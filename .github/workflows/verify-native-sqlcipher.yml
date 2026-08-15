@@ -1,0 +1,147 @@
+name: Verify native SQLCipher
+
+# Produces and verifies the hermetic SQLCipher library for every shipping runtime identifier.
+#
+# A RID whose manifest record is "verified" is gated here: the job rebuilds from pinned sources on a
+# native runner and fails if the result does not match the checked-in binary byte for byte. A RID
+# still recorded as "pending" is built and uploaded so its binary and hash can be landed; the job
+# reports the values to record. Nothing is ever skipped silently — a RID this workflow cannot prove
+# is a failure, because a skipped RID in a green summary is indistinguishable from a verified one.
+
+on:
+  pull_request:
+    paths:
+      - "src/RetroDownfall.Arcanum.NativeSqlCipher/**"
+      - "scripts/build-native-sqlcipher.*"
+      - "scripts/verify-native-sqlcipher.sh"
+      - ".github/workflows/verify-native-sqlcipher.yml"
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    name: Manifest provenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Offline by design: provenance, digest shape, license and SBOM hashes only. No binary is
+      # required, so this runs anywhere and fails fast on a malformed manifest.
+      - name: Verify manifest only
+        run: ./scripts/verify-native-sqlcipher.sh --manifest-only
+
+  macos:
+    name: Native ${{ matrix.rid }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-arm64
+            runner: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install verification tools
+        run: brew install gnupg shellcheck jq
+
+      - name: Lint the build and verify scripts
+        run: shellcheck scripts/build-native-sqlcipher.sh scripts/verify-native-sqlcipher.sh scripts/build-sqlcipher-compatibility-fixture.sh
+
+      # Provenance, hash, Mach-O format, exported-symbol closure, compile options, and declared
+      # dynamic dependencies for the checked-in binary.
+      - name: Verify the checked-in asset
+        run: ./scripts/verify-native-sqlcipher.sh --rid ${{ matrix.rid }}
+
+      - name: Rebuild twice from clean and require byte-identical output
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/first" "$RUNNER_TEMP/second"
+          ./scripts/build-native-sqlcipher.sh --rid "$RID" --output "$RUNNER_TEMP/first"
+          ./scripts/build-native-sqlcipher.sh --rid "$RID" --output "$RUNNER_TEMP/second"
+          first="$(shasum -a 256 "$RUNNER_TEMP"/first/libe_sqlcipher.dylib | awk '{print $1}')"
+          second="$(shasum -a 256 "$RUNNER_TEMP"/second/libe_sqlcipher.dylib | awk '{print $1}')"
+          recorded="$(jq -r --arg rid "$RID" '.assets[] | select(.rid == $rid) | .sha256' \
+            src/RetroDownfall.Arcanum.NativeSqlCipher/native-source-manifest.json)"
+          echo "first=$first second=$second recorded=$recorded"
+          if [ "$first" != "$second" ]; then
+            echo "::error::The build is not reproducible on $RID." >&2
+            exit 1
+          fi
+          if [ "$recorded" != "null" ] && [ "$first" != "$recorded" ]; then
+            echo "::error::Rebuild does not match the checked-in asset for $RID." >&2
+            exit 1
+          fi
+
+      - name: Upload the rebuilt asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sqlcipher-${{ matrix.rid }}
+          path: |
+            ${{ runner.temp }}/first/*
+          if-no-files-found: error
+
+  windows:
+    name: Native ${{ matrix.rid }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [win-x64, win-arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up the MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.rid == 'win-arm64' && 'amd64_arm64' || 'amd64' }}
+
+      - name: Install NASM
+        run: choco install nasm --no-progress -y
+
+      - name: Build the hermetic library
+        shell: pwsh
+        env:
+          RID: ${{ matrix.rid }}
+        run: ./scripts/build-native-sqlcipher.ps1 -Rid $env:RID -Output "$env:RUNNER_TEMP/first"
+
+      - name: Rebuild and require byte-identical output
+        shell: pwsh
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          ./scripts/build-native-sqlcipher.ps1 -Rid $env:RID -Output "$env:RUNNER_TEMP/second"
+          $first = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP/first/e_sqlcipher.dll").Hash.ToLowerInvariant()
+          $second = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP/second/e_sqlcipher.dll").Hash.ToLowerInvariant()
+          $manifest = Get-Content -Raw src/RetroDownfall.Arcanum.NativeSqlCipher/native-source-manifest.json | ConvertFrom-Json
+          $recorded = ($manifest.assets | Where-Object { $_.rid -eq $env:RID }).sha256
+          Write-Host "first=$first second=$second recorded=$recorded"
+          if ($first -ne $second) {
+            Write-Host "::error::The build is not reproducible on $env:RID."
+            exit 1
+          }
+          if ($recorded -and $first -ne $recorded) {
+            Write-Host "::error::Rebuild does not match the checked-in asset for $env:RID."
+            exit 1
+          }
+          if (-not $recorded) {
+            Write-Host "::notice::$env:RID is still pending. Record sha256 $first in native-source-manifest.json and check in the uploaded binary."
+          }
+
+      - name: Upload the built asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sqlcipher-${{ matrix.rid }}
+          path: |
+            ${{ runner.temp }}/first/*
+          if-no-files-found: error

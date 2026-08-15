@@ -1,18 +1,18 @@
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// RAG Phase 1 — process-wide flag recording whether the sqlite-vec <c>vec0</c> acceleration extension
-/// loaded successfully into the Grimoire SQLite connection at bootstrap (see
-/// <c>GrimoireSchemaInstaller</c> and <see cref="SqliteVecExtensionLoader"/>).
+/// Process-wide record of which vector search path The Weave is using.
 ///
-/// Phase 1 ships managed-only by default: no sqlite-vec NuGet package is referenced anywhere in the
-/// solution, so <see cref="IsVecAvailable"/> is <c>false</c> out of the box and
-/// <c>DivinationService</c> always uses its managed brute-force cosine fallback over the BLOB
-/// source-of-truth tables. If a future change adds the sqlite-vec native asset and
-/// <see cref="SqliteVecExtensionLoader.TryLoad"/> succeeds against it, this flips to <c>true</c> at the
-/// next bootstrap and <c>DivinationService</c> automatically starts using the accelerated vec0 KNN
-/// path — no other code change required. Either way, no RAG feature loses functionality: the vec0
-/// index is purely a performance layer over the same data.
+/// Arcanum ships managed-only, permanently as far as this type is concerned. The hermetic SQLCipher
+/// runtime is compiled with <c>SQLITE_OMIT_LOAD_EXTENSION</c>, so no dynamic accelerator can be
+/// loaded into a Grimoire connection at all; the sqlite-vec probe that used to set this flag has
+/// been removed rather than left to fail silently at every bootstrap.
+///
+/// <see cref="IsVecAvailable"/> is therefore <c>false</c> and <c>DivinationService</c> uses its
+/// managed brute-force cosine search over the BLOB source-of-truth tables. No RAG feature loses
+/// functionality: acceleration was only ever a performance layer over the same data. A future
+/// statically linked accelerator would set this through <see cref="SetAvailable"/> after its own
+/// security review.
 /// </summary>
 public sealed class WeaveIndexAvailability
 {
@@ -32,7 +32,7 @@ public sealed class WeaveIndexAvailability
     private volatile bool _isVecAvailable;
 
     private volatile string _diagnostic =
-        "sqlite-vec not shipped; using complete streamed managed SIMD fallback.";
+        "No dynamic vector accelerator is loadable; using complete streamed managed SIMD search.";
 
     public bool IsVecAvailable => _isVecAvailable;
 

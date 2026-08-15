@@ -1,0 +1,87 @@
+<Project>
+
+  <!--
+    Delivers exactly one hermetic SQLCipher library: the one built for the RID being produced.
+
+    There is deliberately no probe, no search path, and no fallback. A RID without a verified,
+    checked-in asset fails the build, because the alternative — silently loading whatever SQLite
+    the machine happens to have — is the failure this whole delivery exists to prevent.
+  -->
+
+  <PropertyGroup>
+
+    <ArcanumSqlCipherAssetRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)..'))</ArcanumSqlCipherAssetRoot>
+
+    <!--
+      A RID-agnostic build still has to run somewhere, so it resolves the host's RID. An explicit
+      RuntimeIdentifier always wins.
+    -->
+    <ArcanumSqlCipherRid Condition="'$(ArcanumSqlCipherRid)' == '' and '$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</ArcanumSqlCipherRid>
+
+    <ArcanumSqlCipherRid Condition="'$(ArcanumSqlCipherRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</ArcanumSqlCipherRid>
+
+    <ArcanumSqlCipherFileName Condition="$(ArcanumSqlCipherRid.StartsWith('osx-'))">libe_sqlcipher.dylib</ArcanumSqlCipherFileName>
+
+    <ArcanumSqlCipherFileName Condition="$(ArcanumSqlCipherRid.StartsWith('win-'))">e_sqlcipher.dll</ArcanumSqlCipherFileName>
+
+    <ArcanumSqlCipherAssetPath>$(ArcanumSqlCipherAssetRoot)runtimes/$(ArcanumSqlCipherRid)/native/$(ArcanumSqlCipherFileName)</ArcanumSqlCipherAssetPath>
+
+  </PropertyGroup>
+
+  <ItemGroup>
+
+    <!--
+      The runtime validator compares the loaded library against the same provenance the build and
+      verify scripts use, so the manifest travels inside the assembly rather than being read from a
+      path that a deployed installation may not have.
+    -->
+    <EmbeddedResource Include="$(ArcanumSqlCipherAssetRoot)native-source-manifest.json">
+
+      <LogicalName>RetroDownfall.Arcanum.NativeSqlCipher.native-source-manifest.json</LogicalName>
+
+      <Visible>false</Visible>
+
+    </EmbeddedResource>
+
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(ArcanumSqlCipherFileName)' != '' And Exists('$(ArcanumSqlCipherAssetPath)')">
+
+    <ArcanumSqlCipherNativeAsset Include="$(ArcanumSqlCipherAssetPath)" />
+
+    <!--
+      Content with CopyToOutputDirectory is what carries the library transitively: every project
+      referencing Infrastructure gets it next to its own output, which is where the SQLitePCLRaw
+      provider's NativeLibrary load looks. It also covers publish, self-contained, and AOT layouts
+      without a second declaration that could disagree with this one.
+    -->
+    <Content Include="$(ArcanumSqlCipherAssetPath)">
+
+      <Link>$(ArcanumSqlCipherFileName)</Link>
+
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+
+      <Visible>false</Visible>
+
+    </Content>
+
+  </ItemGroup>
+
+  <Target Name="ValidateArcanumNativeSqlCipher"
+          BeforeTargets="CopyFilesToOutputDirectory;ComputeFilesToPublish">
+
+    <Error Condition="'$(ArcanumSqlCipherFileName)' == ''"
+           Code="ARCSQLC001"
+           Text="Arcanum ships a hermetic SQLCipher library only for osx-* and win-* runtime identifiers; '$(ArcanumSqlCipherRid)' is not one of them. Build for a supported RID, or add the RID to src/RetroDownfall.Arcanum.NativeSqlCipher/native-source-manifest.json and produce its verified asset first." />
+
+    <Error Condition="'@(ArcanumSqlCipherNativeAsset)' == ''"
+           Code="ARCSQLC002"
+           Text="No hermetic SQLCipher asset exists for RuntimeIdentifier '$(ArcanumSqlCipherRid)'. Expected $(ArcanumSqlCipherAssetPath). Build it on a native runner with scripts/build-native-sqlcipher.sh (macOS) or scripts/build-native-sqlcipher.ps1 (Windows), verify it with scripts/verify-native-sqlcipher.sh, and check it in. Arcanum never falls back to an ambient SQLite library." />
+
+    <Error Condition="'@(ArcanumSqlCipherNativeAsset->Count())' != '1'"
+           Code="ARCSQLC003"
+           Text="Exactly one hermetic SQLCipher asset is required for RuntimeIdentifier '$(ArcanumSqlCipherRid)'; @(ArcanumSqlCipherNativeAsset->Count()) were resolved: @(ArcanumSqlCipherNativeAsset)." />
+
+  </Target>
+
+</Project>

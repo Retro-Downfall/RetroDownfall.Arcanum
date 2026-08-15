@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Assets only: the verified SQLCipher binaries, the provenance that makes them auditable, and the
+    MSBuild contract that delivers exactly one of them. No application policy lives here.
+  -->
+
+  <PropertyGroup>
+
+    <TargetFramework>netstandard2.0</TargetFramework>
+
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+
+    <IsPackable>true</IsPackable>
+
+    <PackageId>RetroDownfall.Arcanum.NativeSqlCipher</PackageId>
+
+    <Description>Hermetic SQLCipher runtime for Arcanum, built from pinned upstream sources with statically linked OpenSSL.</Description>
+
+    <Deterministic>true</Deterministic>
+
+    <EnableDefaultItems>false</EnableDefaultItems>
+
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+    <!-- NU5128: an assets-only package intentionally has no lib/ or ref/ assembly. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+
+  </PropertyGroup>
+
+  <ItemGroup>
+
+    <None Include="native-source-manifest.json" Pack="true" PackagePath="/" />
+
+    <None Include="LICENSES/**/*" Pack="true" PackagePath="LICENSES/" />
+
+    <None Include="sbom/**/*" Pack="true" PackagePath="sbom/" />
+
+    <None Include="build/RetroDownfall.Arcanum.NativeSqlCipher.targets" Pack="true" PackagePath="build/" />
+
+    <None Include="buildTransitive/RetroDownfall.Arcanum.NativeSqlCipher.targets" Pack="true" PackagePath="buildTransitive/" />
+
+    <None Include="runtimes/**/native/*" Pack="true" PackagePath="runtimes/" />
+
+  </ItemGroup>
+
+</Project>

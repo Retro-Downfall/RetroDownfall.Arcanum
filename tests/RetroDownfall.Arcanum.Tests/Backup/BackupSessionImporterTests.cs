@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
@@ -193,7 +195,7 @@ public sealed class BackupSessionImporterTests : IDisposable
 
         CryptographicOperations.ZeroMemory(salt);
 
-        SQLitePCL.Batteries_V2.Init();
+        SqliteNativeRuntime.Instance.Initialize();
 
         await using SqliteConnection connection = new(
             new SqliteConnectionStringBuilder

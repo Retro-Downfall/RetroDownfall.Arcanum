@@ -484,7 +484,7 @@ credential APIs. It has no project reference back to Core, Infrastructure, Api, 
 Grimoire/`Chronosync`/`CampaignLoggerQueue`/`Loremaster`, `InMemoryEventBus`, Comm Link
 multiplex/webhook.
 
-**RAG ownership:** Weave/Divination schema + managed/vec0 search in Infrastructure (`DivinationService`, the `Data/Schema/` object files installed by `GrimoireSchemaInstaller`, `SqliteVecExtensionLoader`); `EmbeddingBlobCodec` in **Core**; `IWeaveService` implemented in **Api** (§21.1). Background: `EntryWeavingService`, `WorkspaceIndexingService`, `SagaExtractionService`/`SagaMemoryStore`. Semantic spell routing cache: `SpellWeaveCache`.
+**RAG ownership:** Weave/Divination managed cosine search in Infrastructure (`DivinationService`, the `Data/Schema/` object files installed by `GrimoireSchemaInstaller`); `EmbeddingBlobCodec` in **Core**; `IWeaveService` implemented in **Api** (§21.1). Background: `EntryWeavingService`, `WorkspaceIndexingService`, `SagaExtractionService`/`SagaMemoryStore`. Semantic spell routing cache: `SpellWeaveCache`.
 
 **MSBuild:** `IsTrimmable`, `PublishAot` (analysis signal), `EnableConfigurationBindingGenerator`; `FrameworkReference` AspNetCore for hosting abstractions.
 
@@ -1037,6 +1037,65 @@ OpenAI responses, but Grimoire Entries, exports, Apprentice state, and local his
 answer-only. Provider `ProtectedData` may survive only in the same-provider in-memory continuation.
 Accounting and audit surfaces may store reasoning token counts, never reasoning bodies.
 
+#### 5.4.4a Hermetic SQLCipher native runtime
+
+The SQLite engine behind the Grimoire is **built by Arcanum from pinned upstream sources**, not
+consumed as a prebuilt package. `SQLitePCLRaw.bundle_e_sqlcipher` was removed; Infrastructure
+references only the managed `SQLitePCLRaw.provider.e_sqlcipher`, and the native library comes from
+the checked-in **`RetroDownfall.Arcanum.NativeSqlCipher`** asset project.
+
+**Why.** A bundle package supplies binaries whose SQLCipher and SQLite versions, compile options, and
+crypto linkage are unknown to us. Covenant depends on properties that cannot be asserted against a
+binary someone else compiled: FTS5 with secure-delete and rank-1 integrity, an exact SQLite version
+for the canonical and accelerator tiers, and the guarantee that no dynamic extension can ever be
+loaded. A build with the codec compiled out accepts `PRAGMA key` and writes plaintext while still
+reporting a correct `cipher_version`, so provenance and behavioral proof are both required.
+
+**What is pinned.** `src/RetroDownfall.Arcanum.NativeSqlCipher/native-source-manifest.json` is the
+single source of truth: SQLCipher tag `v4.17.0` (tag object `f9788efa…`, commit `810db22f…`, based on
+SQLite **3.53.3**) and OpenSSL **3.5.7**, each with an archive SHA-256; OpenSSL additionally carries
+its upstream GPG signature and the signer fingerprint `BA5473A2B0587B07FB27CF2D216094DFD0CB81EF`. The
+manifest also holds the complete compile-option set, the SQLCipher 4 compatibility defaults, the exact
+runtime values the validator enforces, per-RID toolchain identity, license and SBOM hashes, and one
+asset record per shipping RID. No SQLCipher source is vendored — an upgrade is a manifest edit, and
+the empty `patches` array is the only way our C could ever diverge from upstream.
+
+**Shipping runtime identifiers.** `osx-arm64`, `win-x64`, `win-arm64`. Each asset record carries a
+`status` of `verified` (binary checked in, hash recorded) or `pending` (no binary yet). Linux is not a
+shipping RID for the hermetic runtime and has been removed from the AOT gate and packaging.
+
+**Delivery.** `buildTransitive/RetroDownfall.Arcanum.NativeSqlCipher.targets` resolves exactly one
+asset for the RID being built, falling back to the host RID only when no `RuntimeIdentifier` is set.
+There is no probe, no search path, and **no fallback**: a RID without a verified asset fails the build
+with `ARCSQLC002`, because silently loading whatever SQLite the machine has is the failure this
+delivery exists to prevent.
+
+**Build and verification.** `scripts/build-native-sqlcipher.sh` (macOS) and
+`scripts/build-native-sqlcipher.ps1` (Windows) fetch only manifest URLs, verify every hash before
+extraction, verify the OpenSSL signature against the pinned signer, prove the pinned tag object peels
+to the pinned commit, link OpenSSL statically, and export only the SQLite C API. The builds are
+**reproducible**: two runs from clean work areas produce byte-identical output. Achieving that
+required configuring OpenSSL against a fixed virtual prefix with `DESTDIR` staging, because OpenSSL
+compiles its configured directories and its own CFLAGS string into `libcrypto`.
+`scripts/verify-native-sqlcipher.sh` has `--manifest-only`, `--rid <RID>`, and `--all` modes and
+checks hash, format, exported-symbol closure, compile options, and declared dynamic dependencies. It
+never skips: a RID the host cannot prove is a failure.
+
+**Runtime proof.** `SqliteNativeRuntime.Initialize()` selects the provider once and calls
+`raw.FreezeProvider(true)`, so nothing can substitute an engine underneath an open encrypted
+database. `SqliteNativeRuntimeValidator.ValidateAsync` then proves behavior before the Grimoire opens:
+it creates a real encrypted database, closes and reopens it with the correct key, requires
+`cipher_integrity_check` to report ok, requires a wrong key to fail on first page access, exercises an
+external-content FTS5 index with secure-delete and rank-1 integrity, confirms `load_extension()`
+cannot be invoked, and hashes the delivered binary against the manifest. Any mismatch returns a closed
+error code and leaves the Grimoire unavailable; there is no second library to try.
+
+**Compatibility.** A database written by the previous shipping runtime (SQLite 3.39.2) opens, reads,
+and accepts writes under the new one. The fixture proving this is generated from that runtime by
+`scripts/build-sqlcipher-compatibility-fixture.sh` and checked in under
+`tests/…/TestData/SqlCipher/`. Arcanum sets no cipher pragma, so SQLCipher 4 defaults apply on both
+sides and an operator's existing Grimoire is unaffected by the upgrade.
+
 #### 5.4.5 Schema installation, serialization, and crash consistency
 
 **There is no migration chain.** The Grimoire schema is a declarative, SDK-style database project:
@@ -1050,7 +1109,7 @@ Data/Schema/
   FullTextSearch/    # one file per FTS5 virtual table — Entries_fts.sql, lexicon_fts.sql
   Triggers/          # one file per trigger — Entries_ai.sql, TR_BatchLineCheckpoints_*.sql, …
   Views/             # one file per view (none exist yet)
-  Accelerators/      # one file per optional vec0 virtual table
+  Accelerators/      # reserved for statically linked search accelerators (empty; see below)
 ```
 
 Conventions, enforced by `GrimoireSchemaCatalogTests`:
@@ -1066,19 +1125,22 @@ Conventions, enforced by `GrimoireSchemaCatalogTests`:
   triggers come last because they are the only objects that reference both a table and an FTS5
   virtual table. An unrecognized folder throws instead of installing in an arbitrary tier.
 - **`{{EmbeddingDimensions}}`** is the one template token, resolved at install from the clamped
-  `Arcanum:Integrations:Embeddings:Dimensions`. Only the `vec0` accelerators use it; a statement that
-  still carries an unresolved placeholder after substitution throws rather than reaching SQLite.
+  `Arcanum:Integrations:Embeddings:Dimensions`. A statement that still carries an unresolved
+  placeholder after substitution throws rather than reaching SQLite.
 
 `GrimoireSchemaInstaller` installs the **durable schema — every tier except `Accelerators` — in one
 `SqliteTransaction`**, wrapped in `SqliteBusyRetry` so a concurrent CLI opening the same encrypted
 file waits instead of failing. A failure anywhere rolls the whole install back, so a half-built
 schema is never observable, and the durable schema is not optional: a failure fails startup. The
-`Accelerators` tier installs outside that transaction and only when `SqliteVecExtensionLoader` loads
-sqlite-vec; any failure there degrades to a logged warning and the managed cosine fallback over the
-BLOB companion tables, because `vec0` is performance and never correctness (§21.2). Two best-effort
-post-install steps — the Lexicon FTS rebuild and the embedding-dimension mismatch warning — likewise
-log and continue. Callers apply `SqliteConnectionPragmas` first, so the install runs under
-`journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON`, and `synchronous=NORMAL`.
+`Accelerators` tier is currently empty: the hermetic SQLCipher runtime is compiled with
+`SQLITE_OMIT_LOAD_EXTENSION` (§5.4.4a), so no dynamic accelerator can be loaded into a Grimoire
+connection at all. The sqlite-vec probe and its five `vec0` object files were removed rather than
+left to fail at every bootstrap, and managed cosine over the BLOB companion tables is the permanent
+search path (§21.2) until a statically linked accelerator is separately reviewed. Two best-effort
+post-install steps — the Lexicon FTS rebuild and the embedding-dimension mismatch warning — log and
+continue. Callers initialize the connection through `ICovenantSqliteConnectionInitializer` first, so
+the install runs under `journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON`,
+`secure_delete=ON`, and `synchronous=NORMAL`.
 
 **Schema identity replaces the history table.** `GrimoireSchemaIdentity.ComputeAsync` hashes the
 installed `sqlite_master` (type, name, owning table, stored DDL) into a `sha256-…` value.
@@ -4847,7 +4909,7 @@ SQLCipher contention uses `SqliteBusyRetry`; and
 | **Saga** | Auto-extracted associative memory (§21.9); operator-delete only. |
 | **Arcane Resonance** | Spell `dependencies` injection (§10.2.2). |
 | **Spell Routing** | Pre-flight spell selection (`FullGrimoire` / `DirectResonance` / `FilteredDivination`). |
-| **`vec0`** | Optional sqlite-vec KNN index; managed cosine fallback when unavailable (§21.2). |
+| **`vec0`** | Historical: an optional sqlite-vec KNN index. Removed — the hermetic runtime omits extension loading, so managed cosine is the only search path (§5.4.4a, §21.2). |
 | **Output Formatting Directive** | Terminal-safe Markdown subset for CLI (§10.5). |
 
 ## 18. Document maintenance
@@ -5256,11 +5318,23 @@ All seven capabilities are implemented (§21.1–§21.2 foundation; §21.6–§2
 
 **`IDivinationService.SearchAsync`:** callers pass vec0 table name + PK/embedding columns. If `WeaveIndexAvailability.IsVecAvailable`, vec0 KNN; else strip `_vec` and stream managed cosine over every matching BLOB-companion row (`EmbeddingBlobCodec`, bounded top-K heap, caller cancellation, no total row budget). Never throws — sanitized `Result` failure.
 
-### 21.2 Vector storage — vec0 acceleration with a managed fallback (always safe)
+### 21.2 Vector storage — managed cosine over durable BLOB tables
 
-Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table (`distance_metric=cosine`) when extension loads. Both are declarative object files in the one schema tree (§5.4.5): the BLOB tables install with the durable schema, and the `vec0` files live under `Data/Schema/Accelerators/` where a `{{EmbeddingDimensions}}` token resolves at install from `Arcanum:Integrations:Embeddings:Dimensions`. Accelerators install outside the durable transaction and only when sqlite-vec loads; extension load failure → managed-only, never a startup failure.
+Per feature: one durable **BLOB** table, declared as an object file in the one schema tree (§5.4.5)
+and installed with the durable schema. Search is **always** the managed SIMD cosine scan over those
+tables.
 
-**Default: managed-only** (no sqlite-vec NuGet in-tree). vec0 is performance-only.
+**There is no dynamic accelerator, by construction.** The hermetic SQLCipher runtime is compiled with
+`SQLITE_OMIT_LOAD_EXTENSION` (§5.4.4a), so a loadable extension cannot be loaded into a Grimoire
+connection at all — `sqlite3_load_extension` is not even exported from the library. The former
+sqlite-vec probe and its five `vec0` object files were therefore removed rather than retained as code
+that could only ever fail: `SqliteVecExtensionLoader`, `Accelerators/*_vec.sql`, and the accelerator
+branch of `GrimoireSchemaInstaller` are all gone. `WeaveIndexAvailability` reports `managed`
+permanently, and `Data/Schema/Accelerators/` is reserved for a future **statically linked**
+accelerator that would ship inside the native library and pass its own security review.
+
+This costs performance, never correctness: the BLOB tables were always the source of truth and the
+managed scan was always the guaranteed baseline.
 
 **Managed scan shape.** The managed brute-force path scores directly off the stored BLOB and is
 therefore allocation-free per row: decoding into a fresh `float[]` would double the per-row

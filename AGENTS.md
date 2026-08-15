@@ -15,6 +15,7 @@ and degrades to a signed folder-based self-contained publish when it is not.
 `Cli → Api → Infrastructure → Core` (Infrastructure also references the isolated `Secrets` project).
 - **`Core`** — domain primitives, `Result`/`Result<T>`, `ApiResponse<T>`, config POCOs, source-gen JSON contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`).
 - **`Infrastructure`** — Grimoire (EF Core + SQLCipher), MCP client layer, Serilog, workspace tools. Schema lives as one `.sql` file per object under `Infrastructure/Data/Schema/**` — **edit the schema by adding/editing a file**, never a numbered migration (`Data/Migrations` is design-time scaffolding only, never applied).
+- **`NativeSqlCipher`** — assets only: the hermetic SQLCipher library (built from pinned upstream sources with statically linked OpenSSL) for each shipping RID, plus `native-source-manifest.json`. Shipping RIDs are `osx-arm64`, `win-x64`, `win-arm64`; **there is no fallback** — a RID without a verified asset fails the build. Never add a `SQLitePCLRaw.bundle*` package, and never open a SQLite connection without `SqliteNativeRuntime.Instance.Initialize()` first.
 - **`Api`** — class library (not an exe): `MapArcanumEndpoints`, `WizardIntelligenceProvider`, `TurnEngine`, `ToolExecutionPipeline`, `ArcanumJsonContext`, `/v1` OpenAI compat endpoints.
 - **`Cli`** — the shipping executable; calls the running host's API rather than reaching into Infrastructure directly.
 - **`Compendium.Ux` / `TheForge.Ux`** — Avalonia desktop apps (config editor / inference IDE), HTTP-only clients of the same API.
@@ -35,6 +36,7 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
 ./scripts/coverage.sh --threshold        # Cobertura + HTML coverage, tiered gates
 ./scripts/verify-aot-il-warnings.sh      # AOT publish closure must be free of first-party IL/AOT warnings
+./scripts/verify-native-sqlcipher.sh --rid osx-arm64   # native provenance, hashes, symbols, compile options
 ```
 Run everything from the repo root. Don't rely on `workspace_check` as a bootstrap verifier for untrusted repos — it executes repo-authored code and requires an eligible macOS runtime + operator Ward.
 

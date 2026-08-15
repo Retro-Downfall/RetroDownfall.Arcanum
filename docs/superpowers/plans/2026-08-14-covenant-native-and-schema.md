@@ -8,6 +8,34 @@
 
 **Tech Stack:** .NET 10, C# 14, Native AOT, MSBuild `buildTransitive`, SQLitePCLRaw provider APIs, Microsoft.Data.Sqlite, SQLCipher 4.17.0 Community on SQLite 3.53.3, statically linked OpenSSL 3.5.7, SQLite FTS5, Bash, PowerShell, xUnit.
 
+## Delivered scope and approved deviations (issue #80, 2026-08-15)
+
+Tasks 1 through 7 and Task 17 of this plan were implemented as GitHub issue #80. Three deviations
+from the text below were approved by the operator during implementation and are the authority where
+they conflict:
+
+1. **Shipping runtime identifiers are `osx-arm64`, `win-x64`, and `win-arm64`** — three, not the five
+   listed below. Linux was dropped entirely: `linux-x64` and `linux-arm64` are no longer shipping
+   RIDs, are removed from `verify-aot-il-warnings.sh` and the CI matrix, and `osx-x64` is also out of
+   the set. `ci.yml`'s build/test and AOT lanes moved from `ubuntu-latest` to `macos-14`, because a
+   runner whose RID has no native asset now fails the build by design.
+2. **Each manifest asset record carries a closed `status` of `verified` or `pending`.** A verified
+   record requires a checked-in binary whose hash matches; a pending record requires the binary to be
+   absent. This exists because only `osx-arm64` can be built on the implementation host; the two
+   Windows assets are produced by `.github/workflows/verify-native-sqlcipher.yml` on
+   `windows-latest`. A pending RID still hard-fails the build (`ARCSQLC002`) — there is no fallback.
+3. **Windows RIDs are built by `scripts/build-native-sqlcipher.ps1`**, not the Bash script, which
+   refuses them rather than cross-building an approximation. The compatibility fixture is generated
+   from the runtime Arcanum actually shipped before this change (`SQLitePCLRaw.lib.e_sqlcipher`
+   2.1.11, SQLite 3.39.2) rather than a 4.5.2 container image, because that is the database an
+   upgrading operator actually has.
+
+Task 6's connection **owner, factory, lease, and artifact-inventory** types were not implemented: they
+exist to drain and re-point connections for the backup, restore, reset, and erasure flows that Plan 04
+owns, and are not required by issue #80's acceptance criteria. The central initializer, the closed
+connection modes, and the twelve default-denied authorization functions — the parts criterion 5 does
+require — are implemented and tested.
+
 ## Global Constraints
 
 - The approved source of truth is [`2026-08-13-covenant-design.md`](../specs/2026-08-13-covenant-design.md). If a plan step and the specification differ, stop that slice and resolve the plan before changing production code.

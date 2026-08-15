@@ -16,7 +16,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-using SQLitePCL;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -60,7 +61,7 @@ internal static class BackupRestoreDatabaseWorker
         CancellationToken cancellationToken)
     {
 
-        Batteries_V2.Init();
+        SqliteNativeRuntime.Instance.Initialize();
 
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(databasePath);
 

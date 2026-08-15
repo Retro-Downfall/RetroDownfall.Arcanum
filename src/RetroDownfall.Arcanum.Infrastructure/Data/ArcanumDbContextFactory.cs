@@ -5,7 +5,6 @@ using Microsoft.EntityFrameworkCore.Design;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -14,7 +13,7 @@ public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<Arcanu
 {
     public ArcanumDbContext CreateDbContext(string[] args)
     {
-        Batteries_V2.Init();
+        SqliteNativeRuntime.Instance.Initialize();
         // MSBuild compiled-model generation runs without user env; `dotnet ef` should set ARCANUM_GRIMOIRE_DEV_KEY explicitly.
         string devKey = Environment.GetEnvironmentVariable("ARCANUM_GRIMOIRE_DEV_KEY")
             ?? "compile-time-placeholder-not-for-production";

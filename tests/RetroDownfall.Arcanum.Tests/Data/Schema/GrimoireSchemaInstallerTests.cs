@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 
@@ -12,6 +13,14 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 public sealed class GrimoireSchemaInstallerTests
 {
+
+    /// <summary>
+    /// These tests open SQLCipher connections directly, so the provider has to be installed before
+    /// the first one is constructed. Without this the class only passes when some earlier test in
+    /// the run happens to have initialized it, which makes a filtered run fail for a reason that has
+    /// nothing to do with the schema.
+    /// </summary>
+    static GrimoireSchemaInstallerTests() => SqliteNativeRuntime.Instance.Initialize();
 
     private const int Dimensions = 1536;
 

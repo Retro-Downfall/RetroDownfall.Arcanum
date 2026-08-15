@@ -121,6 +121,31 @@ require_cmd dotnet
 require_cmd tar
 require_cmd sha256sum
 
+# Arcanum builds its own SQLCipher and delivers exactly one verified library per shipping runtime
+# identifier. Linux is not currently one of them, so a linux-* publish would fail mid-build with
+# ARCSQLC002 rather than fall back to an unverified SQLite. Detect that here and say why.
+#
+# This check is deliberately written against the asset rather than hard-coded to "Linux is
+# unsupported": adding a verified linux-* asset to the manifest re-enables packaging with no edit
+# here.
+require_native_sqlcipher_asset() {
+  local rid="$1"
+
+  local asset="$REPO_ROOT/src/RetroDownfall.Arcanum.NativeSqlCipher/runtimes/$rid/native/libe_sqlcipher.so"
+
+  if [ -f "$asset" ]; then
+    return 0
+  fi
+
+  echo "No hermetic SQLCipher asset exists for '$rid', so Linux packaging cannot produce a" >&2
+  echo "working archive. Arcanum ships osx-arm64, win-x64, and win-arm64; see" >&2
+  echo "docs/Arcanum.DESIGN.md 5.4.4a. To restore Linux support: add the RID to" >&2
+  echo "src/RetroDownfall.Arcanum.NativeSqlCipher/native-source-manifest.json, build and verify" >&2
+  echo "its asset on a native runner, check it in, and re-add the RID to the CI matrix." >&2
+
+  exit 2
+}
+
 # The Native AOT image does NOT absorb the P/Invoke shared libraries. SQLitePCLRaw only
 # static-links e_sqlcipher for browser-wasm, so every linux-* publish emits
 # libe_sqlcipher.so (and libonigwrap.so) beside the host. Shipping an archive without them
@@ -218,6 +243,8 @@ publish_gui() {
   echo "==> Creating $archive"
   tar -C "$WORK/stage" -czf "$archive" "$folder_name"
 }
+
+require_native_sqlcipher_asset "$RID"
 
 publish_cli
 publish_gui "the-forge" \

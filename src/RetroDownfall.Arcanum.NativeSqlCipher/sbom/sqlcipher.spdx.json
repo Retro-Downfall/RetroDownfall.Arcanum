@@ -1,0 +1,93 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "RetroDownfall.Arcanum.NativeSqlCipher",
+  "documentNamespace": "https://github.com/Retro-Downfall/RetroDownfall.Arcanum/sbom/native-sqlcipher/1",
+  "creationInfo": {
+    "created": "2026-08-15T00:00:00Z",
+    "creators": [
+      "Tool: scripts/build-native-sqlcipher.sh",
+      "Organization: Retro Downfall"
+    ]
+  },
+  "documentDescribes": [
+    "SPDXRef-Package-SQLCipher"
+  ],
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-SQLCipher",
+      "name": "sqlcipher",
+      "versionInfo": "4.17.0",
+      "downloadLocation": "https://codeload.github.com/sqlcipher/sqlcipher/tar.gz/810db22f575ee7cf94ea96a3e91622b5fcece3dc",
+      "sourceInfo": "SQLCipher v4.17.0, tag object f9788efa8ac4dfed75c03e4756b1666a1d0845da, commit 810db22f575ee7cf94ea96a3e91622b5fcece3dc, based on SQLite 3.53.3.",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "Copyright (c) 2025, ZETETIC LLC",
+      "supplier": "Organization: Zetetic LLC",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0263d97b99b679d1c538c5ed07397979627bef67441bc0a384729e645d882a65"
+        }
+      ],
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/sqlcipher/sqlcipher@810db22f575ee7cf94ea96a3e91622b5fcece3dc"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-SQLite",
+      "name": "sqlite",
+      "versionInfo": "3.53.3",
+      "downloadLocation": "NOASSERTION",
+      "sourceInfo": "Vendored into the SQLCipher source tree; not fetched separately.",
+      "filesAnalyzed": false,
+      "licenseConcluded": "blessing",
+      "licenseDeclared": "blessing",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Organization: SQLite Consortium"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-OpenSSL",
+      "name": "openssl",
+      "versionInfo": "3.5.7",
+      "downloadLocation": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz",
+      "sourceInfo": "Statically linked into the shipped library with hidden symbol visibility. Release signature verified against fingerprint BA5473A2B0587B07FB27CF2D216094DFD0CB81EF.",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 1998-2026 The OpenSSL Project Authors",
+      "supplier": "Organization: OpenSSL Project",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
+        }
+      ],
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:generic/openssl@3.5.7"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-Package-SQLCipher",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-SQLite"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-SQLCipher",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-OpenSSL"
+    }
+  ]
+}

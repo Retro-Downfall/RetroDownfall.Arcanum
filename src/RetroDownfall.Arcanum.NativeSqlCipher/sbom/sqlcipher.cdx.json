@@ -1,0 +1,114 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:6f1b3f4a-8f1a-4c0e-9f2b-2c7a1f0d5e31",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-15T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "Retro Downfall",
+        "name": "build-native-sqlcipher.sh",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "bom-ref": "arcanum-native-sqlcipher",
+      "type": "library",
+      "name": "RetroDownfall.Arcanum.NativeSqlCipher",
+      "version": "4.17.0",
+      "description": "Hermetic SQLCipher runtime shipped with Arcanum, built from pinned upstream sources with statically linked OpenSSL."
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:github/sqlcipher/sqlcipher@810db22f575ee7cf94ea96a3e91622b5fcece3dc",
+      "type": "library",
+      "name": "sqlcipher",
+      "version": "4.17.0",
+      "publisher": "Zetetic LLC",
+      "purl": "pkg:github/sqlcipher/sqlcipher@810db22f575ee7cf94ea96a3e91622b5fcece3dc",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0263d97b99b679d1c538c5ed07397979627bef67441bc0a384729e645d882a65"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://codeload.github.com/sqlcipher/sqlcipher/tar.gz/810db22f575ee7cf94ea96a3e91622b5fcece3dc"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/sqlcipher/sqlcipher.git"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:generic/sqlite@3.53.3",
+      "type": "library",
+      "name": "sqlite",
+      "version": "3.53.3",
+      "purl": "pkg:generic/sqlite@3.53.3",
+      "description": "Vendored into the SQLCipher source tree; not fetched separately.",
+      "licenses": [
+        {
+          "license": {
+            "name": "SQLite Blessing"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:generic/openssl@3.5.7",
+      "type": "library",
+      "name": "openssl",
+      "version": "3.5.7",
+      "publisher": "OpenSSL Project",
+      "purl": "pkg:generic/openssl@3.5.7",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "arcanum-native-sqlcipher",
+      "dependsOn": [
+        "pkg:github/sqlcipher/sqlcipher@810db22f575ee7cf94ea96a3e91622b5fcece3dc"
+      ]
+    },
+    {
+      "ref": "pkg:github/sqlcipher/sqlcipher@810db22f575ee7cf94ea96a3e91622b5fcece3dc",
+      "dependsOn": [
+        "pkg:generic/sqlite@3.53.3",
+        "pkg:generic/openssl@3.5.7"
+      ]
+    }
+  ]
+}

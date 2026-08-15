@@ -97,7 +97,7 @@ public sealed class GrimoireFixture : IDisposable
 
         try
         {
-            Batteries_V2.Init();
+            SqliteNativeRuntime.Instance.Initialize();
 
             Directory.CreateDirectory(Path.GetDirectoryName(probePath)!);
 

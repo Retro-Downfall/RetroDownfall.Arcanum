@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 
 using Microsoft.Data.Sqlite;
+using SQLitePCL;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
@@ -16,7 +17,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-using SQLitePCL;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -2280,7 +2282,7 @@ public sealed class BackupArchiveCodec
 
             }
 
-            Batteries_V2.Init();
+            SqliteNativeRuntime.Instance.Initialize();
 
             string connectionString = new SqliteConnectionStringBuilder
             {

@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Delivers the hermetic SQLCipher library for the RID being built and embeds its provenance
+    manifest. Importing the asset project's target rather than referencing the project keeps the
+    dependency to what it actually is: files, not an assembly.
+  -->
+  <Import Project="../RetroDownfall.Arcanum.NativeSqlCipher/build/RetroDownfall.Arcanum.NativeSqlCipher.targets" />
+
   <PropertyGroup>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -93,7 +100,12 @@
 
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
 
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
+    <!--
+      The managed provider only. The native library comes from RetroDownfall.Arcanum.NativeSqlCipher,
+      which ships one verified, reproducibly built SQLCipher per RID; a bundle package would deliver
+      binaries Arcanum neither builds nor verifies.
+    -->
+    <PackageReference Include="SQLitePCLRaw.provider.e_sqlcipher" Version="2.1.11" />
 
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.1" />
 

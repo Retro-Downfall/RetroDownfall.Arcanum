@@ -35,7 +35,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     public GrimoireDatabaseBootstrapperTests()
     {
 
-        Batteries_V2.Init();
+        SqliteNativeRuntime.Instance.Initialize();
 
         _tempDir = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"bootstrapper-{Guid.NewGuid():N}");
 

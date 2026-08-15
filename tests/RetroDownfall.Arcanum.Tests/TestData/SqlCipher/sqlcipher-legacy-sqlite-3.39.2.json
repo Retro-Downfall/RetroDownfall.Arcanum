@@ -1,0 +1,16 @@
+{
+  "description": "Encrypted database written by the SQLCipher runtime Arcanum shipped before the hermetic delivery. Proves an existing Grimoire opens unchanged under the new library.",
+  "fileName": "sqlcipher-legacy-sqlite-3.39.2.db",
+  "legacyRuntime": {
+    "package": "SQLitePCLRaw.lib.e_sqlcipher",
+    "packageVersion": "2.1.11",
+    "sqliteVersion": "3.39.2",
+    "librarySha256": "8b9b73ba4f717366f9d5e655859a28c6a185ed24f16f1b77981b60d06f43f51b"
+  },
+  "cipherDefaults": {
+    "note": "SQLCipher 4 defaults; no cipher pragma was set when writing the fixture."
+  },
+  "key": "arcanum-compatibility-fixture-key",
+  "sentinel": "written-by-the-previous-runtime",
+  "databaseSha256": "a62df149c46edf12b21b1f2f4b98418fb1ba846f6aa89fb9d788e50ca24c0535"
+}

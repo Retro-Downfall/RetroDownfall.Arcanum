@@ -1,8 +1,10 @@
 using Microsoft.Data.Sqlite;
+using SQLitePCL;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-using SQLitePCL;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -36,7 +38,7 @@ public sealed class BackupDatabaseSnapshotter
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        Batteries_V2.Init();
+        SqliteNativeRuntime.Instance.Initialize();
 
         string fullSourcePath = Path.GetFullPath(sourcePath);
 

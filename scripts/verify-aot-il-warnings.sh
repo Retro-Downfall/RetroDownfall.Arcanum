@@ -7,7 +7,7 @@ PROJECT="$ROOT/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj"
 
 REGEX_SMOKE_PROJECT="$ROOT/tests/RetroDownfall.Arcanum.RegexAotSmoke/RetroDownfall.Arcanum.RegexAotSmoke.csproj"
 
-DEFAULT_RIDS=(osx-arm64 osx-x64 linux-x64 win-x64)
+DEFAULT_RIDS=(osx-arm64 win-x64 win-arm64)
 
 ALLOWED=(
   'Microsoft.EntityFrameworkCore'
@@ -28,7 +28,7 @@ Usage:
 
 Arguments:
   RID                 Runtime identifier (default: current host RID)
-  all                 Run the primary RID matrix: osx-arm64 osx-x64 linux-x64 win-x64
+  all                 Run the primary RID matrix: osx-arm64 win-x64 win-arm64
 
 Options:
   --force             Attempt publish even when the host OS cannot link this RID
@@ -103,7 +103,7 @@ skip_reason_for_rid() {
   family="$(rid_os_family "$rid")"
 
   if [[ "$family" == unknown ]]; then
-    echo "unknown RID '$rid' — expected osx-*, linux-*, or win-*"
+    echo "unknown RID '$rid' — expected osx-* or win-*"
     return 0
   fi
 

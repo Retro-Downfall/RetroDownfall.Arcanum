@@ -31,7 +31,7 @@ concurrency admission, and post-cancellation cleanup remain authoritative. Ctrl+
 current CLI turn; Command Center returns to its composer after cleanup, while non-interactive
 streams exit 130. Durable work uses its explicit cancel command and reports saved/checkpointed state.
 
-- **Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on Windows/Linux · `Microsoft.Extensions.AI` · EF Core 10 + SQLCipher · System.CommandLine 2.0.10 + Spectre.Console
+- **Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on Windows/Linux · `Microsoft.Extensions.AI` · EF Core 10 + hermetic SQLCipher 4.17.0 on SQLite 3.53.3, built from pinned sources with statically linked OpenSSL 3.5.7 · System.CommandLine 2.0.10 + Spectre.Console
 - **Version:** `0.1.0-beta` (see [`Directory.Build.props`](../Directory.Build.props))
 - **Audience for the code:** senior C#/.NET engineers and coding agents extending an AOT-constrained, API-first system.
 
@@ -151,6 +151,7 @@ architecture. See
 | **`Core`** | Domain primitives, contracts, configuration | `Result`/`Result<T>`, `Error`, `ApiResponse<T>`, `ArcanumSettings`, Covenant compiler/digests/linker/admission contracts, `IArcanumIntelligenceProvider`, `PingRequest`, `IGrimoireRepository`, `IEyeOfTheWorld`, events, source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`) | `IsAotCompatible` |
 | **`Secrets`** | Native credential boundary | macOS Keychain, Windows Credential Manager, Linux Secret Service, fixed Arcanum credential identity | `IsAotCompatible` + `IsTrimmable` |
 | **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), authenticated encrypted blob storage + OS-backed file key, workspace scanning, reliable `search_workspace` / `apply_patch` / `workspace_check` engines, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable` + `PublishAot` (analysis signal) |
+| **`NativeSqlCipher`** | Hermetic SQLCipher delivery (assets only, no code) | One verified, reproducibly built SQLCipher library per shipping RID (`osx-arm64`, `win-x64`, `win-arm64`), the `native-source-manifest.json` provenance it is checked against, upstream licenses and SBOMs, and the MSBuild target that delivers exactly one asset with no fallback | packable; `IncludeBuildOutput=false` |
 | **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `TurnExecutionCoordinator`/`TurnEngine`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
 | **`Cli`** | Shipping CLI/host entry point | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` on Windows/Linux and macOS with LLVM `lld`; folder-based self-contained macOS fallback without lld |
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
@@ -180,7 +181,7 @@ src/
       Tables/                            #   one file per table, its indexes co-located
       FullTextSearch/                    #   one file per FTS5 virtual table
       Triggers/                          #   one file per trigger
-      Accelerators/                      #   optional vec0 tables, templated on embedding dimensions
+      Accelerators/                      #   reserved for a statically linked accelerator (empty)
     Data/Migrations/                     # EF design-time scaffolding only — never applied
   RetroDownfall.Arcanum.Api/             # endpoints, intelligence hub, /v1, security filter
     ProvingGrounds/                      # trial/inquisitor endpoint wiring

@@ -51,11 +51,12 @@ internal static class GrimoireSchemaInstaller
                 cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
-        bool vectorAcceleration = await TryInstallAcceleratorsAsync(
-            connection,
-            embeddingDimensions,
-            logger,
-            cancellationToken).ConfigureAwait(false);
+        // No vector acceleration exists. The sqlite-vec probe that used to run here loaded a native
+        // extension from the process library search path — the exact behavior the hermetic runtime
+        // forbids, and which SQLITE_OMIT_LOAD_EXTENSION now makes impossible. Managed cosine over
+        // the BLOB companion tables is the permanent search path until a statically linked
+        // accelerator is separately reviewed and shipped.
+        const bool vectorAcceleration = false;
 
         await TryRebuildLexiconFtsAsync(connection, logger, cancellationToken).ConfigureAwait(false);
 
@@ -132,50 +133,6 @@ internal static class GrimoireSchemaInstaller
             }
 
             throw;
-
-        }
-
-    }
-
-    private static async Task<bool> TryInstallAcceleratorsAsync(
-        SqliteConnection connection,
-        int embeddingDimensions,
-        ILogger? logger,
-        CancellationToken cancellationToken)
-    {
-
-        try
-        {
-
-            if (!SqliteVecExtensionLoader.TryLoad(connection, logger))
-            {
-
-                return false;
-
-            }
-
-            foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.AcceleratorObjects)
-            {
-
-                await using SqliteCommand command = connection.CreateCommand();
-
-                command.CommandText = GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions);
-
-                _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-            }
-
-            return true;
-
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-
-            logger?.LogWarning(
-                ex,
-                "The Weave vec0 acceleration tables could not be installed; Divination will use the complete managed cosine fallback.");
-
-            return false;
 
         }
 

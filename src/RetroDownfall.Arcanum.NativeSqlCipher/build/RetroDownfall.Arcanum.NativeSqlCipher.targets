@@ -1,0 +1,11 @@
+<Project>
+
+  <!--
+    Repository-local entry point. The packed buildTransitive target is the single source of the
+    delivery contract; this file only forwards to it so an in-repo project reference and a consumed
+    package cannot drift apart.
+  -->
+
+  <Import Project="$(MSBuildThisFileDirectory)../buildTransitive/RetroDownfall.Arcanum.NativeSqlCipher.targets" />
+
+</Project>

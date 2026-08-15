@@ -17,7 +17,10 @@ public sealed class GrimoireSchemaCatalogTests
 
         Assert.NotEmpty(GrimoireSchemaCatalog.CoreObjects);
 
-        Assert.NotEmpty(GrimoireSchemaCatalog.AcceleratorObjects);
+        // The accelerator tier is intentionally empty: the hermetic SQLCipher runtime omits
+        // extension loading, so no dynamic accelerator can be installed. The tier is retained for a
+        // future statically linked one.
+        Assert.Empty(GrimoireSchemaCatalog.AcceleratorObjects);
 
     }
 
@@ -83,13 +86,6 @@ public sealed class GrimoireSchemaCatalogTests
 
         }
 
-        Assert.All(
-            GrimoireSchemaCatalog.AcceleratorObjects,
-            static definition => Assert.Contains(
-                GrimoireSchemaCatalog.EmbeddingDimensionsToken,
-                definition.Sql,
-                StringComparison.Ordinal));
-
     }
 
     [Fact]
@@ -110,9 +106,16 @@ public sealed class GrimoireSchemaCatalogTests
     public void Resolve_substitutes_the_configured_embedding_dimensions()
     {
 
-        GrimoireSchemaObject accelerator = GrimoireSchemaCatalog.AcceleratorObjects[0];
+        // Built here rather than taken from the catalog: no shipped object uses the token now that
+        // the accelerator tier is empty, but the substitution mechanism still has to work for the
+        // statically linked accelerator the tier is reserved for.
+        GrimoireSchemaObject templated = new(
+            GrimoireSchemaCategory.Accelerators,
+            "templated_embeddings",
+            $"CREATE VIRTUAL TABLE IF NOT EXISTS templated_embeddings USING vec0 "
+            + $"(embedding FLOAT[{GrimoireSchemaCatalog.EmbeddingDimensionsToken}]);");
 
-        string resolved = GrimoireSchemaCatalog.Resolve(accelerator, 3072);
+        string resolved = GrimoireSchemaCatalog.Resolve(templated, 3072);
 
         Assert.Contains("FLOAT[3072]", resolved, StringComparison.Ordinal);
 

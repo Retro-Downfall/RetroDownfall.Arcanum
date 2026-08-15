@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using SQLitePCL;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 public sealed class BackupDatabaseSnapshotterTests : IDisposable
@@ -18,7 +20,7 @@ public sealed class BackupDatabaseSnapshotterTests : IDisposable
     public BackupDatabaseSnapshotterTests()
     {
 
-        Batteries_V2.Init();
+        SqliteNativeRuntime.Instance.Initialize();
 
         Directory.CreateDirectory(_root);
 

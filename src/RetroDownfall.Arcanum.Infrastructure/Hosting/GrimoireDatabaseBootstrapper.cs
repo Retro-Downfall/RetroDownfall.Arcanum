@@ -11,7 +11,6 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using Serilog;
-using SQLitePCL;
 using System.Security.Cryptography;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -110,7 +109,7 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         CancellationToken cancellationToken)
     {
-        Batteries_V2.Init();
+        SqliteNativeRuntime.Instance.Initialize();
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(grimoireDirectory);
 

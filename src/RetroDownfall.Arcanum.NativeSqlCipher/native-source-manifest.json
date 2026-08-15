@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "sqlcipher": {
+    "repository": "https://github.com/sqlcipher/sqlcipher.git",
+    "tag": "v4.17.0",
+    "tagObject": "f9788efa8ac4dfed75c03e4756b1666a1d0845da",
+    "commit": "810db22f575ee7cf94ea96a3e91622b5fcece3dc",
+    "archiveUrl": "https://codeload.github.com/sqlcipher/sqlcipher/tar.gz/810db22f575ee7cf94ea96a3e91622b5fcece3dc",
+    "archiveSha256": "0263d97b99b679d1c538c5ed07397979627bef67441bc0a384729e645d882a65",
+    "sourceDateEpoch": "1783018435",
+    "license": "BSD-3-Clause"
+  },
+  "sqliteVersion": "3.53.3",
+  "openssl": {
+    "version": "3.5.7",
+    "archiveUrl": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz",
+    "archiveSha256": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8",
+    "signatureUrl": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz.asc",
+    "signerFingerprint": "BA5473A2B0587B07FB27CF2D216094DFD0CB81EF",
+    "publicKeysUrl": "https://openssl-library.org/source/pubkeys.asc",
+    "publicKeysSha256": "56e106cd1c44bdb117aec24795f6dfbecaa9bfa0a2901b85331f0059aad16d53",
+    "license": "Apache-2.0",
+    "linkage": "static"
+  },
+  "compileOptions": [
+    "SQLCIPHER_CRYPTO_OPENSSL",
+    "SQLITE_ENABLE_COLUMN_METADATA",
+    "SQLITE_ENABLE_FTS3",
+    "SQLITE_ENABLE_FTS3_PARENTHESIS",
+    "SQLITE_ENABLE_FTS4",
+    "SQLITE_ENABLE_FTS5",
+    "SQLITE_ENABLE_MATH_FUNCTIONS",
+    "SQLITE_ENABLE_RTREE",
+    "SQLITE_ENABLE_SNAPSHOT",
+    "SQLITE_EXTRA_INIT=sqlcipher_extra_init",
+    "SQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown",
+    "SQLITE_HAS_CODEC",
+    "SQLITE_OMIT_LOAD_EXTENSION",
+    "SQLITE_TEMP_STORE=2",
+    "SQLITE_THREADSAFE=1"
+  ],
+  "compatibilityDefaults": {
+    "note": "SQLCipher 4 defaults. Arcanum sets no cipher pragma, so a database created by the previous bundled runtime must open unchanged under this build.",
+    "cipherPageSize": 4096,
+    "kdfIter": 256000,
+    "cipherKdfAlgorithm": "PBKDF2_HMAC_SHA512",
+    "cipherHmacAlgorithm": "HMAC_SHA512",
+    "cipherPlaintextHeaderSize": 0,
+    "cipherUseHmac": true
+  },
+  "runtimePragmas": {
+    "sqliteVersion": "3.53.3",
+    "cipherVersion": "4.17.0 community",
+    "cipherProvider": "openssl",
+    "cipherProviderVersion": "OpenSSL 3.5.7 1 Jul 2026",
+    "cipherStatus": "0"
+  },
+  "toolchains": [
+    {
+      "rid": "osx-arm64",
+      "builder": "scripts/build-native-sqlcipher.sh",
+      "host": "macOS arm64",
+      "compiler": "Apple clang",
+      "opensslTarget": "darwin64-arm64-cc"
+    },
+    {
+      "rid": "win-x64",
+      "builder": "scripts/build-native-sqlcipher.ps1",
+      "host": "windows-latest",
+      "compiler": "MSVC cl.exe x64",
+      "opensslTarget": "VC-WIN64A"
+    },
+    {
+      "rid": "win-arm64",
+      "builder": "scripts/build-native-sqlcipher.ps1",
+      "host": "windows-latest",
+      "compiler": "MSVC cl.exe arm64 cross",
+      "opensslTarget": "VC-WIN64-ARM"
+    }
+  ],
+  "patches": [],
+  "licenses": [
+    {
+      "id": "SQLCipher",
+      "spdxId": "BSD-3-Clause",
+      "path": "LICENSES/sqlcipher-LICENSE.txt",
+      "sha256": "2a2826f6acf46fa650730cf42cbb22a642be33a7ef119c9c4f4bf6daf3bef48e"
+    },
+    {
+      "id": "OpenSSL",
+      "spdxId": "Apache-2.0",
+      "path": "LICENSES/openssl-LICENSE.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    }
+  ],
+  "assets": [
+    {
+      "rid": "osx-arm64",
+      "path": "runtimes/osx-arm64/native/libe_sqlcipher.dylib",
+      "outputFileName": "libe_sqlcipher.dylib",
+      "status": "verified",
+      "sha256": "77b7e25df9079c877e52b4d25e11029839ffa32c48b2a0bd7be59d9642f81dfc",
+      "compiler": "Apple clang version 21.0.0 (clang-2100.3.30.1)",
+      "linker": "PROJECT:ld-27037",
+      "image": "Darwin 27.0.0 arm64",
+      "deploymentTarget": "13.0",
+      "dynamicDependencies": [
+        "/usr/lib/libSystem.B.dylib"
+      ],
+      "libcryptoSha256": "45df273e998337089019c3db50fa6f83dfd564e9f35cb20fa8fa8e36020b15ce"
+    },
+    {
+      "rid": "win-arm64",
+      "path": "runtimes/win-arm64/native/e_sqlcipher.dll",
+      "outputFileName": "e_sqlcipher.dll",
+      "status": "pending",
+      "sha256": null,
+      "compiler": null,
+      "linker": null,
+      "image": null,
+      "deploymentTarget": "10.0.17763.0",
+      "dynamicDependencies": [
+        "ADVAPI32.dll",
+        "KERNEL32.dll",
+        "bcrypt.dll"
+      ]
+    },
+    {
+      "rid": "win-x64",
+      "path": "runtimes/win-x64/native/e_sqlcipher.dll",
+      "outputFileName": "e_sqlcipher.dll",
+      "status": "pending",
+      "sha256": null,
+      "compiler": null,
+      "linker": null,
+      "image": null,
+      "deploymentTarget": "10.0.17763.0",
+      "dynamicDependencies": [
+        "ADVAPI32.dll",
+        "KERNEL32.dll",
+        "bcrypt.dll"
+      ]
+    }
+  ],
+  "sboms": [
+    {
+      "format": "SPDX-2.3",
+      "path": "sbom/sqlcipher.spdx.json",
+      "sha256": "60b73a6b61be922ccbbfc30e2ca148829c5779f920428de90071635bf61841ab"
+    },
+    {
+      "format": "CycloneDX-1.5",
+      "path": "sbom/sqlcipher.cdx.json",
+      "sha256": "09fbafa0cf50a7f3bed4cec1c340afdc63a08512c6df3009cfc8bc83d0909563"
+    }
+  ]
+}

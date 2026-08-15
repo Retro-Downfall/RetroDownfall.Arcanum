@@ -28,7 +28,6 @@ using RetroDownfall.Arcanum.Infrastructure.Generated;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -225,7 +224,7 @@ internal sealed class InstallationResetExistingGrimoire(
                     secret.Value,
                     sidecar.GetSaltBytes());
 
-            Batteries_V2.Init();
+            SqliteNativeRuntime.Instance.Initialize();
 
             GrimoireDbPassphraseSource passphraseSource = new();
 
