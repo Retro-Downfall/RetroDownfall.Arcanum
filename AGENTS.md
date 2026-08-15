@@ -1,15 +1,9 @@
 # AGENTS.md
 
-> Full agent orientation lives in **[`docs/Arcanum.README.md`](docs/Arcanum.README.md)** — read it
-> before making non-trivial changes. `docs/Arcanum.DESIGN.md` is the authoritative architecture/
-> persistence/testing reference; `docs/Arcanum.API.md` is the exact HTTP contract; `docs/Arcanum.Command.Reference.md`
-> is the complete CLI surface. This file is a fast-start summary, not a replacement.
+> Full agent orientation lives in **[`docs/Arcanum.README.md`](docs/Arcanum.README.md)** — read it before making non-trivial changes. `docs/Arcanum.DESIGN.md` is the authoritative architecture/ persistence/testing reference; `docs/Arcanum.API.md` is the exact HTTP contract; `docs/Arcanum.Command.Reference.md` is the complete CLI surface. This file is a fast-start summary, not a replacement.
 
 ## What this is
-**Arcanum** is a .NET 10, local-first AI assistant/inference hub. One `arcanum` binary is both the
-HTTP host (`arcanum serve`) and thin CLI clients (`run`, `watch`, `session`, …) over the same API. Windows/Linux
-ship Native AOT; macOS ships Native AOT too when LLVM `lld` is installed (`brew install lld`),
-and degrades to a signed folder-based self-contained publish when it is not.
+**Arcanum** is a .NET 10, local-first AI assistant/inference hub. One `arcanum` binary is both the HTTP host (`arcanum serve`) and thin CLI clients (`run`, `watch`, `session`, …) over the same API. Windows/Linux ship Native AOT; macOS ships Native AOT too when LLVM `lld` is installed (`brew install lld`), and degrades to a signed folder-based self-contained publish when it is not.
 
 ## Project layout & dependency direction
 `Cli → Api → Infrastructure → Core` (Infrastructure also references the isolated `Secrets` project).

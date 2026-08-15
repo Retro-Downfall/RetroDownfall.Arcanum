@@ -1,114 +1,51 @@
 # Compendium
 
-Compendium is Arcanum's desktop `arcanum.json` editor. It is a .NET 10 Avalonia
-application (`RetroDownfall.Compendium.Ux`) and does not run inference, open the
-Grimoire database, execute tools, manage the daemon, or perform blob migration/key rotation.
-Persistence operators use `arcanum data encryption status|migrate|verify|rotate-key`; those
-code-owned safety limits are intentionally not editable configuration.
+Compendium is Arcanum's desktop `arcanum.json` editor. It is a .NET 10 Avalonia application (`RetroDownfall.Compendium.Ux`) and does not run inference, open the Grimoire database, execute tools, manage the daemon, or perform blob migration/key rotation. Persistence operators use `arcanum data encryption status|migrate|verify|rotate-key`; those code-owned safety limits are intentionally not editable configuration.
 
 ## Documentation authority
 
-This file is the source of truth for Arcanum's public configuration elements and structure. The
-other canonical documents are [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for architecture and design,
-[`Arcanum.API.md`](Arcanum.API.md) for native and OpenAI-compatible API contracts,
-[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for complete CLI usage,
-[`Arcanum.README.md`](Arcanum.README.md) for agent/operator orientation,
-[`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for conceptual navigation,
-and [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) for verified breakpoint and recipe guides.
-Configuration changes update this reference, `SettingDescriptors`, validation,
-source-generated metadata, and the editor together; other docs link here instead
-of reproducing the complete key table.
+This file is the source of truth for Arcanum's public configuration elements and structure. The other canonical documents are [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for architecture and design, [`Arcanum.API.md`](Arcanum.API.md) for native and OpenAI-compatible API contracts, [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for complete CLI usage, [`Arcanum.README.md`](Arcanum.README.md) for agent/operator orientation, [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for conceptual navigation, and [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) for verified breakpoint and recipe guides. Configuration changes update this reference, `SettingDescriptors`, validation, source-generated metadata, and the editor together; other docs link here instead of reproducing the complete key table.
 
 ## Launch and configuration file
 
-The Forge opens Compendium from **View → Open Compendium**, The Anvil, the setup
-wizard, disabled-feature guidance, and the macOS application-menu **Settings...** item. The CLI
-opens the same editor with `arcanum open compendium`; `arcanum config open` remains the
-configuration-family entry. Discovery checks installed platform application locations first and
-recognizes a side-by-side extracted `compendium-win-x64` folder or the active
-`compendium-linux-x64|arm64` architecture before the repository development project. If launch
-fails, every attempted candidate is shown with a safe kind/display path, followed by a
-repository-relative `dotnet run --project ...` command and the `arcanum config edit` fallback.
-Copyable command arguments use PowerShell quoting on Windows and POSIX-shell quoting on
-macOS/Linux; actual process launch remains shell-free.
+The Forge opens Compendium from **View → Open Compendium**, The Anvil, the setup wizard, disabled-feature guidance, and the macOS application-menu **Settings...** item. The CLI opens the same editor with `arcanum open compendium`; `arcanum config open` remains the configuration-family entry. Discovery checks installed platform application locations first and recognizes a side-by-side extracted `compendium-win-x64` folder or the active `compendium-linux-x64|arm64` architecture before the repository development project. If launch fails, every attempted candidate is shown with a safe kind/display path, followed by a repository-relative `dotnet run --project ...` command and the `arcanum config edit` fallback. Copyable command arguments use PowerShell quoting on Windows and POSIX-shell quoting on macOS/Linux; actual process launch remains shell-free.
 
-Each launcher passes a versioned settings deep link as one `ProcessStartInfo.ArgumentList` value, never
-through a shell. The envelope carries only the Compendium target, configuration resource kind,
-initial view, and an optional safe connection-profile identifier; it never carries a credential,
-endpoint, configuration value, file content, attachment, or path. Compendium safely selects
-Edition for a valid settings request and also for normal startup, a malformed or wrong-target
-request, an unknown view, or a future schema. Starting a new process is the portable behavior;
-Compendium is reported as reused/focused only if a platform integration actually does so.
+Each launcher passes a versioned settings deep link as one `ProcessStartInfo.ArgumentList` value, never through a shell. The envelope carries only the Compendium target, configuration resource kind, initial view, and an optional safe connection-profile identifier; it never carries a credential, endpoint, configuration value, file content, attachment, or path. Compendium safely selects Edition for a valid settings request and also for normal startup, a malformed or wrong-target request, an unknown view, or a future schema. Starting a new process is the portable behavior; Compendium is reported as reused/focused only if a platform integration actually does so.
 
 Compendium edits:
 
 - macOS/Linux: `~/.config/arcanum/arcanum.json`
 - Windows: `%USERPROFILE%\.config\arcanum\arcanum.json`
 
-For non-visual work, use `arcanum config path`, `show`, `get <key>`, `set <key> [value]`,
-`validate`, or `edit`. CLI reads preserve the API's provider-endpoint redaction. Dot paths use the
-source-generated configuration descriptor metadata and explicit numeric indices for collections
-(`providers.0.endpoint`). Sensitive endpoint updates omit `[value]` and read redirected stdin or a
-hidden prompt so the value never appears in argv or output. The commands use `/api/config` while
-the host is available and clearly label canonical local bootstrap mode otherwise.
+For non-visual work, use `arcanum config path`, `show`, `get <key>`, `set <key> [value]`, `validate`, or `edit`. CLI reads preserve the API's provider-endpoint redaction. Dot paths use the source-generated configuration descriptor metadata and explicit numeric indices for collections (`providers.0.endpoint`). Sensitive endpoint updates omit `[value]` and read redirected stdin or a hidden prompt so the value never appears in argv or output. The commands use `/api/config` while the host is available and clearly label canonical local bootstrap mode otherwise.
 
-Paths are resolved through `ArcanumPaths`; service code does not use
-platform-specific path literals.
+Paths are resolved through `ArcanumPaths`; service code does not use platform-specific path literals.
 
 ## Public configuration contract
 
-Compendium exposes genuine deployment choices, provider/model facts,
-credential or secret references, security policy, integration endpoints and
-allowlists, feature opt-ins, operator schedules, host-capacity choices, pricing
-facts, and user preferences.
+Compendium exposes genuine deployment choices, provider/model facts, credential or secret references, security policy, integration endpoints and allowlists, feature opt-ins, operator schedules, host-capacity choices, pricing facts, and user preferences.
 
 The navigation is intentionally limited to:
 
-1. **Presets** — shared workflow descriptions, canonical current effective state, separately
-   labelled selected-preset projection, exact diff, prerequisites, progressive disclosure,
-   recommendations, completion summaries, and Apply/Reset actions. Failed state inspection is
-   shown as unavailable instead of retaining a stale active/drifted label.
+1. **Presets** — shared workflow descriptions, canonical current effective state, separately labelled selected-preset projection, exact diff, prerequisites, progressive disclosure, recommendations, completion summaries, and Apply/Reset actions. Failed state inspection is shown as unavailable instead of retaining a stale active/drifted label.
 2. **Edition** — runtime hardening mode.
-3. **Host** — port, CORS, external HTTPS binding, certificate selection,
-   inference-audit policy, and buffered-log level.
-4. **Providers & Models** — `DefaultModel`, `FastModel`, provider endpoint and
-   credential environment-variable reference, model inventory, vision, context
-   capacity, and factual reasoning capabilities/wire dialect. A **Familiar** row
-   (`ClaudeCodeCli` / `CodexCli`) hides the endpoint and credential fields —
-   it has neither — and shows a command override, a readiness line with a
-   **Re-probe** button, and the hidden-models list instead.
+3. **Host** — port, CORS, external HTTPS binding, certificate selection, inference-audit policy, and buffered-log level.
+4. **Providers & Models** — `DefaultModel`, `FastModel`, provider endpoint and credential environment-variable reference, model inventory, vision, context capacity, and factual reasoning capabilities/wire dialect. A **Familiar** row (`ClaudeCodeCli` / `CodexCli`) hides the endpoint and credential fields — it has neither — and shows a command override, a readiness line with a **Re-probe** button, and the hidden-models list instead.
 
-   Readiness comes from the running host over
-   `GET /api/providers/{name}/familiar-probe`; Compendium does not spawn
-   processes. When the host is not running, the page says so and names
-   `arcanum serve` rather than spinning, and the hidden-models list stays fully
-   editable — nothing about editing depends on the probe. Compendium never
-   offers to sign in: remediation is a command you run yourself, and Arcanum
-   never reads the CLI's credential store.
-5. **Security** — Ward and guardrail policy, unsafe-process acknowledgement,
-   metrics authentication, distinct Perception/Spell/Campaign roots, and upload
-   and image MIME allowlists.
+   Readiness comes from the running host over `GET /api/providers/{name}/familiar-probe`; Compendium does not spawn processes. When the host is not running, the page says so and names `arcanum serve` rather than spinning, and the hidden-models list stays fully editable — nothing about editing depends on the probe. Compendium never offers to sign in: remediation is a command you run yourself, and Arcanum never reads the CLI's credential store.
+5. **Security** — Ward and guardrail policy, unsafe-process acknowledgement, metrics authentication, distinct Perception/Spell/Campaign roots, and upload and image MIME allowlists.
 6. **Workspaces** — default root and explicit write permission.
-7. **Features** — flat capability opt-ins, including Conclave/A2A, Apprentices,
-   embeddings, Saga, Scrying, attachments, browsing, guardrails, workspace
-   checks, and memory management.
-8. **Integrations** — A2A identity/allowlist, CommLink webhook environment
-   reference and allowlists, embedding provider/model facts, MCP plaintext-host
-   policy, trusted workspace-check executable, and custom profiles.
-9. **Execution** — operator-controlled host concurrency and backpressure for
-   Apprentices, SSE streams, and batches.
+7. **Features** — flat capability opt-ins, including Conclave/A2A, Apprentices, embeddings, Saga, Scrying, attachments, browsing, guardrails, workspace checks, and memory management.
+8. **Integrations** — A2A identity/allowlist, CommLink webhook environment reference and allowlists, embedding provider/model facts, MCP plaintext-host policy, trusted workspace-check executable, and custom profiles.
+9. **Execution** — operator-controlled host concurrency and backpressure for Apprentices, SSE streams, and batches.
 10. **Cost** — default/per-model pricing and daily budget policy.
-11. **Retention** — unified sweep bounds, typed per-class policies, accounting
-    floor, and explicit protected-session holds.
+11. **Retention** — unified sweep bounds, typed per-class policies, accounting floor, and explicit protected-session holds.
 12. **Daemon** — Unseen Servant schedules and host concurrency.
 13. **CLI** — built-in theme selection and mana-bar preference.
 
 ## Preset workflow
 
-Compendium consumes the same `IConfigurationPresetService`, immutable catalog, planner, state, and
-persistence results as `arcanum preset`; it does not maintain UI-only descriptions or duplicate
-overlay/apply logic. A preset is a versioned partial overlay, not a new `arcanum.json` section or a
-hidden runtime mode. Version 1 contains:
+Compendium consumes the same `IConfigurationPresetService`, immutable catalog, planner, state, and persistence results as `arcanum preset`; it does not maintain UI-only descriptions or duplicate overlay/apply logic. A preset is a versioned partial overlay, not a new `arcanum.json` section or a hidden runtime mode. Version 1 contains:
 
 | Preset | Explicit ownership and prerequisite intent |
 |--------|--------------------------------------------|
@@ -119,78 +56,23 @@ hidden runtime mode. Version 1 contains:
 | **Automation** (`automation`, v1) | Owns Ward unattended mode, auto-deny, and the unsandboxed-child safe default. Requires a provider/model and a positive operator-authored daily budget; it does not create a schedule or enlarge a budget. |
 | **Advanced/Custom** (`advanced-custom`, v1) | Owns no paths and changes nothing; direct editing remains authoritative. |
 
-Selecting a card is read-only. The page shows shared purpose and enable/disable/security/provider/
-resource disclosures; **Custom**, **Active**, or **Drifted** state; exact owned setting rows;
-prerequisite detail and resolution commands; essential first choice; intentionally deferred
-features; recommendations; the Ward/Sanctum/Weave/Saga/Lexicon plain-language glossary; and the
-provider/model, workspace/campaign, memory-source, tool-policy, privacy, and next-command completion
-summary. Recommendations are directly executable; Coding Workspace shows
-`arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required
-prompt.
+Selecting a card is read-only. The page shows shared purpose and enable/disable/security/provider/ resource disclosures; **Custom**, **Active**, or **Drifted** state; exact owned setting rows; prerequisite detail and resolution commands; essential first choice; intentionally deferred features; recommendations; the Ward/Sanctum/Weave/Saga/Lexicon plain-language glossary; and the provider/model, workspace/campaign, memory-source, tool-policy, privacy, and next-command completion summary. Recommendations are directly executable; Coding Workspace shows `arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required prompt.
 
-Each diff row distinguishes the persisted `arcanum.json` value, the effective value after
-recognized environment overrides, and the proposed persisted value. It also names the current
-source and environment variable (never its value), environment effectiveness, ownership,
-prerequisite IDs, restart requirement, and separate persisted/effective change flags. An
-environment override therefore remains the effective truth even if Apply changes the file. Only an
-override that contradicts an owned safety/privacy boundary blocks Apply; a benign feature mask is
-shown as drift and does not make the plan inapplicable. Only a Research preview/diff or Apply probes
-the secure research-credential store; other preset cards, inspection, reset, and mutations do not.
+Each diff row distinguishes the persisted `arcanum.json` value, the effective value after recognized environment overrides, and the proposed persisted value. It also names the current source and environment variable (never its value), environment effectiveness, ownership, prerequisite IDs, restart requirement, and separate persisted/effective change flags. An environment override therefore remains the effective truth even if Apply changes the file. Only an override that contradicts an owned safety/privacy boundary blocks Apply; a benign feature mask is shown as drift and does not make the plan inapplicable. Only a Research preview/diff or Apply probes the secure research-credential store; other preset cards, inspection, reset, and mutations do not.
 
-**Apply preset** and **Reset preset** are explicit actions and add no confirmation dialog. They are
-disabled while the root editor has unsaved changes, is saving, or has an unreviewed external file
-change; the page says to save or cancel/reload instead of silently discarding edits. Apply requires
-a coherent prerequisite-complete plan and canonical full-candidate validation, preserves secrets
-and every unowned value, checks concurrent changes, enters the current-user cross-process
-transaction shared by every canonical configuration writer, writes atomically, and records
-owner-only provenance plus rollback state outside `arcanum.json`. Reapplying the same version and
-owned values is idempotent.
+**Apply preset** and **Reset preset** are explicit actions and add no confirmation dialog. They are disabled while the root editor has unsaved changes, is saving, or has an unreviewed external file change; the page says to save or cancel/reload instead of silently discarding edits. Apply requires a coherent prerequisite-complete plan and canonical full-candidate validation, preserves secrets and every unowned value, checks concurrent changes, enters the current-user cross-process transaction shared by every canonical configuration writer, writes atomically, and records owner-only provenance plus rollback state outside `arcanum.json`. Reapplying the same version and owned values is idempotent.
 
-No provenance is Custom; matching applied persisted/effective owned values are Active; a later
-owned-value change is Drifted. Reset restores only paths that still equal the preset-applied value,
-preserves user drift and unrelated edits, reports both counts, and clears preset provenance. A
-prepared transaction journal stores only owned before/after values and hashes plus previous/next
-provenance. Failure recovery conditionally reverses values that still match the interrupted write,
-preserving unrelated and later manual edits. Bounded no-follow sidecar reads and exact catalog
-ownership/value/hash/state validation reject untrusted provenance before reset or recovery.
+No provenance is Custom; matching applied persisted/effective owned values are Active; a later owned-value change is Drifted. Reset restores only paths that still equal the preset-applied value, preserves user drift and unrelated edits, reports both counts, and clears preset provenance. A prepared transaction journal stores only owned before/after values and hashes plus previous/next provenance. Failure recovery conditionally reverses values that still match the interrupted write, preserving unrelated and later manual edits. Bounded no-follow sidecar reads and exact catalog ownership/value/hash/state validation reject untrusted provenance before reset or recovery.
 
-No preset silently enables `ListenAny`, unsandboxed tool children, untrusted workspace MCP,
-destructive memory operations, Forbidden Arts bypasses, or changes to explicit token/cost/security policy.
-Presets do not add retry, timeout, loop-count, or other arbitrary tuning knobs. The guided
-`arcanum setup` wizard consumes the same preset service for its preset step; this page exposes that
-service directly and does not implement the wizard's other steps.
+No preset silently enables `ListenAny`, unsandboxed tool children, untrusted workspace MCP, destructive memory operations, Forbidden Arts bypasses, or changes to explicit token/cost/security policy. Presets do not add retry, timeout, loop-count, or other arbitrary tuning knobs. The guided `arcanum setup` wizard consumes the same preset service for its preset step; this page exposes that service directly and does not implement the wizard's other steps.
 
 ## Complete configuration reference
 
-This is the sole complete documentation reference for `arcanum.json`. All 161 editable paths in
-`SettingDescriptors.All` appear below, and that total is pinned by
-`SettingDescriptorCoverageTests.Editable_descriptor_count_matches_the_documented_total`, so a
-descriptor change updates the code, the test, and this page together.
-Each key uses the exact camel-case dot path; `providers.models.*` applies to every model in every
-provider, and `daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact
-top-level `"Arcanum"` object.
+This is the sole complete documentation reference for `arcanum.json`. All 161 editable paths in `SettingDescriptors.All` appear below, and that total is pinned by `SettingDescriptorCoverageTests.Editable_descriptor_count_matches_the_documented_total`, so a descriptor change updates the code, the test, and this page together. Each key uses the exact camel-case dot path; `providers.models.*` applies to every model in every provider, and `daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact top-level `"Arcanum"` object.
 
-Compendium exposes policy and facts, not incidental implementation mechanics. Retained fields are
-provider/model capabilities, credentials/endpoints, security/permission choices, explicit feature
-opt-ins, host concurrency/capacity, pricing/budgets, schedules, retention policy, or user
-preferences. Retry counts, total-operation timeouts, workflow/queue/page/checkpoint counts, and
-indexing slice sizes are code-owned adaptive behavior and are not editable. Removing a field never
-removes authentication, containment, SSRF protection, Wards/Sanctum, cryptographic/protocol
-integrity, single-allocation protection, or explicit operator policy.
+Compendium exposes policy and facts, not incidental implementation mechanics. Retained fields are provider/model capabilities, credentials/endpoints, security/permission choices, explicit feature opt-ins, host concurrency/capacity, pricing/budgets, schedules, retention policy, or user preferences. Retry counts, total-operation timeouts, workflow/queue/page/checkpoint counts, and indexing slice sizes are code-owned adaptive behavior and are not editable. Removing a field never removes authentication, containment, SSRF protection, Wards/Sanctum, cryptographic/protocol integrity, single-allocation protection, or explicit operator policy.
 
-Arcanum does not flatten arbitrary environment variables into the configuration tree, but it does
-reserve one override namespace. A variable named `ARCANUM_Arcanum__<Path>` — the prefix keeps the
-`Arcanum` wrapper, and `__` separates path segments, for example
-`ARCANUM_Arcanum__Host__Port` — is applied to the matching descriptor path by
-`ConfigurationEnvironmentResolver`. **That namespace reaches every editable path on this page,
-including security policy** such as `security.ward.enabled`, `security.ward.autoApprove.enabled`,
-and `security.allowUnsandboxedToolChildren`, so a deployment audit must cover the whole
-`ARCANUM_Arcanum__*` namespace and not just the two named variables below. `ARCANUM_EDITION` and
-`ARCANUM_HOST_ANY` are additional explicit runtime overrides. An environment override never touches
-`arcanum.json`: it applies to a cloned effective snapshot, and `arcanum config show`/`get` report
-the variable name and whether it took effect without ever printing its value. Secret values use
-only the dedicated environment references documented below, and a secret reference naming anything
-inside `ARCANUM_Arcanum__*` (or the `Arcanum__*` binding namespace) fails validation.
+Arcanum does not flatten arbitrary environment variables into the configuration tree, but it does reserve one override namespace. A variable named `ARCANUM_Arcanum__<Path>` — the prefix keeps the `Arcanum` wrapper, and `__` separates path segments, for example `ARCANUM_Arcanum__Host__Port` — is applied to the matching descriptor path by `ConfigurationEnvironmentResolver`. **That namespace reaches every editable path on this page, including security policy** such as `security.ward.enabled`, `security.ward.autoApprove.enabled`, and `security.allowUnsandboxedToolChildren`, so a deployment audit must cover the whole `ARCANUM_Arcanum__*` namespace and not just the two named variables below. `ARCANUM_EDITION` and `ARCANUM_HOST_ANY` are additional explicit runtime overrides. An environment override never touches `arcanum.json`: it applies to a cloned effective snapshot, and `arcanum config show`/`get` report the variable name and whether it took effect without ever printing its value. Secret values use only the dedicated environment references documented below, and a secret reference naming anything inside `ARCANUM_Arcanum__*` (or the `Arcanum__*` binding namespace) fails validation.
 
 ### Edition, host, providers, and model selection
 
@@ -222,19 +104,9 @@ inside `ARCANUM_Arcanum__*` (or the `Arcanum__*` binding namespace) fails valida
 | `providers.models.reasoning.maxBudgetTokens` | `int?`, `null` | 1–2,097,152 | Optional numeric-budget ceiling; the adapter requires a nonstandard dialect for it and rejects a numeric budget under `standard`. |
 | `providers.contextWindowLimit` | `int`, `8192` | 256–2,097,152 | Factual provider context capacity. Set it on a Familiar row too: the default suits neither CLI's models, and read-time compression and the Mana bar both measure against it. |
 
-`providers` defaults to `[]`; a usable configuration supplies at least one
-valid provider and model. A model's optional `reasoning` object defaults to
-`null`.
+`providers` defaults to `[]`; a usable configuration supplies at least one valid provider and model. A model's optional `reasoning` object defaults to `null`.
 
-A model's `reasoning` block carries exactly the two keys above.
-`providers.models.reasoning.controlSupport`, `.supportsSummary`, `.supportsFull`,
-`.supportsStreaming`, `.reportsReasoningTokens`, and `.allowsClientOutput` are not part of the
-configuration contract: `ModelReasoningSettings` has no such members, the `ModelEntry` JSON
-converter skips them on read and never writes them, and the host aborts startup on a file that
-declares any of them (`ConfigurationStartupValidator` via `ConfigurationValidator.RejectObsoleteKeys`).
-Compendium loads such a file without complaint and drops the keys on the next save, so a file that
-still carries them must be edited before the host will start. Arcanum derives the corresponding
-behaviour from the declared wire dialect and budget instead.
+A model's `reasoning` block carries exactly the two keys above. `providers.models.reasoning.controlSupport`, `.supportsSummary`, `.supportsFull`, `.supportsStreaming`, `.reportsReasoningTokens`, and `.allowsClientOutput` are not part of the configuration contract: `ModelReasoningSettings` has no such members, the `ModelEntry` JSON converter skips them on read and never writes them, and the host aborts startup on a file that declares any of them (`ConfigurationStartupValidator` via `ConfigurationValidator.RejectObsoleteKeys`). Compendium loads such a file without complaint and drops the keys on the next save, so a file that still carries them must be edited before the host will start. Arcanum derives the corresponding behaviour from the declared wire dialect and budget instead.
 
 ### Security and workspaces
 
@@ -262,11 +134,7 @@ behaviour from the declared wire dialect and budget instead.
 | `workspaces.defaultRoot` | `string?`, `null` | path | Default for workspace-scoped routes. |
 | `workspaces.enableFileWrite` | `bool`, `false` | — | Permits workspace create, modify, and delete routes. |
 
-`arcanum workspace register|tree|info|read|search|index|index-status|chunks|unregister` adds no
-configuration keys. Those commands call the existing authenticated Workspace API and continue to
-honor the server's path allowlists, indexing feature gates, and `workspaces.enableFileWrite` policy.
-CLI path arguments describe the server host; the current-directory default is valid only for the
-shipping loopback client/server pairing. Campaign remains a separate persistent project container.
+`arcanum workspace register|tree|info|read|search|index|index-status|chunks|unregister` adds no configuration keys. Those commands call the existing authenticated Workspace API and continue to honor the server's path allowlists, indexing feature gates, and `workspaces.enableFileWrite` policy. CLI path arguments describe the server host; the current-directory default is valid only for the shipping loopback client/server pairing. Campaign remains a separate persistent project container.
 
 ### Feature opt-ins
 
@@ -299,24 +167,11 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.workspaceChecks` | `bool`, `true` | — | Allows `workspace_check` advertisement when all platform and trust checks pass. |
 | `features.memoryManagement` | `bool`, `false` | — | Enables session deletion, pinning, and compaction. Read-only `arcanum memory status\|sources\|search\|explain` remains available and reports the disabled mutation gate alongside retained counts. |
 
-Feature flags are capability policy. Edition, dependency, security, provider,
-and platform eligibility still apply.
+Feature flags are capability policy. Edition, dependency, security, provider, and platform eligibility still apply.
 
-The standalone attachment family adds no public configuration keys or consent setting.
-`attachment show --privacy` is an immediate disclosure, not an acknowledgement gate. Text attachment pins may
-materialize implicitly within the code-owned pin/turn budgets; image pins remain durable but report
-`Unsupported` until a vision-capable turn explicitly names the bound GUID. Attachment export asks
-before overwrite (or honors global `--yes`), stages beside the destination, and never permits
-stdout; all other attachment commands remain metadata-only. Server-side reference authorization,
-MIME/content validation, and `MaxBytesPerSession` remain code-owned. The former public
-`MaxReferencesPerTurn` and `MaxVersionsPerLogicalKey` controls were removed: identity/ownership,
-inject-once/provider-context admission, and measured session bytes own those risks without count ceilings.
+The standalone attachment family adds no public configuration keys or consent setting. `attachment show --privacy` is an immediate disclosure, not an acknowledgement gate. Text attachment pins may materialize implicitly within the code-owned pin/turn budgets; image pins remain durable but report `Unsupported` until a vision-capable turn explicitly names the bound GUID. Attachment export asks before overwrite (or honors global `--yes`), stages beside the destination, and never permits stdout; all other attachment commands remain metadata-only. Server-side reference authorization, MIME/content validation, and `MaxBytesPerSession` remain code-owned. The former public `MaxReferencesPerTurn` and `MaxVersionsPerLogicalKey` controls were removed: identity/ownership, inject-once/provider-context admission, and measured session bytes own those risks without count ceilings.
 
-The native `delegate_task` subagent tool has no operator configuration key: each call requires an
-explicit positive token or cost budget, and completion/no-progress/cancellation applies without a
-turn, depth, or explicit-file-count counter. Child tools are disabled by construction. Child
-requests inherit no attachment context; an explicit attachment file must name an id from the
-parent's current-turn materialized allowlist, and each explicit path/content remains individually bounded.
+The native `delegate_task` subagent tool has no operator configuration key: each call requires an explicit positive token or cost budget, and completion/no-progress/cancellation applies without a turn, depth, or explicit-file-count counter. Child tools are disabled by construction. Child requests inherit no attachment context; an explicit attachment file must name an id from the parent's current-turn materialized allowlist, and each explicit path/content remains individually bounded.
 
 ### Integrations, execution, cost, retention, daemon, and CLI
 
@@ -412,79 +267,25 @@ parent's current-turn materialized allowlist, and each explicit path/content rem
 | `cli.theme` | enum `"SystemDefault"` | `Light`, `Dark`, `SystemDefault` | CLI color theme. |
 | `cli.showManaBar` | `bool`, `true` | — | Shows the chat token-budget indicator. |
 
-Issue #55 removed the former audit-query lookback fields, embedding watcher/attachment indexing
-mechanics, pending-Apprentice queue size, and retention candidate/checkpoint counts from the public
-schema. Audit deletion is governed only by unified retention. Watcher, extraction, chunking, queue,
-retry, retrieval-slice, and checkpoint values now protect internal work slices and continue through
-reconciliation. `execution.maxConcurrentApprentices` still protects simultaneous host load, while
-additional starts queue and remain cancellable instead of failing at a public pending-count limit.
-Retention still honors the operator's age/hold policy and uses an internal durable checkpoint size
-until the complete selected plan finishes.
-The managed embedding fallback likewise has no public or code-owned total row budget: when
-sqlite-vec is absent, it streams the complete matching corpus with cancellation and bounded top-K
-memory.
+Issue #55 removed the former audit-query lookback fields, embedding watcher/attachment indexing mechanics, pending-Apprentice queue size, and retention candidate/checkpoint counts from the public schema. Audit deletion is governed only by unified retention. Watcher, extraction, chunking, queue, retry, retrieval-slice, and checkpoint values now protect internal work slices and continue through reconciliation. `execution.maxConcurrentApprentices` still protects simultaneous host load, while additional starts queue and remain cancellable instead of failing at a public pending-count limit. Retention still honors the operator's age/hold policy and uses an internal durable checkpoint size until the complete selected plan finishes. The managed embedding fallback likewise has no public or code-owned total row budget: when sqlite-vec is absent, it streams the complete matching corpus with cancellation and bounded top-K memory.
 
-Web workflow policy is per invocation, not retained configuration. `arcanum search --count` remains
-one provider-request result shape. Research accepts an optional positive `--sources` target, a
-positive explicit synthesis-token budget, and an optional nonnegative cost policy; it has no hop
-counter or default total-source ceiling. Passes continue while they add unique URLs and stop at the
-target, deterministic source exhaustion/no-progress, cancellation, explicit policy, or a
-provider/safety failure. Freshness is `day`, `week`, `month`, or `year`; include/exclude domain
-lists and each provider frame/body remain allocation-safe. Static URL reads retain SSRF,
-redirect-origin/DNS, connection/idle-I/O, body/frame, and content protections without a
-whole-operation wall-clock ceiling. No configuration switch implies that JavaScript rendering exists: `--render
-javascript` returns an explicit unavailable-renderer error until a server renderer is installed.
+Web workflow policy is per invocation, not retained configuration. `arcanum search --count` remains one provider-request result shape. Research accepts an optional positive `--sources` target, a positive explicit synthesis-token budget, and an optional nonnegative cost policy; it has no hop counter or default total-source ceiling. Passes continue while they add unique URLs and stop at the target, deterministic source exhaustion/no-progress, cancellation, explicit policy, or a provider/safety failure. Freshness is `day`, `week`, `month`, or `year`; include/exclude domain lists and each provider frame/body remain allocation-safe. Static URL reads retain SSRF, redirect-origin/DNS, connection/idle-I/O, body/frame, and content protections without a whole-operation wall-clock ceiling. No configuration switch implies that JavaScript rendering exists: `--render javascript` returns an explicit unavailable-renderer error until a server renderer is installed.
 
-Compendium edits MCP transport policy but does not operate server lifecycle or approve a
-workspace-local `mcp.json`. Use `arcanum mcp trust [workspace]`, then `arcanum mcp
-list|show|start|stop|restart|reload|tools`; use `arcanum mcp invoke` only for external diagnostic
-tools and `arcanum tool list|show|invoke` for the bounded built-in diagnostic registry. These CLI
-families call the authenticated host APIs and never expose MCP command lines, environment, URLs, or
-secrets.
+Compendium edits MCP transport policy but does not operate server lifecycle or approve a workspace-local `mcp.json`. Use `arcanum mcp trust [workspace]`, then `arcanum mcp list|show|start|stop|restart|reload|tools`; use `arcanum mcp invoke` only for external diagnostic tools and `arcanum tool list|show|invoke` for the bounded built-in diagnostic registry. These CLI families call the authenticated host APIs and never expose MCP command lines, environment, URLs, or secrets.
 
-The direct-command flags `--json`, `--plain`, and `--yes` are intentionally not configuration
-keys and are not editable in Compendium. They are per-invocation automation authority:
-`--json`/`--plain` override theme and mana-bar rendering for that process, while `--yes` approves
-only that command's confirmation prompts. Persisting any of them would make interactive and
-destructive behavior surprising.
+The direct-command flags `--json`, `--plain`, and `--yes` are intentionally not configuration keys and are not editable in Compendium. They are per-invocation automation authority: `--json`/`--plain` override theme and mana-bar rendering for that process, while `--yes` approves only that command's confirmation prompts. Persisting any of them would make interactive and destructive behavior surprising.
 
-The unified `arcanum watch session|apprentice|logs|mcp|daemons|health` surface likewise adds no
-configuration keys. Recursive `--json`, opt-in `--reconnect`, repeatable free-form `--event-type`,
-repeatable free-form `--tool` / `--tool-name`, log `--level` / `--category` / `--search`, Session
-`--since`, and health `--interval` are invocation-only choices. Compendium does not impose a fixed
-event/tool allowlist, reconnect-attempt count, or additional polling restriction: reconnect runs
-until completion/cancellation with a code-owned capped backoff, and health accepts any positive
-whole-second interval (default five). Existing `execution.maxSseConnections` and
-`execution.maxSseConnectionsPerType` remain the server admission controls; every watcher still uses
-normal API authentication. A valid Unhealthy 503 health envelope is observable data, while SSE
-reconnect always warns of a possible gap and never promises replay.
+The unified `arcanum watch session|apprentice|logs|mcp|daemons|health` surface likewise adds no configuration keys. Recursive `--json`, opt-in `--reconnect`, repeatable free-form `--event-type`, repeatable free-form `--tool` / `--tool-name`, log `--level` / `--category` / `--search`, Session `--since`, and health `--interval` are invocation-only choices. Compendium does not impose a fixed event/tool allowlist, reconnect-attempt count, or additional polling restriction: reconnect runs until completion/cancellation with a code-owned capped backoff, and health accepts any positive whole-second interval (default five). Existing `execution.maxSseConnections` and `execution.maxSseConnectionsPerType` remain the server admission controls; every watcher still uses normal API authentication. A valid Unhealthy 503 health envelope is observable data, while SSE reconnect always warns of a possible gap and never promises replay.
 
-For logs, category and search are free-form. Level keeps the API's existing nullable `LogLevel`
-contract: `trace`, `debug`, `information`, `warning`, `error`, or `critical`; Compendium adds no
-second severity policy.
+For logs, category and search are free-form. Level keeps the API's existing nullable `LogLevel` contract: `trace`, `debug`, `information`, `warning`, `error`, or `critical`; Compendium adds no second severity policy.
 
-The same per-invocation rule applies to `arcanum context inspect|tools|sources|cost`:
-`--show-content` is an explicit one-run operator reveal and `--no-retrieval` is a one-run request to
-skip embedding/RAG work. Compendium does not persist either switch. Use these commands after editing
-model, tool, Spell, retrieval, or context-window settings to verify the effective provider, tool
-surface, source-token allocation, reserve, and compression decision before spending main-inference
-tokens.
+The same per-invocation rule applies to `arcanum context inspect|tools|sources|cost`: `--show-content` is an explicit one-run operator reveal and `--no-retrieval` is a one-run request to skip embedding/RAG work. Compendium does not persist either switch. Use these commands after editing model, tool, Spell, retrieval, or context-window settings to verify the effective provider, tool surface, source-token allocation, reserve, and compression decision before spending main-inference tokens.
 
-`arcanum file upload|list|show|download|delete` and `arcanum batch
-create|list|show|watch|cancel|reset|output|errors` add no configuration keys. They call the existing
-authenticated OpenAI-compatible routes and inherit `security.allowedUploadMimeTypes`, the
-code-owned upload ceiling, `execution.maxConcurrentBatches`, and
-`execution.maxConcurrentRequestsPerBatch`. Local JSONL preflight checks only the obvious batch
-wrapper before upload; server validation remains authoritative. Total request count, internal
-64-line pages, and durable per-line dispatch/result checkpoints are code-owned rather than user
-restrictions. Restart skips completed lines and reports an uncertain dispatched line as
-`batch_interrupted_after_dispatch` without replaying it. Download overwrite approval is a
-per-invocation `--yes` decision and is never persisted by Compendium.
+`arcanum file upload|list|show|download|delete` and `arcanum batch create|list|show|watch|cancel|reset|output|errors` add no configuration keys. They call the existing authenticated OpenAI-compatible routes and inherit `security.allowedUploadMimeTypes`, the code-owned upload ceiling, `execution.maxConcurrentBatches`, and `execution.maxConcurrentRequestsPerBatch`. Local JSONL preflight checks only the obvious batch wrapper before upload; server validation remains authoritative. Total request count, internal 64-line pages, and durable per-line dispatch/result checkpoints are code-owned rather than user restrictions. Restart skips completed lines and reports an uncertain dispatched line as `batch_interrupted_after_dispatch` without replaying it. Download overwrite approval is a per-invocation `--yes` decision and is never persisted by Compendium.
 
 ### Dynamic dictionary shapes
 
-`cost.pricing.modelPricing` is keyed case-insensitively by model name. Every
-value has exactly the same rate fields and bounds as `defaultPricing`:
+`cost.pricing.modelPricing` is keyed case-insensitively by model name. Every value has exactly the same rate fields and bounds as `defaultPricing`:
 
 ```json
 {
@@ -497,8 +298,7 @@ value has exactly the same rate fields and bounds as `defaultPricing`:
 }
 ```
 
-`integrations.workspaceChecks.customProfiles` is keyed case-insensitively by
-profile ID and has this recursively validated shape:
+`integrations.workspaceChecks.customProfiles` is keyed case-insensitively by profile ID and has this recursively validated shape:
 
 ```json
 {
@@ -519,43 +319,17 @@ profile ID and has this recursively validated shape:
 }
 ```
 
-The current closed-profile limits are 32 profiles, 32 fixed arguments per
-profile, 16 options per profile, 16 allowed values per option, and 32 argument
-tokens per allowed-value rendering. Profile and option IDs are 1–64 lowercase
-ASCII letters, digits, or hyphens, start with a letter or digit, and are unique
-case-insensitively; built-in profile IDs are reserved. Value IDs are nonblank,
-case-insensitively unique, and at most 256 characters. Argument tokens are
-nonblank, single-line, and at most 256 characters; response files, scripts,
-shells, restore-enabling arguments, and runtime-owned path overrides are
-rejected. `target` is empty or a workspace-relative `.sln`, `.slnx`, `.csproj`,
-`.fsproj`, or `.vbproj` path of at most 256 characters. `kind`, `parser`, and
-the first fixed argument must agree: `build`/`msBuild`/`build`,
-`test`/`vsTest`/`test`, or `lint`/`dotNetFormat`/`format` with
-`--verify-no-changes`.
+The current closed-profile limits are 32 profiles, 32 fixed arguments per profile, 16 options per profile, 16 allowed values per option, and 32 argument tokens per allowed-value rendering. Profile and option IDs are 1–64 lowercase ASCII letters, digits, or hyphens, start with a letter or digit, and are unique case-insensitively; built-in profile IDs are reserved. Value IDs are nonblank, case-insensitively unique, and at most 256 characters. Argument tokens are nonblank, single-line, and at most 256 characters; response files, scripts, shells, restore-enabling arguments, and runtime-owned path overrides are rejected. `target` is empty or a workspace-relative `.sln`, `.slnx`, `.csproj`, `.fsproj`, or `.vbproj` path of at most 256 characters. `kind`, `parser`, and the first fixed argument must agree: `build`/`msBuild`/`build`, `test`/`vsTest`/`test`, or `lint`/`dotNetFormat`/`format` with `--verify-no-changes`.
 
 ### Credential environment references
 
 Secret values are not configuration fields:
 
-- `providers.credentialEnvironmentVariable` names the provider API-key
-  variable. Omission derives
-  `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`. When the referenced variable
-  is unset, Arcanum falls back to the OS-backed secure store written by
-  `arcanum setup` or `arcanum key provider set <provider>`; Compendium never
-  reads or writes the credential itself.
-- `host.https.certificatePasswordEnvironmentVariable` names the PFX-password
-  variable. Omission uses `ARCANUM_HTTPS_CERTIFICATE_PASSWORD`; PEM ignores
-  this reference.
-- `integrations.commLink.webhookUrlEnvironmentVariable` names the
-  secret-bearing webhook URL variable. Omission uses
-  `ARCANUM_COMMLINK_WEBHOOK_URL`.
+- `providers.credentialEnvironmentVariable` names the provider API-key variable. Omission derives `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`. When the referenced variable is unset, Arcanum falls back to the OS-backed secure store written by `arcanum setup` or `arcanum key provider set <provider>`; Compendium never reads or writes the credential itself.
+- `host.https.certificatePasswordEnvironmentVariable` names the PFX-password variable. Omission uses `ARCANUM_HTTPS_CERTIFICATE_PASSWORD`; PEM ignores this reference.
+- `integrations.commLink.webhookUrlEnvironmentVariable` names the secret-bearing webhook URL variable. Omission uses `ARCANUM_COMMLINK_WEBHOOK_URL`.
 
-An explicit reference replaces its default and does not fall through when
-unset. Provider-name normalization retains ASCII letters and digits,
-upper-cases letters, collapses non-alphanumeric runs to `_`, and uses `UNNAMED`
-when empty. Provider names must be nonblank, and all final provider, PFX, and
-CommLink reference names must be portable and unique case-insensitively.
-Compendium never reads or displays a referenced secret value.
+An explicit reference replaces its default and does not fall through when unset. Provider-name normalization retains ASCII letters and digits, upper-cases letters, collapses non-alphanumeric runs to `_`, and uses `UNNAMED` when empty. Provider names must be nonblank, and all final provider, PFX, and CommLink reference names must be portable and unique case-insensitively. Compendium never reads or displays a referenced secret value.
 
 ### Minimal complete `arcanum.json`
 
@@ -583,136 +357,47 @@ Compendium never reads or displays a referenced secret value.
 }
 ```
 
-Set `OPENAI_API_KEY` in the host environment; never place its value in the
-file.
+Set `OPENAI_API_KEY` in the host environment; never place its value in the file.
 
 ## Editor architecture
 
-The Presets, Host, Providers, Daemon, and CLI pages are polished views. Edition,
-Security, Workspaces, Features, Integrations, Execution, Cost, and Retention use the
-descriptor-driven generic view.
+The Presets, Host, Providers, Daemon, and CLI pages are polished views. Edition, Security, Workspaces, Features, Integrations, Execution, Cost, and Retention use the descriptor-driven generic view.
 
-`SettingDescriptors` contains only editable public choices. Every descriptor is
-rendered by one of those views. Descriptor coverage tests recurse through the
-public graph, treat authored dictionaries as one editor, and verify public
-mutable setters plus `ConfigurationJsonContext` metadata.
+`SettingDescriptors` contains only editable public choices. Every descriptor is rendered by one of those views. Descriptor coverage tests recurse through the public graph, treat authored dictionaries as one editor, and verify public mutable setters plus `ConfigurationJsonContext` metadata.
 
-Provider/model rows and daemon schedules have structured editors. Pricing maps
-and custom workspace-check profiles use multiline JSON editors backed by the
-source-generated configuration JSON context. Allowlists use chip editors.
-`retention.protectedSessionIds` uses the same comma-separated editor while converting each value to
-a `Guid`; the stored contract remains a typed `Guid[]`.
+Provider/model rows and daemon schedules have structured editors. Pricing maps and custom workspace-check profiles use multiline JSON editors backed by the source-generated configuration JSON context. Allowlists use chip editors. `retention.protectedSessionIds` uses the same comma-separated editor while converting each value to a `Guid`; the stored contract remains a typed `Guid[]`.
 
-A descriptor whose key crosses a collection describes every element rather than one path — for
-example `integrations.a2A.skills.id` describes each entry of `integrations.a2A.skills`. Sections
-whose collections have a structured editor (providers, models, daemon schedules) bind those
-descriptors per row. Anywhere else the generic view renders the descriptor read-only with its label,
-description, and the `arcanum config set integrations.a2A.skills.0.id <value>` form that does write
-it, because an editable box there would accept text no save could apply.
-`GenericSettingsSectionViewTests.Every_input_control_the_generic_editor_renders_addresses_a_settable_path`
-pins that: every control the generic view offers addresses a path Save can write.
+A descriptor whose key crosses a collection describes every element rather than one path — for example `integrations.a2A.skills.id` describes each entry of `integrations.a2A.skills`. Sections whose collections have a structured editor (providers, models, daemon schedules) bind those descriptors per row. Anywhere else the generic view renders the descriptor read-only with its label, description, and the `arcanum config set integrations.a2A.skills.0.id <value>` form that does write it, because an editable box there would accept text no save could apply. `GenericSettingsSectionViewTests.Every_input_control_the_generic_editor_renders_addresses_a_settable_path` pins that: every control the generic view offers addresses a path Save can write.
 
-`ConfigurationViewModel` keeps the last loaded settings as a snapshot. Polished
-pages rebuild only their owned records; generic edits clone and update only the
-selected public property path. Unopened sections and provider facts therefore
-survive load/edit/save unchanged. `PresetsSectionViewModel` stays outside dirty tracking, delegates
-all catalog/diff/apply/reset behavior to the shared service, and reloads the root snapshot only
-after a successful preset mutation. It clears the now-stale plan immediately after that mutation,
-so failed reload cannot leave an old diff enabled against a newer file.
+`ConfigurationViewModel` keeps the last loaded settings as a snapshot. Polished pages rebuild only their owned records; generic edits clone and update only the selected public property path. Unopened sections and provider facts therefore survive load/edit/save unchanged. `PresetsSectionViewModel` stays outside dirty tracking, delegates all catalog/diff/apply/reset behavior to the shared service, and reloads the root snapshot only after a successful preset mutation. It clears the now-stale plan immediately after that mutation, so failed reload cannot leave an old diff enabled against a newer file.
 
 ## Secrets and HTTPS
 
-The configuration fields, defaults, and resolution rules for secret references
-are defined in
-[Credential environment references](#credential-environment-references).
-Compendium never resolves referenced secret values.
+The configuration fields, defaults, and resolution rules for secret references are defined in [Credential environment references](#credential-environment-references). Compendium never resolves referenced secret values.
 
-The Host page generates an owner-only self-signed loopback PEM certificate/key
-pair under `~/.config/arcanum/certs/`, so generated local HTTPS needs no stored
-password. Collision-resistant names preserve every pair even when several are generated in one
-second. Certificate and key bytes are durable-flushed to owner-only staging files, moved without
-overwrite, and removed as a pair if publication cannot finish. The editor preserves a valid
-operator-selected HTTPS port and does not install OS trust. External binding still requires HTTPS
-and a certificate valid for the remote hostname/IP; TLS validation must not be disabled.
+The Host page generates an owner-only self-signed loopback PEM certificate/key pair under `~/.config/arcanum/certs/`, so generated local HTTPS needs no stored password. Collision-resistant names preserve every pair even when several are generated in one second. Certificate and key bytes are durable-flushed to owner-only staging files, moved without overwrite, and removed as a pair if publication cannot finish. The editor preserves a valid operator-selected HTTPS port and does not install OS trust. External binding still requires HTTPS and a certificate valid for the remote hostname/IP; TLS validation must not be disabled.
 
 ## Portable backup ownership
 
-Portable backup is owned by the `arcanum backup` CLI and shared backup services; Compendium does
-not implement a second archive format or a restore UI. The `full` and
-`configuration-and-authored-assets` scopes include the shared `arcanum.json` configuration and the
-`~/.config/arcanum/certs/` tree when present. Explicitly selecting `compendium-settings` while
-excluding `configuration` still captures `arcanum.json` under the Compendium component. When both
-components are selected, the archive stores one `Configuration` entry and records
-`CompendiumSettings` as a complete zero-entry alias rather than duplicating the settings bytes.
-Compendium certificates remain their own typed component.
+Portable backup is owned by the `arcanum backup` CLI and shared backup services; Compendium does not implement a second archive format or a restore UI. The `full` and `configuration-and-authored-assets` scopes include the shared `arcanum.json` configuration and the `~/.config/arcanum/certs/` tree when present. Explicitly selecting `compendium-settings` while excluding `configuration` still captures `arcanum.json` under the Compendium component. When both components are selected, the archive stores one `Configuration` entry and records `CompendiumSettings` as a complete zero-entry alias rather than duplicating the settings bytes. Compendium certificates remain their own typed component.
 
-The `.arcbackup` manifest and certificate/private-key bytes remain inside the authenticated
-encrypted payload. Environment-referenced secret values are not resolved or exported, raw Data
-Protection/OS credential stores are excluded, and the master API key is absent unless explicitly
-selected as a sensitive component. Global MCP configuration is authored state and may contain
-literal environment values, so the backup planner surfaces a warning when it is selected.
+The `.arcbackup` manifest and certificate/private-key bytes remain inside the authenticated encrypted payload. Environment-referenced secret values are not resolved or exported, raw Data Protection/OS credential stores are excluded, and the master API key is absent unless explicitly selected as a sensitive component. Global MCP configuration is authored state and may contain literal environment values, so the backup planner surfaces a warning when it is selected.
 
-Restoring is likewise owned by the CLI: `arcanum backup restore` moves the configuration,
-certificates, database, and blobs as one generation, and Compendium implements no restore UI of its
-own. Restart Arcanum afterwards so the restored configuration snapshot is loaded. Referenced
-environment secrets and external workspace paths must still be supplied separately on the target,
-and restored certificates may not match or be trusted for a different hostname. Verify an archive
-before depending on it, and prefer `arcanum backup restore --dry-run` first: it validates the whole
-archive and reports the plan without touching the installation.
+Restoring is likewise owned by the CLI: `arcanum backup restore` moves the configuration, certificates, database, and blobs as one generation, and Compendium implements no restore UI of its own. Restart Arcanum afterwards so the restored configuration snapshot is loaded. Referenced environment secrets and external workspace paths must still be supplied separately on the target, and restored certificates may not match or be trusted for a different hostname. Verify an archive before depending on it, and prefer `arcanum backup restore --dry-run` first: it validates the whole archive and reports the plan without touching the installation.
 
 ## Saving and validation
 
-Descriptor validation runs in the editor as values change and blocks Save: an out-of-bounds,
-malformed, or otherwise rejected value is rendered inline beneath its own control, Save is
-unavailable while any field is invalid, and an attempt to save anyway names every offending
-descriptor key in an `Invalid settings` dialog. No invalid field is silently dropped from the
-written file. The JSON dictionary editors — pricing model overrides and custom profiles — parse
-their text against the source-generated configuration context before Save and report a per-field
-parse error in the same place.
+Descriptor validation runs in the editor as values change and blocks Save: an out-of-bounds, malformed, or otherwise rejected value is rendered inline beneath its own control, Save is unavailable while any field is invalid, and an attempt to save anyway names every offending descriptor key in an `Invalid settings` dialog. No invalid field is silently dropped from the written file. The JSON dictionary editors — pricing model overrides and custom profiles — parse their text against the source-generated configuration context before Save and report a per-field parse error in the same place.
 
-Save runs `ConfigurationValidator`, rejects configuration files larger than the code-owned 10 MiB
-ceiling before JSON parsing, then takes the same current-user cross-process configuration
-transaction as preset and CLI writers. Inside that transaction, its existing local save lock
-serializes the owner-only temporary write, durable flush, atomic `arcanum.json` replacement,
-fingerprint acknowledgement, and staging cleanup. Host/API loading performs a
-source-generated fail-closed walk before binding, grouping all unknown paths
-while preserving pricing and workspace-check dictionary keys. Validation
-pointers use the same dot paths as descriptors, and the pointer-keyed error surface is the union of
-the editor's field errors and the errors returned by the last write attempt. Every unsuccessful save
-raises a dialog and leaves its message in the SaveBar, including a write refused by the fingerprint
-check, so nothing fails silently behind the unsaved-changes text.
+Save runs `ConfigurationValidator`, rejects configuration files larger than the code-owned 10 MiB ceiling before JSON parsing, then takes the same current-user cross-process configuration transaction as preset and CLI writers. Inside that transaction, its existing local save lock serializes the owner-only temporary write, durable flush, atomic `arcanum.json` replacement, fingerprint acknowledgement, and staging cleanup. Host/API loading performs a source-generated fail-closed walk before binding, grouping all unknown paths while preserving pricing and workspace-check dictionary keys. Validation pointers use the same dot paths as descriptors, and the pointer-keyed error surface is the union of the editor's field errors and the errors returned by the last write attempt. Every unsuccessful save raises a dialog and leaves its message in the SaveBar, including a write refused by the fingerprint check, so nothing fails silently behind the unsaved-changes text.
 
-A read that fails leaves the editor bound to fabricated defaults rather than the operator's values,
-so it fails closed: Save is disabled, the section tabs are disabled, and the SaveBar shows a
-persistent `Could not read arcanum.json - repair the file or Reload.` banner with Reload always
-reachable. The store independently records an unreadable fingerprint, so a write over a
-never-successfully-loaded configuration is refused at the store layer with a message explaining that
-saving would replace the file with default settings.
+A read that fails leaves the editor bound to fabricated defaults rather than the operator's values, so it fails closed: Save is disabled, the section tabs are disabled, and the SaveBar shows a persistent `Could not read arcanum.json - repair the file or Reload.` banner with Reload always reachable. The store independently records an unreadable fingerprint, so a write over a never-successfully-loaded configuration is refused at the store layer with a message explaining that saving would replace the file with default settings.
 
-Cancel restores the in-memory snapshot and discards local edits; it does not clear an on-disk-change
-block, which only a Reload resolves. Reload re-reads disk after confirmation when local edits exist,
-and closing the window with unsaved edits — close button, `Cmd+W`, or `File > Exit` — prompts
-`Discard` or `Keep editing` in the same way. A file watcher reports external changes and blocks
-overwriting them until reload. Each successful read or ordinary Save acknowledges a SHA-256
-fingerprint of the exact configuration bytes it loaded or wrote. A delayed watcher event matching
-that fingerprint is therefore recognized as the same edit—including a preset transaction followed
-by its successful Compendium reload—while any different bytes still surface as an external change.
-Arcanum loads the source-generated configuration snapshot at process start; restart the host after
-saving changes.
+Cancel restores the in-memory snapshot and discards local edits; it does not clear an on-disk-change block, which only a Reload resolves. Reload re-reads disk after confirmation when local edits exist, and closing the window with unsaved edits — close button, `Cmd+W`, or `File > Exit` — prompts `Discard` or `Keep editing` in the same way. A file watcher reports external changes and blocks overwriting them until reload. Each successful read or ordinary Save acknowledges a SHA-256 fingerprint of the exact configuration bytes it loaded or wrote. A delayed watcher event matching that fingerprint is therefore recognized as the same edit—including a preset transaction followed by its successful Compendium reload—while any different bytes still surface as an external change. Arcanum loads the source-generated configuration snapshot at process start; restart the host after saving changes.
 
-Preset apply/reset uses the shared preset transaction rather than this ordinary Save path. It
-serializes mutations, rejects a stale settings hash, validates the complete candidate with canonical
-semantic/outbound policy, maintains owner-only state/rollback/journal sidecars, atomically replaces
-the file, and verifies or conditionally reverses its owned changes. The journal contains only owned
-before/after values and hashes plus previous/next provenance, and recovery preserves unrelated or
-later manual edits. Sidecar reads are bounded/no-follow and provenance must exactly match the
-immutable catalog and paired state. Compendium never creates a second persistence format.
+Preset apply/reset uses the shared preset transaction rather than this ordinary Save path. It serializes mutations, rejects a stale settings hash, validates the complete candidate with canonical semantic/outbound policy, maintains owner-only state/rollback/journal sidecars, atomically replaces the file, and verifies or conditionally reverses its owned changes. The journal contains only owned before/after values and hashes plus previous/next provenance, and recovery preserves unrelated or later manual edits. Sidecar reads are bounded/no-follow and provenance must exactly match the immutable catalog and paired state. Compendium never creates a second persistence format.
 
-`arcanum config edit` provides the same safety boundary for an operator-configured text editor: it
-writes an owner-only redacted temporary wrapper, waits for `$VISUAL`, `$EDITOR`, or the platform
-editor, restores unchanged masks, validates the complete result, and only then invokes the API or
-atomic local writer. A parse, validation, editor, or write failure leaves the valid configuration
-file unchanged.
+`arcanum config edit` provides the same safety boundary for an operator-configured text editor: it writes an owner-only redacted temporary wrapper, waits for `$VISUAL`, `$EDITOR`, or the platform editor, restores unchanged masks, validates the complete result, and only then invokes the API or atomic local writer. A parse, validation, editor, or write failure leaves the valid configuration file unchanged.
 
 ## Build and test
 
@@ -721,5 +406,4 @@ dotnet run --project src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
 ```
 
-Compendium is not Native AOT-published, but it edits the same source-generated,
-Native-AOT-compatible configuration contract used by Arcanum.
+Compendium is not Native AOT-published, but it edits the same source-generated, Native-AOT-compatible configuration contract used by Arcanum.
