@@ -36,7 +36,8 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
     internal static async Task<CovenantCanonicalFixture> CreateAsync(
         CancellationToken cancellationToken,
-        bool withAccelerator = false)
+        bool withAccelerator = false,
+        IReadOnlyList<string>? coreObjects = null)
     {
 
         CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(cancellationToken);
@@ -46,7 +47,9 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         try
         {
 
-            await database.InstallCoreObjectsAsync(["Campaigns", "campaign_registry_state"], cancellationToken);
+            await database.InstallCoreObjectsAsync(
+                [.. (IReadOnlyList<string>)["Campaigns", "campaign_registry_state"], .. coreObjects ?? []],
+                cancellationToken);
 
             await database.ExecuteAsync(
                 "INSERT OR IGNORE INTO campaign_registry_state (StateKey, RegistryEpoch) VALUES (1, 1);",

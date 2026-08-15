@@ -1,0 +1,216 @@
+using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Serialization;
+
+namespace RetroDownfall.Arcanum.Core.Covenant;
+
+/// <summary>
+/// Who a finalization-capacity slot was allocated for.
+/// </summary>
+/// <remarks>
+/// A public claim reserves its slot before any provider work starts and consumes it later, so a turn
+/// can never reach the point of needing a guard and discover the ceiling is full. Internal, imported,
+/// and forked guards have no waiting period at all: their guarded row is written in the same
+/// transaction, so they allocate an already-consumed slot.
+/// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<AssistantFinalizationCapacityOrigin>))]
+public enum AssistantFinalizationCapacityOrigin : byte
+{
+
+    PublicClaim = 1,
+
+    Internal = 2,
+
+    Imported = 3,
+
+    Forked = 4,
+
+}
+
+/// <summary>
+/// Where one capacity reservation stands. Both non-reserved states are terminal.
+/// </summary>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<AssistantFinalizationCapacityState>))]
+public enum AssistantFinalizationCapacityState : byte
+{
+
+    Reserved = 1,
+
+    Consumed = 2,
+
+    Released = 3,
+
+}
+
+/// <summary>
+/// The exact identity a consume or release names.
+/// </summary>
+/// <remarks>
+/// All three fields, not just the reservation ID. A reservation that could be consumed by naming its
+/// ID alone could be consumed by a Session that does not own it, and the counters it moves belong to
+/// that owner.
+/// </remarks>
+public readonly record struct AssistantFinalizationCapacityIdentity
+{
+
+    public AssistantFinalizationCapacityIdentity(Guid reservationId, Guid sessionId, Guid assistantEntryId)
+    {
+
+        ReservationId = CovenantValidation.RequireNonEmpty(reservationId, nameof(reservationId));
+
+        SessionId = CovenantValidation.RequireNonEmpty(sessionId, nameof(sessionId));
+
+        AssistantEntryId = CovenantValidation.RequireNonEmpty(assistantEntryId, nameof(assistantEntryId));
+
+    }
+
+    public Guid ReservationId { get; }
+
+    public Guid SessionId { get; }
+
+    public Guid AssistantEntryId { get; }
+
+}
+
+/// <summary>
+/// A public claim reserving one claim slot and one future finalization guard together.
+/// </summary>
+public sealed record SessionTurnCapacityReservationRequest
+{
+
+    public SessionTurnCapacityReservationRequest(
+        Guid reservationId,
+        Guid sessionId,
+        Guid assistantEntryId,
+        Guid claimId)
+    {
+
+        Identity = new AssistantFinalizationCapacityIdentity(reservationId, sessionId, assistantEntryId);
+
+        ClaimId = CovenantValidation.RequireNonEmpty(claimId, nameof(claimId));
+
+    }
+
+    public AssistantFinalizationCapacityIdentity Identity { get; }
+
+    public Guid ClaimId { get; }
+
+}
+
+/// <summary>
+/// An internal, imported, or forked guard allocating an already-consumed slot.
+/// </summary>
+/// <remarks>
+/// A public claim is deliberately not accepted here. It has a claim identity to bind and a waiting
+/// period to survive, and letting it take the direct path would allocate a guard slot with no claim
+/// that could ever release it.
+/// </remarks>
+public sealed record DirectFinalizationCapacityRequest
+{
+
+    public DirectFinalizationCapacityRequest(
+        Guid reservationId,
+        Guid sessionId,
+        Guid assistantEntryId,
+        AssistantFinalizationCapacityOrigin origin)
+    {
+
+        Identity = new AssistantFinalizationCapacityIdentity(reservationId, sessionId, assistantEntryId);
+
+        Origin = origin is AssistantFinalizationCapacityOrigin.Internal
+            or AssistantFinalizationCapacityOrigin.Imported
+            or AssistantFinalizationCapacityOrigin.Forked
+            ? origin
+            : throw new ArgumentOutOfRangeException(
+                nameof(origin),
+                "A public claim must reserve its finalization capacity rather than allocating it directly.");
+
+    }
+
+    public AssistantFinalizationCapacityIdentity Identity { get; }
+
+    public AssistantFinalizationCapacityOrigin Origin { get; }
+
+}
+
+/// <summary>
+/// Whole-Session retention returning lifetime capacity installation-wide.
+/// </summary>
+/// <remarks>
+/// The expected counts are a compare-and-swap, not a hint. Retention decrements the installation
+/// totals by the exact values it locked from the Session row it is about to delete; decrementing by
+/// anything else would silently rewrite the installation ceiling.
+/// </remarks>
+public sealed record SessionTurnCapacityReleaseRequest
+{
+
+    public SessionTurnCapacityReleaseRequest(
+        Guid sessionId,
+        long expectedClaimCount,
+        long expectedReservedCount,
+        long expectedConsumedCount)
+    {
+
+        SessionId = CovenantValidation.RequireNonEmpty(sessionId, nameof(sessionId));
+
+        ExpectedClaimCount = Require(expectedClaimCount, nameof(expectedClaimCount));
+
+        ExpectedReservedCount = Require(expectedReservedCount, nameof(expectedReservedCount));
+
+        ExpectedConsumedCount = Require(expectedConsumedCount, nameof(expectedConsumedCount));
+
+    }
+
+    public Guid SessionId { get; }
+
+    public long ExpectedClaimCount { get; }
+
+    public long ExpectedReservedCount { get; }
+
+    public long ExpectedConsumedCount { get; }
+
+    private static long Require(long value, string parameterName) =>
+        value >= 0 ? value : throw new ArgumentOutOfRangeException(parameterName);
+
+}
+
+/// <summary>
+/// The durable state of one capacity reservation after a transition.
+/// </summary>
+public sealed record AssistantFinalizationCapacityReservation(
+    AssistantFinalizationCapacityIdentity Identity,
+    AssistantFinalizationCapacityOrigin Origin,
+    Guid? ClaimId,
+    AssistantFinalizationCapacityState State,
+    bool Replayed);
+
+/// <summary>
+/// The canonical counters a prospective Covenant mutation batch is checked against.
+/// </summary>
+/// <remarks>
+/// Read once per batch inside the write transaction. Reading them per intent would let two intents
+/// in the same batch each see room that only one of them can actually take.
+/// </remarks>
+public sealed record CovenantQuotaSnapshot(
+    long ActiveEntriesInScope,
+    long VersionsInScope,
+    long SetVersionsInScope,
+    long CanonicalBytesInScope,
+    long AgentVersionsInCampaign,
+    long AgentBytesInCampaign,
+    long MutationReceiptsInScope,
+    long ProvenanceRowsInCampaign,
+    long PendingOutboxRows);
+
+/// <summary>
+/// What one prospective batch would add to those counters.
+/// </summary>
+public sealed record CovenantQuotaDemand(
+    long NewEntries,
+    long NewVersions,
+    long NewSetVersions,
+    long NewCanonicalBytes,
+    long NewAgentVersions,
+    long NewAgentBytes,
+    long NewMutationReceipts,
+    long NewProvenanceRows,
+    long NewOutboxRows);

@@ -23,8 +23,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// typed error and leaves the caller's transaction to be rolled back as a whole, which is what makes
 /// "a failed batch writes nothing" true rather than merely intended.</para>
 /// </remarks>
-internal sealed class CovenantMutationKernel
+internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 {
+
+    /// <summary>
+    /// A kernel over the process-wide connection initializer, for callers with no guard of their own.
+    /// </summary>
+    internal CovenantMutationKernel()
+        : this(new CovenantQuotaGuard())
+    {
+    }
+
 
     public async ValueTask<Result<IReadOnlyList<CovenantMutationReceipt>>> ApplyBatchAsync(
         CovenantMutationBatch batch,
@@ -72,6 +81,31 @@ internal sealed class CovenantMutationKernel
             return new Error(
                 "Covenant.StaleSnapshot",
                 "The Campaign registry epoch changed before this mutation batch could commit.");
+
+        }
+
+        // One capacity check per scope for the whole batch, before anything is appended. Checking
+        // per intent would let two intents in the same batch each see room that only one can take.
+        foreach (IGrouping<(CovenantScope Kind, Guid Campaign), CovenantMutationIntent> group in batch.Intents
+            .GroupBy(static intent => (
+                intent.Target.Scope.Kind,
+                intent.Target.Scope.CampaignId ?? Guid.Empty)))
+        {
+
+            CovenantOperationScope scope = group.Key.Kind == CovenantScope.Global
+                ? CovenantOperationScope.Global
+                : CovenantOperationScope.ForCampaign(group.Key.Campaign);
+
+            Result<CovenantQuotaSnapshot> capacity = await quotas
+                .CheckCanonicalCapacityAsync(scope, Demand(group), transaction, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (capacity.IsFailure)
+            {
+
+                return capacity.Error;
+
+            }
 
         }
 
@@ -150,6 +184,76 @@ internal sealed class CovenantMutationKernel
         }
 
         return receipts;
+
+    }
+
+    /// <summary>
+    /// The upper bound on what one scope's intents would add. Deliberately conservative: an intent
+    /// that turns out to be a no-op or an update simply consumes less than it reserved, which is the
+    /// safe direction for a ceiling.
+    /// </summary>
+    private static CovenantQuotaDemand Demand(IEnumerable<CovenantMutationIntent> intents)
+    {
+
+        long entries = 0;
+
+        long versions = 0;
+
+        long setVersions = 0;
+
+        long canonicalBytes = 0;
+
+        long agentVersions = 0;
+
+        long agentBytes = 0;
+
+        long receipts = 0;
+
+        long provenanceRows = 0;
+
+        foreach (CovenantMutationIntent intent in intents)
+        {
+
+            entries = checked(entries + 1);
+
+            versions = checked(versions + 1);
+
+            receipts = checked(receipts + 1);
+
+            provenanceRows = checked(provenanceRows + intent.Provenance.Length);
+
+            long bytes = intent.Artifact?.CompiledByteCost ?? 0;
+
+            canonicalBytes = checked(canonicalBytes + bytes);
+
+            if (intent.Operation == CovenantOperation.Set)
+            {
+
+                setVersions = checked(setVersions + 1);
+
+            }
+
+            if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved)
+            {
+
+                agentVersions = checked(agentVersions + 1);
+
+                agentBytes = checked(agentBytes + bytes);
+
+            }
+
+        }
+
+        return new CovenantQuotaDemand(
+            entries,
+            versions,
+            setVersions,
+            canonicalBytes,
+            agentVersions,
+            agentBytes,
+            receipts,
+            provenanceRows,
+            versions);
 
     }
 
