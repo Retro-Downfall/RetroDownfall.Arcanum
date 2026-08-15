@@ -179,7 +179,10 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
         }
 
-        long searchRowId = await AllocateSearchRowIdAsync(cancellationToken);
+        // A projection row ID is allocated once per entry and lane and never moves, so an advance
+        // over an existing head reuses it rather than claiming a second one.
+        long searchRowId = await ExistingSearchRowIdAsync(resolvedEntryId, lane, cancellationToken)
+            ?? await AllocateSearchRowIdAsync(cancellationToken);
 
         await UpsertHeadAsync(
             resolvedEntryId,
@@ -194,6 +197,8 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
             resolvedOrigin,
             searchRowId,
             cancellationToken);
+
+        await AppendOutboxAsync(searchRowId, resolvedEntryId, lane, versionId, cancellationToken);
 
         return new SeededHead(resolvedEntryId, versionId, searchRowId, compiled);
 
@@ -473,9 +478,68 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
     }
 
     /// <summary>
+    /// Emits the projection delta and advances the canonical search sequence, exactly as the mutation
+    /// kernel does. Seeding a head without its outbox row would leave the accelerator with nothing to
+    /// apply and make an eligible-index test pass against an empty index.
+    /// </summary>
+    private async Task AppendOutboxAsync(
+        long searchRowId,
+        Guid entryId,
+        CovenantLane lane,
+        Guid versionId,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            UPDATE covenant_state
+            SET CanonicalSearchSequence = CanonicalSearchSequence + 1, UpdatedAtUtc = $updated
+            WHERE StateKey = 1;
+
+            INSERT INTO covenant_search_outbox (SearchSequence, Ordinal, SearchRowId, EntryId, LaneCode, DesiredVersionId)
+            SELECT CanonicalSearchSequence, 0, $row, $entry, $lane, $version
+            FROM covenant_state WHERE StateKey = 1;
+            """;
+
+        _ = command.Parameters.AddWithValue("$updated", Iso(SeedTime));
+
+        _ = command.Parameters.AddWithValue("$row", searchRowId);
+
+        _ = command.Parameters.AddWithValue("$entry", entryId.ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$lane", (int)lane);
+
+        _ = command.Parameters.AddWithValue("$version", versionId.ToString("D"));
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    /// <summary>
     /// Claims the next projection row ID exactly as the mutation kernel must: the counter advances
     /// first, because a head at or past it was never allocated and the insert trigger refuses it.
     /// </summary>
+    private async Task<long?> ExistingSearchRowIdAsync(
+        Guid entryId,
+        CovenantLane lane,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = "SELECT SearchRowId FROM covenant_heads WHERE EntryId = $entry AND LaneCode = $lane;";
+
+        _ = command.Parameters.AddWithValue("$entry", entryId.ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$lane", (int)lane);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken);
+
+        return value is null or DBNull ? null : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+
+    }
+
     private async Task<long> AllocateSearchRowIdAsync(CancellationToken cancellationToken)
     {
 

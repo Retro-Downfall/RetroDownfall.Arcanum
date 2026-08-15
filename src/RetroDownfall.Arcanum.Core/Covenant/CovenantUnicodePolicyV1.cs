@@ -82,7 +82,7 @@ public static class CovenantUnicodePolicyV1
         }
     }
 
-    internal static bool IsFormatScalar(int scalar)
+    public static bool IsFormatScalar(int scalar)
     {
         ReadOnlySpan<ulong> ranges = CovenantUnicode17Tables.FormatRanges;
         int low = 0;
@@ -112,7 +112,7 @@ public static class CovenantUnicodePolicyV1
         return false;
     }
 
-    internal static bool IsWhitespaceScalar(int scalar) =>
+    public static bool IsWhitespaceScalar(int scalar) =>
         scalar is 0x0009 or 0x000a or 0x000d or 0x0020 or 0x00a0 or 0x1680
             or >= 0x2000 and <= 0x200a
             or >= 0x2028 and <= 0x2029
