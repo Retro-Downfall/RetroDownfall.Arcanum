@@ -29,6 +29,9 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
     internal SqliteConnection Connection => _database.Connection;
 
+    internal Task<SqliteConnection> OpenAdditionalConnectionAsync(CancellationToken cancellationToken) =>
+        _database.OpenAdditionalConnectionAsync(cancellationToken);
+
     internal CovenantStore Store { get; private set; } = null!;
 
     internal static async Task<CovenantCanonicalFixture> CreateAsync(

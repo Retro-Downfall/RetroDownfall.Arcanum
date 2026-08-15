@@ -183,6 +183,51 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
     }
 
+    /// <summary>
+    /// Opens a second initialized connection to the same scratch file.
+    /// </summary>
+    /// <remarks>
+    /// Contention suites need genuinely separate connections: two commands on one connection
+    /// serialize inside SQLite before they ever reach the write lock, so a single-connection "race"
+    /// proves nothing about the lock this tier actually relies on.
+    /// </remarks>
+    public async Task<SqliteConnection> OpenAdditionalConnectionAsync(CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = _path,
+
+                Password = Passphrase,
+
+                Pooling = false,
+            }.ToString());
+
+        try
+        {
+
+            await connection.OpenAsync(cancellationToken);
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                connection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken);
+
+            return connection;
+
+        }
+        catch
+        {
+
+            await connection.DisposeAsync();
+
+            throw;
+
+        }
+
+    }
+
     public async Task<bool> ObjectExistsAsync(string name, string type, CancellationToken cancellationToken)
     {
 
