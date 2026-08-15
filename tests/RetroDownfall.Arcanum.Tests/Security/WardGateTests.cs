@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -883,200 +882,41 @@ public sealed class WardGateTests
 
     }
 
-    // RunTimeoutAsync's `if (!_pending.TryRemove(wardId, out removed!)) return;` is the timeout
-    // path losing the race to an operator decision: the ward's Task.Delay elapses, but by the time
-    // the timeout takes the resolution gate the entry has already been removed by Resolve. The
-    // timeout must then fail closed on itself — it must NOT overwrite the operator's decision with
-    // a denial, must not complete the ward a second time, and must not resurrect the ward.
-    //
-    // The race is staged by parking Resolve inside the resolution gate: Resolve calls GetUtcNow once
-    // from PruneResolvedTombstones (before the gate) and once inside the gate, immediately after the
-    // entry has left _pending. Blocking that second call holds the gate — and leaves the entry's
-    // cancellation token uncancelled, since TryCancelEntry runs only after the gate is released —
-    // until well past the ward's timeout, so the timeout's delay completes and it reaches
-    // _pending.TryRemove with the entry already gone.
-    //
-    // Reaching the gate at all is still a race the resolver can lose on a loaded machine, so the
-    // scenario is re-staged with a widening window instead of asserting on a single attempt.
     [Fact]
-    public async Task Timeout_LosingRaceToResolve_DoesNotOverwriteTheOperatorDecision()
+    public async Task TimedOutResolution_AfterOperatorResolution_DoesNotOverwriteOperatorDecision()
     {
 
-        const int maxAttempts = 4;
+        const string wardId = "ward-timeout-loses-race";
 
-        for (int attempt = 1; attempt <= maxAttempts; attempt++)
-        {
+        WardGate gate = CreateGate();
 
-            TimeSpan wardTimeout = TimeSpan.FromMilliseconds(500 * attempt);
+        Task<WardResolution> wardTask = gate.WardAsync(
+            wardId,
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
 
-            string wardId = $"ward-timeout-loses-race-{attempt}";
+        Assert.Equal(
+            ResolveStatus.Success,
+            gate.Resolve(wardId, allow: true, reason: "Operator approved"));
 
-            using GateHoldingTimeProvider timeProvider = new();
+        WardResolution resolution = await wardTask;
 
-            WardGate gate = new(new FakeOptionsMonitor(new ArcanumSettings()), timeProvider);
+        Assert.False(gate.TryResolveTimedOutWard(wardId));
 
-            JsonDocument arguments = JsonDocument.Parse("""{"path":"README.md"}""");
+        Assert.True(resolution.Allowed);
 
-            Stopwatch placed = Stopwatch.StartNew();
+        Assert.Equal("Operator approved", resolution.Reason);
 
-            Task<WardResolution> wardTask = gate.WardAsync(
-                wardId,
-                "write_file",
-                arguments,
-                sessionId: null,
-                wardTimeout,
-                CancellationToken.None);
+        Assert.NotEqual(TimeoutReason, resolution.Reason);
 
-            // A dedicated thread rather than a pool thread, so the resolver reaches the gate even
-            // when the rest of the suite is saturating the thread pool.
-            Task<ResolveStatus> resolveTask = Task.Factory.StartNew(
-                () =>
-                {
+        Assert.Empty(gate.GetActiveWards());
 
-                    timeProvider.ArmBlockOnCurrentThread(skipCalls: 1);
-
-                    return gate.Resolve(wardId, allow: true, reason: "Operator approved");
-
-                },
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default);
-
-            // Resolve parks in the gate only if its TryRemove won; if the timeout removed the entry
-            // first, Resolve returns AlreadyResolved without ever reaching the blocking call.
-            while (!timeProvider.WaitUntilBlocked(TimeSpan.FromMilliseconds(25)) && !resolveTask.IsCompleted)
-            {
-
-            }
-
-            if (!timeProvider.IsBlocked)
-            {
-
-                timeProvider.Release();
-
-                Assert.Equal(ResolveStatus.AlreadyResolved, await resolveTask);
-
-                _ = await wardTask;
-
-                continue;
-
-            }
-
-            try
-            {
-
-                // Hold the gate past the ward's timeout so RunTimeoutAsync's delay completes
-                // uncancelled and queues up behind the gate.
-                while (placed.Elapsed < wardTimeout + TimeSpan.FromMilliseconds(400))
-                {
-
-                    await Task.Delay(25);
-
-                }
-
-            }
-            finally
-            {
-
-                timeProvider.Release();
-
-            }
-
-            Assert.Equal(ResolveStatus.Success, await resolveTask);
-
-            WardResolution resolution = await wardTask;
-
-            // The operator's allow stands: the timeout that lost the race must not have flipped the
-            // ward to the timeout denial.
-            Assert.True(resolution.Allowed);
-
-            Assert.Equal("Operator approved", resolution.Reason);
-
-            Assert.NotEqual(TimeoutReason, resolution.Reason);
-
-            // Give the losing timeout time to finish, then confirm it changed nothing: the ward is
-            // not resurrected as active, and it is still recorded as resolved exactly once.
-            await Task.Delay(200);
-
-            Assert.Empty(gate.GetActiveWards());
-
-            Assert.Equal(
-                ResolveStatus.AlreadyResolved,
-                gate.Resolve(wardId, allow: false, reason: "late timeout"));
-
-            return;
-
-        }
-
-        Assert.Fail("The resolver never won the removal race, so the losing-timeout path was never staged.");
-
-    }
-
-    private sealed class GateHoldingTimeProvider : TimeProvider, IDisposable
-    {
-
-        private readonly ManualResetEventSlim _blocked = new(false);
-
-        private readonly ManualResetEventSlim _release = new(false);
-
-        private int _armedThreadId;
-
-        private int _skipRemaining;
-
-        public override DateTimeOffset GetUtcNow()
-        {
-
-            if (Volatile.Read(ref _armedThreadId) == Thread.CurrentThread.ManagedThreadId)
-            {
-
-                if (_skipRemaining > 0)
-                {
-
-                    _skipRemaining--;
-
-                }
-                else
-                {
-
-                    Volatile.Write(ref _armedThreadId, 0);
-
-                    _blocked.Set();
-
-                    _ = _release.Wait(TimeSpan.FromSeconds(60));
-
-                }
-
-            }
-
-            return DateTimeOffset.UtcNow;
-
-        }
-
-        // Managed thread ids start at 1, so 0 reliably means "not armed".
-        public void ArmBlockOnCurrentThread(int skipCalls)
-        {
-
-            _skipRemaining = skipCalls;
-
-            Volatile.Write(ref _armedThreadId, Thread.CurrentThread.ManagedThreadId);
-
-        }
-
-        // Set only from inside the parked call, so it stays true until the gate is released.
-        public bool IsBlocked => _blocked.IsSet;
-
-        public bool WaitUntilBlocked(TimeSpan timeout) => _blocked.Wait(timeout);
-
-        public void Release() => _release.Set();
-
-        public void Dispose()
-        {
-
-            _blocked.Dispose();
-
-            _release.Dispose();
-
-        }
+        Assert.Equal(
+            ResolveStatus.AlreadyResolved,
+            gate.Resolve(wardId, allow: false, reason: "late timeout"));
 
     }
 

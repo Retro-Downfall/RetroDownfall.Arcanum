@@ -116,7 +116,7 @@ public sealed class WardGate : IWard
             }
         });
 
-        _ = RunTimeoutAsync(wardId, entry, timeout, entryCts.Token);
+        _ = RunTimeoutAsync(wardId, timeout, entryCts.Token);
 
         try
         {
@@ -235,7 +235,6 @@ public sealed class WardGate : IWard
             .ToList();
     }
 
-
     private static void TryCancelEntry(CancellationTokenSource cts)
     {
 
@@ -262,7 +261,7 @@ public sealed class WardGate : IWard
 
     }
 
-    private async Task RunTimeoutAsync(string wardId, WardEntry entry, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task RunTimeoutAsync(string wardId, TimeSpan timeout, CancellationToken cancellationToken)
     {
         try
         {
@@ -273,6 +272,13 @@ public sealed class WardGate : IWard
             return;
         }
 
+        _ = TryResolveTimedOutWard(wardId);
+    }
+
+    // Keep the post-delay transition separate so both outcomes remain explicit: the timeout can
+    // remove the live ward, or it can observe that another resolver already won.
+    internal bool TryResolveTimedOutWard(string wardId)
+    {
         WardEntry removed;
 
         WardResolution resolution;
@@ -282,7 +288,7 @@ public sealed class WardGate : IWard
 
             if (!_pending.TryRemove(wardId, out removed!))
             {
-                return;
+                return false;
             }
 
             resolution = new WardResolution(
@@ -302,6 +308,8 @@ public sealed class WardGate : IWard
         _ = removed.Tcs.TrySetResult(resolution);
 
         PruneResolvedTombstones();
+
+        return true;
     }
 
     private WardSettings ResolveRuntimeSettings() =>

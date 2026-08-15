@@ -218,7 +218,8 @@ public sealed class FamiliarProviderEditorTests
     {
 
         SettingDescriptor type = Assert.Single(
-            SettingDescriptors.All.Where(static descriptor => descriptor.Key == "providers.type"));
+            SettingDescriptors.All,
+            static descriptor => descriptor.Key == "providers.type");
 
         Assert.Equal(typeof(AiProviderKind), type.EnumType);
 

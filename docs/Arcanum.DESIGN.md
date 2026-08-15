@@ -47,7 +47,7 @@ A Familiar is a transport, not a managed runtime, and the distinction is load-be
 |------|-----------|
 | **Strict project boundaries** | Keeps compile-time dependencies honest, enables parallel ownership, and avoids the "everything references everything" failure mode. |
 | **Hybrid process model** | One CLI/host entry point reduces deployment and versioning surface; operators choose mode via CLI verbs. |
-| **Native AOT readiness for the host** | Windows/Linux ship one native executable; macOS remains self-contained while the shared code keeps AOT-safe source-generation constraints. Secondary benefits are predictable startup and a smaller reflection surface (§9). |
+| **Native AOT readiness for the host** | Windows and Linux ship one native executable. macOS does too when LLVM `lld` is installed, and otherwise ships a signed folder-based self-contained publish. Secondary benefits are predictable startup and a smaller reflection surface (§9). |
 | **Minimal API over MVC** | Fewer moving parts, explicit endpoint mapping, and alignment with ASP.NET Core's AOT-oriented request pipeline. |
 | **Source-generated JSON and request delegates** | Required for credible trimming and Native AOT compatibility; avoids runtime reflection. |
 
@@ -449,6 +449,12 @@ references `Secrets`; `Cli` references `Core` and `Infrastructure` directly for 
 
 **Ownership boundaries (namespaces):** `Primitives/` (`Error`, `Result`, `ApiResponse<T>`), `CommLink/`, `Events/` (`IEventBus`, daemon SSE types), `Daemons/` (wire DTOs for `/api/daemons`), `Configuration/` (`ArcanumSettings`, providers, validators, bootstrapper), `Security/` (`ISecretStore` contract), `Intelligence/` (`IArcanumIntelligenceProvider`, `PingRequest`, NDJSON event types), `Storage/` (Grimoire POCOs + `IGrimoireRepository`), `Chronosync/`, `Serialization/` (Core JSON contexts distinct from Api `ArcanumJsonContext`), `Pattern/` (Eye of the World), `Workspace/`.
 
+`Covenant/` owns the pure protocol vocabulary, compiler, canonical encoders, digests, evidence
+algebra, linker, and admission contracts. `Intelligence/CovenantContextPolicy` and
+`Intelligence/InvocationAttendance` carry the provider-neutral invocation policy, while
+`TheForge/SessionCampaignBinding` and `TheForge/CanonicalCampaignContext` bind Sessions to the
+canonical Campaign identity.
+
 **MSBuild:** `<IsAotCompatible>true</IsAotCompatible>`.
 
 **Non-goals:** Web types, hosting DI extensions, HTTP middleware.
@@ -709,7 +715,7 @@ On a readiness failure, retry the invoking command, run `arcanum doctor`, confir
 
 Auto-launched processes do not expose `arcanum serve stop` or `daemon stop`.
 
-**MSBuild:** `PublishAot` (the shipping native image on non-macOS RIDs), `IsAotCompatible`, `EnableConfigurationBindingGenerator`. `System.CommandLine 2.0.10` and `System.CommandLine 2.0.10.Abstractions` are analyzer/source-generator packages with no runtime DLL reference, so no `TrimmerRootAssembly`, `[DynamicDependency]`, or IL-warning suppression is needed for CLI parsing. **Terminal.Gui** is referenced only from `Cli`; first-party AOT IL for the Command Center bootstrap is gated by `./scripts/verify-aot-il-warnings.sh` (method-level suppressions on `CommandCenterApp` only — no project-level blanket suppress). Transitive vulnerable packages: `dotnet list package --vulnerable --include-transitive` on the Cli project.
+**MSBuild:** `PublishAot` (the shipping native image on Windows, Linux, and macOS when `lld` is installed), `IsAotCompatible`, `EnableConfigurationBindingGenerator`. `System.CommandLine 2.0.10` and `System.CommandLine 2.0.10.Abstractions` are analyzer/source-generator packages with no runtime DLL reference, so no `TrimmerRootAssembly`, `[DynamicDependency]`, or IL-warning suppression is needed for CLI parsing. **Terminal.Gui** is referenced only from `Cli`; first-party AOT IL for the Command Center bootstrap is gated by `./scripts/verify-aot-il-warnings.sh` (method-level suppressions on `CommandCenterApp` only, with no project-level blanket suppress). Transitive vulnerable packages: `dotnet list package --vulnerable --include-transitive` on the Cli project.
 
 ### 4.4.2 Subsystem diagnostics and safe repairs (`arcanum doctor`)
 
@@ -2053,6 +2059,7 @@ Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs;
 - **`Cli` publish** (`<PublishAot>true</PublishAot>` on every RID that can link one) produces a native binary via ILCompiler over the full closure (`Cli` + `Api` + `Infrastructure` + `Core` + framework + third-party assemblies). macOS is included when LLVM `ld64.lld` is present: Apple's ld-prime asserts on the ~450 MB object file (dotnet/runtime#119380) and `ld_classic` no longer exists, but ILC itself is unaffected and lld links it cleanly — a 98 MB `osx-arm64` binary with no CoreCLR dependency. Without lld the RID falls back to a folder-based self-contained publish. See the Cli csproj notes.
 - **`Infrastructure`** additionally sets `PublishAot` / `IsTrimmable` as a library signal so the ILCompiler analyzes it in the publish graph — it is not shipped as its own binary.
 - **`Api` / `Core`** declare `<IsAotCompatible>true</IsAotCompatible>` to opt into AOT-oriented analyzers. Libraries in the closure should remain AOT-compatible for every host.
+- **Covenant corpus entry points** are reflection-free: `CovenantCompilerCorpus.Run` accepts the exact checked-in Unicode corpus as a caller-supplied span, and `CovenantDigestCorpus.Run` executes literal canonical digest cases. Plan 05 Task 5 owns execution in native smoke binaries on all five shipping RIDs; ordinary Core and xUnit evidence does not establish that RID-native result.
 - **Command Center (Terminal.Gui 2.4.17)** lives only in `Cli`. Bootstrap is isolated in `CommandCenterApp`; any `IL3050`/`IL2026` suppressions are method-level there and must remain first-party-clean under `./scripts/verify-aot-il-warnings.sh`.
 - **Size-tuning feature switches** (`OptimizationPreference`, `StackTraceSupport`, `DebuggerSupport`, `UseWindowsThreadPool`, `BuiltInComInteropSupport`, `UseSystemResourceKeys`) are declared in a `Cli` `PropertyGroup` carrying the same RID guard as `PublishAot`. The SDK emits each of them as a runtimeconfig `configProperty` on the sole condition that the property is *set*, so an unguarded group also reaches plain `dotnet build`/`dotnet run` and the untrimmed macOS publish — where `UseSystemResourceKeys=true` has no trimmer to justify it and degrades every BCL exception message to a bare resource key (`Arg_NullReferenceException`). `HostProjectFeatureSwitchTests` gates this for `Cli` and `Api.DevHost`.
 
@@ -2060,11 +2067,11 @@ Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs;
 
 - **System.CommandLine 2.0.10 v5** is source-generated with zero reflection — the CLI layer has no AOT tradeoffs.
 - **EF Core** compiled model is required (`dotnet ef dbcontext optimize`). Precompiled queries are disabled (`EFPrecompileQueriesStage = none`) because certain repository LINQ patterns are not yet compatible.
-- **`dotnet build`** is warning-clean in Debug and Release. macOS Native AOT is currently disabled:
-  macOS 27 / Xcode 26+ `ld-prime` can crash on the large AOT object closure
-  (`dotnet/runtime#119380`), `ld_classic` is no longer supported, and the current toolchain's
-  single-file apphost is not a reliable fallback. macOS therefore uses an untrimmed, folder-based
-  self-contained publish; Windows/Linux remain Native AOT.
+- **`dotnet build`** is warning-clean in Debug and Release. Windows and Linux remain Native AOT.
+  macOS uses Native AOT when LLVM `ld64.lld` is installed. Without lld, macOS 27 / Xcode 26+
+  `ld-prime` can crash on the large AOT object closure (`dotnet/runtime#119380`), `ld_classic` is no
+  longer supported, and the current toolchain's single-file apphost is not a reliable fallback, so
+  packaging uses the untrimmed, folder-based self-contained publish.
 
 ### 9.4 AOT discipline for new code
 
@@ -3246,6 +3253,51 @@ can price. Provider-reported token usage is surfaced when the CLI emits it; when
 stays absent rather than being flattened to zero, so an unreported turn reads as unknown rather than
 free.
 
+### 10.10 Covenant Core protocol foundation
+
+Issue #79 implements Tasks 1 through 6 of the Covenant Core foundation tracked by umbrella issue
+#74. `Core.Covenant` owns validated vocabulary, authored-fragment compilation, canonical records,
+domain-separated digests and rolling chains, disclosure evidence, pure linking, and admission
+receipts. This slice adds no host registration, public API or CLI surface, configuration key,
+persistence schema, or provider call path.
+
+Policy v1 uses strict UTF-8, the scoped-key grammar `[a-z0-9][a-z0-9._-]{0,127}`, and checked-in
+Unicode 17 tables for runtime-independent NFC and safety decisions. Authored fragments retain their
+validated authored bytes separately from their normalized rendered form. Canonical JSON follows the
+bounded RFC 8785 and RFC 7493 profile. Canonical binary records use big-endian scalars, `u32` length
+prefixes for strings and arbitrary bytes, one-byte optional presence, `u32` list counts, raw RFC 4122
+GUID bytes, and raw fixed 32-byte Covenant digests and Bloom filters. The streaming SHA-256 writer
+uses the same field framing without materializing a second full preimage.
+
+Every Plan and Admission digest carries exactly three placement-specific Section digests: Global
+Confirmed, Campaign Confirmed, and Campaign Proposed. Snapshot candidate records bind both a `u32`
+provenance count and its required aggregate provenance digest. Unordered resolved attachment version
+identities sort by raw GUID bytes; canonical materialization and provenance sets use their specified
+field ordering; provider-visible message, content-part, tool-call, and tool-result sequences preserve
+their supplied order.
+
+Generation provenance remains exact through eight generation identities, then transitions to a
+fixed 32-byte Bloom representation that permits diagnostic false positives and makes no exact
+membership claim.
+`Sensitivity.v1` binds level plus provenance. `ArtifactLabel.v1` adds owner, Campaign, plan,
+admission, and artifact identity to that sensitivity. Empty disclosure state is the exact
+`Exact,false,0,0,zeroBloom` value; fold and restore use checked increment, bitwise Bloom union, and
+the documented lower-bound timestamp algebra.
+
+The pure linker applies Campaign shadowing over Global fallback and materializes the three bounded
+sections. Admission receipts validate supplied provider-neutral outcomes, including Confirmed
+all-or-fail and a Campaign Proposed longest prefix with at most 32 trailing removals. Issue #84 and
+Plan 03 Task 8 own provider-specific tokenization, full-prompt measurement, and runtime pressure
+selection.
+
+| Core boundary | Policy-v1 hard limit |
+|---------------|----------------------|
+| Scoped key and authored fragment | 128 ASCII key characters; 2,048 strict UTF-8 authored bytes |
+| Rendered Sections | 4,096 bytes each; 64 Global Confirmed, 64 Campaign Confirmed, and 32 Campaign Proposed entries |
+| Active snapshot | 160 accepted rows with a 161-row overflow probe |
+| Generation provenance | 8 exact identities before the fixed 32-byte Bloom form |
+| Canonical JSON | 65,536 UTF-8 input bytes, 65,536 output bytes, and depth 64 |
+
 ## 11. Local API security
 
 ### 11.1 Threat model
@@ -4185,11 +4237,11 @@ are keyed by (source file, line) so a line reported by both the synchronous shel
 machine is counted once, at its best observed condition coverage, and a covered shell can never mask
 an uncovered state machine.
 
-**The gate is a requirement, not a description of the current report.** Against the checked-in
-Cobertura report the gate exits non-zero: `ApiKeyEndpointFilter` 92.50%, `DataProtectionSecretStore`
-64.29%, `OutboundUrlGuard` 90.57%, `SandboxedFileIo` 86.36%, and `TrustedMcpWorkspaceStore` 93.42%
-branch coverage. `./scripts/coverage.sh --threshold` fails until those five reach 100%; the remaining
-listed types clear it.
+Security-critical concurrency branches use deterministic transitions rather than scheduler timing.
+For example, `WardGate` separates its post-delay timeout transition so tests cover both a timeout
+that removes a live ward and one that observes an operator-resolved ward. This keeps the 100% branch
+gate stable under Coverlet instrumentation. A regression in any listed type makes
+`./scripts/coverage.sh --threshold` exit non-zero.
 
 Ubuntu executes a different
 set of OS-specific branches while the denominator still includes all shipping assemblies. Local and
@@ -4409,6 +4461,9 @@ reinstall.
 
 | Test area | Contract locked down |
 |-----------|----------------------|
+| `CovenantDomainContractTests` / `CovenantCompilerTests` / `CovenantUnicodePolicyTests` | Fixed policy codes and hard bounds; exact key grammar and authored-byte limits; strict UTF-8, Unicode 17 NFC and Format-code-point policy; all 20,034 corpus rows; generated table and corpus identity binding; reflection-free corpus execution under normal and invariant globalization. Byte-identical generator reruns remain a manual verification step. |
+| `CovenantCanonicalEncoderTests` / `CovenantCanonicalJsonTests` / digest, chain, and disclosure tests | Big-endian scalar and optional/list framing; raw fixed-32 digest/Bloom fields; bounded RFC 8785 and RFC 7493 JSON; every domain-separated preimage, Section placement, chain seed/update/fork, disclosure invariant, and the independently literal 249-case digest-corpus aggregate. |
+| `GenerationProvenanceTests` / `ArtifactSensitivityLabelTests` / `CovenantLinkerTests` / `CovenantAdmissionReceiptTests` | Exact-to-Bloom transition and merge algebra; Sensitivity versus owner-bound ArtifactLabel; deterministic Global fallback and Campaign shadowing; resolved-attachment ordering; Section ceilings; Confirmed all-or-fail and Proposed longest-prefix admission validation. |
 | `ConfigurationPresetCatalogTests` / `ConfigurationPresetPlannerTests` / `ConfigurationPresetPersistenceTests` / `PresetCommandTests` / Compendium preset tests | Six immutable v1 ownership sets and every prohibited automatic enablement; fresh/custom/environment-overridden planning; prerequisites and canonical validation; idempotency; owner-only secret-free provenance/rollback; stale-write rejection, atomic recovery, reset drift preservation; CLI redaction/output; shared Compendium descriptions, exact diff, navigation, and unsaved-edit protection. |
 | `BudgetMonitorTests` | `IOptionsMonitor` + scope-factory singleton shape; record-before-dispatch ordering; duplicate suppression when `RecordAlertAsync` returns false; a ceiling reached partly through delegation is refused; unpriced delegation is allowed and flagged rather than charged as zero; a refusal with unpriced delegation present says the figure is a floor; behavior unchanged when no external-spend ledger is registered. |
 | `A2AOutboundModalityTests` | Requested output modes default to what this instance can consume and are always stated on the wire; a card that can produce none of them, or advertises no such skill, fails **before** the remote task is created; a named skill's own modes govern; silence — an absent or empty card list, or no skills at all — is not a mismatch. |
