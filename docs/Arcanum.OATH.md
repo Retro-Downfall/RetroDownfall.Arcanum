@@ -64,7 +64,9 @@ explicit research extensions. These categories must not be conflated.
 |---|---|
 | **Implemented and landed** | Issue #79 delivered the pure-Core Covenant vocabulary, Unicode-safe compiler, canonical encoding and JSON, domain-separated digests, evidence chains, sensitivity/provenance algebra, pure linker, and admission contracts. |
 | **Foundation landed; RID closure pending** | Issue #80 delivered the hermetic SQLCipher 4.17 runtime code, central SQLite initialization and authorization functions, runtime validation, native provenance, and build/package enforcement. The shipping matrix is `osx-arm64`, `win-x64`, and `win-arm64`, with no fallback. The macOS asset is currently verified; both Windows manifest records remain `pending`, their binaries are absent, and those RIDs intentionally fail the build until their verification workflow supplies accepted assets. |
-| **In progress** | The current issue #81 work establishes schema-family and transaction-tier catalogs. It is not described here as completed until its own verification and integration gate lands. |
+| **Implemented and landed** | Issue #81 delivered the schema-family and transaction-tier catalogs, the always-present core support tables, both Covenant tiers, closed installed-catalog manifests, the three-transaction installer, and `ICovenantAvailability` health publication. |
+| **Implemented and landed** | Issue #82 delivered the generation-bound operation gate and its lease vocabulary, the bounded canonical store, the transactional mutation kernel and replay ledger, canonical and turn-capacity quotas, bounded turn-evidence folding, owner-deletion catch-up, the FTS query compiler and cursor bodies, the eligible search index with its bounded canonical fallback, whole-sequence outbox synchronization, and the resumable base rebuild. These are registered but not yet reachable from any public surface. |
+| **In progress** | Issue #83 establishes invocation authority and Campaign binding on top of that persistence boundary. It is not described here as completed until its own verification and integration gate lands. |
 | **Approved and specified** | Canonical persistence, generation-bound operation leases, runtime authority, provider-call freezing, transactional publication, protected derivatives, API and CLI surfaces, backup/restore, retention, reset, erasure, and full verification are defined by the Covenant specification and Plans 01 through 05. |
 | **Roadmap extension** | Long Rest policy, Campaign-scoped retrieval, Campaign rollups, operator curation, counterfactual evaluation, least-authority delegation capsules, and full bitemporal/dependency-aware claims extend OATH after the Covenant foundation. |
 
@@ -319,6 +321,27 @@ canonical-to-accelerator outbox, and FTS synchronization.
 One central initializer configures every SQLite connection. Authorization functions start false and
 become true only through non-serializable, connection-bound scopes. A code path cannot obtain
 mutation authority merely because it has a database connection.
+
+**Implemented.** One process-wide operation gate is the sole admission point. Ordinary work takes a
+generation-bound lease and keeps it for the whole operation; a destructive operation records its
+exact recovery owner, closes admission over the affected scopes, drains every live lease, and only
+then may change anything. That ordering is the law: closing after draining leaves a permanent race
+in which new readers arrive faster than old ones leave. Installation-wide coverage is a capability
+rather than a third persisted scope, and protected transfer takes one compound read-and-exclusive
+lease rather than a read-then-close sequence that would deadlock against its own drain set.
+
+**Implemented.** Reads take a caller-owned lease, validate its exact coverage, and never acquire or
+widen one — a store that could escalate its own coverage would make the drain guarantee unprovable.
+Writes go through one mutation kernel inside the caller's immediate transaction, which the kernel
+never opens, commits, or retries; that is what makes a failed batch write nothing. Receipt replay
+resolves before compare-and-swap, so an exact retry returns its committed answer rather than a
+revision conflict, and a deliberate no-op is recorded as durably as an applied mutation.
+
+**Implemented.** The accelerator is derived and failure-isolated. Canonical commits never depend on
+it; synchronization applies whole outbox sequences only, because half a canonical commit would leave
+the applied tuple claiming a sequence whose projection is incomplete. An ineligible, absent, or
+damaged index yields a successful bounded canonical page with typed rebuild guidance, never an
+error and never authority.
 
 ### 6.3 Runtime authority and admission layer
 
