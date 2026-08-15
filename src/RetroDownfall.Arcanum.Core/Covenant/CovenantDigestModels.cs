@@ -96,3 +96,7 @@ public sealed record FinalReceiptDigestInput(CovenantDigest SnapshotDigest, Cove
 public sealed record TurnAggregateDigestInput(CovenantDigest FinalReceiptDigest, ulong AttemptedAdmissionCount, CovenantDigest AttemptChainDigest, Guid CommittedBranchId, CovenantDigest CommittedLineageHeadDigest, CovenantDigest FinalSensitivityDigest, ulong ExternalDisclosureCount, CovenantDigest DisclosureChainDigest, ulong ConfirmedTokens, ulong ProposedTokens, uint MutationCount, CovenantFinalOutcome FinalOutcome);
 
 public sealed record CursorFilterDigestInput(CovenantCursorEndpoint Endpoint, CovenantCursorScopeSelection ScopeSelection, Guid? CampaignId, Guid? EvaluationCampaignId, CovenantLane? Lane, CovenantLifecycle Lifecycle, CovenantDigest? QueryDigest, uint PageSize, CovenantCursorSort SortPolicy);
+
+public sealed record DependentHeadDigestInput(Guid CampaignId, bool HasConfirmedHead, bool HasProposedHead, ulong ConfirmedLaneRevision, ulong ProposedLaneRevision);
+
+public sealed record DependentHeadVectorDigestInput(CovenantScope Scope, Guid? CampaignId, string NormalizedKey, CovenantLane Lane, CovenantOperation Operation, ulong KeyEpoch, ulong KeyReclamationEpoch, ulong CampaignRegistryEpoch, ImmutableArray<DependentHeadDigestInput> Entries);

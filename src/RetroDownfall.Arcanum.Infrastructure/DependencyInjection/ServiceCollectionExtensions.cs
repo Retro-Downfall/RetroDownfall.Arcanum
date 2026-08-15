@@ -36,6 +36,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
@@ -202,6 +203,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
+
+        services.AddCovenantPersistence();
 
         services.AddDbContext<ArcanumDbContext>((sp, options) =>
             ArcanumDbContextOptionsConfigurator.Configure(
@@ -591,6 +594,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        services.AddCovenantPersistence();
+
         services.AddScoped<IDivinationService, DivinationService>();
         services.AddScoped<EmbeddingsResetService>();
         services.AddScoped<ITapestryStore, TapestryStore>();
@@ -921,4 +926,82 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+    /// <summary>
+    /// The Covenant persistence boundary: one gate, one store, one mutation kernel, one quota guard,
+    /// one search index, and the single-writer workers behind them.
+    /// </summary>
+    /// <remarks>
+    /// Registered from one place so both host compositions get exactly the same set. Two lists that
+    /// had to be kept in step by hand is precisely how one host ends up with a second operation gate
+    /// and loses the drain guarantee the whole tier depends on.
+    ///
+    /// <para>The gate, compiler, and linker are singletons because their state is process-wide. The
+    /// store, kernel, guard, index, and workers are scoped, because each one writes through the
+    /// scoped Grimoire connection.</para>
+    /// </remarks>
+    private static IServiceCollection AddCovenantPersistence(this IServiceCollection services)
+    {
+
+        // Explicit factories rather than type registrations: these components declare internal
+        // constructors on purpose, so the container is handed exactly the dependency graph the tier
+        // intends instead of whatever a reflective activator can reach.
+        services.AddSingleton<ICovenantCampaignScopeProbe>(
+            static sp => new CovenantCampaignScopeProbe(sp.GetRequiredService<IServiceScopeFactory>()));
+
+        services.AddSingleton(
+            static sp => new CovenantOperationGate(
+                sp.GetRequiredService<ICovenantAvailability>(),
+                sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
+                sp.GetRequiredService<ICovenantCampaignScopeProbe>()));
+
+        services.AddSingleton<ICovenantOperationGate>(
+            static sp => sp.GetRequiredService<CovenantOperationGate>());
+
+        services.AddSingleton<ICovenantCompiler, CovenantCompiler>();
+
+        services.AddSingleton<ICovenantLinker, CovenantLinker>();
+
+        services.AddSingleton(static _ => new CovenantSearchQueryCompiler());
+
+        services.AddScoped<ICovenantConnectionSource>(
+            static sp => new CovenantConnectionSource(sp.GetRequiredService<ArcanumDbContext>()));
+
+        services.AddScoped<ICovenantStore>(
+            static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        services.AddScoped<ICovenantSearchIndex>(
+            static sp => new CovenantSearchIndex(sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        services.AddScoped(
+            static sp => new CovenantQuotaGuard(sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddScoped(
+            static sp => new CovenantMutationKernel(sp.GetRequiredService<CovenantQuotaGuard>()));
+
+        services.AddScoped(
+            static sp => new CovenantTurnReceiptCompactor(
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddScoped(static _ => new CovenantOwnerDeletionReader());
+
+        services.AddScoped(
+            static sp => new CovenantCleanupWorker(
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<CovenantOwnerDeletionReader>()));
+
+        services.AddScoped(
+            static sp => new CovenantSearchOutboxWorker(
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        // The long-running-operation adapter, its checkpoint envelope, and its recovery handler
+        // belong to a later slice. Only the base batch algorithm is registered here.
+        services.AddScoped(
+            static sp => new CovenantIndexRebuilder(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        return services;
+
+    }
+
 }

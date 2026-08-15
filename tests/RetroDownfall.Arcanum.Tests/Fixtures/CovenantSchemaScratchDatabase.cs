@@ -141,6 +141,30 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     }
 
     /// <summary>
+    /// Installs named core schema objects a Covenant suite genuinely depends on.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than wholesale. Installing the entire core tier would hide a Covenant object
+    /// that had grown an undeclared dependency on a core table, which is precisely the drift these
+    /// suites exist to catch.
+    /// </remarks>
+    public async Task InstallCoreObjectsAsync(
+        IReadOnlyList<string> names,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(names);
+
+        foreach (string name in names)
+        {
+
+            await ExecuteAsync(ReadCoreObjectSql(name), cancellationToken);
+
+        }
+
+    }
+
+    /// <summary>
     /// Installs the Covenant accelerator tier over an already-installed canonical tier.
     /// </summary>
     public async Task InstallAcceleratorAsync(CancellationToken cancellationToken)
@@ -156,6 +180,51 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         }
 
         await RunInitializerAsync(new CovenantAcceleratorSchemaDataInitializer(), cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Opens a second initialized connection to the same scratch file.
+    /// </summary>
+    /// <remarks>
+    /// Contention suites need genuinely separate connections: two commands on one connection
+    /// serialize inside SQLite before they ever reach the write lock, so a single-connection "race"
+    /// proves nothing about the lock this tier actually relies on.
+    /// </remarks>
+    public async Task<SqliteConnection> OpenAdditionalConnectionAsync(CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = _path,
+
+                Password = Passphrase,
+
+                Pooling = false,
+            }.ToString());
+
+        try
+        {
+
+            await connection.OpenAsync(cancellationToken);
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                connection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken);
+
+            return connection;
+
+        }
+        catch
+        {
+
+            await connection.DisposeAsync();
+
+            throw;
+
+        }
 
     }
 
