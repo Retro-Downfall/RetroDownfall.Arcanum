@@ -360,10 +360,9 @@ public sealed class GrimoireFixture : IDisposable
         // Mirrors GrimoireDatabaseBootstrapper: one installer creates the complete schema — Grimoire
         // core tables, FTS, triggers, The Weave/Saga/Tapestry BLOB stores, and The Lexicon — so every
         // test works against the same schema the host installs instead of an ad hoc subset.
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             embeddingDimensions: new EmbeddingIntegrationSettings().Dimensions,
-            logger: null,
             cancellationToken).ConfigureAwait(false);
 
         await using SqliteCommand checkpoint = connection.CreateCommand();

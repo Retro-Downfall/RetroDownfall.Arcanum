@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -478,10 +479,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 .ExecuteDeleteAsync(cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
-        int removed = await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(c => c.Id == sessionId)
-                .ExecuteDeleteAsync(cancellationToken),
+        int removed = await DeleteSessionRowInAmbientTransactionAsync(
+            sessionId,
             cancellationToken).ConfigureAwait(false);
 
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -496,6 +495,34 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
 
         return removed;
+    }
+
+    /// <summary>
+    /// Removes the Session row itself, under the retention authorization its cascade requires.
+    /// </summary>
+    /// <remarks>
+    /// The Session owns its row in the turn capacity ledger, and that row leaves only through an
+    /// authorized retention or capacity transaction. Its delete guard begins denied on every
+    /// connection, including a pooled one handed back out, so the parent delete has to hold the
+    /// scope itself. The scope covers the delete alone and is released before the caller commits,
+    /// so nothing later in this transaction inherits it.
+    /// </remarks>
+    private async Task<int> DeleteSessionRowInAmbientTransactionAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        using CovenantSqliteAuthorizationScope retention =
+            CovenantSqliteConnectionInitializer.Instance.Authorize(
+                (SqliteConnection)_db.Database.GetDbConnection(),
+                CovenantSqliteAuthorizationKind.SessionRetention);
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(c => c.Id == sessionId)
+                .ExecuteDeleteAsync(cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
     }
 
     private async Task DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(

@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -35,12 +37,15 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
     private readonly BackupRestoreServiceOptions _options;
 
+    private readonly GrimoireSchemaInstaller _schemaInstaller;
+
     internal BackupRestoreService(
         BackupStatePaths paths,
         BackupArchiveCodec codec,
         ISecretStore secretStore,
         Func<IBackupService>? safetyBackupFactory,
         TimeProvider timeProvider,
+        GrimoireSchemaInstaller schemaInstaller,
         BackupRestoreServiceOptions? options = null)
     {
 
@@ -54,7 +59,29 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         _timeProvider = timeProvider;
 
+        _schemaInstaller = schemaInstaller
+            ?? throw new ArgumentNullException(nameof(schemaInstaller));
+
         _options = options ?? new BackupRestoreServiceOptions();
+
+    }
+
+    /// <summary>
+    /// Picks the key material the staged snapshot's authority fingerprint is computed from.
+    /// </summary>
+    /// <remarks>
+    /// The master API key is the right input, because after commit this installation runs under it and
+    /// the host recomputes the same digest at every start. It can legitimately be absent on a
+    /// recovery machine where the key has not been persisted yet, and the restore must not fail for
+    /// that; the portable recovery secret is always present at this point and yields a stable digest
+    /// the next host start simply supersedes by advancing the counters.
+    /// </remarks>
+    private async Task<string> ResolveSchemaKeyMaterialAsync(string grimoireSecret)
+    {
+
+        string? masterApiKey = await _secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        return string.IsNullOrWhiteSpace(masterApiKey) ? grimoireSecret : masterApiKey;
 
     }
 
@@ -988,8 +1015,24 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             .ReadSchemaIdentityAsync(connection, cancellationToken)
             .ConfigureAwait(false);
 
-        await BackupRestoreDatabaseWorker
-            .MigrateAsync(connection, _options.EmbeddingDimensions, cancellationToken)
+        GrimoireSchemaInitializationContext schemaContext = await BackupRestoreDatabaseWorker
+            .ResolveInitializationContextAsync(
+                connection,
+                await ResolveSchemaKeyMaterialAsync(grimoireSecret).ConfigureAwait(false),
+                _timeProvider.GetUtcNow(),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        // The tier results are deliberately not folded into the restore outcome: convergence of the
+        // staged snapshot is judged by the schema identity recorded below, and a Covenant tier that
+        // reports unavailable here is republished by the host at its own next bootstrap.
+        _ = await BackupRestoreDatabaseWorker
+            .MigrateAsync(
+                connection,
+                _schemaInstaller,
+                _options.EmbeddingDimensions,
+                schemaContext,
+                cancellationToken)
             .ConfigureAwait(false);
 
         string afterSchema = await BackupRestoreDatabaseWorker

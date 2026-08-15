@@ -26,6 +26,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -3935,6 +3937,30 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         }
 
         _ = await command.ExecuteNonQueryAsync();
+
+    }
+
+    /// <summary>
+    /// Runs a Session retention statement the way production runs it, under an open retention
+    /// scope.
+    /// </summary>
+    /// <remarks>
+    /// A test that stands in for a committed retention transaction has to stand in for its
+    /// authorization too. The cascade into the per-Session turn capacity ledger is guarded and
+    /// begins denied on every connection, including a pooled one handed back out, so a bare delete
+    /// here would be simulating something production never does.
+    /// </remarks>
+    private async Task ExecuteSessionRetentionAsync(
+        string sql,
+        params (string Name, object Value)[] parameters)
+    {
+
+        using CovenantSqliteAuthorizationScope retention =
+            CovenantSqliteConnectionInitializer.Instance.Authorize(
+                (SqliteConnection)_db!.Database.GetDbConnection(),
+                CovenantSqliteAuthorizationKind.SessionRetention);
+
+        await ExecuteAsync(sql, parameters);
 
     }
 

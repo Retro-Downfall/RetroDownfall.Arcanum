@@ -118,11 +118,11 @@ Arcanum uses Dungeons & Dragons and/or fantasy metaphors for domain concepts. Ne
 
 ### 9. Docs travel with code
 
-The repository maintains seven canonical docs (`Arcanum.DESIGN.md`, `Arcanum.API.md`, `Arcanum.Command.Reference.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`) plus the focused `Arcanum.CHAT-LOOP.md` companion. Architecture, persistence, runtime behavior,
+The repository maintains seven canonical docs (`Arcanum.DESIGN.md`, `Arcanum.API.md`, `Arcanum.Command.Reference.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`) plus the focused `Arcanum.CHAT-LOOP.md`, `Arcanum.OATH.md`, and `ArcanumOATH.Human.md` companions. Architecture, persistence, runtime behavior,
 testing, and packaging update `Arcanum.DESIGN.md`; API contracts update `Arcanum.API.md`; the complete public configuration contract updates
 `Compendium.README.md`; CLI command-surface changes update `Arcanum.Command.Reference.md`;
 agent/operator orientation updates this file; human navigation updates
-`Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`; shared model/tool-loop and attachment continuation changes also update `Arcanum.CHAT-LOOP.md`. Keep the owning documents current in the same change set. See
+`Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`; shared model/tool-loop and attachment continuation changes also update `Arcanum.CHAT-LOOP.md`; cross-store memory authority, lineage, disclosure, and lifecycle changes also update `Arcanum.OATH.md`, with conceptual changes mirrored in `ArcanumOATH.Human.md`. Keep the owning documents current in the same change set. See
 [DESIGN.md §18](Arcanum.DESIGN.md#18-document-maintenance).
 
 ---
@@ -162,9 +162,16 @@ architecture. See
 | **`tests/RetroDownfall.TheForge.Tests`** | Forge desktop tests (not shipped) | Client contracts, settings, view models, and source-generated JSON | — |
 
 **Covenant status.** Issue #79 supplies the pure-Core protocol foundation tracked by umbrella issue
-#74. It has no public endpoint, CLI command, configuration key, persistence schema, or provider-call
-wiring in this slice. Issue #84 owns provider-specific token measurement and runtime context-pressure
-selection.
+#74. Issue #84 owns provider-specific token measurement and runtime context-pressure selection. Issue
+#80 supplies the hermetic SQLCipher runtime and central connection authorization foundation. **Issue
+#81 adds the persistence schema**: the always-present core support tables, the Covenant canonical and
+FTS5 accelerator tiers under `Data/Schema/Capabilities/Covenant/`, closed installed-catalog manifests
+with index-shape validation, a three-transaction installer, and `ICovenantAvailability` health
+publication. It still has no public endpoint, CLI command, configuration key, or provider-call
+wiring, and the feature is not enabled: canonical persistence, search, and the operator surfaces are
+issues #82 and later. [`Arcanum.OATH.md`](Arcanum.OATH.md) explains how Covenant and the other memory systems
+compose into the complete Origin-Bound, Authority-Conserving Transactional History architecture;
+[`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) explains that architecture in simpler terms.
 
 **Key entry points to know:** `ApiBootstrapper.AddArcanumApiServices` / `MapArcanumEndpoints` (wire everything), `AddArcanumInfrastructure` (Infrastructure DI), `WizardIntelligenceProvider` (existing inference orchestration and `ITurnPipelineRunner`), `TurnEngine` (bounded semantic shell), and `Cli/Program.cs` (command registration).
 
@@ -181,7 +188,8 @@ src/
       Tables/                            #   one file per table, its indexes co-located
       FullTextSearch/                    #   one file per FTS5 virtual table
       Triggers/                          #   one file per trigger
-      Accelerators/                      #   reserved for a statically linked accelerator (empty)
+      Capabilities/Covenant/Canonical/   #   Covenant's own transaction tier
+      Capabilities/Covenant/Accelerator/ #   the FTS5 inspection index, its own tier again
     Data/Migrations/                     # EF design-time scaffolding only — never applied
   RetroDownfall.Arcanum.Api/             # endpoints, intelligence hub, /v1, security filter
     ProvingGrounds/                      # trial/inquisitor endpoint wiring
@@ -203,6 +211,8 @@ docs/                                    # canonical documentation and focused c
   Arcanum.Design.Human.md                # non-authoritative human reading companion
   Arcanum.DEBUGGING.Human.md             # verified breakpoint map and debugging recipes
   Arcanum.CHAT-LOOP.md                    # focused model/tool-loop and attachment ordering guide
+  Arcanum.OATH.md                         # governed durable-memory architecture companion
+  ArcanumOATH.Human.md                    # plain-language OATH mental-model guide
   Compendium.README.md                   # sole complete arcanum.json reference
 scripts/coverage.sh                      # run tests, generate Cobertura + HTML coverage; pass --threshold to enforce gates
 scripts/coverage_threshold.py            # tiered coverage threshold enforcement
@@ -241,10 +251,15 @@ These are the recurring shapes. Matching them is what makes a change "fit."
   [DESIGN §10.8](Arcanum.DESIGN.md#108-durable-operation-ledger-and-restart-reconciliation).
 - **Change the schema by editing its object file.** The Grimoire schema is a declarative tree under
   `Infrastructure/Data/Schema/`: one `.sql` file per table (with its indexes co-located), per FTS5
-  virtual table, per trigger, and per view, embedded by glob and installed fresh in one transaction.
-  Adding an object is adding a file — no list to update, no numbered script, no
-  `__EFMigrationsHistory`. Arcanum has no users yet, so edit the canonical definition in place and
-  recreate local/test databases; do not add compatibility migrations or in-place upgrade paths.
+  virtual table, per trigger, and per view, embedded by glob and installed fresh. Adding an object is
+  adding a file — no list to update, no numbered script, no `__EFMigrationsHistory`. Arcanum has no
+  users yet, so edit the canonical definition in place and recreate local/test databases; do not add
+  compatibility migrations or in-place upgrade paths. **The file's path picks its install
+  transaction**: directly under a category folder is the startup-blocking core tier, while
+  `Capabilities/Covenant/{Canonical,Accelerator}/<Category>/` is a capability tier that fails on its
+  own without taking startup down. The declared object name must equal the file name, and every
+  statement stays `CREATE ... IF NOT EXISTS`. See
+  [DESIGN §5.4.5a](Arcanum.DESIGN.md#54.5a-three-transaction-tiers-three-failure-domains).
   Revisit this policy before durable user data exists. See
   [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency).
 
@@ -285,6 +300,7 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Vector representation of text | **Imprint** | `IWeaveService.EmbedAsync`/`EmbedBatchAsync` ("imprints" text into The Weave; §21) |
 | Long-term associative memory | **Saga** | `/api/saga/*`, `read_saga`, `arcanum saga` (§21.9) |
 | Hierarchical summary tree over The Weave | **The Tapestry** | `Arcanum:Features:Tapestry`; `### Hierarchical Context (The Tapestry)`; `POST /api/embeddings/reset?scope=tapestry` (§21.11) |
+| Governed durable-memory architecture | **OATH** (Origin-Bound, Authority-Conserving Transactional History) | [`Arcanum.OATH.md`](Arcanum.OATH.md), with the approachable [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) guide; Covenant is its governed claim and authority substrate |
 | Recursive Spell dependency injection | **Arcane Resonance** | `SpellDependencyResolver`; dependency and byte envelopes are internal invariants (Arcanum.DESIGN.md §10.2.2) |
 | Pre-flight active-Spell selection | **Spell Routing** | `SemanticRouter` (LLM-based) + `SemanticSpellRouter` (embedding pre-filter); `Arcanum:Features:SemanticSpellRouting` (Arcanum.DESIGN.md §10.2.2, §21.10) |
 

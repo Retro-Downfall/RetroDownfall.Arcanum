@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -103,6 +105,19 @@ internal static class BackupRestoreDatabaseWorker
 
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
+            // The staged snapshot is converged through the same installer the host uses, and the
+            // schema's guard triggers call the arcanum_*_authorized scalar functions this initializer
+            // registers. Without it a guarded write fails with "no such function" instead of being
+            // denied, which would abort the restore rather than refuse one statement.
+            await CovenantSqliteConnectionInitializer.Instance
+                .InitializeAsync(
+                    connection,
+                    readOnly
+                        ? CovenantSqliteConnectionMode.ReadOnly
+                        : CovenantSqliteConnectionMode.ReadWrite,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             return connection;
 
         }
@@ -126,15 +141,147 @@ internal static class BackupRestoreDatabaseWorker
     /// Converges the staged snapshot onto this build's declarative schema. Older supported snapshots
     /// gain whatever objects they lack; a snapshot already at this schema is unchanged.
     /// </summary>
-    public static Task MigrateAsync(
+    /// <remarks>
+    /// The installer is injected rather than constructed here so the restore path shares the host's
+    /// composed instance, logger included. It previously passed <c>logger: null</c>, which silently
+    /// discarded the Lexicon-rebuild and embedding-dimension-mismatch warnings on exactly the path
+    /// where an operator most needs to see them.
+    ///
+    /// <para>The whole <see cref="GrimoireSchemaInstallResult"/> is returned rather than swallowed:
+    /// a restore that converged Core but left a Covenant tier unavailable is a materially different
+    /// outcome from one where all three are healthy, and the caller has to be able to tell.</para>
+    /// </remarks>
+    public static Task<GrimoireSchemaInstallResult> MigrateAsync(
         SqliteConnection connection,
+        GrimoireSchemaInstaller installer,
         int embeddingDimensions,
-        CancellationToken cancellationToken) =>
-        GrimoireSchemaInstaller.InstallAsync(
+        GrimoireSchemaInitializationContext context,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(installer);
+
+        ArgumentNullException.ThrowIfNull(context);
+
+        return installer.InstallAsync(connection, embeddingDimensions, context, cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Resolves the installation context the staged snapshot must be converged against.
+    /// </summary>
+    /// <remarks>
+    /// A snapshot that already carries a well-formed authority row is converged against its own
+    /// identity, fingerprint, and counters, so migration is a no-op for authority: reusing the stored
+    /// fingerprint makes the Core initializer's fixed-time comparison match and nothing advances. A
+    /// restore is not a key rotation, and recording one would make the restored installation claim a
+    /// generation the operator never caused.
+    ///
+    /// <para>A snapshot with no authority row predates the table. That one is seeded fresh from this
+    /// machine's key material, which is the only correct answer available: the row has to exist before
+    /// any Covenant path may run.</para>
+    /// </remarks>
+    public static async Task<GrimoireSchemaInitializationContext> ResolveInitializationContextAsync(
+        SqliteConnection connection,
+        string masterKeyMaterial,
+        DateTimeOffset installedAtUtc,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentException.ThrowIfNullOrEmpty(masterKeyMaterial);
+
+        GrimoireSchemaInitializationContext? staged = await TryReadStagedAuthorityAsync(
             connection,
-            embeddingDimensions,
-            logger: null,
-            cancellationToken);
+            installedAtUtc,
+            cancellationToken).ConfigureAwait(false);
+
+        return staged
+            ?? CovenantAuthorityBootstrapper.PrepareWithoutInstallationLock(
+                masterKeyMaterial,
+                installedAtUtc);
+
+    }
+
+    /// <summary>
+    /// Reads the staged authority row, or returns <see langword="null"/> when there is nothing usable
+    /// to preserve.
+    /// </summary>
+    /// <remarks>
+    /// A row that fails the shape check is treated as absent rather than propagated. Feeding a
+    /// malformed identity into the install transaction would abort the Core tier and fail the whole
+    /// restore, when the snapshot's remaining content is still perfectly recoverable.
+    /// </remarks>
+    private static async Task<GrimoireSchemaInitializationContext?> TryReadStagedAuthorityAsync(
+        SqliteConnection connection,
+        DateTimeOffset installedAtUtc,
+        CancellationToken cancellationToken)
+    {
+
+        if (!await TableExistsAsync(connection, "covenant_authority_state", cancellationToken)
+            .ConfigureAwait(false))
+        {
+
+            return null;
+
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT InstallationIdentity,
+                   AuthorityEpoch,
+                   CurrentMasterKeyVersion,
+                   CurrentMasterKeyFingerprint,
+                   RecoveryEnvelopeEpoch
+            FROM covenant_authority_state
+            WHERE StateKey = 1;
+            """;
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            return null;
+
+        }
+
+        if (reader.IsDBNull(0) || reader.GetValue(3) is not byte[] fingerprint)
+        {
+
+            return null;
+
+        }
+
+        string installationIdentity = reader.GetString(0);
+
+        long authorityEpoch = reader.GetInt64(1);
+
+        long masterKeyVersion = reader.GetInt64(2);
+
+        long recoveryEnvelopeEpoch = reader.GetInt64(4);
+
+        bool usable = installationIdentity.Length is > 0 and <= 128
+            && authorityEpoch > 0
+            && masterKeyVersion is > 0 and <= uint.MaxValue
+            && fingerprint.Length == 32
+            && recoveryEnvelopeEpoch > 0;
+
+        return usable
+            ? new GrimoireSchemaInitializationContext(
+                installationIdentity,
+                authorityEpoch,
+                (uint)masterKeyVersion,
+                fingerprint,
+                recoveryEnvelopeEpoch,
+                installedAtUtc)
+            : null;
+
+    }
 
     /// <summary>
     /// Applies typed root rewrites to the machine-specific columns that own them, and reports every

@@ -124,6 +124,46 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
 
     }
 
+    /// <summary>
+    /// Verifies that this live, undisposed instance is the lock guarding
+    /// <paramref name="guardedDirectory"/>, and throws otherwise.
+    /// </summary>
+    /// <remarks>
+    /// Answers the question from evidence this object already carries: the canonical lock path for
+    /// the directory the caller names, compared against the path this handle was opened on, plus
+    /// whether that handle is still open. It must never probe.
+    /// <see cref="IsHeld(string)"/> and <see cref="TryAcquire(string)"/> answer their own questions
+    /// by opening the lock file, which creates it, truncates it, and rewrites its owner stamp as a
+    /// side effect. An assertion that mutates the filesystem is not an assertion, and probing here
+    /// would additionally be self-defeating within this process: the probe would contend with the
+    /// very handle being asserted and report the caller's own lock as somebody else's.
+    ///
+    /// <para>This is why the check is identity rather than liveness. A caller passing a lock it
+    /// still holds is the only case that can reach here truthfully, because the handle cannot be
+    /// open unless acquisition succeeded and cannot survive <see cref="Dispose"/>.</para>
+    /// </remarks>
+    public void AssertHeldFor(string guardedDirectory)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
+
+        ObjectDisposedException.ThrowIf(_stream is null, this);
+
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        if (!string.Equals(LockPathFor(guardedDirectory), Path, comparison))
+        {
+
+            throw new InvalidOperationException(
+                "The maintenance lock supplied for this operation guards a different installation "
+                + "directory, so the caller does not hold the lock it claims to hold.");
+
+        }
+
+    }
+
     /// <summary>Reports whether some other process currently holds the lock.</summary>
     public static bool IsHeld(string guardedDirectory)
     {

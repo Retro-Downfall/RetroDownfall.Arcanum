@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -52,6 +53,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         ServiceCollection services = new();
 
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
+
+        // The bootstrapper resolves the whole schema-installation graph out of this scope, so a
+        // container that registers only readiness fails at install time rather than at compile time.
+        _ = services.AddGrimoireSchemaInstallation();
 
         _scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
@@ -451,10 +456,9 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         await connection.OpenAsync();
 
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             embeddingDimensions: 1536,
-            logger: null,
             CancellationToken.None);
 
         await connection.CloseAsync();

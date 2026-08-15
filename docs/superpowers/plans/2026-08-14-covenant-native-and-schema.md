@@ -36,6 +36,67 @@ owns, and are not required by issue #80's acceptance criteria. The central initi
 connection modes, and the twelve default-denied authorization functions — the parts criterion 5 does
 require — are implemented and tested.
 
+## Delivered scope and approved deviations (issue #81, 2026-08-15)
+
+Tasks 8 through 16 of this plan were implemented as GitHub issue #81. The deviations below were
+approved by the operator during implementation and are the authority where they conflict with the
+task text.
+
+1. **No database migration or upgrade machinery was built.** The operator confirmed there is no
+   installed base and no Grimoire anywhere to upgrade, including their own. `SupportedPreCovenantCoreManifest`
+   (Task 14 Step 5) and the legacy-upgrade arm of the installer (Task 15 Step 6) are therefore not
+   implemented, along with their classification tests `Exact_supported_pre_Covenant_catalog_upgrades_in_one_core_transaction`,
+   `Missing_extra_drifted_partial_or_mixed_legacy_catalog_is_refused_before_DDL`, and
+   `Legacy_core_without_feature_metadata_is_upgraded_in_the_core_transaction`. An allowlist of a
+   catalog no database has is dead code that still has to be maintained. The fail-closed refusals
+   that *do* apply to a database this build itself wrote are implemented in full:
+   `IncompatibleNewerVersion`, `SourceDefinitionMismatch`, `MetadataMissing`, and
+   `InstalledCatalogDrift`. This also resolves the plan's unnamed "Wave 0 recorded base commit",
+   which no longer needs to be chosen.
+2. **The sealed restore-staging capability is deferred to Plan 04.** Task 11's
+   `restored_managed_file_authority_tombstones` table and its disjoint tombstone-backed trigger
+   branches are implemented, but the single-take sealed capability that makes
+   `arcanum_restore_staging_managed_authority_sanitization_authorized()` return 1 is not:
+   `CovenantSqliteConnectionInitializer.Authorize` still rejects that kind, `AuthorizeCore` still has
+   no external caller, and building the capability is in no Task 8-16 file list. Plan 04 owns restore
+   behavior and builds it there. Until then the predicate can only return 0 in production and the
+   staging branch is unreachable outside tests.
+3. **`InstallCoreOnlyAsync` takes no embedding dimension, and `GrimoireSchemaCatalog.Resolve` accepts
+   a null one.** The plan keeps `int embeddingDimensions` on `InstallAsync` but omits it from
+   `InstallCoreOnlyAsync` while routing both through the same helper. No shipped `.sql` file uses
+   `{{EmbeddingDimensions}}`, so the parameter now feeds only the post-commit dimension-mismatch
+   diagnostic. `Resolve` therefore takes `int?` and fails closed on a templated object when no width
+   was supplied, rather than installing at a guessed width.
+4. **The CLI acquires the installation lock only if it is free.** Task 16 Step 4 says CLI
+   initialization owns one scoped acquisition through readiness. Taken literally that regresses daily
+   use: `ArcanumMaintenanceLock` is `FileShare.None` and the hosted service holds it for the host's
+   whole lifetime, so `arcanum ask` and `arcanum run` would begin failing whenever the host is up,
+   where today they coexist through WAL plus `busy_timeout`. The CLI now tries the lock; holding it
+   means sole ownership and a full bootstrap under it, and failing to get it means a live host
+   already bootstrapped authority, so the CLI proceeds without it. The plan's real invariant - that
+   no startup path nests a second acquisition - is preserved.
+5. **`GrimoireDbReadiness` is unchanged.** Task 16 lists it as Modify but no step describes a change,
+   and the readiness contract for downstream hosted services is deliberately unaffected: canonical
+   and accelerator results publish *before* `MarkReady()`, so an optional-tier failure must not delay
+   readiness.
+6. **Codes the specification names but never numbers were pinned here.**
+   `CovenantFtsRebuildState` (`Idle=1`, `FullRebuildRequired=2`, `Rebuilding=3`) is declared in
+   `Core/Covenant/CovenantCanonicalStateCodes.cs` so Plan 02 cannot disagree with it. The canonical
+   tables' exact column lists were designed against the specification's prose bullets, which supply
+   no column names, affinities, or index manifests. `SessionCampaignBindingKind` was **not** added:
+   `Core/TheForge/SessionCampaignBinding.cs` already declares it with the required values.
+
+One pre-existing defect found and fixed in passing: `GrimoireDatabaseBootstrapper.InstallSchemaAsync`
+resolved `WeaveIndexAvailability` with `GetRequiredService` inside a `try` that also resolved
+embedding settings. `AddArcanumGrimoireForCli` never registered that type, so every CLI bootstrap
+threw before the dimension assignment and silently installed at the default embedding width instead
+of the configured one, with the exception swallowed.
+
+Plan 02 still owns the canonical repository, mutation kernel, FTS synchronization, search compiler,
+`SearchAsync`, fallback, and base rebuild. Plan 04 still owns authenticated cursor and API
+integration, the long-running rebuild adapter and recovery handler, and lifecycle, backup, restore,
+reset, and erasure behavior.
+
 ## Global Constraints
 
 - The approved source of truth is [`2026-08-13-covenant-design.md`](../specs/2026-08-13-covenant-design.md). If a plan step and the specification differ, stop that slice and resolve the plan before changing production code.

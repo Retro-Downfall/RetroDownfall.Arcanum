@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -308,10 +310,10 @@ internal sealed partial class DataRetentionService
 
                 }
 
-                int deleted = await ExecuteAsync(
+                int deleted = await ClearFactoryTableAsync(
                     connection,
                     transaction,
-                    $"DELETE FROM \"{table.Table}\"",
+                    table,
                     cancellationToken).ConfigureAwait(false);
 
                 if (table.Kind == FactoryRecordKind.Physical)
@@ -799,6 +801,37 @@ internal sealed partial class DataRetentionService
         }
 
         return [.. conflicts];
+
+    }
+
+    /// <summary>
+    /// Empties one factory-reset table, holding the retention authorization for Sessions alone.
+    /// </summary>
+    /// <remarks>
+    /// Emptying Sessions cascades into the per-Session turn capacity ledger, whose delete guard
+    /// begins denied on every connection, including a pooled one handed back out, so the parent
+    /// delete has to hold the scope itself. Only that one table needs the grant, so the scope opens
+    /// and closes around its own statement rather than spanning the sweep or the commit.
+    /// </remarks>
+    private static async Task<int> ClearFactoryTableAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        FactoryTablePlan table,
+        CancellationToken cancellationToken)
+    {
+
+        using CovenantSqliteAuthorizationScope? retention =
+            string.Equals(table.Table, "Sessions", StringComparison.Ordinal)
+                ? CovenantSqliteConnectionInitializer.Instance.Authorize(
+                    (SqliteConnection)connection,
+                    CovenantSqliteAuthorizationKind.SessionRetention)
+                : null;
+
+        return await ExecuteAsync(
+            connection,
+            transaction,
+            $"DELETE FROM \"{table.Table}\"",
+            cancellationToken).ConfigureAwait(false);
 
     }
 

@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
@@ -14,6 +16,13 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </summary>
 public sealed class BackupRestoreDatabaseWorkerTests
 {
+
+    /// <summary>
+    /// These tests construct SQLite connections directly, so the provider has to be installed first.
+    /// Without this the class only passes when some earlier test in the run happened to initialize
+    /// it, which makes a filtered run fail for a reason that has nothing to do with the worker.
+    /// </summary>
+    static BackupRestoreDatabaseWorkerTests() => SqliteNativeRuntime.Instance.Initialize();
 
     [Fact]
     public async Task Sanctum_allow_lists_tolerate_non_string_entries_alongside_real_paths()

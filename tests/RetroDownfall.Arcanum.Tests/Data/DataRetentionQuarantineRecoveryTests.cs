@@ -323,7 +323,7 @@ public sealed partial class DataRetentionServiceTests
                 "DELETE FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id",
                 ("@id", sessionId.ToString("N")));
 
-            await ExecuteAsync(
+            await ExecuteSessionRetentionAsync(
                 "DELETE FROM Sessions WHERE lower(replace(Id, '-', '')) = @id",
                 ("@id", sessionId.ToString("N")));
 

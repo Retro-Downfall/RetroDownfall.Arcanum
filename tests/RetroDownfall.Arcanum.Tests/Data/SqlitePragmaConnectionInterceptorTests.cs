@@ -116,10 +116,9 @@ public sealed class SqlitePragmaConnectionInterceptorTests : IAsyncLifetime
 
                 await install.OpenAsync(CancellationToken.None);
 
-                _ = await GrimoireSchemaInstaller.InstallAsync(
+                _ = await GrimoireSchemaTestInstaller.InstallAsync(
                     install,
                     1536,
-                    logger: null,
                     CancellationToken.None);
 
             }
