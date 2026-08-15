@@ -2,17 +2,11 @@
 
 **Date:** 2026-08-10 · **Branch:** `review/hardening-2026-08` · **Status:** review phase incomplete (stopped early)
 
-Scope: Arcanum (`Core`, `Secrets`, `Infrastructure`, `Api`, `Api.DevHost`, `Cli`) and `Compendium.Ux`,
-plus the `Arcanum.Tests` / `Compendium.Tests` suites and the build/CI/packaging surface.
-The Forge was explicitly out of scope. Priority order: reliability first, then security, performance, usability.
+Scope: Arcanum (`Core`, `Secrets`, `Infrastructure`, `Api`, `Api.DevHost`, `Cli`) and `Compendium.Ux`, plus the `Arcanum.Tests` / `Compendium.Tests` suites and the build/CI/packaging surface. The Forge was explicitly out of scope. Priority order: reliability first, then security, performance, usability.
 
 ## Method
 
-Four review waves ran in parallel, 39 finder agents in total, each assigned a bounded subsystem and given the
-repo's own conventions (Native AOT discipline, `Result`/`Result<T>` flow, API-first layering, the documented CLI
-exit-code contract) as the correctness rubric. Every finding was then handed to an **independent adversarial
-verifier** whose default verdict is *refuted* and which had to re-confirm the defect in the code — checking for a
-guard in the caller, an existing pinning test, or a dead code path — before the finding counted.
+Four review waves ran in parallel, 39 finder agents in total, each assigned a bounded subsystem and given the repo's own conventions (Native AOT discipline, `Result`/`Result<T>` flow, API-first layering, the documented CLI exit-code contract) as the correctness rubric. Every finding was then handed to an **independent adversarial verifier** whose default verdict is *refuted* and which had to re-confirm the defect in the code — checking for a guard in the caller, an existing pinning test, or a dead code path — before the finding counted.
 
 The waves were stopped before verification finished, so the numbers below are a partial result.
 
@@ -23,9 +17,7 @@ The waves were stopped before verification finished, so the numbers below are a 
 | Awaiting verification (unverified) | 138 | Critical 1 · High 32 · Medium 78 · Low 27 |
 | **Raw findings produced** | **322** | |
 
-**The refuted count is the reason to trust the confirmed list**: roughly 29% of raw findings did not survive
-independent scrutiny. The unverified block below has *not* had that filter applied and should be assumed to
-contain a similar proportion of false positives.
+**The refuted count is the reason to trust the confirmed list**: roughly 29% of raw findings did not survive independent scrutiny. The unverified block below has *not* had that filter applied and should be assumed to contain a similar proportion of false positives.
 
 ## Baseline at time of review (all green)
 
@@ -232,8 +224,7 @@ WriteAtomicallyAsync calls Directory.CreateDirectory(parentDir) at line 372 and 
 
 3. SCOPE IS `WriteFileAsync` ONLY. `ReplaceTextBlockAsync` also calls `WriteAtomicallyAsync` (line 175), but it requires `File.Exists(resolvedPath)` at line 97 first, so the parent already exists and `Directory.CreateDirectory` is a no-op. `DeleteAsync` and `CreateDirectoryAsync` both revalidate before touching the filesystem (lines 223 and 302) and are not affected.
 
-STRONGER EVIDENCE THAN THE REVIEWER CITED — the in-repo reference implementation this method's own doc comment says it mirrors has the correct order:
-  src/RetroDownfall.Arcanum.Infrastructure/Mcp/SandboxedFileIo.cs:107-122
+STRONGER EVIDENCE THAN THE REVIEWER CITED — the in-repo reference implementation this method's own doc comment says it mirrors has the correct order: src/RetroDownfall.Arcanum.Infrastructure/Mcp/SandboxedFileIo.cs:107-122
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
             return (false, ToolError(PathEscapesSandboxMessage));
@@ -1173,10 +1164,7 @@ The confirmation preview rebuilds the report with `Only = [], Skip = []`, discar
 
 *Proposed fix:* Short-circuit selector resolution when `--new` is present: at the top of `TryResolveSessionSelector`, if `request.NewSession` is true, set `selector = null; picker = false;` and return `true` before the conflict count and the `--continue`/`--resume` branches. Keep the >1-selector conflict check only for the non-`--new` path (or evaluate it first and still let `--new` suppress the resolution), and add a test for `--new --continue` with no prior session returning 0.
 
-*Verifier correction:* Severity Medium is correct as claimed. Two distinct symptoms, both in src/RetroDownfall.Arcanum.Cli/Commands/RunCommand.cs:
-(1) `arcanum run -n -c "hello"` with no prior session exits 2 with "No previous session to continue" instead of starting a fresh session (line 321 gate reached from line 115 before any `NewSession` check).
-(2) `arcanum run -n -c "hello"` WITH a prior session succeeds but prints the wrong verbose line `Continuing session <id>.` (line 337) before the selector is thrown away at lines 186-188.
-The fix is a one-line short-circuit: skip the `--continue`/`--resume` resolution entirely when `request.NewSession` is true (or return early with `selector = null` at the top of `TryResolveSessionSelector`), which also makes the method consistent with its own XML doc at lines 290-294 and with the `--resume` picker suppression already present at line 192. The multi-selector conflict check at lines 308-319 should stay unconditional so `--new --continue --session` still exits 2.
+*Verifier correction:* Severity Medium is correct as claimed. Two distinct symptoms, both in src/RetroDownfall.Arcanum.Cli/Commands/RunCommand.cs: (1) `arcanum run -n -c "hello"` with no prior session exits 2 with "No previous session to continue" instead of starting a fresh session (line 321 gate reached from line 115 before any `NewSession` check). (2) `arcanum run -n -c "hello"` WITH a prior session succeeds but prints the wrong verbose line `Continuing session <id>.` (line 337) before the selector is thrown away at lines 186-188. The fix is a one-line short-circuit: skip the `--continue`/`--resume` resolution entirely when `request.NewSession` is true (or return early with `selector = null` at the top of `TryResolveSessionSelector`), which also makes the method consistent with its own XML doc at lines 290-294 and with the `--resume` picker suppression already present at line 192. The multi-selector conflict check at lines 308-319 should stay unconditional so `--new --continue --session` still exits 2.
 
 #### `export --output` write failures escape to the generic "An unexpected CLI error occurred." and silently overwrite existing files
 
@@ -3494,8 +3482,7 @@ What is true: `ConfigurationViewModel.cs:125` is `_ = ObserveLoadAsync();`, `Obs
 - **FamiliarProbeClient.ProbeAsync re-acknowledges the on-disk fingerprint through the shared store, which can silently defeat the stale-file guard and lose an external edit** (`src/RetroDownfall.Compendium.Ux/Services/FamiliarProbeClient.cs`) — REFUTED on reachability. The store-side mechanism the reviewer describes is accurate in isolation — ArcanumConfigurationStore.ReadAsync does have the AcknowledgeFingerprint side effect (src/RetroDownfall.Compendium.Ux/Services/ArcanumConfigurationStore.cs:176-179), the debounce suppresses ExternalChange when observed == acknowledged (line 626-634), the write guard uses the same comparison (line 50
 - **async void OnAboutClick has no exception guard; a dialog failure escapes to the dispatcher and terminates the app** (`src/RetroDownfall.Compendium.Ux/App.axaml.cs`) — REFUTED — the claimed failure scenario is unreachable, and internally self-contradictory.
 
-1. The "window between SetMainWindow and Show" does not exist as a clickable interval.
-`/Users/mat/Library/Mobile Documents/com~apple~CloudDocs/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Compendium.Ux/Program.cs:23` calls `BuildAvaloniaApp().StartWithClassicDesktopLifetime(...)`. In Avalonia 12.1.0 
+1. The "window between SetMainWindow and Show" does not exist as a clickable interval. `/Users/mat/Library/Mobile Documents/com~apple~CloudDocs/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Compendium.Ux/Program.cs:23` calls `BuildAvaloniaApp().StartWithClassicDesktopLifetime(...)`. In Avalonia 12.1.0
 - **FamiliarProbeClient constructs a new HttpClient per probe because no IHttpClientFactory is ever registered** (`src/RetroDownfall.Compendium.Ux/Services/FamiliarProbeClient.cs`) — REFUTED — the offending line is unreachable, so the claimed failure scenario cannot occur.
 
 The reviewer's two mechanical facts are correct: `ServiceCollectionConfigurator.Build()` (src/RetroDownfall.Compendium.Ux/ServiceCollectionConfigurator.cs:13-40) never calls `AddHttpClient`, and `AddArcanumConfigurationPresets` (src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionE
@@ -3535,13 +3522,8 @@ The load-bearing premise is that `Assert.Equal(ConclaveDelegationChain.NodeId, C
 
 1. Re-run verification over the **unverified** block above; discard what does not survive.
 2. Merge the surviving set with the confirmed list, dedupe by file+line, and rank by severity then effort.
-3. Remediate in phases via TDD — failing test first, then the fix — starting with Critical/High at Trivial or
-   Small effort, since those are the highest reliability return per unit of risk.
-4. Update the owning canonical doc in the same change set as each code change (repo convention 6):
-   architecture/persistence/testing → `Arcanum.DESIGN.md`; HTTP contracts → `Arcanum.API.md`;
-   CLI surface → `Arcanum.Command.Reference.md`; config keys → `Compendium.README.md`.
-5. Gates before landing: full solution build, all three test projects, `./scripts/coverage.sh --threshold`,
-   and `./scripts/verify-aot-il-warnings.sh`.
+3. Remediate in phases via TDD — failing test first, then the fix — starting with Critical/High at Trivial or Small effort, since those are the highest reliability return per unit of risk.
+4. Update the owning canonical doc in the same change set as each code change (repo convention 6): architecture/persistence/testing → `Arcanum.DESIGN.md`; HTTP contracts → `Arcanum.API.md`; CLI surface → `Arcanum.Command.Reference.md`; config keys → `Compendium.README.md`.
+5. Gates before landing: full solution build, all three test projects, `./scripts/coverage.sh --threshold`, and `./scripts/verify-aot-il-warnings.sh`.
 
-Full machine-readable data, including evidence quotes and verifier reasoning for every finding, is in
-`.tmp/review/findings-2026-08-10.json` (gitignored, local to the machine that ran the pass).
+Full machine-readable data, including evidence quotes and verifier reasoning for every finding, is in `.tmp/review/findings-2026-08-10.json` (gitignored, local to the machine that ran the pass).

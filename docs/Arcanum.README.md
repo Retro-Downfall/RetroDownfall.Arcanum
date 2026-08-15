@@ -1,35 +1,10 @@
 # Retro Downfall Arcanum
 
-> **Agent orientation document.** This README gives an AI coding agent or operator the shortest
-> useful context for Arcanum. **[`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)** is authoritative for
-> architecture, persistence, runtime behavior, packaging, and testing. Exact HTTP contracts belong
-> to [`Arcanum.API.md`](Arcanum.API.md).
-> Complete CLI syntax, options, aliases, interactive commands, output modes, and exit behavior
-> belong to [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
-> **[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference)** is the only
-> complete configuration reference, and **[`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)** is
-> the human-readable navigation companion.
+> **Agent orientation document.** This README gives an AI coding agent or operator the shortest useful context for Arcanum. **[`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)** is authoritative for architecture, persistence, runtime behavior, packaging, and testing. Exact HTTP contracts belong to [`Arcanum.API.md`](Arcanum.API.md). Complete CLI syntax, options, aliases, interactive commands, output modes, and exit behavior belong to [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md). **[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference)** is the only complete configuration reference, and **[`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)** is the human-readable navigation companion.
 
-**Arcanum** is a **.NET 10, local-first AI assistant and inference hub.** The `arcanum` executable
-runs either as the long-lived HTTP host (`arcanum serve`) or as thin terminal clients (`run`,
-`watch`, `look`, `lore`, `daemon`, `campaign`, `session`, `memory`, `saga`, `spell`, `prompt`, `ward`, `trial`,
-`apprentice`, `model`, `provider`) over the same API. Windows and Linux ship the CLI/host as one
-self-contained Native AOT executable, and so does macOS arm64 when LLVM `lld` is installed
-(`brew install lld`) — Apple's own linker asserts on an object file this large, so the AOT link is
-routed through `ld64.lld`; without it the signed, notarized release degrades to a folder-based
-self-contained publish. Arcanum
-exposes an **OpenAI Chat Completions compatibility subset**, routes inference across OpenAI-compatible
-HTTP providers (including Ollama through `/v1`) and — opt in — across the Claude Code and Codex CLIs
-you already have installed, and persists state in an encrypted SQLCipher store.
+**Arcanum** is a **.NET 10, local-first AI assistant and inference hub.** The `arcanum` executable runs either as the long-lived HTTP host (`arcanum serve`) or as thin terminal clients (`run`, `watch`, `look`, `lore`, `daemon`, `campaign`, `session`, `memory`, `saga`, `spell`, `prompt`, `ward`, `trial`, `apprentice`, `model`, `provider`) over the same API. Windows and Linux ship the CLI/host as one self-contained Native AOT executable, and so does macOS arm64 when LLVM `lld` is installed (`brew install lld`) — Apple's own linker asserts on an object file this large, so the AOT link is routed through `ld64.lld`; without it the signed, notarized release degrades to a folder-based self-contained publish. Arcanum exposes an **OpenAI Chat Completions compatibility subset**, routes inference across OpenAI-compatible HTTP providers (including Ollama through `/v1`) and — opt in — across the Claude Code and Codex CLIs you already have installed, and persists state in an encrypted SQLCipher store.
 
-Arcanum's default product posture is an unrestricted coding harness: let the agent keep working,
-using tools, and reporting progress until the task completes or the operator cancels. Arcanum does
-not stop ordinary work because an expected duration, turn count, hop count, retry count, or total
-repository size was exceeded. Provider/model facts, explicit operator budgets, authentication,
-containment, SSRF defenses, Wards/Sanctum, integrity/protocol checks, single-allocation protection,
-concurrency admission, and post-cancellation cleanup remain authoritative. Ctrl+C cancels the
-current CLI turn; Command Center returns to its composer after cleanup, while non-interactive
-streams exit 130. Durable work uses its explicit cancel command and reports saved/checkpointed state.
+Arcanum's default product posture is an unrestricted coding harness: let the agent keep working, using tools, and reporting progress until the task completes or the operator cancels. Arcanum does not stop ordinary work because an expected duration, turn count, hop count, retry count, or total repository size was exceeded. Provider/model facts, explicit operator budgets, authentication, containment, SSRF defenses, Wards/Sanctum, integrity/protocol checks, single-allocation protection, concurrency admission, and post-cancellation cleanup remain authoritative. Ctrl+C cancels the current CLI turn; Command Center returns to its composer after cleanup, while non-interactive streams exit 130. Durable work uses its explicit cancel command and reports saved/checkpointed state.
 
 - **Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on Windows/Linux · `Microsoft.Extensions.AI` · EF Core 10 + hermetic SQLCipher 4.17.0 on SQLite 3.53.3, built from pinned sources with statically linked OpenSSL 3.5.7 · System.CommandLine 2.0.10 + Spectre.Console
 - **Version:** `0.1.0-beta` (see [`Directory.Build.props`](../Directory.Build.props))
@@ -43,11 +18,7 @@ These are **non-negotiable** and define what "correct" means in this repo. Every
 
 ### 1. Native AOT compatibility (hard constraint)
 
-Windows/Linux ship a **Native AOT** binary with **zero runtime prerequisite**. macOS ships the same
-Native AOT host when LLVM `lld` is installed and uses a folder-based self-contained fallback without
-it. The shared host remains AOT-constrained: minimal reflection, source generation, and an AOT warning
-gate still dictate serialization and binding.
-See [DESIGN.md §9](Arcanum.DESIGN.md#9-native-aot-and-trimming).
+Windows/Linux ship a **Native AOT** binary with **zero runtime prerequisite**. macOS ships the same Native AOT host when LLVM `lld` is installed and uses a folder-based self-contained fallback without it. The shared host remains AOT-constrained: minimal reflection, source generation, and an AOT warning gate still dictate serialization and binding. See [DESIGN.md §9](Arcanum.DESIGN.md#9-native-aot-and-trimming).
 
 - **Source-generated JSON only.** Every HTTP payload type must have a `[JsonSerializable]` registration on **`ArcanumJsonContext`** (Api). Other contexts are scoped: `GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext` (Core — Grimoire blobs, `arcanum.json`, campaign/skill metadata), `McpJsonSerializerContext` / `McpConfigJsonSerializerContext` (Infrastructure, JSON-RPC + `mcp.json`), `CommLinkInfrastructureJsonContext` (outbound webhooks), and `CliJsonContext` (CLI process envelopes). **Never** use reflection-based `JsonSerializer` overloads, `PostAsJsonAsync` with anonymous types, or `Results.Json` without an explicit `JsonTypeInfo`.
 - **Source-generated request delegates.** `Api` sets `EnableRequestDelegateGenerator`; handlers must be RDG-compatible (no unbounded reflection model binding, no anonymous return DTOs).
@@ -92,11 +63,7 @@ Ephemeral Trials via `POST /api/proving-grounds/trials/run` (regex / jsonSchema 
 
 Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](Arcanum.DESIGN.md#11-local-api-security).
 
-- Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards
-  every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived
-  via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`). Session
-  attachments, uploaded files, and batch artifacts outside SQLCipher are independently protected
-  by versioned, chunk-authenticated AES-256-GCM envelopes.
+- Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`). Session attachments, uploaded files, and batch artifacts outside SQLCipher are independently protected by versioned, chunk-authenticated AES-256-GCM envelopes.
 - Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-context.json`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
 - `Arcanum:Host:ListenAny` requires **first-run acknowledgement** in interactive `serve` (or `ARCANUM_LISTEN_ANY_ACK=1` / `ARCANUM_HOST_ANY` for automation) and emits a **security banner** when binding all interfaces over **HTTPS only** (plaintext any-IP HTTP is refused; `Arcanum:Host:Https:Enabled` + cert required).
 - `WorkspacePathPolicy` containment, symlink walking, and handle-identity revalidation are the primary boundary for file/search/patch tools; campaign Sanctum is an additional conditional allowlist. Shared `SecureFileReader` opens no-follow/nonblocking, accepts only regular single-link files, reads through cleared capped pools, and revalidates identity; FIFO/device/hardlink/symlink inputs fail closed. Host-process tools (`execute_command` / `run_spell_script`) use `ArgumentList` (no shell) with child-env scrubbing and are **gated by Local edition** unless Development + `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1`; workspace MCP requires trust bound to the exact approved bytes. Oversized `execute_command` output keeps only a bounded response preview in memory while streaming complete stdout/stderr to private connection-scoped artifacts; attuned `read_command_output` pages them through opaque handles, and cancellation/failure/connection close removes them. **Tool-child FS jail** is filesystem-only: macOS uses Seatbelt, Linux remains inactive/fail-closed, and Windows uses a per-invocation AppContainer identity with explicit allowed-root ACLs plus Job Object process-tree/resource enforcement. The Windows broker confirms Job membership before resuming the suspended untrusted target; capability or setup failure fails closed, and health/doctor are Healthy only when AppContainer is genuinely available. Owner-only temp artifacts are deleted only after identity-safe quarantine checks. `workspace_check` is stricter and separate: advertised only on an eligible macOS Seatbelt host, never enabled by `AllowUnsandboxedToolChildren`, and unavailable on Linux/Windows. Its child additionally needs the two shared `/private/tmp/.dotnet` PAL inter-process roots, because macOS no longer allows a private per-run group container ([DESIGN §11.7.1](Arcanum.DESIGN.md#1171-shared-net-inter-process-roots-for-workspace_check-macos)); eligibility now probes them, so an unusable host reports the reason instead of failing at invocation. SSRF guard + DNS-rebind pinning on untrusted egress; sanitized public error envelopes. Details: [DESIGN §11](Arcanum.DESIGN.md#11-local-api-security).
@@ -118,31 +85,15 @@ Arcanum uses Dungeons & Dragons and/or fantasy metaphors for domain concepts. Ne
 
 ### 9. Docs travel with code
 
-The repository maintains seven canonical docs (`Arcanum.DESIGN.md`, `Arcanum.API.md`, `Arcanum.Command.Reference.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`) plus the focused `Arcanum.CHAT-LOOP.md`, `Arcanum.OATH.md`, and `ArcanumOATH.Human.md` companions. Architecture, persistence, runtime behavior,
-testing, and packaging update `Arcanum.DESIGN.md`; API contracts update `Arcanum.API.md`; the complete public configuration contract updates
-`Compendium.README.md`; CLI command-surface changes update `Arcanum.Command.Reference.md`;
-agent/operator orientation updates this file; human navigation updates
-`Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`; shared model/tool-loop and attachment continuation changes also update `Arcanum.CHAT-LOOP.md`; cross-store memory authority, lineage, disclosure, and lifecycle changes also update `Arcanum.OATH.md`, with conceptual changes mirrored in `ArcanumOATH.Human.md`. Keep the owning documents current in the same change set. See
-[DESIGN.md §18](Arcanum.DESIGN.md#18-document-maintenance).
+The repository maintains seven canonical docs (`Arcanum.DESIGN.md`, `Arcanum.API.md`, `Arcanum.Command.Reference.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`) plus the focused `Arcanum.CHAT-LOOP.md` companion. Architecture, persistence, runtime behavior, testing, and packaging update `Arcanum.DESIGN.md`; API contracts update `Arcanum.API.md`; the complete public configuration contract updates `Compendium.README.md`; CLI command-surface changes update `Arcanum.Command.Reference.md`; agent/operator orientation updates this file; human navigation updates `Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`; shared model/tool-loop and attachment continuation changes also update `Arcanum.CHAT-LOOP.md`. Keep the owning documents current in the same change set. See [DESIGN.md §18](Arcanum.DESIGN.md#18-document-maintenance).
 
 ---
 
 ## Architecture at a glance
 
-**One CLI/host entry point, hybrid process model.** A System.CommandLine 2.0.10 verb selects the role:
-`serve` (long-running Kestrel host) vs. short-lived commands. See
-[DESIGN.md §5](Arcanum.DESIGN.md#5-hybrid-hosting-model).
+**One CLI/host entry point, hybrid process model.** A System.CommandLine 2.0.10 verb selects the role: `serve` (long-running Kestrel host) vs. short-lived commands. See [DESIGN.md §5](Arcanum.DESIGN.md#5-hybrid-hosting-model).
 
-**Explicit application entry.** `arcanum center` and `arcanum open center` reuse the in-process
-Command Center host. `arcanum open theforge|compendium|session|campaign|spell|prompt|apprentice`
-resolves any friendly selector first, then launches through a versioned one-argument deep link.
-Only canonical server-owned identifiers cross the process boundary; API keys, endpoints, prompt/file content,
-attachments, and server paths do not. Missing desktop applications report every safe candidate plus
-repository-relative `dotnet run` and current-CLI fallbacks. Windows and Linux release archives
-extracted beneath one parent are discovered by their shipped sibling folder names and active
-architecture. See
-[the command reference](Arcanum.Command.Reference.md#arcanum-open) and
-[DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
+**Explicit application entry.** `arcanum center` and `arcanum open center` reuse the in-process Command Center host. `arcanum open theforge|compendium|session|campaign|spell|prompt|apprentice` resolves any friendly selector first, then launches through a versioned one-argument deep link. Only canonical server-owned identifiers cross the process boundary; API keys, endpoints, prompt/file content, attachments, and server paths do not. Missing desktop applications report every safe candidate plus repository-relative `dotnet run` and current-CLI fallbacks. Windows and Linux release archives extracted beneath one parent are discovered by their shipped sibling folder names and active architecture. See [the command reference](Arcanum.Command.Reference.md#arcanum-open) and [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
 
 **Primary dependency chain:** `Cli → Api → Infrastructure → Core` (`Cli` also references `Core`/`Infrastructure` directly for lightweight DI). `Infrastructure` also references the isolated `Secrets` project. Strict project boundaries are a deliberate goal.
 
@@ -161,17 +112,7 @@ architecture. See
 | **`TheForge.Core` / `TheForge.Ux`** | Desktop Inference IDE (Avalonia) | HTTP-only Arcanum client with bounded buffered/NDJSON/SSE reads and atomic downloads; Campaign/Spell/Prompt/Session workbench, Wards, MCP, Trials, diagnostics | — |
 | **`tests/RetroDownfall.TheForge.Tests`** | Forge desktop tests (not shipped) | Client contracts, settings, view models, and source-generated JSON | — |
 
-**Covenant status.** Issue #79 supplies the pure-Core protocol foundation tracked by umbrella issue
-#74. Issue #84 owns provider-specific token measurement and runtime context-pressure selection. Issue
-#80 supplies the hermetic SQLCipher runtime and central connection authorization foundation. **Issue
-#81 adds the persistence schema**: the always-present core support tables, the Covenant canonical and
-FTS5 accelerator tiers under `Data/Schema/Capabilities/Covenant/`, closed installed-catalog manifests
-with index-shape validation, a three-transaction installer, and `ICovenantAvailability` health
-publication. It still has no public endpoint, CLI command, configuration key, or provider-call
-wiring, and the feature is not enabled: canonical persistence, search, and the operator surfaces are
-issues #82 and later. [`Arcanum.OATH.md`](Arcanum.OATH.md) explains how Covenant and the other memory systems
-compose into the complete Origin-Bound, Authority-Conserving Transactional History architecture;
-[`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) explains that architecture in simpler terms.
+**Covenant status.** Issue #79 supplies the pure-Core protocol foundation tracked by umbrella issue #74. Issue #84 owns provider-specific token measurement and runtime context-pressure selection. Issue #80 supplies the hermetic SQLCipher runtime and central connection authorization foundation. **Issue #81 adds the persistence schema**: the always-present core support tables, the Covenant canonical and FTS5 accelerator tiers under `Data/Schema/Capabilities/Covenant/`, closed installed-catalog manifests with index-shape validation, a three-transaction installer, and `ICovenantAvailability` health publication. It still has no public endpoint, CLI command, configuration key, or provider-call wiring, and the feature is not enabled: canonical persistence, search, and the operator surfaces are issues #82 and later.
 
 **Key entry points to know:** `ApiBootstrapper.AddArcanumApiServices` / `MapArcanumEndpoints` (wire everything), `AddArcanumInfrastructure` (Infrastructure DI), `WizardIntelligenceProvider` (existing inference orchestration and `ITurnPipelineRunner`), `TurnEngine` (bounded semantic shell), and `Cli/Program.cs` (command registration).
 
@@ -211,8 +152,6 @@ docs/                                    # canonical documentation and focused c
   Arcanum.Design.Human.md                # non-authoritative human reading companion
   Arcanum.DEBUGGING.Human.md             # verified breakpoint map and debugging recipes
   Arcanum.CHAT-LOOP.md                    # focused model/tool-loop and attachment ordering guide
-  Arcanum.OATH.md                         # governed durable-memory architecture companion
-  ArcanumOATH.Human.md                    # plain-language OATH mental-model guide
   Compendium.README.md                   # sole complete arcanum.json reference
 scripts/coverage.sh                      # run tests, generate Cobertura + HTML coverage; pass --threshold to enforce gates
 scripts/coverage_threshold.py            # tiered coverage threshold enforcement
@@ -238,30 +177,8 @@ These are the recurring shapes. Matching them is what makes a change "fit."
 - **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact. This holds even for a transport that is not OpenAI-compatible HTTP — the Familiar kinds are exactly this pattern and change nothing above the factory. External CLI wire types may carry vendor-chosen names through a source-generated naming policy, the same exception `/v1` and MCP JSON-RPC types get.
 - **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor unconditional `WorkspacePathPolicy` containment and treat `ToolOutputCapBytes` as one response/page allocation, adding an attuned continuation when complete useful output can exceed it; decide whether it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`. Do not treat campaign Sanctum as the primary filesystem boundary.
 - **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [API §8.2](Arcanum.API.md#82-arcanumjsoncontext--source-generated-public)).
-- **Register long-running work.** Use the scoped `ILongRunningOperationCoordinator`; add the kind
-  and exactly one `LongRunningOperationRecoveryDescriptor` to `LongRunningOperationRecoveryRegistry`
-  (`LongRunningOperationPolicyCatalog` projects its policy column, so there is nothing to update
-  there), implement an idempotent recovery handler, register it, store only minimum encrypted
-  checkpoint state, and expose only a bounded safe summary. Never persist a live
-  Task/token/enumerator/process/DI object. `RecoveryHandlerCoverageTests` fails if a kind has no
-  owning handler, and `LongRunningOperationCrashRecoveryTests` replays a crash at every durable step
-  of every kind — so a new kind must be repeat-safe before it can go green. Be explicit about what
-  recovery cannot know: never aggregate a cost, re-bill a provider, or claim a child process or peer
-  task survived. See
-  [DESIGN §10.8](Arcanum.DESIGN.md#108-durable-operation-ledger-and-restart-reconciliation).
-- **Change the schema by editing its object file.** The Grimoire schema is a declarative tree under
-  `Infrastructure/Data/Schema/`: one `.sql` file per table (with its indexes co-located), per FTS5
-  virtual table, per trigger, and per view, embedded by glob and installed fresh. Adding an object is
-  adding a file — no list to update, no numbered script, no `__EFMigrationsHistory`. Arcanum has no
-  users yet, so edit the canonical definition in place and recreate local/test databases; do not add
-  compatibility migrations or in-place upgrade paths. **The file's path picks its install
-  transaction**: directly under a category folder is the startup-blocking core tier, while
-  `Capabilities/Covenant/{Canonical,Accelerator}/<Category>/` is a capability tier that fails on its
-  own without taking startup down. The declared object name must equal the file name, and every
-  statement stays `CREATE ... IF NOT EXISTS`. See
-  [DESIGN §5.4.5a](Arcanum.DESIGN.md#54.5a-three-transaction-tiers-three-failure-domains).
-  Revisit this policy before durable user data exists. See
-  [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency).
+- **Register long-running work.** Use the scoped `ILongRunningOperationCoordinator`; add the kind and exactly one `LongRunningOperationRecoveryDescriptor` to `LongRunningOperationRecoveryRegistry` (`LongRunningOperationPolicyCatalog` projects its policy column, so there is nothing to update there), implement an idempotent recovery handler, register it, store only minimum encrypted checkpoint state, and expose only a bounded safe summary. Never persist a live Task/token/enumerator/process/DI object. `RecoveryHandlerCoverageTests` fails if a kind has no owning handler, and `LongRunningOperationCrashRecoveryTests` replays a crash at every durable step of every kind — so a new kind must be repeat-safe before it can go green. Be explicit about what recovery cannot know: never aggregate a cost, re-bill a provider, or claim a child process or peer task survived. See [DESIGN §10.8](Arcanum.DESIGN.md#108-durable-operation-ledger-and-restart-reconciliation).
+- **Change the schema by editing its object file.** The Grimoire schema is a declarative tree under `Infrastructure/Data/Schema/`: one `.sql` file per table (with its indexes co-located), per FTS5 virtual table, per trigger, and per view, embedded by glob and installed fresh. Adding an object is adding a file — no list to update, no numbered script, no `__EFMigrationsHistory`. Arcanum has no users yet, so edit the canonical definition in place and recreate local/test databases; do not add compatibility migrations or in-place upgrade paths. Revisit this policy before durable user data exists. **The file's path picks its install transaction**: directly under a category folder is the startup-blocking core tier, while `Capabilities/Covenant/{Canonical,Accelerator}/<Category>/` is a capability tier that fails on its own without taking startup down. The declared object name must equal the file name, and every statement stays `CREATE ... IF NOT EXISTS`. See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency).
 
 ---
 
@@ -300,7 +217,6 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Vector representation of text | **Imprint** | `IWeaveService.EmbedAsync`/`EmbedBatchAsync` ("imprints" text into The Weave; §21) |
 | Long-term associative memory | **Saga** | `/api/saga/*`, `read_saga`, `arcanum saga` (§21.9) |
 | Hierarchical summary tree over The Weave | **The Tapestry** | `Arcanum:Features:Tapestry`; `### Hierarchical Context (The Tapestry)`; `POST /api/embeddings/reset?scope=tapestry` (§21.11) |
-| Governed durable-memory architecture | **OATH** (Origin-Bound, Authority-Conserving Transactional History) | [`Arcanum.OATH.md`](Arcanum.OATH.md), with the approachable [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) guide; Covenant is its governed claim and authority substrate |
 | Recursive Spell dependency injection | **Arcane Resonance** | `SpellDependencyResolver`; dependency and byte envelopes are internal invariants (Arcanum.DESIGN.md §10.2.2) |
 | Pre-flight active-Spell selection | **Spell Routing** | `SemanticRouter` (LLM-based) + `SemanticSpellRouter` (embedding pre-filter); `Arcanum:Features:SemanticSpellRouting` (Arcanum.DESIGN.md §10.2.2, §21.10) |
 
@@ -357,37 +273,7 @@ Summaries only — full contracts live in DESIGN.
 - **Ward auto-approval (opt-in, off by default):** rather than choosing between confirming every gated call and disabling Wards wholesale, an operator may pre-authorize named tools with `Arcanum:Security:Ward:AutoApprove:Enabled` plus an exact-name `AutoApprove:Tools` allowlist. Listed tools skip the prompt; everything else still prompts (attended) or denies (unattended) exactly as before, and an empty list is a no-op. This supplies **operator consent only** — Sanctum, `WorkspacePathPolicy`, edition and host-process gates, Artifact Attunement, and `workspace_check` eligibility still run on every auto-approved call, and unattended auto-deny is evaluated first so **deny always wins**. Auto-approved calls still emit `warded`/`wardResolved` with an `origin` field (`autoApproved` vs `human`), so Command Center records them in the transcript instead of opening a modal and `arcanum_ward_decisions_total{origin=…}` counts them. It is unrelated to the CLI `--yes` direct-command flag, which never becomes authority for a model-proposed action. [DESIGN §11.14](Arcanum.DESIGN.md#1114-wards-forbidden-arts).
 - **Idempotency:** same-process requests coordinate locally before durable acquire; live foreign-process ownership returns 409 `Security.IdempotencyInProgress` (OpenAI `idempotency_in_progress`). The current renewable lease is five minutes. Only terminal in-cap responses replay; explicitly terminal empty bodies replay empty, while partial/over-cap responses do not. [DESIGN §11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
 - **Inference audit:** the opt-in JSONL log records successful completed turns only. Tool names/counts are retained; raw argument JSON is omitted by default (`Arcanum:Host:AuditLog:RedactToolArguments=true`); tool results and prompt/answer/reasoning bodies are not audit fields.
-- **Scrying / attachments:** persisted bytes are durable snapshots stored as authenticated encrypted
-  envelopes; plaintext hashes and lifecycle metadata remain inside SQLCipher. Optional live-file
-  provenance is accepted only from a host-trusted path beneath the active workspace after
-  canonical, symlink, and file-handle identity checks; API-supplied paths remain snapshot-only.
-  Attachment responses expose sanitized relative provenance/status/hash/time metadata and never
-  absolute host paths. Missing or unsafe sources do not delete snapshots. This schema revision is
-  folded into the canonical database creation script, so upgrading installations must recreate the
-  database. Full contract: [§10.2.4](Arcanum.DESIGN.md#1024-scrying--the-visionmultimodality-capability-gate) /
-  [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers).
-  The attunement-aware `refresh_session_file` tool accepts an attachment id or logical key—not a
-  path—securely rereads verified workspace provenance through an identity-checked handle, reuses an
-  unchanged version or persists the next encrypted version with its currently detected MIME-derived
-  kind, and queues it after the complete tool round for the next request in the same logical turn. It
-  shares attachment byte/version/reference budgets, inject-once behavior, MIME/Scrying/vision checks,
-  and Sanctum enforcement. Native NDJSON exposes sanitized `attachmentRefreshed` observability;
-  OpenAI projections ignore it.
-  Command Center `/attachments` renders `[Snapshot]`, `[Live]`, or `[Stale]` with the loaded version
-  hash and last backend-observed disk hash/time. Its filesystem watcher only triggers an asynchronous
-  metadata re-read; the host revalidates provenance before the UI changes state. Use
-  `/attachments refresh <logicalName>` to run the same secure refresh core manually; `[Live]` is
-  printed only after the backend confirms the persisted/reused version. Manual refresh applies the
-  content policy without requiring the configured default model to support vision because no model
-  content is queued.
-  Semantic retrieval reads only through the encrypted attachment store, exposes bounded
-  `indexingStatus` metadata, and fences retrieved excerpts as untrusted DATA.
-  Durable memory promotion is fail-closed: Lexicon and Saga accept attachment-derived facts only
-  from the current turn's materialized attachment allowlist and retain typed source provenance.
-  Campaign summaries persist metadata-only consultation references; prompt-cache stable prefixes,
-  audit logs, and subagent context never absorb attachment bytes, excerpts, host paths, or hashes.
-  Source deletion preserves provenance but reports it as unavailable.
-  See [the chat-loop ordering guide](Arcanum.CHAT-LOOP.md).
+- **Scrying / attachments:** persisted bytes are durable snapshots stored as authenticated encrypted envelopes; plaintext hashes and lifecycle metadata remain inside SQLCipher. Optional live-file provenance is accepted only from a host-trusted path beneath the active workspace after canonical, symlink, and file-handle identity checks; API-supplied paths remain snapshot-only. Attachment responses expose sanitized relative provenance/status/hash/time metadata and never absolute host paths. Missing or unsafe sources do not delete snapshots. This schema revision is folded into the canonical database creation script, so upgrading installations must recreate the database. Full contract: [§10.2.4](Arcanum.DESIGN.md#1024-scrying--the-visionmultimodality-capability-gate) / [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers). The attunement-aware `refresh_session_file` tool accepts an attachment id or logical key—not a path—securely rereads verified workspace provenance through an identity-checked handle, reuses an unchanged version or persists the next encrypted version with its currently detected MIME-derived kind, and queues it after the complete tool round for the next request in the same logical turn. It shares attachment byte/version/reference budgets, inject-once behavior, MIME/Scrying/vision checks, and Sanctum enforcement. Native NDJSON exposes sanitized `attachmentRefreshed` observability; OpenAI projections ignore it. Command Center `/attachments` renders `[Snapshot]`, `[Live]`, or `[Stale]` with the loaded version hash and last backend-observed disk hash/time. Its filesystem watcher only triggers an asynchronous metadata re-read; the host revalidates provenance before the UI changes state. Use `/attachments refresh <logicalName>` to run the same secure refresh core manually; `[Live]` is printed only after the backend confirms the persisted/reused version. Manual refresh applies the content policy without requiring the configured default model to support vision because no model content is queued. Semantic retrieval reads only through the encrypted attachment store, exposes bounded `indexingStatus` metadata, and fences retrieved excerpts as untrusted DATA. Durable memory promotion is fail-closed: Lexicon and Saga accept attachment-derived facts only from the current turn's materialized attachment allowlist and retain typed source provenance. Campaign summaries persist metadata-only consultation references; prompt-cache stable prefixes, audit logs, and subagent context never absorb attachment bytes, excerpts, host paths, or hashes. Source deletion preserves provenance but reports it as unavailable. See [the chat-loop ordering guide](Arcanum.CHAT-LOOP.md).
 - **A2A:** [§5.7.1](Arcanum.DESIGN.md#571-a2a-and-the-conclave) (disabled by default; enabled purely by `Arcanum:Features:A2AServer` / `A2AClient`, with no edition gate). The end-to-end operator workflow — enable, identify, verify, dispatch, continue, observe, accept, account — is §5.7.1.1; what survives a restart and what is reconciled is §5.7.1.2; continuing a Sending the remote parked at `input-required` is §5.7.1.3; push notifications and callback-mode Sendings are §5.7.1.4; answering a parked Sending **after a restart** is §5.7.1.5. Delegation loops are broken by node-id cycle detection rather than a hop ceiling, and the chain propagates through an Apprentice's own Sendings so multi-hop cycles are caught too. A peer that advertises streaming is subscribed to rather than polled, degrading to polling rather than failing when a stream drops. An outbound Sending states what it will accept back and checks it against the peer's Agent Card **before** the remote task exists, so a modality or skill mismatch is a named local failure rather than a remote task left running for an answer nothing here can read. Remote cost is reported as known or **explicitly unknown**, never as a silent zero — and now counts against the daily budget, with unpriced delegated work surfaced as a count rather than folded in at zero (§22.2, `arcanum budget`). Operators may declare Agent Card skills and modalities; declaring none serves the original card unchanged. Reach an authenticated peer (including another Arcanum) with `Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable`.
 - **RAG (Weave / Divination / Saga / Tapestry):** [§21](Arcanum.DESIGN.md#21-the-weave-divination-saga-and-the-tapestry-rag) — capabilities are gated under `Arcanum:Features`; only embedding provider/model/dimensions are public integration facts. Watcher, queue, retry, batch, checkpoint, and retrieval-slice mechanics are code-owned and no longer exposed as user restrictions. Semantic workspace indexing reacts to recursive watcher events, revalidates paths and opened file identities before every read, lazily completes cancellable full walks without a total-entry ceiling, streams large files through pooled embedding pages, reconciles lost/unavailable events, and exposes watcher/reconciliation health through `/api/workspaces/{id}/files/index/status`. Saga extraction likewise drains a deduplicated queue through oldest-first timestamp-group checkpoint pages, retries failed pages without advancing the watermark, and keeps every eligible memory without a per-session or installation count cap; provider capability, paged retrieval, explicit deletion, retention, and cancellation remain authoritative. The Tapestry adds hierarchical summary trees over those same corpora: its tree-shaping bounds (depth, children per summary, clusters per layer, summary tokens, rebuild cadence) are code-owned mechanics rather than user restrictions, and only the retrieval mode and summary model are operator policy. Its clustering is deterministic and versioned, but the design deliberately does not claim reproducible model prose — only reproducible membership and summary identity.
 - **Lexicon:** agent memory via `scribe_lexicon` / `delete_lexicon`; gated by `Arcanum:Features:Lexicon`. Every non-empty distinct fact is persisted at full length—there is no per-upsert, per-fact, retained-fact, or extracted-entity product total. Provider-visible matching/injection remains context-bounded without deleting durable facts. Attachment-derived facts require a current-turn materialized attachment id and retain typed provenance. [§10.6](Arcanum.DESIGN.md#106-the-lexicon--agent-directed-entity-memory).
@@ -398,24 +284,9 @@ Summaries only — full contracts live in DESIGN.
 
 Settings bind under the required `Arcanum` object in **`arcanum.json`** (`~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows). General environment overrides keep the wrapper after the prefix, for example `ARCANUM_Arcanum__Host__Port`; `ARCANUM_EDITION` and `ARCANUM_HOST_ANY` are explicit overrides. Before binding, the source-generated configuration schema walks the complete tree and reports every unknown/obsolete path together; dynamic array indices and documented dictionary keys remain valid. Serve then runs semantic validation before listening.
 
-Use `arcanum config path`, `show`, `get <dot.path>`, `set <dot.path> [value]`, `validate`,
-`edit`, or `open` for routine configuration work. `arcanum open compendium` is the explicit
-application-launch spelling; `arcanum config open` remains the configuration-family entry. These
-commands prefer the running host's
-authenticated `/api/config` endpoints. When the host cannot be reached (or a first-run key is not
-initialized), stderr clearly identifies local bootstrap mode; that path still uses the canonical
-loader, full validator, outbound URL guard, and atomic writer. `show`/`get` mask provider endpoints,
-environment overrides are named without revealing their values, and sensitive endpoint values must
-be supplied through redirected stdin or the hidden prompt—not argv. `edit` uses an owner-only
-temporary redacted copy and applies it only after full validation. Both open forms launch
-Compendium or print the attempted locations, repository-relative development command, exact file
-path where applicable, and `arcanum config edit` fallback.
+Use `arcanum config path`, `show`, `get <dot.path>`, `set <dot.path> [value]`, `validate`, `edit`, or `open` for routine configuration work. `arcanum open compendium` is the explicit application-launch spelling; `arcanum config open` remains the configuration-family entry. These commands prefer the running host's authenticated `/api/config` endpoints. When the host cannot be reached (or a first-run key is not initialized), stderr clearly identifies local bootstrap mode; that path still uses the canonical loader, full validator, outbound URL guard, and atomic writer. `show`/`get` mask provider endpoints, environment overrides are named without revealing their values, and sensitive endpoint values must be supplied through redirected stdin or the hidden prompt—not argv. `edit` uses an owner-only temporary redacted copy and applies it only after full validation. Both open forms launch Compendium or print the attempted locations, repository-relative development command, exact file path where applicable, and `arcanum config edit` fallback.
 
-Public settings are limited to deployment choices, provider/model facts, credential references,
-security and permission policy, integration endpoints/allowlists, feature opt-ins, schedules,
-host-capacity choices, pricing facts, and user preferences. Retry, fallback, workflow-count, and
-other implementation mechanics are code-owned. Unknown or obsolete paths fail together before
-binding; there are no compatibility aliases or silent ignores.
+Public settings are limited to deployment choices, provider/model facts, credential references, security and permission policy, integration endpoints/allowlists, feature opt-ins, schedules, host-capacity choices, pricing facts, and user preferences. Retry, fallback, workflow-count, and other implementation mechanics are code-owned. Unknown or obsolete paths fail together before binding; there are no compatibility aliases or silent ignores.
 
 > **Compendium** edits the same file visually — [`Compendium.README.md`](Compendium.README.md). Provider rows edit factual fields and credential environment-variable references, never credential values or tokenization/prompt-cache algorithms.
 
@@ -438,10 +309,7 @@ binding; there are no compatibility aliases or silent ignores.
 
 ### Safe onboarding presets
 
-`arcanum preset` offers six immutable, versioned **partial overlays**. A preset owns only the
-listed paths; every provider, secret reference, integration, budget, schedule, and other setting
-outside that list remains operator-owned. Presets are transparent configuration changes, not
-hidden runtime modes or a second configuration model.
+`arcanum preset` offers six immutable, versioned **partial overlays**. A preset owns only the listed paths; every provider, secret reference, integration, budget, schedule, and other setting outside that list remains operator-owned. Presets are transparent configuration changes, not hidden runtime modes or a second configuration model.
 
 | v1 preset | Owned configuration |
 |-----------|---------------------|
@@ -462,61 +330,17 @@ arcanum preset apply coding-workspace
 arcanum preset reset
 ```
 
-`show` explains the exact owned settings, security/network disclosures, prerequisites, first
-essential choice, deferred advanced features, and next command. Recommendations are executable;
-for example, Coding Workspace uses
-`arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required
-prompt. `diff` is read-only and reports
-persisted, effective, and proposed persisted values separately, including the current source,
-environment-variable name (never its value), ownership, prerequisite status, and restart impact.
-An environment override can therefore make a persisted value change while leaving the effective
-value unchanged; the output says so instead of claiming the preset changed live behavior. Only an
-effective override that contradicts a preset-owned safety or privacy boundary blocks Apply. A
-benign feature mask remains authoritative, stays visible as effective drift, and does not make the
-plan inapplicable. The secure research-credential store is probed only while diffing or applying
-the Research preset; other preset plans, listing/state inspection, and reset do not touch it.
+`show` explains the exact owned settings, security/network disclosures, prerequisites, first essential choice, deferred advanced features, and next command. Recommendations are executable; for example, Coding Workspace uses `arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required prompt. `diff` is read-only and reports persisted, effective, and proposed persisted values separately, including the current source, environment-variable name (never its value), ownership, prerequisite status, and restart impact. An environment override can therefore make a persisted value change while leaving the effective value unchanged; the output says so instead of claiming the preset changed live behavior. Only an effective override that contradicts a preset-owned safety or privacy boundary blocks Apply. A benign feature mask remains authoritative, stays visible as effective drift, and does not make the plan inapplicable. The secure research-credential store is probed only while diffing or applying the Research preset; other preset plans, listing/state inspection, and reset do not touch it.
 
-Application first builds and validates one complete candidate, rejects missing required
-prerequisites, checks for a concurrent configuration change, and enters the same current-user
-cross-process transaction coordinator used by every canonical configuration write, including CLI
-and Compendium writers. It creates owner-only provenance and rollback sidecars and atomically replaces
-`arcanum.json`. Provenance records the preset ID/version, timestamp, owned-value hash, baseline, and
-applied values separately from effective configuration. Sidecar reads are bounded and no-follow;
-provenance must exactly match a catalog preset's version, owned paths, canonical values, hashes,
-and paired rollback state before it is trusted.
+Application first builds and validates one complete candidate, rejects missing required prerequisites, checks for a concurrent configuration change, and enters the same current-user cross-process transaction coordinator used by every canonical configuration write, including CLI and Compendium writers. It creates owner-only provenance and rollback sidecars and atomically replaces `arcanum.json`. Provenance records the preset ID/version, timestamp, owned-value hash, baseline, and applied values separately from effective configuration. Sidecar reads are bounded and no-follow; provenance must exactly match a catalog preset's version, owned paths, canonical values, hashes, and paired rollback state before it is trusted.
 
-No provenance means **Custom**; matching owned persisted and effective values mean **Active**; any
-later owned-value difference means **Drifted**. Reapplying the same version and owned values is
-idempotent. `reset` restores a baseline value only when it still equals the preset-applied value,
-preserves user drift and every unrelated setting, then reports both counts. The prepared journal
-contains only preset-owned before/after values and hashes plus previous/next provenance—not a full
-configuration copy. Recovery conditionally reverses only values that still match the interrupted
-write, so unrelated or later manual edits win instead of being overwritten.
+No provenance means **Custom**; matching owned persisted and effective values mean **Active**; any later owned-value difference means **Drifted**. Reapplying the same version and owned values is idempotent. `reset` restores a baseline value only when it still equals the preset-applied value, preserves user drift and every unrelated setting, then reports both counts. The prepared journal contains only preset-owned before/after values and hashes plus previous/next provenance—not a full configuration copy. Recovery conditionally reverses only values that still match the interrupted write, so unrelated or later manual edits win instead of being overwritten.
 
-Every successful plan ends with provider/model, workspace/campaign, enabled memory sources, tool
-policy, privacy state, and the next recommended command. Compendium keeps that selected-preset
-projection separate from the latest inspected current summary; an inspection failure is
-`Unavailable`, never a stale active/drifted label. The five workflow presets explicitly retain
-Ward, unattended auto-deny, and the unsandboxed-child safe default; Advanced/Custom owns no
-paths and changes nothing. Sanctum continues to enforce the operator's configured workspace
-boundaries. No preset weakens these boundaries or silently enables `ListenAny`, unsandboxed tool
-children, untrusted workspace MCP, destructive memory operations, Forbidden Arts bypasses, or
-changes to explicit token/cost/security policy. Presets do not add retry, timeout, loop-count, or
-other arbitrary tuning knobs.
+Every successful plan ends with provider/model, workspace/campaign, enabled memory sources, tool policy, privacy state, and the next recommended command. Compendium keeps that selected-preset projection separate from the latest inspected current summary; an inspection failure is `Unavailable`, never a stale active/drifted label. The five workflow presets explicitly retain Ward, unattended auto-deny, and the unsandboxed-child safe default; Advanced/Custom owns no paths and changes nothing. Sanctum continues to enforce the operator's configured workspace boundaries. No preset weakens these boundaries or silently enables `ListenAny`, unsandboxed tool children, untrusted workspace MCP, destructive memory operations, Forbidden Arts bypasses, or changes to explicit token/cost/security policy. Presets do not add retry, timeout, loop-count, or other arbitrary tuning knobs.
 
-This command family is the reusable preset service for guided onboarding. The interactive
-`arcanum setup` wizard composes the same service for its preset step, so the two surfaces apply
-exactly the same overlay; `preset apply` never simulates the wizard's other steps.
+This command family is the reusable preset service for guided onboarding. The interactive `arcanum setup` wizard composes the same service for its preset step, so the two surfaces apply exactly the same overlay; `preset apply` never simulates the wizard's other steps.
 
-Progress/no-progress mechanics, retries/fallback, structured-output correction, transport
-connection/idle behavior, filesystem and storage envelopes, heartbeats, and other implementation
-mechanics are not configuration sections. The public surface retains only meaningful operator
-policy, security choices, provider/model facts, explicit budgets/retention, and host-capacity
-choices. Required containment, protocol, integrity, and single-allocation safeguards remain
-code-owned invariants and are classified in
-[`Arcanum.ConstraintInventory.json`](Arcanum.ConstraintInventory.json); the removals and rationale
-are summarized in
-[`Arcanum.ConstraintReduction.20260803.md`](Arcanum.ConstraintReduction.20260803.md).
+Progress/no-progress mechanics, retries/fallback, structured-output correction, transport connection/idle behavior, filesystem and storage envelopes, heartbeats, and other implementation mechanics are not configuration sections. The public surface retains only meaningful operator policy, security choices, provider/model facts, explicit budgets/retention, and host-capacity choices. Required containment, protocol, integrity, and single-allocation safeguards remain code-owned invariants and are classified in [`Arcanum.ConstraintInventory.json`](Arcanum.ConstraintInventory.json); the removals and rationale are summarized in [`Arcanum.ConstraintReduction.20260803.md`](Arcanum.ConstraintReduction.20260803.md).
 
 **Minimal complete example** (one provider, one model, no secret values):
 
@@ -550,8 +374,7 @@ are summarized in
 }
 ```
 
-Set `OPENAI_API_KEY` in the host environment. `models` entries may be bare strings or objects.
-Ollama, when used, must use its `/v1` endpoint. A reasoning-capable model entry is explicit:
+Set `OPENAI_API_KEY` in the host environment. `models` entries may be bare strings or objects. Ollama, when used, must use its `/v1` endpoint. A reasoning-capable model entry is explicit:
 
 ```json
 {
@@ -572,13 +395,7 @@ Ollama, when used, must use its `/v1` endpoint. A reasoning-capable model entry 
 
 `standard` uses typed Microsoft.Extensions.AI/OpenAI controls and does not accept a numeric budget. Numeric budgets require exactly one explicit nonstandard shape: `openRouter` → `reasoning.max_tokens`, `topLevelReasoningBudget` → top-level `reasoning_budget`, or `anthropicThinking` → `thinking.budget_tokens`.
 
-Provider credentials never live in `arcanum.json`. They resolve in a fixed order: the
-environment reference first, then the OS-backed secure store. An explicit
-`credentialEnvironmentVariable` is the exact reference and replaces the default. When omitted,
-Arcanum derives `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`: ASCII letters/digits are retained,
-letters are upper-cased, runs of other characters become one underscore, and an empty result becomes
-`UNNAMED`. Explicit references use portable `[A-Za-z_][A-Za-z0-9_]*` names. For the minimal
-example:
+Provider credentials never live in `arcanum.json`. They resolve in a fixed order: the environment reference first, then the OS-backed secure store. An explicit `credentialEnvironmentVariable` is the exact reference and replaces the default. When omitted, Arcanum derives `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`: ASCII letters/digits are retained, letters are upper-cased, runs of other characters become one underscore, and an empty result becomes `UNNAMED`. Explicit references use portable `[A-Za-z_][A-Za-z0-9_]*` names. For the minimal example:
 
 ```bash
 export OPENAI_API_KEY='your-key-here'
@@ -586,23 +403,17 @@ export OPENAI_API_KEY='your-key-here'
 
 PowerShell: `$env:OPENAI_API_KEY = "your-key-here"`.
 
-To skip environment variables entirely, store the credential in the OS credential manager — macOS
-Keychain, Windows Credential Manager, or Linux Secret Service, each with an owner-only Data
-Protection mirror for headless hosts:
+To skip environment variables entirely, store the credential in the OS credential manager — macOS Keychain, Windows Credential Manager, or Linux Secret Service, each with an owner-only Data Protection mirror for headless hosts:
 
 ```bash
 arcanum key provider set openai   # reads redirected stdin or a hidden prompt; never echoed back
 ```
 
-`arcanum setup` does the same thing as part of guided onboarding. Because the environment reference
-is checked first, exporting the variable still overrides the stored credential for that process
-without changing stored state. `arcanum key list` reports every credential identity Arcanum owns with
-presence and status only; a credential value is never printed back, including under `--json`.
+`arcanum setup` does the same thing as part of guided onboarding. Because the environment reference is checked first, exporting the variable still overrides the stored credential for that process without changing stored state. `arcanum key list` reports every credential identity Arcanum owns with presence and status only; a credential value is never printed back, including under `--json`.
 
 ### Native web research
 
-Native web tools are off by default. Enable the family and select the synthesized-search model in
-`arcanum.json`:
+Native web tools are off by default. Enable the family and select the synthesized-search model in `arcanum.json`:
 
 ```json
 {
@@ -627,21 +438,9 @@ arcanum key provider set perplexity
 arcanum key provider status perplexity
 ```
 
-The secure prompt stores the key in the OS credential manager with an owner-only,
-Data Protection-encrypted fallback. For unattended hosts, set `ARCANUM_PERPLEXITY_API_KEY`, or set
-`integrations.webResearch.credentialEnvironmentVariable` to another exact environment-variable
-name. The environment reference takes precedence at invocation time; key values are never returned
-by status, provider-list, logs, or telemetry. Remove local copies with
-`arcanum key provider delete perplexity`.
+The secure prompt stores the key in the OS credential manager with an owner-only, Data Protection-encrypted fallback. For unattended hosts, set `ARCANUM_PERPLEXITY_API_KEY`, or set `integrations.webResearch.credentialEnvironmentVariable` to another exact environment-variable name. The environment reference takes precedence at invocation time; key values are never returned by status, provider-list, logs, or telemetry. Remove local copies with `arcanum key provider delete perplexity`.
 
-When enabled, models receive `web_search` for current, synthesized answers with ordered citations
-and `read_url` for allocation-safe static HTTP/HTTPS pages converted to Markdown. `read_url` does not launch
-or embed a browser and does not execute JavaScript; bot-protected and empty JavaScript shells return
-a structured error suggesting `web_search`. Connection and idle-I/O deadlines protect stalled
-transports without assigning a total wall-clock duration to progressing work. Per-read body/frame
-limits, SSRF protection, untrusted-content framing, and aggregate-only usage/token/cost/latency
-telemetry remain. The old `browse_web` direct-invoke alias remains for
-compatibility but is not advertised in new model toolsets.
+When enabled, models receive `web_search` for current, synthesized answers with ordered citations and `read_url` for allocation-safe static HTTP/HTTPS pages converted to Markdown. `read_url` does not launch or embed a browser and does not execute JavaScript; bot-protected and empty JavaScript shells return a structured error suggesting `web_search`. Connection and idle-I/O deadlines protect stalled transports without assigning a total wall-clock duration to progressing work. Per-read body/frame limits, SSRF protection, untrusted-content framing, and aggregate-only usage/token/cost/latency telemetry remain. The old `browse_web` direct-invoke alias remains for compatibility but is not advertised in new model toolsets.
 
 The same capabilities are first-class CLI workflows, so no chat prompt or raw tool JSON is needed:
 
@@ -655,68 +454,23 @@ cat local-notes.txt | arcanum run --research "Reconcile these notes with current
   --with @requirements.unusual --sources 8
 ```
 
-`search` also accepts repeatable `--include-domain` / `--exclude-domain`. `browse --render
-javascript` reports a clear unavailable-renderer error and recommends `static`; it never silently
-pretends static HTML is rendered JavaScript. `research` performs another server-side pass while at
-least one new unique source is discovered. Optional `--sources` is a positive target, not a default
-ceiling; omitting it continues to source exhaustion or deterministic no-progress. The command
-prints the target/no-progress reason, unique-source count, explicit token/cost policy, and
-`Searching` / `Fetching` / `Rendering` / `Synthesizing` progress to stderr, while the
-final cited terminal, Markdown, or single JSON payload remains on stdout. All orchestration and
-model accounting stay in the server. `--save <path>` atomically exports Markdown;
-`--attach-to-session <session>` stores it as an encrypted session attachment; and research
-`--continue-session <session>` continues the server-side synthesis turn. Session values accept a
-GUID, exact title, or unique title prefix.
+`search` also accepts repeatable `--include-domain` / `--exclude-domain`. `browse --render javascript` reports a clear unavailable-renderer error and recommends `static`; it never silently pretends static HTML is rendered JavaScript. `research` performs another server-side pass while at least one new unique source is discovered. Optional `--sources` is a positive target, not a default ceiling; omitting it continues to source exhaustion or deterministic no-progress. The command prints the target/no-progress reason, unique-source count, explicit token/cost policy, and `Searching` / `Fetching` / `Rendering` / `Synthesizing` progress to stderr, while the final cited terminal, Markdown, or single JSON payload remains on stdout. All orchestration and model accounting stay in the server. `--save <path>` atomically exports Markdown; `--attach-to-session <session>` stores it as an encrypted session attachment; and research `--continue-session <session>` continues the server-side synthesis turn. Session values accept a GUID, exact title, or unique title prefix.
 
-`arcanum run --research` reaches the same server-owned workflow through the unified execution
-surface. It preserves the resolved Campaign, Workspace, Session, and Model, combines an optional
-instruction with piped text, accepts repeatable current-turn `--with @path` text/images, and forwards
-the common sampling controls into synthesis. The host validates the prospective synthesis request
-and resolves Campaign/Session context before provider search. Research's existing untrusted-source
-instruction and tool-disabled final synthesis remain server-owned; selecting the route does not
-impose new restrictions on ordinary Agent or named-Spell execution. Live synthesis uses the normal
-attachment pipeline. Use `--dry-run` for a spend-free static pre-inference plan without search,
-synthesis, tool execution, or persistence.
+`arcanum run --research` reaches the same server-owned workflow through the unified execution surface. It preserves the resolved Campaign, Workspace, Session, and Model, combines an optional instruction with piped text, accepts repeatable current-turn `--with @path` text/images, and forwards the common sampling controls into synthesis. The host validates the prospective synthesis request and resolves Campaign/Session context before provider search. Research's existing untrusted-source instruction and tool-disabled final synthesis remain server-owned; selecting the route does not impose new restrictions on ordinary Agent or named-Spell execution. Live synthesis uses the normal attachment pipeline. Use `--dry-run` for a spend-free static pre-inference plan without search, synthesis, tool execution, or persistence.
 
-Use only keys in [Compendium's retained reference](Compendium.README.md#complete-configuration-reference).
-After changing `arcanum.json`, restart Arcanum. Configuration-only changes do not require deleting
-or reinstalling the Grimoire.
+Use only keys in [Compendium's retained reference](Compendium.README.md#complete-configuration-reference). After changing `arcanum.json`, restart Arcanum. Configuration-only changes do not require deleting or reinstalling the Grimoire.
 
-Known official OpenAI `gpt-4o`, `chatgpt-4o`, `gpt-4.1`, `gpt-5`, `o1`, `o3`, and `o4`
-families use the built-in exact `o200k_base`/key-only prompt-cache profile. Unknown providers,
-endpoints, or models use conservative estimated accounting and no prompt-cache directive.
+Known official OpenAI `gpt-4o`, `chatgpt-4o`, `gpt-4.1`, `gpt-5`, `o1`, `o3`, and `o4` families use the built-in exact `o200k_base`/key-only prompt-cache profile. Unknown providers, endpoints, or models use conservative estimated accounting and no prompt-cache directive.
 
 `DefaultModel`/`FastModel` must match a `models` entry on some provider — matching is a case-insensitive **exact** match, with no bare-name or tag-stripping fallback. OpenAI-compatible `endpoint`s usually include `/v1`. **MCP servers** are wired via `~/.config/arcanum/mcp.json` (`mcpServers` schema) over **stdio** (`command`/`args`, with an optional `inheritEnv` allowlist for `npx`-style launches) or **Streamable HTTP** (`type: "http"` or a bare `url`, SSRF-guarded and `https`-by-default); workspace-local `mcp.json` is merged only after explicit `arcanum mcp trust [workspace]` approval, which calls `POST /api/mcp/trust-workspace`. Routine listing, lifecycle, reload, tool discovery, and diagnostics are available through `arcanum mcp ...` and `arcanum tool ...`; raw HTTP is not required. See [Compendium's complete configuration reference](Compendium.README.md#complete-configuration-reference); MCP transport limits are code-owned.
 
 ### Local Grimoire reinstall
 
-Arcanum has no migration chain and no supported user-data migration path between incompatible local
-schemas — the declarative schema tree installs fresh and every statement is `CREATE ... IF NOT
-EXISTS`, so re-opening a database with an older shape adds what is missing and leaves incompatible
-objects exactly as they are. It does not upgrade them. A developer database created before the
-current schema must be recreated. Before replacing the binary that can still read it, create and
-verify a supported `.arcbackup` for anything that must be preserved. Then stop every Arcanum host and
-daemon, delete the database and its WAL/SHM sidecars, and restart. A database created by the current
-schema needs no reinstall.
+Arcanum has no migration chain and no supported user-data migration path between incompatible local schemas — the declarative schema tree installs fresh and every statement is `CREATE ... IF NOT EXISTS`, so re-opening a database with an older shape adds what is missing and leaves incompatible objects exactly as they are. It does not upgrade them. A developer database created before the current schema must be recreated. Before replacing the binary that can still read it, create and verify a supported `.arcbackup` for anything that must be preserved. Then stop every Arcanum host and daemon, delete the database and its WAL/SHM sidecars, and restart. A database created by the current schema needs no reinstall.
 
-If the dedicated Grimoire secret is corrupt or cannot decrypt the current database, startup fails
-closed with a sanitized database-unavailable error and never falls back to the API key. The failure
-is controlled, so host/CLI cleanup completes. Restore the matching secret and Data Protection key
-ring, or follow the destructive reinstall procedure only after preserving anything recoverable.
-The same controlled rule applies when the master API-key credential/mirror is corrupt and a
-Grimoire database exists: Arcanum does not log the underlying decryption message or generate a
-replacement key. Safe key regeneration is limited to the no-database case.
-All Data Protection credential mirrors are accepted only as no-follow, single-link regular files
-of at most 64 KiB; linked, oversized, or undecryptable ciphertext fails closed as corrupt.
-The Grimoire `.kdf` sidecar follows the same identity rule with a 4 KiB ceiling and owner-only,
-durable atomic publication.
+If the dedicated Grimoire secret is corrupt or cannot decrypt the current database, startup fails closed with a sanitized database-unavailable error and never falls back to the API key. The failure is controlled, so host/CLI cleanup completes. Restore the matching secret and Data Protection key ring, or follow the destructive reinstall procedure only after preserving anything recoverable. The same controlled rule applies when the master API-key credential/mirror is corrupt and a Grimoire database exists: Arcanum does not log the underlying decryption message or generate a replacement key. Safe key regeneration is limited to the no-database case. All Data Protection credential mirrors are accepted only as no-follow, single-link regular files of at most 64 KiB; linked, oversized, or undecryptable ciphertext fails closed as corrupt. The Grimoire `.kdf` sidecar follows the same identity rule with a 4 KiB ceiling and owner-only, durable atomic publication.
 
-The current canonical schema requires recreation of any database whose `Entries` table lacks the
-`Sequence` column and unique `(SessionId, Sequence)` index. Those fields give a session's transcript
-an explicit append order instead of inferring one from timestamps that a prompt and its answer
-share. Existing rows never recorded that order, so there is nothing to backfill and the database is
-recreated instead
-([DESIGN §5.4.1](Arcanum.DESIGN.md#541-grimoire-data-model), [§5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)).
+The current canonical schema requires recreation of any database whose `Entries` table lacks the `Sequence` column and unique `(SessionId, Sequence)` index. Those fields give a session's transcript an explicit append order instead of inferring one from timestamps that a prompt and its answer share. Existing rows never recorded that order, so there is nothing to backfill and the database is recreated instead ([DESIGN §5.4.1](Arcanum.DESIGN.md#541-grimoire-data-model), [§5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)).
 
 macOS/Linux (Bash):
 
@@ -733,31 +487,20 @@ Remove-Item -Force -ErrorAction SilentlyContinue `
   "$HOME\.config\arcanum\arcanum.db-shm"
 ```
 
-There is intentionally no data migration or EF-model regeneration for the raw-SQL accounting tables.
-See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)
-and [§22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumcost).
+There is intentionally no data migration or EF-model regeneration for the raw-SQL accounting tables. See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency) and [§22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumcost).
 
 ### Encrypted blob key, backup, and recovery
 
-Session attachments, `/v1/files` uploads, and batch input/output/error files are never stored as
-plaintext under `attachments/` or `files/`. Arcanum streams them through a versioned `ARCABLOB`
-AES-256-GCM envelope with independently authenticated bounded chunks. Downloads and batch readers
-authenticate each chunk before returning plaintext, and batch output uses encrypted staging—there
-is no plaintext JSONL temp.
+Session attachments, `/v1/files` uploads, and batch input/output/error files are never stored as plaintext under `attachments/` or `files/`. Arcanum streams them through a versioned `ARCABLOB` AES-256-GCM envelope with independently authenticated bounded chunks. Downloads and batch readers authenticate each chunk before returning plaintext, and batch output uses encrypted staging—there is no plaintext JSONL temp.
 
-The independent 256-bit file-encryption master key is stored primarily in the operating system's
-secret storage:
+The independent 256-bit file-encryption master key is stored primarily in the operating system's secret storage:
 
 - service `arcanum`, account `file-encryption-master-key`;
 - macOS Keychain on macOS;
 - Windows Credential Manager on Windows; and
 - Secret Service/libsecret on Linux.
 
-First startup creates the key only after the OS store accepts it. Arcanum also attempts to write
-`~/.config/arcanum/file-encryption-key.dat`, sealed with the local Data Protection key ring, as a
-recovery mirror. The mirror is not a substitute for OS key storage during normal writes. The
-file-encryption key is separate from both `master-api-key` and the Grimoire encryption secret;
-`arcanum key show` never displays it and API-key rotation does not rotate it.
+First startup creates the key only after the OS store accepts it. Arcanum also attempts to write `~/.config/arcanum/file-encryption-key.dat`, sealed with the local Data Protection key ring, as a recovery mirror. The mirror is not a substitute for OS key storage during normal writes. The file-encryption key is separate from both `master-api-key` and the Grimoire encryption secret; `arcanum key show` never displays it and API-key rotation does not rotate it.
 
 Existing version-zero attachment/upload rows can be migrated in place without a startup rewrite:
 
@@ -768,16 +511,9 @@ arcanum data encryption verify
 arcanum data encryption rotate-key
 ```
 
-Migration and rotation are resumable durable operations. They use bounded concurrency (default 2,
-maximum 8), an aggregate 64 MiB/s default throttle, and observe cancellation between files. Every
-file is length/hash checked before encryption, the temporary encrypted copy is authenticated before
-atomic replacement, and the replacement is decrypted and checked before metadata commits. A crash
-between replacement and metadata commit is reconciled on retry. `verify` reports aggregate
-missing/corrupt/unknown-key/metadata-mismatch/hash-mismatch categories and never prints filenames.
-New writes remain encrypted throughout the mixed-mode window.
+Migration and rotation are resumable durable operations. They use bounded concurrency (default 2, maximum 8), an aggregate 64 MiB/s default throttle, and observe cancellation between files. Every file is length/hash checked before encryption, the temporary encrypted copy is authenticated before atomic replacement, and the replacement is decrypted and checked before metadata commits. A crash between replacement and metadata commit is reconciled on retry. `verify` reports aggregate missing/corrupt/unknown-key/metadata-mismatch/hash-mismatch categories and never prints filenames. New writes remain encrypted throughout the mixed-mode window.
 
-Do not copy a live database or assemble a backup from its WAL sidecars. Use the supported portable
-backup workflow instead:
+Do not copy a live database or assemble a backup from its WAL sidecars. Use the supported portable backup workflow instead:
 
 ```text
 arcanum backup create --dry-run
@@ -791,107 +527,27 @@ arcanum backup restore <archive.arcbackup>
 arcanum backup migrate <archive.arcbackup> --output <new-archive.arcbackup>
 ```
 
-Creation uses the same typed inventory planner for dry-run and execution. Dry-run reports selected
-components, estimated files and bytes, missing required files, nonportable paths, and security
-warnings without asking for the recovery passphrase or publishing an archive. The scopes are `full`,
-`configuration-and-authored-assets`, `sessions-and-memory`, `specific-session`, and
-`metadata-only`. `--include` and `--exclude` accept only the documented component catalog; they are
-not an escape hatch for arbitrary host paths, and exclusion wins if a component is named in both.
-`compendium-settings` and `configuration` share `arcanum.json`: selecting only
-`compendium-settings` still captures it as Compendium-owned state even when `configuration` is
-excluded, while selecting both stores one configuration entry and records Compendium as a complete
-zero-entry alias. The same configuration inventory includes committed
-`arcanum.preset.json`/`arcanum.preset.rollback.json` sidecars only as an exact matching pair and only
-when no preset recovery journal is present. An incomplete/mismatched pair makes the component
-incomplete; a pending journal prevents capture of the possibly mid-transaction configuration until
-preset recovery completes. The transient `arcanum.preset.journal.json` is never backed up.
-Verification accepts the paired sidecars as authenticated configuration entries; a coordinated
-recovery installs them beside their matching `arcanum.json`, never by recreating the journal.
-`specific-session` requires `--session-id`; other scopes may record it as provenance without
-narrowing their inventory. `trusted-mcp-workspace-metadata`, `audit-logs`,
-`guardrail-logs`, and `master-api-key` are excluded by default and require explicit inclusion. A
-full backup includes global MCP configuration and warns that it may contain literal environment
-values.
+Creation uses the same typed inventory planner for dry-run and execution. Dry-run reports selected components, estimated files and bytes, missing required files, nonportable paths, and security warnings without asking for the recovery passphrase or publishing an archive. The scopes are `full`, `configuration-and-authored-assets`, `sessions-and-memory`, `specific-session`, and `metadata-only`. `--include` and `--exclude` accept only the documented component catalog; they are not an escape hatch for arbitrary host paths, and exclusion wins if a component is named in both. `compendium-settings` and `configuration` share `arcanum.json`: selecting only `compendium-settings` still captures it as Compendium-owned state even when `configuration` is excluded, while selecting both stores one configuration entry and records Compendium as a complete zero-entry alias. The same configuration inventory includes committed `arcanum.preset.json`/`arcanum.preset.rollback.json` sidecars only as an exact matching pair and only when no preset recovery journal is present. An incomplete/mismatched pair makes the component incomplete; a pending journal prevents capture of the possibly mid-transaction configuration until preset recovery completes. The transient `arcanum.preset.journal.json` is never backed up. Verification accepts the paired sidecars as authenticated configuration entries; a coordinated recovery installs them beside their matching `arcanum.json`, never by recreating the journal. `specific-session` requires `--session-id`; other scopes may record it as provenance without narrowing their inventory. `trusted-mcp-workspace-metadata`, `audit-logs`, `guardrail-logs`, and `master-api-key` are excluded by default and require explicit inclusion. A full backup includes global MCP configuration and warns that it may contain literal environment values.
 
-The default full scope captures a live, consistent SQLCipher snapshot through SQLite's online
-backup facility, the KDF metadata, configuration, attachment/upload/batch ciphertext, global
-Codex and Spells, CLI and The Forge local state, Compendium settings and certificates, and only the
-portable Grimoire secret plus active/referenced file keys needed by the selected data. The recovery
-material is re-exported inside the encrypted payload; the archive does not depend on the original
-OS credential store or raw Data Protection key ring. Environment-referenced secret values,
-OS credential-store internals,
-raw Data Protection keys, external workspace trees, daemon registration, and ephemeral process
-state are not portable components. A `specific-session` archive includes only matching Session
-attachments by default; uploaded and batch files are omitted because they have no Session
-ownership unless their global typed components are explicitly included. The version-1 physical
-Grimoire snapshot remains indivisible, so its manifest discloses collateral global/accounting rows
-rather than pretending to be a privacy-scoped logical export.
+The default full scope captures a live, consistent SQLCipher snapshot through SQLite's online backup facility, the KDF metadata, configuration, attachment/upload/batch ciphertext, global Codex and Spells, CLI and The Forge local state, Compendium settings and certificates, and only the portable Grimoire secret plus active/referenced file keys needed by the selected data. The recovery material is re-exported inside the encrypted payload; the archive does not depend on the original OS credential store or raw Data Protection key ring. Environment-referenced secret values, OS credential-store internals, raw Data Protection keys, external workspace trees, daemon registration, and ephemeral process state are not portable components. A `specific-session` archive includes only matching Session attachments by default; uploaded and batch files are omitted because they have no Session ownership unless their global typed components are explicitly included. The version-1 physical Grimoire snapshot remains indivisible, so its manifest discloses collateral global/accounting rows rather than pretending to be a privacy-scoped logical export.
 
-Every `.arcbackup` uses a versioned `ARCABACK` envelope. The small outer header contains only safe
-format, KDF, encryption, size, and creation-time facts. The canonical manifest, checksums, files,
-and portable recovery keys are inside a PBKDF2-HMAC-SHA256/AES-256-GCM authenticated encrypted
-payload streamed in bounded chunks. The current version records its salt and 600,000-iteration KDF
-parameters and uses one-MiB authenticated chunks. The passphrase comes from a hidden interactive
-prompt, the environment variable named by `--passphrase-env`, or the inherited descriptor named by
-`--passphrase-fd`; it is never accepted as a literal argv value. Interactive creation confirms the
-entry. Empty input is rejected without adding an arbitrary character-composition rule. Automation
-should prefer an inherited descriptor when practical and must protect any chosen environment
-variable from unrelated child processes.
+Every `.arcbackup` uses a versioned `ARCABACK` envelope. The small outer header contains only safe format, KDF, encryption, size, and creation-time facts. The canonical manifest, checksums, files, and portable recovery keys are inside a PBKDF2-HMAC-SHA256/AES-256-GCM authenticated encrypted payload streamed in bounded chunks. The current version records its salt and 600,000-iteration KDF parameters and uses one-MiB authenticated chunks. The passphrase comes from a hidden interactive prompt, the environment variable named by `--passphrase-env`, or the inherited descriptor named by `--passphrase-fd`; it is never accepted as a literal argv value. Interactive creation confirms the entry. Empty input is rejected without adding an arbitrary character-composition rule. Automation should prefer an inherited descriptor when practical and must protect any chosen environment variable from unrelated child processes.
 
-Creation uses an identity-owned, owner-only staging root directly beneath the destination parent.
-The encrypted archive temporary file, decrypted self-verification payload, database verification
-extraction, and generated snapshot material all remain inside that root. Arcanum durable-flushes
-the staged archive, performs a complete authentication/checksum self-verification plus database
-validation when included, and revalidates that the staged pathname still names the captured file
-before atomically publishing it to the sibling destination on the same filesystem.
-A replacement staging path is neither published nor deleted as though Arcanum owned it. Existing
-destinations are not replaced without the explicit overwrite flow. Missing or unreadable required
-files, a changed or linked source identity, cancellation, corruption, or failed verification leaves
-no published archive and never reports success. Inventory fingerprints every source with bounded
-streaming SHA-256; creation rejects a changed fingerprint even when an in-place rewrite preserves
-the file identity and byte count. Optional state that does not exist is recorded as `unavailable`;
-policy exclusions remain explicit in the encrypted manifest.
+Creation uses an identity-owned, owner-only staging root directly beneath the destination parent. The encrypted archive temporary file, decrypted self-verification payload, database verification extraction, and generated snapshot material all remain inside that root. Arcanum durable-flushes the staged archive, performs a complete authentication/checksum self-verification plus database validation when included, and revalidates that the staged pathname still names the captured file before atomically publishing it to the sibling destination on the same filesystem. A replacement staging path is neither published nor deleted as though Arcanum owned it. Existing destinations are not replaced without the explicit overwrite flow. Missing or unreadable required files, a changed or linked source identity, cancellation, corruption, or failed verification leaves no published archive and never reports success. Inventory fingerprints every source with bounded streaming SHA-256; creation rejects a changed fingerprint even when an in-place rewrite preserves the file identity and byte count. Optional state that does not exist is recorded as `unavailable`; policy exclusions remain explicit in the encrypted manifest.
 
-For each database-backed blob, inventory validates the version, bounds, owning purpose, and key id
-from the `ARCABLOB` envelope on the same no-follow file handle used for its SHA-256 fingerprint,
-and confirms that descriptor again after hashing. The captured ciphertext's key id is authoritative
-for portable recovery export when a live key rotation has replaced bytes before committing their
-database metadata. Encrypted metadata paired with plaintext, a malformed or purpose-mismatched
-envelope, a descriptor changed during hashing, or an unavailable captured key makes creation
-incomplete before publication; it does not add an irrelevant snapshot key or block normal live
-rotation.
+For each database-backed blob, inventory validates the version, bounds, owning purpose, and key id from the `ARCABLOB` envelope on the same no-follow file handle used for its SHA-256 fingerprint, and confirms that descriptor again after hashing. The captured ciphertext's key id is authoritative for portable recovery export when a live key rotation has replaced bytes before committing their database metadata. Encrypted metadata paired with plaintext, a malformed or purpose-mismatched envelope, a descriptor changed during hashing, or an unavailable captured key makes creation incomplete before publication; it does not add an irrelevant snapshot key or block normal live rotation.
 
-`backup inspect` without `--decrypt` or an explicit passphrase source shows only the safe outer
-header. `--decrypt` prompts when needed; it and the explicit sources authenticate one bounded
-encrypted chunk at a time, skip entry content, and retain only bounded path metadata plus the
-capped final manifest in memory. Inspection creates no plaintext staging file. `backup verify`
-authenticates the complete structure and
-every chunk, compares each SHA-256 and size, and checks the decrypted
-database and schema in an owner-only temporary root before removing it. Wrong passphrases and
-modified authenticated bytes share a sanitized authentication failure. `backup list` reads outer
-headers in the selected backup directory and does not decrypt archives.
+`backup inspect` without `--decrypt` or an explicit passphrase source shows only the safe outer header. `--decrypt` prompts when needed; it and the explicit sources authenticate one bounded encrypted chunk at a time, skip entry content, and retain only bounded path metadata plus the capped final manifest in memory. Inspection creates no plaintext staging file. `backup verify` authenticates the complete structure and every chunk, compares each SHA-256 and size, and checks the decrypted database and schema in an owner-only temporary root before removing it. Wrong passphrases and modified authenticated bytes share a sanitized authentication failure. `backup list` reads outer headers in the selected backup directory and does not decrypt archives.
 
 #### Restoring a backup
 
-`backup restore` is the supported recovery path. It never restores half a generation: the database,
-encrypted blobs, configuration and authored assets, and the archive's portable recovery material
-move together, or nothing moves at all.
+`backup restore` is the supported recovery path. It never restores half a generation: the database, encrypted blobs, configuration and authored assets, and the archive's portable recovery material move together, or nothing moves at all.
 
-Run `--dry-run` first. It authenticates the archive, validates every checksum and the Grimoire
-snapshot, validates your path mappings, and reports how much free space the restore needs — all
-without touching the destination. The plan it prints is exactly what a real restore would execute.
+Run `--dry-run` first. It authenticates the archive, validates every checksum and the Grimoire snapshot, validates your path mappings, and reports how much free space the restore needs — all without touching the destination. The plan it prints is exactly what a real restore would execute.
 
-A real restore refuses before staging when the archive's format is newer than this build supports
-(with upgrade guidance), when the archive carries no portable recovery material, when the
-destination volume cannot hold the restored generation alongside the current installation, or when a
-running host or another restore holds the maintenance lock. Stop the host and try again.
+A real restore refuses before staging when the archive's format is newer than this build supports (with upgrade guidance), when the archive carries no portable recovery material, when the destination volume cannot hold the restored generation alongside the current installation, or when a running host or another restore holds the maintenance lock. Stop the host and try again.
 
-Replacing an installation is destructive, so it asks for confirmation and writes a pre-restore
-safety backup first; `--no-safety-backup` records that you declined rather than skipping silently.
-The commit itself is two directory renames guarded by a journal, so an interrupted restore resolves
-on the next start to a complete commit, a complete rollback, or an explicit reconciliation request —
-never a half-swapped tree. Your Data Protection key ring and existing archives are carried across
-the swap; they belong to this machine, not to the archive.
+Replacing an installation is destructive, so it asks for confirmation and writes a pre-restore safety backup first; `--no-safety-backup` records that you declined rather than skipping silently. The commit itself is two directory renames guarded by a journal, so an interrupted restore resolves on the next start to a complete commit, a complete rollback, or an explicit reconciliation request — never a half-swapped tree. Your Data Protection key ring and existing archives are carried across the swap; they belong to this machine, not to the archive.
 
 Three conflict modes:
 
@@ -901,44 +557,17 @@ Three conflict modes:
 | `new-profile-root` | Materializes the archive into an empty directory and leaves the current installation and its secrets untouched. Data only: adopt it with a `replace-installation` restore before using it. |
 | `import-selected-sessions` | Merges named Sessions into the live installation. Colliding ids are remapped, attachment payloads that already match are deduplicated, and the archive's file-encryption keys are added to your ring without changing its active key. |
 
-Paths recorded on the source machine are rewritten with typed `--map <kind>=<from>=<to>` mappings
-covering campaign roots, workspace roots, Codex and Spell roots, and attachment source provenance.
-Windows and Unix roots interoperate: separators are converted, drive and UNC roots match
-case-insensitively while Unix roots do not, and mappings that are ambiguous, that escape
-containment, that collide on one destination, or that name something invalid on the target platform
-are rejected before anything is staged. Anything no mapping claims is reported rather than guessed
-at.
+Paths recorded on the source machine are rewritten with typed `--map <kind>=<from>=<to>` mappings covering campaign roots, workspace roots, Codex and Spell roots, and attachment source provenance. Windows and Unix roots interoperate: separators are converted, drive and UNC roots match case-insensitively while Unix roots do not, and mappings that are ambiguous, that escape containment, that collide on one destination, or that name something invalid on the target platform are rejected before anything is staged. Anything no mapping claims is reported rather than guessed at.
 
-Restored attachment snapshots remain readable even when the originating workspace does not exist
-here — but their live source is marked `WorkspaceUnavailable` and stays unrefreshable until you
-rebind that workspace and it passes the normal containment, identity, Sanctum, and MCP trust checks.
-Two things are deliberately not inherited: trusted MCP workspace metadata is withheld rather than
-installed, and `Host:ListenAny` is reset to `false`. Both are authorization decisions made on the
-source machine, and neither transfers. The archived master API key is likewise left alone unless you
-pass `--restore-master-api-key`.
+Restored attachment snapshots remain readable even when the originating workspace does not exist here — but their live source is marked `WorkspaceUnavailable` and stays unrefreshable until you rebind that workspace and it passes the normal containment, identity, Sanctum, and MCP trust checks. Two things are deliberately not inherited: trusted MCP workspace metadata is withheld rather than installed, and `Host:ListenAny` is reset to `false`. Both are authorization decisions made on the source machine, and neither transfers. The archived master API key is likewise left alone unless you pass `--restore-master-api-key`.
 
-`backup migrate` rewrites a supported archive at the current container format through the
-authoritative codec, writing a new file and never modifying the source.
+`backup migrate` rewrites a supported archive at the current container format through the authoritative codec, writing a new file and never modifying the source.
 
-If encrypted blobs exist but the restored key set is missing, corrupt, or lacks a referenced key id,
-Arcanum fails closed and never generates a replacement. `/api/health` and `arcanum doctor` expose a
-`FileEncryption` check with key availability plus bounded encrypted/legacy-plaintext/corrupt counts,
-but never key or content data. Legacy plaintext blobs are never silently served; migrate and verify
-them before relying on a portable backup. Full format, rotation, and atomicity details are in
-[DESIGN §5.4.6](Arcanum.DESIGN.md#546-versioned-authenticated-blob-storage) and
-[§5.4.8](Arcanum.DESIGN.md#548-versioned-encrypted-portable-backups).
+If encrypted blobs exist but the restored key set is missing, corrupt, or lacks a referenced key id, Arcanum fails closed and never generates a replacement. `/api/health` and `arcanum doctor` expose a `FileEncryption` check with key availability plus bounded encrypted/legacy-plaintext/corrupt counts, but never key or content data. Legacy plaintext blobs are never silently served; migrate and verify them before relying on a portable backup. Full format, rotation, and atomicity details are in [DESIGN §5.4.6](Arcanum.DESIGN.md#546-versioned-authenticated-blob-storage) and [§5.4.8](Arcanum.DESIGN.md#548-versioned-encrypted-portable-backups).
 
 ### Unified data retention and deletion
 
-`Arcanum:Retention` is the single policy surface for the Grimoire, encrypted blob trees, dated
-JSONL logs, and derived indexes. Automatic sweeps are off by default. Active/archived sessions,
-Entries, attachments, Saga, and Lexicon rules also default disabled so an upgrade does not begin
-deleting user conversation or durable-memory content. Enabled defaults cover shorter-lived or
-derived classes; the exact rules, days, and clamps are in
-[Compendium's configuration reference](Compendium.README.md#integrations-execution-cost-retention-daemon-and-cli).
-Inference and guardrail audit writers only append to the current dated JSONL file; they never scan
-or delete older files. Those files age out only through the same bounded, durable plan/apply path
-used for every other retention class, whether a sweep is started manually or by the scheduler.
+`Arcanum:Retention` is the single policy surface for the Grimoire, encrypted blob trees, dated JSONL logs, and derived indexes. Automatic sweeps are off by default. Active/archived sessions, Entries, attachments, Saga, and Lexicon rules also default disabled so an upgrade does not begin deleting user conversation or durable-memory content. Enabled defaults cover shorter-lived or derived classes; the exact rules, days, and clamps are in [Compendium's configuration reference](Compendium.README.md#integrations-execution-cost-retention-daemon-and-cli). Inference and guardrail audit writers only append to the current dated JSONL file; they never scan or delete older files. Those files age out only through the same bounded, durable plan/apply path used for every other retention class, whether a sweep is started manually or by the scheduler.
 
 Use the API-backed CLI rather than editing storage directly:
 
@@ -956,62 +585,19 @@ arcanum data factory-reset --global --dry-run
 arcanum data factory-reset --all --apply
 ```
 
-Dry-run and apply call the same server-owned planner. A plan identifies candidates and reports rows,
-files, estimated bytes, derived records, blockers, and conflicts by typed data class. Apply rebuilds
-the plan immediately before mutation; API callers may supply the preview's `planId` as
-`expectedPlanId` to fail if the candidate graph changed. CLI `--dry-run` never mutates. CLI
-`--apply` fetches and displays the exact current plan, confirms its id and totals, and binds that id
-to the apply request without another user step. Under `--json --yes`, the preview remains silent and
-stdout contains exactly one final apply result. Human mode prints concise operator summaries for
-status, settings, plan, and apply results; `--json` preserves the exact API payload. Every mutation
-requires interactive approval or the recursive `--yes` switch and still uses normal API-key
-authentication.
+Dry-run and apply call the same server-owned planner. A plan identifies candidates and reports rows, files, estimated bytes, derived records, blockers, and conflicts by typed data class. Apply rebuilds the plan immediately before mutation; API callers may supply the preview's `planId` as `expectedPlanId` to fail if the candidate graph changed. CLI `--dry-run` never mutates. CLI `--apply` fetches and displays the exact current plan, confirms its id and totals, and binds that id to the apply request without another user step. Under `--json --yes`, the preview remains silent and stdout contains exactly one final apply result. Human mode prints concise operator summaries for status, settings, plan, and apply results; `--json` preserves the exact API payload. Every mutation requires interactive approval or the recursive `--yes` switch and still uses normal API-key authentication.
 
-Deletion follows explicit dependencies. An attachment deletion removes its metadata, encrypted
-bytes, chunks, embeddings, and index state; a session deletion additionally removes its Entries and
-Entry embeddings. Workspace chunks and their embeddings move together. Uploaded files are retained
-while any batch still references them, and in-progress batches are conflicts. Pinned Entries,
-pinned context/attachments, `retention.protectedSessionIds`, active durable operations, active
-inference/idempotency work, and outstanding budget reservations block rather than disappear.
-Accounting uses `InferenceRuns`, `BillableOperations`, `BudgetReservations`, and `CostAdjustments`,
-plus standalone adjustments and `BudgetAlerts`; it never uses `Sessions.TotalCostUsd`, and its
-effective age is at least `accountingMinimumDays`. Managed files are captured and revalidated by
-no-follow identity at deletion time, so a substituted path leaves both bytes and metadata intact
-and fails closed.
+Deletion follows explicit dependencies. An attachment deletion removes its metadata, encrypted bytes, chunks, embeddings, and index state; a session deletion additionally removes its Entries and Entry embeddings. Workspace chunks and their embeddings move together. Uploaded files are retained while any batch still references them, and in-progress batches are conflicts. Pinned Entries, pinned context/attachments, `retention.protectedSessionIds`, active durable operations, active inference/idempotency work, and outstanding budget reservations block rather than disappear. Accounting uses `InferenceRuns`, `BillableOperations`, `BudgetReservations`, and `CostAdjustments`, plus standalone adjustments and `BudgetAlerts`; it never uses `Sessions.TotalCostUsd`, and its effective age is at least `accountingMinimumDays`. Managed files are captured and revalidated by no-follow identity at deletion time, so a substituted path leaves both bytes and metadata intact and fails closed.
 
-Saga and Lexicon remain separate durable stores. Deleting a source attachment does not silently
-delete independently retained facts; their typed provenance remains and changes to
-`Unavailable`/unresolved when the source no longer exists. Use an explicit `reset-memory --scope
-saga` or `--scope lexicon` only when those stores themselves are the intended target.
+Saga and Lexicon remain separate durable stores. Deleting a source attachment does not silently delete independently retained facts; their typed provenance remains and changes to `Unavailable`/unresolved when the source no longer exists. Use an explicit `reset-memory --scope saga` or `--scope lexicon` only when those stores themselves are the intended target.
 
-Sweeps are bounded by `maxItemsPerSweep`, skip stable blocked rows without spending that candidate
-quota, checkpoint at the effective checkpoint interval, run as restart-idempotent durable
-operations, and verify the selected rows, derived records, and owned files after each planned
-candidate. Prune and explicit mutations start atomically under one retention single-flight lease;
-elapsed-time heartbeats retain ownership even during one slow candidate. This is candidate-local
-reconciliation, not a global orphan vacuum. A missing selected row or already-unlinked owned file
-is a converged state, so repeating an interrupted sweep is safe. Inspect or repair durable state
-with `arcanum operation`.
+Sweeps are bounded by `maxItemsPerSweep`, skip stable blocked rows without spending that candidate quota, checkpoint at the effective checkpoint interval, run as restart-idempotent durable operations, and verify the selected rows, derived records, and owned files after each planned candidate. Prune and explicit mutations start atomically under one retention single-flight lease; elapsed-time heartbeats retain ownership even during one slow candidate. This is candidate-local reconciliation, not a global orphan vacuum. A missing selected row or already-unlinked owned file is a converged state, so repeating an interrupted sweep is safe. Inspect or repair durable state with `arcanum operation`.
 
-Deletion is logical database deletion plus owned-file unlinking, **not a physical secure-erasure
-guarantee**. SSD wear leveling, copy-on-write filesystems, filesystem snapshots, SQLCipher free
-pages/WAL copies, operating-system caches, and independent backups can retain recoverable copies.
-Encryption protects retained bytes but does not make per-record unlinking equivalent to destroying
-all copies.
+Deletion is logical database deletion plus owned-file unlinking, **not a physical secure-erasure guarantee**. SSD wear leveling, copy-on-write filesystems, filesystem snapshots, SQLCipher free pages/WAL copies, operating-system caches, and independent backups can retain recoverable copies. Encryption protects retained bytes but does not make per-record unlinking equivalent to destroying all copies.
 
-Installation reset requires an explicit scope and mode. Workspace scope removes exact-root derived
-rows and the selected registered Campaign's `.arcanum` tree while preserving global daemon state.
-Global scope removes installation-wide state, configured credential identities, and daemon
-registration. All scope captures the current Campaign before running both phases. Dry-run performs
-no writes. Apply prompts for the exact text `RESET`; automation requires both `--yes` and `--force`.
-Recognized `.arcbackup` files and nested registered Campaign roots remain in place. An owner-only
-active record makes interruption resumable, blocks host startup until recovery completes, and is
-retired only after final file, backup, and credential verification succeeds.
+Installation reset requires an explicit scope and mode. Workspace scope removes exact-root derived rows and the selected registered Campaign's `.arcanum` tree while preserving global daemon state. Global scope removes installation-wide state, configured credential identities, and daemon registration. All scope captures the current Campaign before running both phases. Dry-run performs no writes. Apply prompts for the exact text `RESET`; automation requires both `--yes` and `--force`. Recognized `.arcbackup` files and nested registered Campaign roots remain in place. An owner-only active record makes interruption resumable, blocks host startup until recovery completes, and is retired only after final file, backup, and credential verification succeeds.
 
-This feature uses the existing canonical tables and file layouts. It adds no schema object and
-requires no local/test database recreation. If a later retention change alters a canonical schema,
-the pre-user-data reinstall policy in [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)
-applies at that time.
+This feature uses the existing canonical tables and file layouts. It adds no schema object and requires no local/test database recreation. If a later retention change alters a canonical schema, the pre-user-data reinstall policy in [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency) applies at that time.
 
 ### Optional HTTPS
 
@@ -1021,11 +607,7 @@ HTTP remains the default on **loopback**. `Arcanum:Host:Https:Enabled` adds a TL
 
 ## Distribution and first run
 
-Windows and Linux packages contain separate archives for Arcanum, Compendium, and The Forge plus
-`SHA256SUMS`. The `arcanum` executable is Native AOT; desktop apps are self-contained multi-file
-Avalonia folders. These archives are unsigned by default. Windows SmartScreen can warn; optional
-Authenticode requires the Windows packager's `-Sign` flag and `WINDOWS_CERT_PATH` /
-`WINDOWS_CERT_PASSWORD`.
+Windows and Linux packages contain separate archives for Arcanum, Compendium, and The Forge plus `SHA256SUMS`. The `arcanum` executable is Native AOT; desktop apps are self-contained multi-file Avalonia folders. These archives are unsigned by default. Windows SmartScreen can warn; optional Authenticode requires the Windows packager's `-Sign` flag and `WINDOWS_CERT_PATH` / `WINDOWS_CERT_PASSWORD`.
 
 Linux:
 
@@ -1048,25 +630,11 @@ Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
 
 ### Guided setup
 
-`arcanum setup` is the guided first run. It walks eight explicit steps — runtime edition and privacy
-posture, provider endpoint and model, provider credential, optional Perplexity web-research
-credential, live provider validation, workspace and Campaign, onboarding preset, and the final diff —
-and then commits. Nothing is written until you accept the plan, so Ctrl+C or end of input at any step
-leaves configuration, credentials, CLI context, and the workspace registry unchanged. Re-running it
-and accepting the current values is a no-op, not a reset: the wizard owns only `edition`,
-`host.listenAny`, `defaultModel`, `workspaces.defaultRoot`, and the selected provider entry.
+`arcanum setup` is the guided first run. It walks eight explicit steps — runtime edition and privacy posture, provider endpoint and model, provider credential, optional Perplexity web-research credential, live provider validation, workspace and Campaign, onboarding preset, and the final diff — and then commits. Nothing is written until you accept the plan, so Ctrl+C or end of input at any step leaves configuration, credentials, CLI context, and the workspace registry unchanged. Re-running it and accepting the current values is a no-op, not a reset: the wizard owns only `edition`, `host.listenAny`, `defaultModel`, `workspaces.defaultRoot`, and the selected provider entry.
 
-The wizard authors OpenAI-compatible endpoints, including Ollama and other local model servers
-through their own `/v1` endpoint. A Familiar has no endpoint and no credential to collect, so add one
-in Compendium or by hand instead. Validation is one guarded `GET {endpoint}/models` with a strict
-five-second timeout: non-billable, in-process, and usable before `arcanum serve` has ever started. It
-tells you which dependency failed — endpoint rejected, TLS failure, authentication failure, model
-absent, malformed response, timeout, or unreachable.
+The wizard authors OpenAI-compatible endpoints, including Ollama and other local model servers through their own `/v1` endpoint. A Familiar has no endpoint and no credential to collect, so add one in Compendium or by hand instead. Validation is one guarded `GET {endpoint}/models` with a strict five-second timeout: non-billable, in-process, and usable before `arcanum serve` has ever started. It tells you which dependency failed — endpoint rejected, TLS failure, authentication failure, model absent, malformed response, timeout, or unreachable.
 
-Credentials go into the OS credential manager (macOS Keychain, Windows Credential Manager, Linux
-Secret Service) with an owner-only Data Protection mirror for headless hosts, so a finished run is
-ready for `arcanum run` without exporting anything. Provider credentials still resolve from
-`ARCANUM_PROVIDER_<NAME>_API_KEY` first when it is set, so a per-process override always wins.
+Credentials go into the OS credential manager (macOS Keychain, Windows Credential Manager, Linux Secret Service) with an owner-only Data Protection mirror for headless hosts, so a finished run is ready for `arcanum run` without exporting anything. Provider credentials still resolve from `ARCANUM_PROVIDER_<NAME>_API_KEY` first when it is set, so a per-process override always wins.
 
 For automation, `--plan` prints the plan and writes nothing, and `--apply` commits without prompting:
 
@@ -1076,19 +644,9 @@ printf '%s\n' "$OPENAI_KEY" | arcanum setup --apply \
   --preset general-assistant --workspace . --provider-key-stdin
 ```
 
-Secrets are never accepted as arguments. A credential may only arrive on redirected stdin
-(`--provider-key-stdin`, `--research-key-stdin`) or as an environment reference
-(`--provider-key-env`, `--research-key-env`), so nothing secret reaches argv, the process table, or
-shell history. Use `arcanum key list` afterwards to see every credential identity Arcanum owns with
-presence and status only.
+Secrets are never accepted as arguments. A credential may only arrive on redirected stdin (`--provider-key-stdin`, `--research-key-stdin`) or as an environment reference (`--provider-key-env`, `--research-key-env`), so nothing secret reaches argv, the process table, or shell history. Use `arcanum key list` afterwards to see every credential identity Arcanum owns with presence and status only.
 
-Run as a normal user; elevation is not required. Extract the Arcanum, The Forge, and Compendium
-archives beneath the same parent directory. `arcanum open ...` discovers the shipped sibling
-folders (`the-forge-win-x64` / `compendium-win-x64`, or the matching
-`the-forge-linux-x64|arm64` / `compendium-linux-x64|arm64` folders for the active architecture).
-The applications can also be launched directly from those extracted archives. Linux shared key
-discovery requires `libsecret` and a running Secret Service; otherwise The Forge prompts for a key
-or accepts process-only `THEFORGE_ARCANUM_KEY`.
+Run as a normal user; elevation is not required. Extract the Arcanum, The Forge, and Compendium archives beneath the same parent directory. `arcanum open ...` discovers the shipped sibling folders (`the-forge-win-x64` / `compendium-win-x64`, or the matching `the-forge-linux-x64|arm64` / `compendium-linux-x64|arm64` folders for the active architecture). The applications can also be launched directly from those extracted archives. Linux shared key discovery requires `libsecret` and a running Secret Service; otherwise The Forge prompts for a key or accepts process-only `THEFORGE_ARCANUM_KEY`.
 
 Local package creation:
 
@@ -1100,47 +658,24 @@ Local package creation:
 .\scripts\packaging\windows\package-windows.ps1 -Version 0.1.0-beta.1 -OutputDir .\dist
 ```
 
-Use `-SkipForge` for Windows Arcanum + Compendium only. Cross-OS builds are manual GitHub workflows:
-`Private beta release (Windows / Linux)` builds all three products; `Build Windows x64 (Arcanum +
-Compendium)` omits The Forge.
+Use `-SkipForge` for Windows Arcanum + Compendium only. Cross-OS builds are manual GitHub workflows: `Private beta release (Windows / Linux)` builds all three products; `Build Windows x64 (Arcanum + Compendium)` omits The Forge.
 
-The manual **Release macOS arm64** workflow builds on `macos-15-xlarge`, signs with a Developer ID
-Application certificate, notarizes all outputs, and creates or updates a draft GitHub Release.
-Required repository secrets are `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
-`APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_SPECIFIC_PASSWORD`. Enter a
-version such as `0.1.0-beta.1`; build metadata is rejected. Outputs are:
+The manual **Release macOS arm64** workflow builds on `macos-15-xlarge`, signs with a Developer ID Application certificate, notarizes all outputs, and creates or updates a draft GitHub Release. Required repository secrets are `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_SPECIFIC_PASSWORD`. Enter a version such as `0.1.0-beta.1`; build metadata is rejected. Outputs are:
 
-- `arcanum-osx-arm64.zip` — signed, notarized folder-based self-contained CLI plus this document as
-  `README.md`; zip is not stapled;
+- `arcanum-osx-arm64.zip` — signed, notarized folder-based self-contained CLI plus this document as `README.md`; zip is not stapled;
 - `compendium-osx-arm64.dmg` — signed, notarized, stapled `Compendium.app`; and
 - `the-forge-osx-arm64.dmg` — signed, notarized, stapled `The Forge.app`.
 
-Signing is mandatory in CI; `--skip-sign` is only for local package-structure smoke tests. Spot-check
-the draft on a clean Mac, then publish it. Rerunning the same version replaces its release assets.
-Full distribution contracts are in [DESIGN §19.12](Arcanum.DESIGN.md#1912-build-packaging-and-maintenance).
+Signing is mandatory in CI; `--skip-sign` is only for local package-structure smoke tests. Spot-check the draft on a clean Mac, then publish it. Rerunning the same version replaces its release assets. Full distribution contracts are in [DESIGN §19.12](Arcanum.DESIGN.md#1912-build-packaging-and-maintenance).
 
 ## Current operator limitations
 
-- Tool-child filesystem confinement uses deprecated Seatbelt on macOS and AppContainer plus Job
-  Objects on Windows; Linux fails closed unless unsandboxed process tools are explicitly
-  acknowledged. No platform provides child-process network isolation.
-- `workspace_check` is advertised only on an eligible macOS host and remains unavailable on
-  Linux/Windows.
-- sqlite-vec is not shipped by default. Managed SIMD Divination streams every matching BLOB row
-  with caller cancellation and bounded top-K memory; runtime grows linearly with corpus size.
-  `/api/meta`, health, and `arcanum doctor` report the active mode and compatibility budget `0`
-  (no total row budget).
-- OpenAI support is a compatibility subset. Moderation, image-generation/editing, and audio routes
-  return `501 not_supported`; batch processing supports `/v1/chat/completions` and forces tools off.
-- Durable recovery is single-host and handler-driven, not a distributed workflow engine. Live
-  streams and Wards remain ephemeral. A deferred or unsupported/corrupt checkpoint is explicit
-  `ReconciliationRequired`/Degraded health and is repaired with `arcanum operation ...`.
-- Subagents are intentionally model-only and cannot recursively delegate because child tools are
-  disabled; there is no depth counter. They inherit no parent transcript,
-  session memory, workspace/Codex/RAG context, or tools; the parent must pass self-contained
-  instructions and any file content explicitly. Attachment files additionally require an opaque id
-  from the parent's current-turn materialized allowlist. A crashed `subagent` durable operation is
-  abandoned safely rather than replayed.
+- Tool-child filesystem confinement uses deprecated Seatbelt on macOS and AppContainer plus Job Objects on Windows; Linux fails closed unless unsandboxed process tools are explicitly acknowledged. No platform provides child-process network isolation.
+- `workspace_check` is advertised only on an eligible macOS host and remains unavailable on Linux/Windows.
+- sqlite-vec is not shipped by default. Managed SIMD Divination streams every matching BLOB row with caller cancellation and bounded top-K memory; runtime grows linearly with corpus size. `/api/meta`, health, and `arcanum doctor` report the active mode and compatibility budget `0` (no total row budget).
+- OpenAI support is a compatibility subset. Moderation, image-generation/editing, and audio routes return `501 not_supported`; batch processing supports `/v1/chat/completions` and forces tools off.
+- Durable recovery is single-host and handler-driven, not a distributed workflow engine. Live streams and Wards remain ephemeral. A deferred or unsupported/corrupt checkpoint is explicit `ReconciliationRequired`/Degraded health and is repaired with `arcanum operation ...`.
+- Subagents are intentionally model-only and cannot recursively delegate because child tools are disabled; there is no depth counter. They inherit no parent transcript, session memory, workspace/Codex/RAG context, or tools; the parent must pass self-contained instructions and any file content explicitly. Attachment files additionally require an opaque id from the parent's current-turn materialized allowlist. A crashed `subagent` durable operation is abandoned safely rather than replayed.
 
 ---
 
@@ -1162,9 +697,7 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 
 ## CLI quick reference
 
-This section is intentionally condensed. See
-[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for the complete command tree and
-option-by-option behavior.
+This section is intentionally condensed. See [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for the complete command tree and option-by-option behavior.
 
 ### First run
 
@@ -1177,16 +710,13 @@ arcanum run "Hello"                 # the wizard prints the exact next command f
 
 ### Shell completion
 
-Completion is generated from the canonical command tree, so it offers exactly the commands and
-options the binary accepts. Generation reads no state and produces identical bytes on any machine.
+Completion is generated from the canonical command tree, so it offers exactly the commands and options the binary accepts. Generation reads no state and produces identical bytes on any machine.
 
 ```bash
 arcanum completion install zsh      # names the target, confirms, then writes atomically
 ```
 
-Install shows the exact destination before asking and prints the sourcing step for that shell. It
-is a mutation, so a redirected invocation without `--yes` fails closed rather than editing shell
-configuration unattended. To place the script yourself instead:
+Install shows the exact destination before asking and prints the sourcing step for that shell. It is a mutation, so a redirected invocation without `--yes` fails closed rather than editing shell configuration unattended. To place the script yourself instead:
 
 ```bash
 arcanum completion bash > ~/.local/share/bash-completion/completions/arcanum
@@ -1199,9 +729,7 @@ arcanum completion bash > ~/.local/share/bash-completion/completions/arcanum
 | fish | `~/.config/fish/completions/arcanum.fish` | none; loaded on next shell start |
 | powershell | `~/.config/powershell/arcanum.completion.ps1` | dot-source it from `$PROFILE` |
 
-Completing a live resource — a model, Campaign, Session, Spell, and so on — asks the running host.
-That path never starts the host, gives up on a short budget rather than making the shell wait, and
-prints nothing when the host is unavailable, so completion silently falls back to the static tree.
+Completing a live resource — a model, Campaign, Session, Spell, and so on — asks the running host. That path never starts the host, gives up on a short budget rather than making the shell wait, and prints nothing when the host is unavailable, so completion silently falls back to the static tree.
 
 ### Discovering commands
 
@@ -1211,27 +739,15 @@ arcanum help sessions               # plain-language guide with runnable command
 arcanum run --help                  # options plus runnable examples for one command
 ```
 
-Every runnable command's `--help` ends with an `Examples:` section. Those examples are parse-tested
-against the live tree, so they cannot go stale; a command with no safe example says why instead.
+Every runnable command's `--help` ends with an `Examples:` section. Those examples are parse-tested against the live tree, so they cannot go stale; a command with no safe example says why instead.
 
-A mistyped or removed command exits `2` naming the canonical replacement or the nearest command. It
-is only printed — Arcanum never runs a suggestion for you. The failing verb is found by the parser
-rather than by position, so `arcanum campain list` still names `campaign`, and a global option typed
-before the verb does not suppress the diagnostic.
+A mistyped or removed command exits `2` naming the canonical replacement or the nearest command. It is only printed — Arcanum never runs a suggestion for you. The failing verb is found by the parser rather than by position, so `arcanum campain list` still names `campaign`, and a global option typed before the verb does not suppress the diagnostic.
 
 ### Safe resource selection
 
-Commands that target a session, campaign, workspace, prompt, spell, Apprentice, model, provider,
-MCP server, or diagnostic tool accept an exact ID, an exact case-insensitive name, or a unique name prefix. In an
-interactive terminal, omit the selector to open a searchable picker; press Escape to cancel before
-any mutation. MCP server/tool ambiguity may also open that picker in a real interactive terminal.
-Redirected stdin/stdout and `--json` never prompt or guess: ambiguity and missing selectors exit
-with candidate summaries so scripts can provide an exact value. Exact IDs retain deterministic
-scripting behavior.
+Commands that target a session, campaign, workspace, prompt, spell, Apprentice, model, provider, MCP server, or diagnostic tool accept an exact ID, an exact case-insensitive name, or a unique name prefix. In an interactive terminal, omit the selector to open a searchable picker; press Escape to cancel before any mutation. MCP server/tool ambiguity may also open that picker in a real interactive terminal. Redirected stdin/stdout and `--json` never prompt or guess: ambiguity and missing selectors exit with candidate summaries so scripts can provide an exact value. Exact IDs retain deterministic scripting behavior.
 
-Pickers page through large collections and show only safe resource-specific columns. Recent choices
-are stored locally as an owner-only ordering hint, never as tie-breaking authority. Picker output
-does not include provider endpoints/credential references or MCP URL/command/argument details.
+Pickers page through large collections and show only safe resource-specific columns. Recent choices are stored locally as an owner-only ordering hint, never as tie-breaking authority. Picker output does not include provider endpoints/credential references or MCP URL/command/argument details.
 
 ```bash
 arcanum campaign show campaign-alpha  # exact name or unique prefix
@@ -1244,8 +760,7 @@ arcanum mcp show
 
 ### Portable backup
 
-Use the typed encrypted workflow for a consistent recovery generation; do not copy a live
-database or its WAL files:
+Use the typed encrypted workflow for a consistent recovery generation; do not copy a live database or its WAL files:
 
 ```bash
 arcanum backup create --dry-run
@@ -1259,26 +774,11 @@ arcanum backup restore ~/.config/arcanum/backups/example.arcbackup --yes   # glo
 arcanum backup migrate ~/.config/arcanum/backups/example.arcbackup -o ~/migrated.arcbackup
 ```
 
-Create and verify prompt securely when no automation source is supplied; interactive create asks
-twice. Automation supplies either the *name* of an environment variable through `--passphrase-env`
-or an inherited descriptor through `--passphrase-fd`, never a literal passphrase argument. Outer
-inspect and list do not decrypt manifests or prompt. Creation is no-clobber unless `--overwrite` is
-explicit, and `--dry-run` uses the creation inventory without asking for a recovery passphrase or
-publishing an archive. Because dry-run never consumes a passphrase source, a parsed negative
-descriptor or simultaneous `--passphrase-env` and `--passphrase-fd` flags do not restrict the
-inventory preview; live creation still validates the source it will read. Scope/component and
-recovery limitations are in
-[the operator backup section](#encrypted-blob-key-backup-and-recovery); exact flags are in the
-[command reference](Arcanum.Command.Reference.md#arcanum-backup).
+Create and verify prompt securely when no automation source is supplied; interactive create asks twice. Automation supplies either the *name* of an environment variable through `--passphrase-env` or an inherited descriptor through `--passphrase-fd`, never a literal passphrase argument. Outer inspect and list do not decrypt manifests or prompt. Creation is no-clobber unless `--overwrite` is explicit, and `--dry-run` uses the creation inventory without asking for a recovery passphrase or publishing an archive. Because dry-run never consumes a passphrase source, a parsed negative descriptor or simultaneous `--passphrase-env` and `--passphrase-fd` flags do not restrict the inventory preview; live creation still validates the source it will read. Scope/component and recovery limitations are in [the operator backup section](#encrypted-blob-key-backup-and-recovery); exact flags are in the [command reference](Arcanum.Command.Reference.md#arcanum-backup).
 
 ### Unified prompt execution
 
-`arcanum run` is the primary flexible one-turn entry point. The default route is the ordinary Agent
-Loop; `--research` selects progress-driven server-side research, and `--spell <name-or-unique-prefix>`
-forces a named Spell through the same production Spell/dependency/tool policy. Only `--research`
-plus `--spell` conflicts. All routes resolve explicit Campaign, Workspace, Session, and Model first,
-then active context, current-directory detection, and server defaults. Recursive `--no-context`,
-`--plain`, and `--json` keep their normal meanings.
+`arcanum run` is the primary flexible one-turn entry point. The default route is the ordinary Agent Loop; `--research` selects progress-driven server-side research, and `--spell <name-or-unique-prefix>` forces a named Spell through the same production Spell/dependency/tool policy. Only `--research` plus `--spell` conflicts. All routes resolve explicit Campaign, Workspace, Session, and Model first, then active context, current-directory detection, and server defaults. Recursive `--no-context`, `--plain`, and `--json` keep their normal meanings.
 
 ```bash
 arcanum run "Fix this bug"
@@ -1288,44 +788,15 @@ arcanum run --research "What changed upstream?" --sources 8
 arcanum run --dry-run --show-content "Show the planned static turn"
 ```
 
-Positional words form the instruction. Redirected stdin remains a separate untrusted text source,
-so supplying both never drops or replaces either value. With neither and a real TTY, the command
-prompts once for one line. Stdin is counted while reading and capped at exactly 10 MiB
-(10,485,760 UTF-8 bytes); oversized or unreadable input fails before dispatch, with no silent
-truncation, positional-only fallback, or partial model context.
+Positional words form the instruction. Redirected stdin remains a separate untrusted text source, so supplying both never drops or replaces either value. With neither and a real TTY, the command prompts once for one line. Stdin is counted while reading and capped at exactly 10 MiB (10,485,760 UTF-8 bytes); oversized or unreadable input fails before dispatch, with no silent truncation, positional-only fallback, or partial model context.
 
-Repeat `--with @path` to stage current-turn context. Relative paths resolve from the effective
-working directory; an explicitly supplied absolute path is also accepted. Any strict-UTF-8 text
-file is eligible regardless of extension, while recognized images pass through the existing
-Scrying MIME, size, and vision checks. Text diagnostics report UTF-8 bytes, part count, and SHA-256;
-image diagnostics report decoded bytes and SHA-256. The CLI splits text and stdin into UTF-8-safe
-1 MiB parts without a file/part-count ceiling and enforces the existing 32 MiB aggregate request authority; stdin retains
-its separate 10 MiB reader ceiling, but `--with` files do not inherit it. Typed content is sent for
-server-side materialization. The client path is a
-display/resolution input, not server filesystem authority. On a live route, an
-Attachments-enabled host persists and Session-binds these sources before inference; an
-Attachments-disabled host keeps them in memory for the current turn. A dry-run never persists them.
+Repeat `--with @path` to stage current-turn context. Relative paths resolve from the effective working directory; an explicitly supplied absolute path is also accepted. Any strict-UTF-8 text file is eligible regardless of extension, while recognized images pass through the existing Scrying MIME, size, and vision checks. Text diagnostics report UTF-8 bytes, part count, and SHA-256; image diagnostics report decoded bytes and SHA-256. The CLI splits text and stdin into UTF-8-safe 1 MiB parts without a file/part-count ceiling and enforces the existing 32 MiB aggregate request authority; stdin retains its separate 10 MiB reader ceiling, but `--with` files do not inherit it. Typed content is sent for server-side materialization. The client path is a display/resolution input, not server filesystem authority. On a live route, an Attachments-enabled host persists and Session-binds these sources before inference; an Attachments-disabled host keeps them in memory for the current turn. A dry-run never persists them.
 
-`--dry-run` uses the authenticated context-preview path with the resolved route, Spell, preview-only
-sources, context, output reserve, and common inference flags. It always skips retrieval, automatic
-semantic Spell routing, search, and provider inference, while an explicit named Spell still
-resolves. The result is a spend-free static pre-inference plan, not an exact live request: live
-Agent dispatch may still add local `PatternSnapshot` and `ChronosyncDelta` context. It does not
-start the selected Agent/research synthesis turn, execute tools, persist an assistant Entry, or
-persist the staged sources. `--show-content` explicitly reveals model-visible preview content. All
-live routes accept `--new`, `--unattended`, model/context options, temperature, top-p,
-seed, repeatable stops, response format (`json` aliases `json_object`), and penalties; Agent and
-Spell also use `--max-tokens`, while research uses its synthesis token budget. On this
-permissive unified surface, `--new` suppresses Session continuation even when `--session` is also
-present. Research additionally
-accepts optional `--sources`, `--token-budget`, and `--cost-budget`; its positive token budget is
-the explicit synthesis output policy. With no source target, new-evidence passes continue until
-source exhaustion/no-progress or cancellation.
+`--dry-run` uses the authenticated context-preview path with the resolved route, Spell, preview-only sources, context, output reserve, and common inference flags. It always skips retrieval, automatic semantic Spell routing, search, and provider inference, while an explicit named Spell still resolves. The result is a spend-free static pre-inference plan, not an exact live request: live Agent dispatch may still add local `PatternSnapshot` and `ChronosyncDelta` context. It does not start the selected Agent/research synthesis turn, execute tools, persist an assistant Entry, or persist the staged sources. `--show-content` explicitly reveals model-visible preview content. All live routes accept `--new`, `--unattended`, model/context options, temperature, top-p, seed, repeatable stops, response format (`json` aliases `json_object`), and penalties; Agent and Spell also use `--max-tokens`, while research uses its synthesis token budget. On this permissive unified surface, `--new` suppresses Session continuation even when `--session` is also present. Research additionally accepts optional `--sources`, `--token-budget`, and `--cost-budget`; its positive token budget is the explicit synthesis output policy. With no source target, new-evidence passes continue until source exhaustion/no-progress or cancellation.
 
 ### Unified live watch
 
-Use one command family for the existing Session, Apprentice Chronicle, log, MCP, daemon, and host
-health sources:
+Use one command family for the existing Session, Apprentice Chronicle, log, MCP, daemon, and host health sources:
 
 ```bash
 arcanum watch session [session] [--since <entry-guid>]
@@ -1336,38 +807,17 @@ arcanum watch daemons
 arcanum watch health [--interval 5]
 ```
 
-`watch session` and `watch apprentice` are the only spellings for those streams. Session and Apprentice
-selectors accept the same GUID/name/prefix and interactive-picker forms as their lifecycle
-commands. All six sources authenticate against the running host; the SSE sources continue to count
-against the existing global and per-type connection caps.
+`watch session` and `watch apprentice` are the only spellings for those streams. Session and Apprentice selectors accept the same GUID/name/prefix and interactive-picker forms as their lifecycle commands. All six sources authenticate against the running host; the SSE sources continue to count against the existing global and per-type connection caps.
 
-Terminal mode prints UTC timestamps and event-type colors. SSE comments/keep-alives produce stderr
-liveness diagnostics and are never printed as data; `[DONE]` ends successfully. Ctrl+C cancels cleanly with exit
-code `130`. Add recursive `--json` for automation: stdout then contains only one compact source JSON
-object per line, with no ANSI, heartbeat, `[DONE]`, label, or diagnostic text; diagnostics remain on
-stderr.
+Terminal mode prints UTC timestamps and event-type colors. SSE comments/keep-alives produce stderr liveness diagnostics and are never printed as data; `[DONE]` ends successfully. Ctrl+C cancels cleanly with exit code `130`. Add recursive `--json` for automation: stdout then contains only one compact source JSON object per line, with no ANSI, heartbeat, `[DONE]`, label, or diagnostic text; diagnostics remain on stderr.
 
-Repeat `--event-type <value>` or `--tool <value>` (`--tool-name` alias) for case-insensitive
-free-form filters; blank values are ignored and the CLI does not restrict values to a hard-coded
-enum. Log tool matching includes structured `properties.ToolName` metadata. Log category/search remain
-free-form, while `--level` is one of `trace`, `debug`, `information`, `warning`, `error`, or
-`critical` and is validated by the API. `--reconnect` is deliberately opt-in and keeps retrying
-unexpected disconnects with capped exponential backoff until completion or cancellation. Each
-attempt warns on stderr that a gap may exist. Session reconnect advances from the last received valid
-Entry id where possible, but the server replay window is bounded; the other live sources have no
-cursor. Arcanum never claims that missed events were replayed.
+Repeat `--event-type <value>` or `--tool <value>` (`--tool-name` alias) for case-insensitive free-form filters; blank values are ignored and the CLI does not restrict values to a hard-coded enum. Log tool matching includes structured `properties.ToolName` metadata. Log category/search remain free-form, while `--level` is one of `trace`, `debug`, `information`, `warning`, `error`, or `critical` and is validated by the API. `--reconnect` is deliberately opt-in and keeps retrying unexpected disconnects with capped exponential backoff until completion or cancellation. Each attempt warns on stderr that a gap may exist. Session reconnect advances from the last received valid Entry id where possible, but the server replay window is bounded; the other live sources have no cursor. Arcanum never claims that missed events were replayed.
 
-`watch health` polls every five seconds by default and accepts any positive whole-second
-`--interval`. A well-formed HTTP 503 health response is still rendered as a valid Unhealthy
-snapshot, including component detail. Filters, reconnect, and polling cadence are invocation-only
-choices; there are no new configuration keys or persistent user restrictions.
+`watch health` polls every five seconds by default and accepts any positive whole-second `--interval`. A well-formed HTTP 503 health response is still rendered as a valid Unhealthy snapshot, including component detail. Filters, reconnect, and polling cadence are invocation-only choices; there are no new configuration keys or persistent user restrictions.
 
 ### MCP and diagnostic tools
 
-The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status
-output includes scope, transport, trust, lifecycle, tool count, and last error. It deliberately
-omits subprocess commands/arguments, URLs, environment variables, and secrets. `--workspace`
-selects a workspace-local scope; an omitted selector can open the interactive picker.
+The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status output includes scope, transport, trust, lifecycle, tool count, and last error. It deliberately omits subprocess commands/arguments, URLs, environment variables, and secrets. `--workspace` selects a workspace-local scope; an omitted selector can open the interactive picker.
 
 ```bash
 arcanum mcp list
@@ -1383,56 +833,15 @@ arcanum tool show <tool> [--workspace /server/path]
 arcanum tool invoke <tool> ['{"timezone":"UTC"}'] [--workspace /server/path]
 ```
 
-Both invoke commands accept one JSON object inline, as `@file`, or from redirected stdin; omitted
-interactive arguments default to `{}`. Response-file expansion is disabled so `@file` reaches the
-Arcanum argument reader unchanged. Input is capped at 1 MiB and JSON depth 64 before any invocation.
-MCP results retain the server-owned output cap, report the server/tool, duration, and truncation
-flag. MCP initialization and HTTP connection establishment retain local deadlines, but an
-established diagnostic or inference tool call has no Arcanum-owned total request duration; it runs
-until completion, terminal protocol/provider failure, or caller cancellation.
+Both invoke commands accept one JSON object inline, as `@file`, or from redirected stdin; omitted interactive arguments default to `{}`. Response-file expansion is disabled so `@file` reaches the Arcanum argument reader unchanged. Input is capped at 1 MiB and JSON depth 64 before any invocation. MCP results retain the server-owned output cap, report the server/tool, duration, and truncation flag. MCP initialization and HTTP connection establishment retain local deadlines, but an established diagnostic or inference tool call has no Arcanum-owned total request duration; it runs until completion, terminal protocol/provider failure, or caller cancellation.
 
-`mcp invoke` is strictly external-only. `arcanum-internal` is not a diagnostic MCP target, and the
-Forbidden Art names `execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`,
-`run_spell_script`, `apply_patch`, and `workspace_check` cannot use this path, including when an
-external server reuses a blocked name. Eligible built-ins use `arcanum tool invoke`; internal and
-high-risk execution otherwise remains in the Master pipeline with its Ward and Sanctum policy.
+`mcp invoke` is strictly external-only. `arcanum-internal` is not a diagnostic MCP target, and the Forbidden Art names `execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`, `run_spell_script`, `apply_patch`, and `workspace_check` cannot use this path, including when an external server reuses a blocked name. Eligible built-ins use `arcanum tool invoke`; internal and high-risk execution otherwise remains in the Master pipeline with its Ward and Sanctum policy.
 
-Inside that pipeline, `execute_command` returns a bounded stdout/stderr preview. When either stream
-is larger, it also returns an opaque connection-lifetime handle and the available stream names.
-The automatically attuned `read_command_output` tool accepts that handle, `stdout` or `stderr`, a
-byte offset, and an optional per-page byte size; continue with each returned `nextOffset`. Pages use
-strict UTF-8 and `RandomAccess` and are bounded to one JSON-RPC-safe allocation. Artifacts are
-owner-only and never exposed by path. A stream's final page closes its `FileOptions.DeleteOnClose`
-handle immediately; the opaque handle expires after all available streams finish, with caller
-cancellation, preservation failure, connection disposal, and abrupt exit as cleanup backstops.
-There is no product-owned output total, but complete stdout and stderr share the existing explicit
-Sanctum `MaxFileWriteMb` operator policy. Crossing it terminates the process tree, deletes partial
-artifacts, and reports the measured bytes, limit, saved state, and exact next action instead of
-silently losing diagnostics.
+Inside that pipeline, `execute_command` returns a bounded stdout/stderr preview. When either stream is larger, it also returns an opaque connection-lifetime handle and the available stream names. The automatically attuned `read_command_output` tool accepts that handle, `stdout` or `stderr`, a byte offset, and an optional per-page byte size; continue with each returned `nextOffset`. Pages use strict UTF-8 and `RandomAccess` and are bounded to one JSON-RPC-safe allocation. Artifacts are owner-only and never exposed by path. A stream's final page closes its `FileOptions.DeleteOnClose` handle immediately; the opaque handle expires after all available streams finish, with caller cancellation, preservation failure, connection disposal, and abrupt exit as cleanup backstops. There is no product-owned output total, but complete stdout and stderr share the existing explicit Sanctum `MaxFileWriteMb` operator policy. Crossing it terminates the process tree, deletes partial artifacts, and reports the measured bytes, limit, saved state, and exact next action instead of silently losing diagnostics.
 
 ### Files and asynchronous batches
 
-The native CLI exposes the existing OpenAI-compatible `/v1/files` and `/v1/batches` APIs without
-opening server storage. A batch can start from local JSONL in one command; the CLI checks the
-obvious wrapper shape first, uploads it as a batch file, and then creates the server-owned job.
-Pass an existing `file-*` id instead to skip the upload. The server still owns full request
-validation, cancellation, recovery, endpoint restrictions, MIME policy, size limits, and status.
-There is no total requests-per-batch ceiling. The server streams JSONL through internal 64-line
-processing pages, keeps only a pooled 256 KiB prefix of one physical record before owner-only spill,
-and retains a measured 64 MiB one-request DTO materialization boundary while later records continue.
-It reserves explicit token/cost policy per page, durably marks each line before provider dispatch,
-atomically stores its terminal output or error, and advances exact 64-bit request counters without
-reopening artifacts during metadata reads. Completed checkpoints publish in input order and are
-skipped on resume. Cancellation seals every already-claimed unresolved line before publication;
-after an ambiguous host failure or unexpected pre-publication exception, durable recovery converts a
-dispatched line without a result into explicit `batch_interrupted_after_dispatch` output instead of
-deleting or replaying the provider call. Metadata list responses default to 20 rows, retain a
-100-row one-response maximum, and continue through an opaque status-bound keyset cursor; worker
-pickup selects only the oldest rows needed for current free concurrency slots. If the next page is
-rejected by operator policy, prior output remains downloadable and the error identifies the first
-remaining line and continuation action. `completion_window` is accepted for OpenAI compatibility but
-does not expire or delete queued/progressing work; explicit cancellation, terminal retention policy,
-and startup reconciliation own that lifecycle.
+The native CLI exposes the existing OpenAI-compatible `/v1/files` and `/v1/batches` APIs without opening server storage. A batch can start from local JSONL in one command; the CLI checks the obvious wrapper shape first, uploads it as a batch file, and then creates the server-owned job. Pass an existing `file-*` id instead to skip the upload. The server still owns full request validation, cancellation, recovery, endpoint restrictions, MIME policy, size limits, and status. There is no total requests-per-batch ceiling. The server streams JSONL through internal 64-line processing pages, keeps only a pooled 256 KiB prefix of one physical record before owner-only spill, and retains a measured 64 MiB one-request DTO materialization boundary while later records continue. It reserves explicit token/cost policy per page, durably marks each line before provider dispatch, atomically stores its terminal output or error, and advances exact 64-bit request counters without reopening artifacts during metadata reads. Completed checkpoints publish in input order and are skipped on resume. Cancellation seals every already-claimed unresolved line before publication; after an ambiguous host failure or unexpected pre-publication exception, durable recovery converts a dispatched line without a result into explicit `batch_interrupted_after_dispatch` output instead of deleting or replaying the provider call. Metadata list responses default to 20 rows, retain a 100-row one-response maximum, and continue through an opaque status-bound keyset cursor; worker pickup selects only the oldest rows needed for current free concurrency slots. If the next page is rejected by operator policy, prior output remains downloadable and the error identifies the first remaining line and continuation action. `completion_window` is accepted for OpenAI compatibility but does not expire or delete queued/progressing work; explicit cancellation, terminal retention policy, and startup reconciliation own that lifecycle.
 
 ```bash
 arcanum file upload ./batch-input.jsonl
@@ -1450,29 +859,11 @@ arcanum batch cancel|reset batch_0123456789abcdef0123456789abcdef
 arcanum batch output|errors batch_0123456789abcdef0123456789abcdef [--output ./result.jsonl]
 ```
 
-Lists and detail views include total/completed/failed request counts. `batch wait` uses bounded
-exponential polling and exits at the first terminal state. Downloads stream through a
-same-directory temporary file and atomically replace only after success. Default names discard
-server path components and sanitize the leaf; an existing destination requires interactive
-confirmation or explicit `--yes`. `file delete` uses the same confirmation boundary. Recursive
-`--json` emits one source-generated JSON document on stdout and keeps progress/diagnostics on
-stderr; `/v1` successes are never reinterpreted as `ApiResponse<T>`. A file referenced by any batch
-input/output/error role—including a terminal batch—is preserved and returns an OpenAI-shaped 409
-conflict; deletion can succeed only after no batch role references that file. Batch inserts and
-artifact-reference updates resolve every non-null file role in the same conditional database write,
-so a concurrent deletion cannot leave a new batch pointing at absent metadata or bytes.
-Uploads and generated batch artifacts likewise capture their new encrypted file identity before
-waiting for the database writer, then revalidate that exact owned file inside the immediate
-metadata-insert transaction. A reset/delete that commits first makes publication fail without a
-metadata row; publication that commits first makes both metadata and the same bytes visible to the
-next reset/delete. Upload failures remain sanitized and cleanup never blindly deletes a replacement.
+Lists and detail views include total/completed/failed request counts. `batch wait` uses bounded exponential polling and exits at the first terminal state. Downloads stream through a same-directory temporary file and atomically replace only after success. Default names discard server path components and sanitize the leaf; an existing destination requires interactive confirmation or explicit `--yes`. `file delete` uses the same confirmation boundary. Recursive `--json` emits one source-generated JSON document on stdout and keeps progress/diagnostics on stderr; `/v1` successes are never reinterpreted as `ApiResponse<T>`. A file referenced by any batch input/output/error role—including a terminal batch—is preserved and returns an OpenAI-shaped 409 conflict; deletion can succeed only after no batch role references that file. Batch inserts and artifact-reference updates resolve every non-null file role in the same conditional database write, so a concurrent deletion cannot leave a new batch pointing at absent metadata or bytes. Uploads and generated batch artifacts likewise capture their new encrypted file identity before waiting for the database writer, then revalidate that exact owned file inside the immediate metadata-insert transaction. A reset/delete that commits first makes publication fail without a metadata row; publication that commits first makes both metadata and the same bytes visible to the next reset/delete. Upload failures remain sanitized and cleanup never blindly deletes a replacement.
 
 ### Session attachments
 
-The standalone attachment family manages encrypted, versioned snapshots without starting an
-inference turn. Selectors accept an attachment GUID, exact logical key, or unique logical-key
-prefix; omit one in an interactive terminal for the bounded picker. `--session` accepts the shared
-session selector and falls back through active context. Metadata commands never print file bytes.
+The standalone attachment family manages encrypted, versioned snapshots without starting an inference turn. Selectors accept an attachment GUID, exact logical key, or unique logical-key prefix; omit one in an interactive terminal for the bounded picker. `--session` accepts the shared session selector and falls back through active context. Metadata commands never print file bytes.
 
 ```bash
 arcanum attachment list [session] [--session <session>]
@@ -1490,45 +881,17 @@ arcanum run --session <session> --attachment <bound-guid> "use this snapshot"
 arcanum run -c --attachment <bound-guid> "and again"
 ```
 
-`attachment add` reads a client-local file or `-` for stdin and uploads bytes; it may snapshot a
-file outside any Workspace because the originating path is neither sent nor retained. Stdin with
-no MIME/name defaults to `stdin.txt` and `text/plain`. `--mime` is only a hint: the server still
-validates detected content, strict text encoding/image policy, size, and shared Session budgets.
-Unsupported binary/PDF/Office content remains a valid `Binary` snapshot with `NotEligible` indexing
-status; it can be managed and exported even though it cannot be injected as text model context. A
-maximum-size file remains valid with normal multipart overhead; aggregate declared or chunked bodies
-beyond the bounded 64 KiB protocol allowance fail before persistence.
+`attachment add` reads a client-local file or `-` for stdin and uploads bytes; it may snapshot a file outside any Workspace because the originating path is neither sent nor retained. Stdin with no MIME/name defaults to `stdin.txt` and `text/plain`. `--mime` is only a hint: the server still validates detected content, strict text encoding/image policy, size, and shared Session budgets. Unsupported binary/PDF/Office content remains a valid `Binary` snapshot with `NotEligible` indexing status; it can be managed and exported even though it cannot be injected as text model context. A maximum-size file remains valid with normal multipart overhead; aggregate declared or chunked bodies beyond the bounded 64 KiB protocol allowance fail before persistence.
 
-`attachment reference` is different: its path belongs to the server host and is resolved only
-inside the selected registered Workspace or server default. The CLI does not open that path. The
-server canonicalizes it, checks containment/file identity and Campaign Sanctum, reads it stably,
-and persists those verified bytes as a refreshable version. A snapshot is always immutable;
-refresh never rereads a client path or accepts a new path. Changed verified bytes create the next
-version with its newly detected Text/Image/Binary kind, while an unchanged hash reuses the existing
-row. Standalone refresh has no model-capability gate because it does not inject content. `versions`
-exposes that history and `list` shows the latest version of each logical key.
+`attachment reference` is different: its path belongs to the server host and is resolved only inside the selected registered Workspace or server default. The CLI does not open that path. The server canonicalizes it, checks containment/file identity and Campaign Sanctum, reads it stably, and persists those verified bytes as a refreshable version. A snapshot is always immutable; refresh never rereads a client path or accepts a new path. Changed verified bytes create the next version with its newly detected Text/Image/Binary kind, while an unchanged hash reuses the existing row. Standalone refresh has no model-capability gate because it does not inject content. `versions` exposes that history and `list` shows the latest version of each logical key.
 
-`pin` stores a selected version as durable Session context; `unpin` is harmless when no matching
-pin exists. Text pins may be admitted implicitly under the existing pin/turn budgets. An image pin
-remains selected but reports `Unsupported` for implicit materialization; pass its bound GUID with
-repeatable `ask --attachment` or `chat --attachment` for an explicit vision-capable turn. Direct
-IDs must belong to the effective Session and share the normal attachment-reference budget.
+`pin` stores a selected version as durable Session context; `unpin` is harmless when no matching pin exists. Text pins may be admitted implicitly under the existing pin/turn budgets. An image pin remains selected but reports `Unsupported` for implicit materialization; pass its bound GUID with repeatable `ask --attachment` or `chat --attachment` for an explicit vision-capable turn. Direct IDs must belong to the effective Session and share the normal attachment-reference budget.
 
-`export` is the only command that writes plaintext attachment bytes. It streams to a same-directory
-temporary file and atomically replaces the destination only after a complete authenticated
-download; an existing file requires interactive confirmation or global `--yes`. `--output -` is
-refused, so attachment bytes never reach stdout. `reveal` opens the encrypted stored snapshot
-artifact only when that local path contains an `ARCABLOB` envelope; a remote or mismatched client is
-directed to export. It does not reveal the live source or a decrypted copy. `show
---privacy` prints these rules as disclosure and exits without an acknowledgement prompt. `--json`
-remains metadata-only with diagnostics on stderr.
+`export` is the only command that writes plaintext attachment bytes. It streams to a same-directory temporary file and atomically replaces the destination only after a complete authenticated download; an existing file requires interactive confirmation or global `--yes`. `--output -` is refused, so attachment bytes never reach stdout. `reveal` opens the encrypted stored snapshot artifact only when that local path contains an `ARCABLOB` envelope; a remote or mismatched client is directed to export. It does not reveal the live source or a decrypted copy. `show --privacy` prints these rules as disclosure and exits without an acknowledgement prompt. `--json` remains metadata-only with diagnostics on stderr.
 
 ### Workspace versus Campaign
 
-A **Workspace** is a registered filesystem access and indexing boundary. A **Campaign** is a
-persistent project container for sessions, spells, prompts, Codex, and Sanctum policy. Campaigns
-are exposed as workspaces to filesystem consumers, but the server models remain separate and the
-CLI does not copy or merge them.
+A **Workspace** is a registered filesystem access and indexing boundary. A **Campaign** is a persistent project container for sessions, spells, prompts, Codex, and Sanctum policy. Campaigns are exposed as workspaces to filesystem consumers, but the server models remain separate and the CLI does not copy or merge them.
 
 ```bash
 arcanum workspace register                 # current directory, bundled local server
@@ -1543,13 +906,7 @@ arcanum workspace chunks --path src/Program.cs
 arcanum workspace unregister
 ```
 
-Workspace file, search, and index commands always call the authenticated server API; they never
-substitute a direct client filesystem read. Explicit registration paths and paths printed by the
-CLI belong to the **server host**. Omitting `register [path]` uses the client current directory only
-because the shipping CLI connects to its bundled loopback server. A future remote client must pass
-an explicit server path. File-write routes and `Arcanum:Workspaces:EnableFileWrite` are unchanged.
-When `workspace current` finds a Workspace but no Campaign, it suggests the exact `campaign create`
-shape for operations that need persistent project state.
+Workspace file, search, and index commands always call the authenticated server API; they never substitute a direct client filesystem read. Explicit registration paths and paths printed by the CLI belong to the **server host**. Omitting `register [path]` uses the client current directory only because the shipping CLI connects to its bundled loopback server. A future remote client must pass an explicit server path. File-write routes and `Arcanum:Workspaces:EnableFileWrite` are unchanged. When `workspace current` finds a Workspace but no Campaign, it suggests the exact `campaign create` shape for operations that need persistent project state.
 
 ### Persistent active context
 
@@ -1570,36 +927,17 @@ arcanum use clear workspace   # one scope
 arcanum use clear             # every scope
 ```
 
-Precedence is explicit option, active context, current-directory resource detection, then server
-default. Campaign and Workspace containment are detected independently. `--no-context` bypasses
-saved values for one invocation without disabling directory
-detection. `context current` explains the source of each effective value. `run` validates
-saved references before inference, report confirmed stale references before clearing them, warn
-when the current directory is outside an inherited workspace, and refuse a Session/Campaign
-mismatch. Explicit options always win and are never persisted merely by use.
+Precedence is explicit option, active context, current-directory resource detection, then server default. Campaign and Workspace containment are detected independently. `--no-context` bypasses saved values for one invocation without disabling directory detection. `context current` explains the source of each effective value. `run` validates saved references before inference, report confirmed stale references before clearing them, warn when the current directory is outside an inherited workspace, and refuse a Session/Campaign mismatch. Explicit options always win and are never persisted merely by use.
 
-The preview commands show the effective provider/model/window, Spell and resonances, tool
-availability reasons, classified source-token allocation, output reserve, compression decision,
-and explicit auxiliary work without invoking the main model. Preview content is hidden unless
-`--show-content`; `--no-retrieval` skips embedding/RAG work.
+The preview commands show the effective provider/model/window, Spell and resonances, tool availability reasons, classified source-token allocation, output reserve, compression decision, and explicit auxiliary work without invoking the main model. Preview content is hidden unless `--show-content`; `--no-retrieval` skips embedding/RAG work.
 
-The state file is owner-only `~/.config/arcanum/cli-context.json` (platform-equivalent Grimoire
-directory), schema version `1`. It contains resource IDs, safe names/paths, and a model name only;
-it contains no credentials, prompts, or transcript content and has no server authority.
-`cli-session.txt` is retained temporarily as a last-session mirror for older flows. The shipping CLI
-talks to its local loopback host; a future remote-host client must not compare its local current
-directory with server paths.
+The state file is owner-only `~/.config/arcanum/cli-context.json` (platform-equivalent Grimoire directory), schema version `1`. It contains resource IDs, safe names/paths, and a model name only; it contains no credentials, prompts, or transcript content and has no server authority. `cli-session.txt` is retained temporarily as a last-session mirror for older flows. The shipping CLI talks to its local loopback host; a future remote-host client must not compare its local current directory with server paths.
 
 All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- <cmd>` in development, or `arcanum <cmd>` after an AOT publish.
 
 **Default command:** bare interactive `arcanum` (no arguments) opens the **Command Center** (Terminal.Gui fixed-viewport TUI). Bare non-interactive `arcanum`, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage and exits **0**. Explicit commands (`serve`, `run`, `--help`, …) stay frameless Spectre/CAF as before.
 
-Command Center list views load 50-line terminal pages and expose the exact next offset when more
-rows remain; navigation continues until exhaustion instead of silently truncating a resource list.
-The Sessions and Transcript panes likewise keep only one bounded view page (40 sessions or 200
-entries): use `Ctrl+PgDn`/`Ctrl+PgUp` for older/newer session pages and
-`Ctrl+PgUp`/`Ctrl+PgDn` for older/newer transcript pages. Exact server cursors/offsets preserve the
-complete durable history; repeated or missing checkpoints fail with restart guidance.
+Command Center list views load 50-line terminal pages and expose the exact next offset when more rows remain; navigation continues until exhaustion instead of silently truncating a resource list. The Sessions and Transcript panes likewise keep only one bounded view page (40 sessions or 200 entries): use `Ctrl+PgDn`/`Ctrl+PgUp` for older/newer session pages and `Ctrl+PgUp`/`Ctrl+PgDn` for older/newer transcript pages. Exact server cursors/offsets preserve the complete durable history; repeated or missing checkpoints fail with restart guidance.
 
 **Global automation contract:** every direct command accepts these flags before or after its verb:
 
@@ -1610,9 +948,7 @@ complete durable history; repeated or missing checkpoints fail with restart guid
 | `--yes` | Auto-approve command confirmation prompts. Without it, a confirmation required while stdout is redirected fails immediately instead of reading stdin or hanging CI. |
 | `--no-context` | Bypass saved Campaign, Workspace, Model, and Session defaults for one invocation; explicit options and independent current-directory Campaign/Workspace detection still apply. |
 
-The closed exit-code set is `0` success, `1` generic/runtime error, `2` invalid command line or
-configuration/confirmation error, `3` network error, and `130` cancellation. Unexpected failures
-print fixed redacted copy only: no raw exception message, stack trace, path, PII, or credential.
+The closed exit-code set is `0` success, `1` generic/runtime error, `2` invalid command line or configuration/confirmation error, `3` network error, and `130` cancellation. Unexpected failures print fixed redacted copy only: no raw exception message, stack trace, path, PII, or credential.
 
 Examples:
 
@@ -1624,38 +960,11 @@ arcanum operation list --plain
 
 **Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [complete command reference](Arcanum.Command.Reference.md#bare-arcanum-command-center).
 
-Attachment status is authoritative and versioned: `/attachments` shows `[Snapshot]`, `[Live]`, or
-`[Stale]`, the snapshot hash loaded into context, and tracked-source observations. External workspace
-edits are debounced through `FileSystemWatcher` and rechecked by the host; use
-`/attachments refresh <name>` to securely load the current version after backend confirmation.
+Attachment status is authoritative and versioned: `/attachments` shows `[Snapshot]`, `[Live]`, or `[Stale]`, the snapshot hash loaded into context, and tracked-source observations. External workspace edits are debounced through `FileSystemWatcher` and rechecked by the host; use `/attachments refresh <name>` to securely load the current version after backend confirmation.
 
-Session branching is first-class in Command Center. `/fork` copies the complete active session;
-select a transcript entry and use `/fork at` for an inclusive cutoff branch. Select an assistant
-answer and use `/fork alternative` to branch before it and regenerate from the preceding user
-prompt; generation starts only after the new branch opens. `/branch parent` and `/branch child`
-move through visible lineage. A compact `⑂` marker identifies branches in the header and session
-pane without changing its newest-updated-first order. Large attachment-bearing forks require
-`/fork confirm`. The new branch is opened only after its transcript and attachment metadata reload;
-any fork failure leaves the original session unchanged. Durable sessions have no total entry-count
-or fork-depth ceiling. The pre-existing `sessions.maxPinnedEntries` admission setting is unchanged
-outside issue #55; long transcripts remain pageable, Campaign Logger advances timestamp-group-safe
-checkpoint pages, and only one provider turn's actual context window is finite.
+Session branching is first-class in Command Center. `/fork` copies the complete active session; select a transcript entry and use `/fork at` for an inclusive cutoff branch. Select an assistant answer and use `/fork alternative` to branch before it and regenerate from the preceding user prompt; generation starts only after the new branch opens. `/branch parent` and `/branch child` move through visible lineage. A compact `⑂` marker identifies branches in the header and session pane without changing its newest-updated-first order. Large attachment-bearing forks require `/fork confirm`. The new branch is opened only after its transcript and attachment metadata reload; any fork failure leaves the original session unchanged. Durable sessions have no total entry-count or fork-depth ceiling. The pre-existing `sessions.maxPinnedEntries` admission setting is unchanged outside issue #55; long transcripts remain pageable, Campaign Logger advances timestamp-group-safe checkpoint pages, and only one provider turn's actual context window is finite.
 
-Persistent session context is managed with `/context`, `/context pin <kind> <target>`, and
-`/context unpin <pin-id>`. Kinds are `file`, `directorySnapshot`, `symbolRange`
-(`path:start-end`), `sessionEntry`, `attachment`, `url`, and `diagnostic`. Pins survive host and
-session restarts. File and symbol-range pins open a no-follow single-link regular-file handle and
-retain only bounded output; total source length is streamed rather than used as an admission gate.
-File pins hash the complete accepted handle
-incrementally on every turn; modified, deleted, inaccessible, linked, or workspace-escaping targets
-are shown to the model with an explicit stale/error status rather than silently reusing bytes.
-Symbol ranges stream their selected lines and normalize CRLF output. Directory snapshots retain a
-per-materialization listing bound. Materialization adds no second per-turn pin-count ceiling: it
-considers every pin already accepted by the existing session-management contract. One pin retains
-at most 64 KiB and one turn at most 256 KiB, with byte-excess pins reported as deferred.
-Materialized values are source-labeled untrusted data,
-participate in normal context/mana estimates, and do not change transcript `Entries.IsPinned`
-compression behavior. Existing `@path` text/image staging remains unchanged and turn-scoped.
+Persistent session context is managed with `/context`, `/context pin <kind> <target>`, and `/context unpin <pin-id>`. Kinds are `file`, `directorySnapshot`, `symbolRange` (`path:start-end`), `sessionEntry`, `attachment`, `url`, and `diagnostic`. Pins survive host and session restarts. File and symbol-range pins open a no-follow single-link regular-file handle and retain only bounded output; total source length is streamed rather than used as an admission gate. File pins hash the complete accepted handle incrementally on every turn; modified, deleted, inaccessible, linked, or workspace-escaping targets are shown to the model with an explicit stale/error status rather than silently reusing bytes. Symbol ranges stream their selected lines and normalize CRLF output. Directory snapshots retain a per-materialization listing bound. Materialization adds no second per-turn pin-count ceiling: it considers every pin already accepted by the existing session-management contract. One pin retains at most 64 KiB and one turn at most 256 KiB, with byte-excess pins reported as deferred. Materialized values are source-labeled untrusted data, participate in normal context/mana estimates, and do not change transcript `Entries.IsPinned` compression behavior. Existing `@path` text/image staging remains unchanged and turn-scoped.
 
 **Ephemeral reasoning:** live `run` Agent/Spell turns render client-safe reasoning in a dimmed, labeled block separate from the Mage answer; their reasoning buffer has a 64 KiB default cap with an explicit truncation marker, and reasoning is coalesced on the same refresh cadence as answer tokens. Command Center stops its synthetic Thinking indicator and refreshes the header exactly once on the first token or reasoning frame, coalesces reasoning into one separately bounded in-memory `Reasoning (ephemeral)` entry, and preserves both the source entry and exact line offset of a scrolled multiline viewport. Reasoning is never appended to stdout answer text, mana totals, structured output, or reloaded session history.
 

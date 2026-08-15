@@ -1,18 +1,10 @@
 # Arcanum — API Reference
 
-This document is the source of truth for Arcanum's native HTTP API, OpenAI-compatible API, wire
-formats, authentication behavior, request and response contracts, status mapping, and public error
-codes. It covers both general `/api` calls and the OpenAI-compatible `/v1` surface.
+This document is the source of truth for Arcanum's native HTTP API, OpenAI-compatible API, wire formats, authentication behavior, request and response contracts, status mapping, and public error codes. It covers both general `/api` calls and the OpenAI-compatible `/v1` surface.
 
-Architecture and design decisions belong in [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md). The readable
-architecture guide is [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md). The complete public
-configuration model belongs in
-[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference). Complete CLI
-syntax and option behavior belong in
-[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
+Architecture and design decisions belong in [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md). The readable architecture guide is [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md). The complete public configuration model belongs in [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference). Complete CLI syntax and option behavior belong in [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 
-The established §8 contract numbers are retained in this extracted reference so existing issue,
-test, and documentation citations remain stable.
+The established §8 contract numbers are retained in this extracted reference so existing issue, test, and documentation citations remain stable.
 
 ## 1. Complete API surface
 
@@ -255,15 +247,7 @@ test, and documentation citations remain stable.
 Envelope-payload specifics:
 
 - **`GET /api/meta`** wraps **`InstanceMetadataDto`** (version, OS, runtime, process identity, Grimoire paths, effective host binding, and intelligence feature flags). `EmbeddingsVectorMode` / `EmbeddingsVectorDiagnostic` identify sqlite-vec versus the complete streamed managed fallback; the retained compatibility integer `EmbeddingsManagedSearchRowBudget` is `0`, meaning no total row budget.
-- **`GET /api/health`** wraps **`HealthReportDto`** even when overall status is Unhealthy. An
-  Unhealthy report returns HTTP **503** with `IsSuccess: true` and populated `Data`; clients must
-  not discard that readiness snapshot merely because the status is non-2xx. The
-  **`DurableOperations`** component's detail carries the last reconciliation summary *and* the
-  states that pass could not fix — `stale=<n>`, `awaiting_repair=<n>`, per-kind repair guidance
-  keyed by terminal error code, and any operation kind with no registered recovery handler
-  (DESIGN §10.8.3). It is `Degraded` whenever any of those is non-empty. The detail is drawn only
-  from the closed kind/state/error-code vocabularies: it never contains an operation id, a public
-  summary, or checkpoint content.
+- **`GET /api/health`** wraps **`HealthReportDto`** even when overall status is Unhealthy. An Unhealthy report returns HTTP **503** with `IsSuccess: true` and populated `Data`; clients must not discard that readiness snapshot merely because the status is non-2xx. The **`DurableOperations`** component's detail carries the last reconciliation summary *and* the states that pass could not fix — `stale=<n>`, `awaiting_repair=<n>`, per-kind repair guidance keyed by terminal error code, and any operation kind with no registered recovery handler (DESIGN §10.8.3). It is `Degraded` whenever any of those is non-empty. The detail is drawn only from the closed kind/state/error-code vocabularies: it never contains an operation id, a public summary, or checkpoint content.
 - **`GET /api/config`** / **`PUT /api/config`** / **`POST /api/config/validate`** use **`ArcanumSettings`** as the payload type (§8.12). Read masks provider endpoints and returns only environment-variable references for provider credentials, HTTPS certificate passwords, and CommLink—not their secret values. Raw bodies fail closed on every unknown/obsolete path before source-generated deserialization; writes merge only endpoint masks.
 - **`DELETE /api/sessions/{id}`** returns **204** with no body on success (soft-delete archive; idempotent — DESIGN §11.16); **`POST /api/sessions/{id}/rest`** returns **202** with `ApiResponse<bool>` when the job is queued, or **503** with `Session.RestQueueFull` when enqueue is rejected.
 - **`POST /api/commlink/send`** returns **502** with `ApiResponse<bool>` when the outbound webhook HTTP call fails (non-success status or transport error).
@@ -335,11 +319,7 @@ Three mechanisms trigger Campaign Log consolidation:
 
 The queue consumer resolves **`IArcanumIntelligenceProvider`** in a per-item DI scope alongside **`IGrimoireRepository`**, loads the session header via **`GetSessionHeaderAsync`**, and batches rows with **`CreatedAt > (LastSummarizedMessageAt ?? DateTime.MinValue)`**. It builds a stateless **`PingRequest`**: empty `Prompt`, `StatelessMessages` (system persona + user payload with prior summary and batched turns), **`SkipSpellRouting: true`**, **`DisableMcpTools: true`**, **`UnattendedMode: true`**, **`Model`** from **`Arcanum:FastModel`** when set else **`Arcanum:DefaultModel`**, else omitted for first-provider fallback, and **no** `SessionId` so the hub does not append a new **`Entry`**. On **`ExecutePromptAsync`** success, **`UpdateSessionCampaignRollupAsync`** atomically persists the LLM text into **`Session.Summary`** and sets **`LastSummarizedMessageAt`** to the latest batched entry time. On **`Result.IsFailure`** or exception, **no** DB update — the session remains eligible on the next sweep. The intelligence hub **reads** `Summary` for optional read-time compression (DESIGN §10.2.3).
 
-For attachment privacy, the successful source turn records only typed consultation metadata. The
-Campaign Logger adds logical key, version, opaque attachment id, and source type for consultations
-inside the summarized window; it never loads attachment bytes, automatically submits the session's
-attachment index, or copies hashes/host paths into the summarizer payload. The prompt asks for useful
-decisions and source references, not an attachment archive.
+For attachment privacy, the successful source turn records only typed consultation metadata. The Campaign Logger adds logical key, version, opaque attachment id, and source type for consultations inside the summarized window; it never loads attachment bytes, automatically submits the session's attachment index, or copies hashes/host paths into the summarizer payload. The prompt asks for useful decisions and source references, not an attachment archive.
 
 Under the same **Session-Based Consolidation model of AI memory**, **Chronosync reporting** (DESIGN §5.4.2) addresses **spatial** drift: thread lines and `DomainType` deltas vs the last persisted `PatternSnapshot`, not chat log length. Campaign Logger and Chronosync are separate triggers; the hub folds `ChronosyncReport` into the system prompt via `PingRequest.ChronosyncDelta`; MCP context remains separate.
 
@@ -361,10 +341,7 @@ Arcanum executes MCP tools server-side; `/v1` surfaces calls for observability/r
 
 #### 8.8.2 `GET /v1/models` capability enrichment
 
-`ModelInfoBuilder` is shared with `GET /api/models`, and both routes read the same latest successfully
-persisted configuration snapshot. Additive OpenAI fields: `context_window`, `supports_vision`,
-`provider_name`/`provider_type`, `supports_tools`/`supports_streaming` (always true), plus the same
-optional typed `reasoning` capability object returned by the native endpoint.
+`ModelInfoBuilder` is shared with `GET /api/models`, and both routes read the same latest successfully persisted configuration snapshot. Additive OpenAI fields: `context_window`, `supports_vision`, `provider_name`/`provider_type`, `supports_tools`/`supports_streaming` (always true), plus the same optional typed `reasoning` capability object returned by the native endpoint.
 
 #### 8.8.3 Client tool security (forwarding mode)
 
@@ -384,142 +361,51 @@ Read-only model-aware estimate (`ManaCountRequest` → `ManaCountResult`); no in
 
 ### 8.10.2 Effective context preview (`POST /api/intelligence/context/inspect`)
 
-`ContextPreviewRequest` accepts optional `prompt`, `model`, `workingDirectory`, `sessionId`, and
-`campaignId`, plus `showContent` and `noRetrieval`. Unified-run previews can additionally supply
-`overrideSpellName`, preview-only `attachedFiles` (`AttachedFileDto[]`) and `scryingFoci`
-(`ScryingFocusDto[]`), `disableAllTools`, `unattendedMode`, `additionalSystemPrompt`,
-`maxOutputTokens`, and the production sampling fields `temperature`, `topP`, `stop`, `seed`, `responseFormat`,
-`presencePenalty`, and `frequencyPenalty`. The assembled request passes through the shared native
-preflight validation pipeline used by live inference, including attached-file, request-bound, and
-Scrying validation. An empty prompt is valid so an existing Session can be inspected as it stands.
-The response reports the effective provider/model and context window, selected Spell and routing
-mode, resonant dependencies, included and excluded tools
-with reasons, every `ContextTokenSource` row with estimate classification, reserved output, the
-production compression decision, and auxiliary routing/embedding work.
+`ContextPreviewRequest` accepts optional `prompt`, `model`, `workingDirectory`, `sessionId`, and `campaignId`, plus `showContent` and `noRetrieval`. Unified-run previews can additionally supply `overrideSpellName`, preview-only `attachedFiles` (`AttachedFileDto[]`) and `scryingFoci` (`ScryingFocusDto[]`), `disableAllTools`, `unattendedMode`, `additionalSystemPrompt`, `maxOutputTokens`, and the production sampling fields `temperature`, `topP`, `stop`, `seed`, `responseFormat`, `presencePenalty`, and `frequencyPenalty`. The assembled request passes through the shared native preflight validation pipeline used by live inference, including attached-file, request-bound, and Scrying validation. An empty prompt is valid so an existing Session can be inspected as it stands. The response reports the effective provider/model and context window, selected Spell and routing mode, resonant dependencies, included and excluded tools with reasons, every `ContextTokenSource` row with estimate classification, reserved output, the production compression decision, and auxiliary routing/embedding work.
 
 Prompt input uses the production ping bound. When `campaignId` is supplied without `workingDirectory`, the endpoint resolves the Campaign's server-host path exactly as buffered and streaming inference do; an unknown Campaign returns **404**.
 
-The endpoint uses `WizardIntelligenceProvider`'s production routing, RAG readers, tool builder and
-policy filters, `SystemPromptBuilder.BuildDocument`,
-`InferenceContextBuilder.TryApplyContextCompressionIfNeeded`, and `IModelTokenEstimator`. It never
-enters the turn coordinator, invokes a tool, reserves turn budget, creates an assistant Entry,
-persists preview files/images as attachments, or calls the main inference model.
-`overrideSpellName` uses the same forced-Spell load and dependency resolution as a live turn and
-continues to resolve when `noRetrieval:true`; only automatic semantic Spell routing is skipped.
-`disableAllTools` and `additionalSystemPrompt` let a research dry run reproduce synthesis policy
-without executing it. `noRetrieval:true` skips embedding/RAG and automatic semantic Spell routing,
-with explicit unavailable reasons. Model-visible content is omitted unless `showContent:true`; that
-opt-in returns the assembled system prompt and messages through the authenticated operator API.
-Pre-call token values are labeled `exact`, `estimated`, `unknown`, or `reserved`; provider-reported
-values are never fabricated.
+The endpoint uses `WizardIntelligenceProvider`'s production routing, RAG readers, tool builder and policy filters, `SystemPromptBuilder.BuildDocument`, `InferenceContextBuilder.TryApplyContextCompressionIfNeeded`, and `IModelTokenEstimator`. It never enters the turn coordinator, invokes a tool, reserves turn budget, creates an assistant Entry, persists preview files/images as attachments, or calls the main inference model. `overrideSpellName` uses the same forced-Spell load and dependency resolution as a live turn and continues to resolve when `noRetrieval:true`; only automatic semantic Spell routing is skipped. `disableAllTools` and `additionalSystemPrompt` let a research dry run reproduce synthesis policy without executing it. `noRetrieval:true` skips embedding/RAG and automatic semantic Spell routing, with explicit unavailable reasons. Model-visible content is omitted unless `showContent:true`; that opt-in returns the assembled system prompt and messages through the authenticated operator API. Pre-call token values are labeled `exact`, `estimated`, `unknown`, or `reserved`; provider-reported values are never fabricated.
 
-`arcanum run --dry-run` always requests `noRetrieval:true`, making it a spend-free static,
-pre-inference plan rather than an exact copy of the eventual live `PingRequest`. It validates and
-shows the resolved user payload, forced Spell, server context, tool policy, output reserve, and
-sampling controls without search or provider inference. A later live Agent handoff may still add
-locally produced `PatternSnapshot` and `ChronosyncDelta` context before inference.
+`arcanum run --dry-run` always requests `noRetrieval:true`, making it a spend-free static, pre-inference plan rather than an exact copy of the eventual live `PingRequest`. It validates and shows the resolved user payload, forced Spell, server context, tool policy, output reserve, and sampling controls without search or provider inference. A later live Agent handoff may still add locally produced `PatternSnapshot` and `ChronosyncDelta` context before inference.
 
 ### 8.10.3 Web research workflow request (`POST /api/web/research`)
 
-`WebResearchWorkflowRequest` carries bounded `question`, optional positive `sourceTarget`, `model`,
-`tokenBudget`, optional `costBudgetUsd`, `continueSessionId`, and `attachToSessionId` fields. It also
-accepts optional `workingDirectory`, `campaignId`, current-turn `attachedFiles`, current-turn
-`scryingFoci`, and synthesis controls `temperature`, `topP`, `stop`, `seed`, `responseFormat`,
-`presencePenalty`, `frequencyPenalty`, and `unattendedMode`. These additions let `arcanum run --research` carry the
-same effective Campaign, Workspace, Session, Model, and explicit turn context as the ordinary Agent
-route. `tokenBudget` remains the synthesis output-token authority.
+`WebResearchWorkflowRequest` carries bounded `question`, optional positive `sourceTarget`, `model`, `tokenBudget`, optional `costBudgetUsd`, `continueSessionId`, and `attachToSessionId` fields. It also accepts optional `workingDirectory`, `campaignId`, current-turn `attachedFiles`, current-turn `scryingFoci`, and synthesis controls `temperature`, `topP`, `stop`, `seed`, `responseFormat`, `presencePenalty`, `frequencyPenalty`, and `unattendedMode`. These additions let `arcanum run --research` carry the same effective Campaign, Workspace, Session, Model, and explicit turn context as the ordinary Agent route. `tokenBudget` remains the synthesis output-token authority.
 
-Before any search-provider work, the server validates the request and prospective synthesis
-request, resolves a Campaign-only request to its server-host working directory, and validates the
-continuing and attachment target Sessions. It then performs progress-driven search/read passes and
-uses the preflighted `PingRequest` for final synthesis. The research-only untrusted-source system
-instruction and `DisableAllTools` remain server-owned. Client filesystem paths are never
-dereferenced by this endpoint: callers send typed content, and the host validates and materializes
-it through the normal inference path.
+Before any search-provider work, the server validates the request and prospective synthesis request, resolves a Campaign-only request to its server-host working directory, and validates the continuing and attachment target Sessions. It then performs progress-driven search/read passes and uses the preflighted `PingRequest` for final synthesis. The research-only untrusted-source system instruction and `DisableAllTools` remain server-owned. Client filesystem paths are never dereferenced by this endpoint: callers send typed content, and the host validates and materializes it through the normal inference path.
 
-There is no hop counter or default total-source ceiling. Passes continue while they discover new
-unique URLs and stop at an optional `sourceTarget`, deterministic source exhaustion/no-progress,
-caller cancellation, explicit token/cost policy, provider/context failure, or a safety denial.
+There is no hop counter or default total-source ceiling. Passes continue while they discover new unique URLs and stop at an optional `sourceTarget`, deterministic source exhaustion/no-progress, caller cancellation, explicit token/cost policy, provider/context failure, or a safety denial.
 
-On live synthesis, supplied `attachedFiles` and `scryingFoci` enter the normal attachment pipeline:
-when Attachments are enabled they are persisted and bound to the synthesis Session before model
-inference; when Attachments are disabled they remain in-memory current-turn content. A context
-preview never persists them. `attachToSessionId` is separate: it stores the final research Markdown,
-not the supplied synthesis context.
+On live synthesis, supplied `attachedFiles` and `scryingFoci` enter the normal attachment pipeline: when Attachments are enabled they are persisted and bound to the synthesis Session before model inference; when Attachments are disabled they remain in-memory current-turn content. A context preview never persists them. `attachToSessionId` is separate: it stores the final research Markdown, not the supplied synthesis context.
 
 ### 8.11 Daemon event SSE bus (`GET /api/events/daemon`)
 
 In-process `IEventBus` uses code-owned bounded per-subscriber channels with `DropOldest`. Wire: `text/event-stream` `DaemonEvent` frames + best-effort `[DONE]`. `Arcanum:Execution:MaxSseConnections` and `MaxSseConnectionsPerType` feed `SseConnectionGate` → **503** `Api.TooManyConnections`. Anti-buffering headers; API key on the `/api` group. Rate limiting admits the HTTP request only, not open-stream duration.
 
-`arcanum watch daemons` is the terminal consumer. It keeps heartbeats and `[DONE]` out of data
-output, supports free-form event/tool filtering, and offers opt-in reconnect. Reconnect cannot
-recover process-local daemon frames and therefore always warns that a gap may exist.
+`arcanum watch daemons` is the terminal consumer. It keeps heartbeats and `[DONE]` out of data output, supports free-form event/tool filtering, and offers opt-in reconnect. Reconnect cannot recover process-local daemon frames and therefore always warns that a gap may exist.
 
 ### 8.12 Configuration API (`GET` / `PUT` / `POST /api/config`)
 
-Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential references;
-environment values are never read into the response. `GET /api/config`, `GET /api/models`,
-`GET /api/providers`, and `GET /v1/models` resolve one latest-successfully-persisted snapshot, so
-their configuration and discovery projections agree immediately after a successful write. Write:
-under the configuration-writer lock, re-read the current file, merge recognized redacted URL
-placeholders, run outbound and semantic validation, and atomically replace `arcanum.json`. Holding
-that lock across the entire read-validate-write transaction prevents a concurrent retention-rule
-update from committing between the full PUT's snapshot and replacement. Validate-only also merges
-recognized endpoint masks against the current snapshot before outbound and semantic validation, so
-an unchanged redacted `GET` document remains a valid update candidate; it never writes. Residual
-masks for new/unmatched providers fail closed. Provider API keys and PFX passwords are not accepted
-fields. Other non-retention runtime consumers remain bound to the process-start snapshot and require
-a host restart to adopt configuration changes; referenced secret environment values are resolved
-only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`,
-`Config.UnresolvedMask`, or `Security.BlockedOutboundUrl`; **500** `Configuration.WriteFailed` or
-`Configuration.LockUnavailable` (another process held the configuration transaction past the bounded
-acquisition window).
-`POST /api/config/validate` answers **200** with `isSuccess: true` and `data: true` only when the
-merged document clears residual-mask, outbound, and semantic validation; every failure — semantic
-included — is a **400** failure envelope, so a status-code-driven probe cannot read an invalid
-configuration as validated.
+Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential references; environment values are never read into the response. `GET /api/config`, `GET /api/models`, `GET /api/providers`, and `GET /v1/models` resolve one latest-successfully-persisted snapshot, so their configuration and discovery projections agree immediately after a successful write. Write: under the configuration-writer lock, re-read the current file, merge recognized redacted URL placeholders, run outbound and semantic validation, and atomically replace `arcanum.json`. Holding that lock across the entire read-validate-write transaction prevents a concurrent retention-rule update from committing between the full PUT's snapshot and replacement. Validate-only also merges recognized endpoint masks against the current snapshot before outbound and semantic validation, so an unchanged redacted `GET` document remains a valid update candidate; it never writes. Residual masks for new/unmatched providers fail closed. Provider API keys and PFX passwords are not accepted fields. Other non-retention runtime consumers remain bound to the process-start snapshot and require a host restart to adopt configuration changes; referenced secret environment values are resolved only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`, `Config.UnresolvedMask`, or `Security.BlockedOutboundUrl`; **500** `Configuration.WriteFailed` or `Configuration.LockUnavailable` (another process held the configuration transaction past the bounded acquisition window). `POST /api/config/validate` answers **200** with `isSuccess: true` and `data: true` only when the merged document clears residual-mask, outbound, and semantic validation; every failure — semantic included — is a **400** failure envelope, so a status-code-driven probe cannot read an invalid configuration as validated.
 
 #### 8.12.1 Familiar readiness (`GET /api/providers/{name}/familiar-probe`)
 
-Answers whether a subscription-backed CLI provider is ready, without asking it for a completion. Runs
-host-side next to the process runner so Compendium — an editor that does not spawn processes — can ask
-over HTTP instead of growing a second implementation. Non-billable (ADR 0002 /
-`NonBillableSurfaces.FamiliarProbe`), alongside `GET /v1/models`.
+Answers whether a subscription-backed CLI provider is ready, without asking it for a completion. Runs host-side next to the process runner so Compendium — an editor that does not spawn processes — can ask over HTTP instead of growing a second implementation. Non-billable (ADR 0002 / `NonBillableSurfaces.FamiliarProbe`), alongside `GET /v1/models`.
 
-`FamiliarProbeResult` carries `providerName`, `providerType`, `status`
-(`NotInstalled` | `NotConfigured` | `Configured`), `version` when the CLI reports one, a one-line
-`summary`, `remediation` text, a copyable `remediationCommand` the **operator** runs, `enumeration`
-(`Discovered` | `OperatorDeclared` | `Unknown`), `models`, and `hiddenModels`.
+`FamiliarProbeResult` carries `providerName`, `providerType`, `status` (`NotInstalled` | `NotConfigured` | `Configured`), `version` when the CLI reports one, a one-line `summary`, `remediation` text, a copyable `remediationCommand` the **operator** runs, `enumeration` (`Discovered` | `OperatorDeclared` | `Unknown`), `models`, and `hiddenModels`.
 
-Redaction is structural rather than a filtering pass: the bound DTOs have no field for the account
-e-mail, organisation identifiers, or local paths that `claude auth status --json` and
-`codex doctor --json` print, so that material cannot reach this payload or a log. Arcanum never
-authenticates — `remediationCommand` is text the operator runs themselves. `enumeration: "Unknown"` is
-the ordinary outcome, because neither CLI publishes a machine-readable model list; clients fall back
-to free-text model entry and everything still works.
+Redaction is structural rather than a filtering pass: the bound DTOs have no field for the account e-mail, organisation identifiers, or local paths that `claude auth status --json` and `codex doctor --json` print, so that material cannot reach this payload or a log. Arcanum never authenticates — `remediationCommand` is text the operator runs themselves. `enumeration: "Unknown"` is the ordinary outcome, because neither CLI publishes a machine-readable model list; clients fall back to free-text model entry and everything still works.
 
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 
-`McpConnectionManager` publishes `McpServerEvent` on state changes. Same SSE back-pressure/caps/auth as §8.11.
-`arcanum watch mcp` uses the common watcher, including repeatable `--tool` / `--tool-name` and
-`--event-type` filters. Reconnect does not imply replay of MCP lifecycle events.
+`McpConnectionManager` publishes `McpServerEvent` on state changes. Same SSE back-pressure/caps/auth as §8.11. `arcanum watch mcp` uses the common watcher, including repeatable `--tool` / `--tool-name` and `--event-type` filters. Reconnect does not imply replay of MCP lifecycle events.
 
 ### 8.14 Spell Management API (`/api/spells`)
 
 Workspace resolution: `?workspace=` → `Arcanum:Workspaces:DefaultRoot` → CWD. CRUD needs a resolvable workspace; empty `Arcanum:Security:SpellWorkspaceRoots` denies all (**403** `Spell.PathNotAllowed`). Built-ins under `~/.config/arcanum/spells/` are read-only (`Spell.BuiltinReadOnly`). Format: `SPELL.md` frontmatter + body; optional `SPELL.json` (legacy `SKILL.json` read fallback; writes always `SPELL.json`). Search shadow order is campaign > workspace > builtin and returns the complete deterministic match set rather than silently dropping results after 1,000. Declared dependency lists and cycle-safe graph traversal have no count/depth ceiling; single-file allocation, cancellation, visited identity, `MaxDeclaredTools`, and provider-facing `MaxResonantBytes` remain. Versions: string labels `SPELL.v{label}.md` (`^[A-Za-z0-9.]+$`); activate swaps into `SPELL.md` and records `activeVersion`. Clone/cast/import quirks and status codes: §1. Per-workspace locks; delete only under `{workspace}/spells/{name}`. Updating or deleting a spell that does not exist in the resolved workspace returns **404** `Spell.NotFound` through `ArcanumErrorMapper` (§8.23), matching `GET /api/spells/{name}`; built-in and validation refusals stay **400**.
 
-`GET /api/spells` preserves the legacy `ApiResponse<SpellSummary[]>` response unless the nullable
-query flag is explicitly `paged=true`. Paged mode returns `ApiResponse<SpellCatalogPage>` with 50
-metadata items, `hasMore`, opaque `nextCursor`, and `continuationAction`; it accepts `workspace`,
-`q`, `tag`, `tool`, `source`, and `cursor`. The cursor binds all filters/workspace plus the exact
-source/name/path identity of the prior anchor. A mismatched query, malformed cursor, or missing or
-changed anchor returns a structured **400** that instructs the client to restart with `cursor`
-omitted. Replaying the same input cursor is deterministic; the returned cursor advances. One
-cursor-name frame retains a 65,536-byte strict-UTF-8 boundary; **400**
-`Spell.ContinuationFrameTooLarge` reports the measurement and asks the operator to rename the
-spell or narrow the filters, then restart. The resource selector follows every advancing page,
-while Command Center `/spell list [opaque-cursor]` fetches one page and prints the exact next
-command. Legacy array consumers remain unchanged.
+`GET /api/spells` preserves the legacy `ApiResponse<SpellSummary[]>` response unless the nullable query flag is explicitly `paged=true`. Paged mode returns `ApiResponse<SpellCatalogPage>` with 50 metadata items, `hasMore`, opaque `nextCursor`, and `continuationAction`; it accepts `workspace`, `q`, `tag`, `tool`, `source`, and `cursor`. The cursor binds all filters/workspace plus the exact source/name/path identity of the prior anchor. A mismatched query, malformed cursor, or missing or changed anchor returns a structured **400** that instructs the client to restart with `cursor` omitted. Replaying the same input cursor is deterministic; the returned cursor advances. One cursor-name frame retains a 65,536-byte strict-UTF-8 boundary; **400** `Spell.ContinuationFrameTooLarge` reports the measurement and asks the operator to rename the spell or narrow the filters, then restart. The resource selector follows every advancing page, while Command Center `/spell list [opaque-cursor]` fetches one page and prints the exact next command. Legacy array consumers remain unchanged.
 
 ### 8.15 Daemon job management (`/api/daemons`, `/api/executions`)
 
@@ -529,11 +415,7 @@ command. Legacy array consumers remain unchanged.
 
 Serilog → `SerilogLogRingBufferSink` → a code-owned bounded in-memory ring that overwrites the oldest entry. Query filters + `beforeSequence` cursor. Live SSE accepts nullable `LogLevel` `level` (`trace`, `debug`, `information`, `warning`, `error`, or `critical`) plus free-form `category` and `search`. The CLI forwards the level token without adding another client-side allowlist; API enum binding remains authoritative, and an unknown nonblank value returns **400** `Validation.InvalidQuery` before the response becomes SSE. A successful stream begins with the SSE comment `: connected`, not a synthetic data object. The route uses the same caps/auth as §8.11 and is not persisted across restarts. Post-build sink registration avoids a Build()-time logging DI deadlock.
 
-`arcanum watch logs` maps `--level`, `--category`, and `--search` to those server filters and may
-add repeatable client-side `--event-type` / `--tool` filters. Like the other process-local streams,
-an opt-in reconnect continues across retryable disconnects until cancellation or clean completion,
-uses capped exponential delays, warns on every possible gap, and never claims missed log entries
-were replayed. Permanent 4xx/authentication/cap denials remain terminal.
+`arcanum watch logs` maps `--level`, `--category`, and `--search` to those server filters and may add repeatable client-side `--event-type` / `--tool` filters. Like the other process-local streams, an opt-in reconnect continues across retryable disconnects until cancellation or clean completion, uses capped exponential delays, warns on every possible gap, and never claims missed log entries were replayed. Permanent 4xx/authentication/cap denials remain terminal.
 
 ### 8.16.1 Unified CLI watch projection
 
@@ -548,23 +430,9 @@ The six CLI sources map one-to-one to existing server contracts:
 | `watch daemons` | `GET /api/events/daemon` |
 | `watch health` | Repeated `GET /api/health`; `--interval` defaults to five seconds |
 
-`watch <source>` is the only live-stream entry; the CLI ships no alias spellings for these. Every request uses the
-normal `/api` credential; the CLI neither widens authorization nor bypasses SSE connection caps.
-The shared SSE consumer joins multi-line `data:` fields without a new client-only payload cap,
-surfaces heartbeat comments as stderr liveness diagnostics while excluding them from data, stops cleanly
-on `[DONE]`, uses UTC timestamps and event-type coloring in terminal mode, and returns **130** on
-Ctrl+C. `--json` reserves stdout for compact newline-delimited source objects and routes all
-diagnostics, including reconnect/gap messages, to stderr.
+`watch <source>` is the only live-stream entry; the CLI ships no alias spellings for these. Every request uses the normal `/api` credential; the CLI neither widens authorization nor bypasses SSE connection caps. The shared SSE consumer joins multi-line `data:` fields without a new client-only payload cap, surfaces heartbeat comments as stderr liveness diagnostics while excluding them from data, stops cleanly on `[DONE]`, uses UTC timestamps and event-type coloring in terminal mode, and returns **130** on Ctrl+C. `--json` reserves stdout for compact newline-delimited source objects and routes all diagnostics, including reconnect/gap messages, to stderr.
 
-Repeatable `--event-type` and repeatable `--tool` (alias `--tool-name`) accept arbitrary
-case-insensitive values; blank values are ignored, and log tool matching recognizes structured
-`properties.ToolName` metadata. Reconnect is opt-in, retries unexpected disconnects and transient
-HTTP 408/425/429/5xx failures until cancellation with a code-owned capped exponential delay, and
-always reports a possible gap. Permanent validation/authentication/not-found/cap errors exit. A Session cursor may
-reduce the gap by continuing after the last received valid Entry id, but the bounded Session window is not
-a replay guarantee; Chronicle, log, MCP, and daemon streams have no replay cursor. Health polling
-accepts any positive whole-second interval and renders a valid Unhealthy 503 envelope as an
-observation. These are per-process CLI options and add no configuration surface.
+Repeatable `--event-type` and repeatable `--tool` (alias `--tool-name`) accept arbitrary case-insensitive values; blank values are ignored, and log tool matching recognizes structured `properties.ToolName` metadata. Reconnect is opt-in, retries unexpected disconnects and transient HTTP 408/425/429/5xx failures until cancellation with a code-owned capped exponential delay, and always reports a possible gap. Permanent validation/authentication/not-found/cap errors exit. A Session cursor may reduce the gap by continuing after the last received valid Entry id, but the bounded Session window is not a replay guarantee; Chronicle, log, MCP, and daemon streams have no replay cursor. Health polling accepts any positive whole-second interval and renders a valid Unhealthy 503 envelope as an observation. These are per-process CLI options and add no configuration surface.
 
 ### 8.17 Workspace registry and file browser/writer (`/api/workspaces`)
 
@@ -580,59 +448,17 @@ Search, export, analytics, CRUD, manual entry append, SSE live stream, and Campa
 
 #### 8.18.1 Standalone session attachments
 
-All routes are API-key protected and operate only on a bound attachment belonging to the route
-Session. Successes use the native `ApiResponse<T>` envelope except the content stream.
+All routes are API-key protected and operate only on a bound attachment belonging to the route Session. Successes use the native `ApiResponse<T>` envelope except the content stream.
 
-- **Snapshot:** `POST /api/sessions/{id}/attachments` requires multipart form field `file`; an
-  optional `logicalName` chooses the version family. It persists the supplied bytes as an immutable
-  encrypted snapshot with `SourceKind=SnapshotOnly` / `SourceStatus=NotApplicable`. The request may
-  originate from any client-readable path or stdin because no client path is sent or retained.
-  Unsupported binary/PDF/Office content is stored as `Binary` and remains `NotEligible` for text
-  extraction; it is not rejected merely because Arcanum cannot materialize it into model context.
-  The parser admits a maximum-size file plus 64 KiB of multipart envelope, but rejects aggregate
-  overflow with `Attachment.TooLarge` for both declared-length and chunked requests.
-- **Live reference:** `POST /api/sessions/{id}/attachments/reference` accepts
-  `{ "workspacePath": "docs/notes.md", "workspaceId": "optional-id", "logicalName": "optional-key" }`.
-  `workspacePath` is interpreted only on the server, relative to the selected registered workspace
-  or the configured active/default workspace. Absolute values do not widen authority: canonical
-  containment, link/file identity, stable bounded reads, and Campaign Sanctum must all pass. The
-  response exposes only opaque/sanitized provenance; canonical paths and file identities stay
-  encrypted server metadata.
-- **List/versions:** `GET /api/sessions/{id}/attachments` returns all bound versions. Clients derive
-  a latest-per-logical-key list or a version history without a second persistence authority.
-  The server fulfills that all-version array contract by exhausting bounded SQL keyset pages; turn
-  indexes and logical-name tool selectors use SQL-selected latest projections and retrieve version
-  ordinals only for the requested index keys, rather than loading every full historical row first.
-  `SessionAttachmentDto.SessionId` enables direct CLI output; `RelativePath` names the encrypted
-  stored snapshot, never the live source. CLI Reveal uses it only when the corresponding local file
-  is present and has an `ARCABLOB` envelope; otherwise the user is directed to authenticated export.
-- **Refresh:** `POST /api/sessions/{id}/attachments/{attachmentId}/refresh` accepts no body or path.
-  It calls the same `ToolExecutionPipeline.RefreshSessionAttachmentAsync` core used by
-  `refresh_session_file`. An unchanged hash reuses the row; changed verified bytes create the next
-  version under the measured per-Session byte protection without an incidental per-key version-count cap. Detected MIME determines the
-  refreshed version's current Text/Image/Binary kind. Kind-specific policy is reapplied, but this
-  operator endpoint does not require model vision capability because it injects no content.
-- **Content:** `GET /api/sessions/{id}/attachments/{attachmentId}/content` opens only the authenticated
-  stored snapshot through `ISessionAttachmentStore.OpenReadAsync`. It returns a download, never
-  inline content, with `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and no source
-  path in headers. Attachment bytes are therefore available for atomic client export without ever
-  being printed by metadata commands.
-- **Pins:** the existing context-pin routes create/delete `kind=attachment` pins whose target is an
-  attachment id and whose content version is its snapshot hash. Text pins may materialize
-  implicitly within the shared pin/turn budgets. Image pins remain stored but materialize with
-  `Unsupported`; a vision-capable turn must explicitly pass that bound attachment id.
-- **Inference references:** native `attachmentReferences` remain ordered opaque IDs for Bound
-  snapshots in the effective Session. Preparation validates metadata without loading every file.
-  After provider/model resolution, the turn opens and admits each reference independently against
-  the actual context window; overflow stops before opening later references or calling the provider.
-  Successful content retains request order and typed attachment provenance. Caller cancellation
-  propagates immediately and does not materialize later references.
+- **Snapshot:** `POST /api/sessions/{id}/attachments` requires multipart form field `file`; an optional `logicalName` chooses the version family. It persists the supplied bytes as an immutable encrypted snapshot with `SourceKind=SnapshotOnly` / `SourceStatus=NotApplicable`. The request may originate from any client-readable path or stdin because no client path is sent or retained. Unsupported binary/PDF/Office content is stored as `Binary` and remains `NotEligible` for text extraction; it is not rejected merely because Arcanum cannot materialize it into model context. The parser admits a maximum-size file plus 64 KiB of multipart envelope, but rejects aggregate overflow with `Attachment.TooLarge` for both declared-length and chunked requests.
+- **Live reference:** `POST /api/sessions/{id}/attachments/reference` accepts `{ "workspacePath": "docs/notes.md", "workspaceId": "optional-id", "logicalName": "optional-key" }`. `workspacePath` is interpreted only on the server, relative to the selected registered workspace or the configured active/default workspace. Absolute values do not widen authority: canonical containment, link/file identity, stable bounded reads, and Campaign Sanctum must all pass. The response exposes only opaque/sanitized provenance; canonical paths and file identities stay encrypted server metadata.
+- **List/versions:** `GET /api/sessions/{id}/attachments` returns all bound versions. Clients derive a latest-per-logical-key list or a version history without a second persistence authority. The server fulfills that all-version array contract by exhausting bounded SQL keyset pages; turn indexes and logical-name tool selectors use SQL-selected latest projections and retrieve version ordinals only for the requested index keys, rather than loading every full historical row first. `SessionAttachmentDto.SessionId` enables direct CLI output; `RelativePath` names the encrypted stored snapshot, never the live source. CLI Reveal uses it only when the corresponding local file is present and has an `ARCABLOB` envelope; otherwise the user is directed to authenticated export.
+- **Refresh:** `POST /api/sessions/{id}/attachments/{attachmentId}/refresh` accepts no body or path. It calls the same `ToolExecutionPipeline.RefreshSessionAttachmentAsync` core used by `refresh_session_file`. An unchanged hash reuses the row; changed verified bytes create the next version under the measured per-Session byte protection without an incidental per-key version-count cap. Detected MIME determines the refreshed version's current Text/Image/Binary kind. Kind-specific policy is reapplied, but this operator endpoint does not require model vision capability because it injects no content.
+- **Content:** `GET /api/sessions/{id}/attachments/{attachmentId}/content` opens only the authenticated stored snapshot through `ISessionAttachmentStore.OpenReadAsync`. It returns a download, never inline content, with `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and no source path in headers. Attachment bytes are therefore available for atomic client export without ever being printed by metadata commands.
+- **Pins:** the existing context-pin routes create/delete `kind=attachment` pins whose target is an attachment id and whose content version is its snapshot hash. Text pins may materialize implicitly within the shared pin/turn budgets. Image pins remain stored but materialize with `Unsupported`; a vision-capable turn must explicitly pass that bound attachment id.
+- **Inference references:** native `attachmentReferences` remain ordered opaque IDs for Bound snapshots in the effective Session. Preparation validates metadata without loading every file. After provider/model resolution, the turn opens and admits each reference independently against the actual context window; overflow stops before opening later references or calling the provider. Successful content retains request order and typed attachment provenance. Caller cancellation propagates immediately and does not materialize later references.
 
-`Attachment.Disabled` → **403**; `Attachment.InvalidRequest`, `InvalidContent`,
-`InvalidReference`, and `SourceUnavailable` → **400**; `Attachment.NotFound` and `SourceNotFound` →
-**404**; `Attachment.LimitExceeded` → **409**; `Attachment.TooLarge` → **413**. Error messages are
-bounded and never echo a source path. Refresh failures use this same mapping instead of collapsing
-every outcome to a conflict.
+`Attachment.Disabled` → **403**; `Attachment.InvalidRequest`, `InvalidContent`, `InvalidReference`, and `SourceUnavailable` → **400**; `Attachment.NotFound` and `SourceNotFound` → **404**; `Attachment.LimitExceeded` → **409**; `Attachment.TooLarge` → **413**. Error messages are bounded and never echo a source path. Refresh failures use this same mapping instead of collapsing every outcome to a conflict.
 
 ### 8.19 Server lifecycle (PID file)
 
@@ -640,10 +466,7 @@ The code-owned path is `~/.config/arcanum/arcanum.pid`. Startup fails if a live 
 
 ### 8.20 Unified data lifecycle API (`/api/data`)
 
-Every route in this family is protected by the normal `/api` key filter. Status and planning are
-read-only. Mutations are operation-specific; there is no generic memory-delete route and the CLI
-never mutates the Grimoire directly. CLI confirmation is an additional operator gate, not a
-substitute for HTTP authentication. Factory reset also requires the exact body token shown below.
+Every route in this family is protected by the normal `/api` key filter. Status and planning are read-only. Mutations are operation-specific; there is no generic memory-delete route and the CLI never mutates the Grimoire directly. CLI confirmation is an additional operator gate, not a substitute for HTTP authentication. Factory reset also requires the exact body token shown below.
 
 **Requests (camel-case property names; canonical enum values retain CLR casing):**
 
@@ -698,121 +521,23 @@ substitute for HTTP authentication. Factory reset also requires the exact body t
 }
 ```
 
-`POST /api/data/factory-reset/plan` is a loopback-only planning seam used by the installation-reset
-coordinator. `Global` forbids a workspace binding. `Workspace` requires the exact registered
-Campaign id and canonical root. The existing `POST /api/data/factory-reset` confirmation contract
-remains available for compatibility and retains its data-only boundary.
+`POST /api/data/factory-reset/plan` is a loopback-only planning seam used by the installation-reset coordinator. `Global` forbids a workspace binding. `Workspace` requires the exact registered Campaign id and canonical root. The existing `POST /api/data/factory-reset` confirmation contract remains available for compatibility and retains its data-only boundary.
 
-`DataRetentionOperation` is emitted as `Prune`, `DeleteSession`, `DeleteAttachment`, `ResetMemory`,
-`FactoryReset`, or `ResetWorkspace`. The two DELETE routes construct the corresponding target operation from `{id}`;
-callers do not send a body. `MemoryResetScope` is emitted as `Entry`, `Attachments`, `Workspace`,
-`Saga`, or `Lexicon`. Enum input matching is case-insensitive; responses use the canonical casing
-shown here. `RetentionDataClass` response values likewise retain their CLR casing, such as
-`ActiveSessions`. `RetentionRuleUpdateRequest.dataClass` names one configured rule. Matching is
-case-insensitive after hyphens, underscores, and spaces are removed; grouped aliases include
-`attachments`, `workspace-indexes`, `accounting`, and `daemon-history`, while typed attachment,
-batch-file, workspace, and accounting subclasses resolve to their governing rule. `days` is clamped
-to 1–3,650 and is required when `enabled` is `true`. It is optional when `enabled` is `false`;
-disabling a rule preserves its prior day value and does not add a capability restriction to
-explicit deletion. `GET /api/data/retention`
-returns the complete effective policy, including sweep bounds, accounting floor, and protected
-session ids. A successful PUT persists the normalized rule and makes it immediately authoritative
-for subsequent GET, status, and planning calls.
-The same process-authoritative snapshot controls subsequent inference- and guardrail-log planning
-and apply calls. Log writers only create, secure, and append dated files; they never enumerate or
-delete historical files. The former host/security day fields are removed. A query without `from`
-searches all dated files, and only the canonical `AuditLogs` / `GuardrailLogs` retention rules can
-trigger age-based mutation.
-Mutation selectors and `enabled` are required: omission never selects a default destructive scope
-or silently substitutes `false`. The sole presence-aware field is retention `days`, under the rule
-above. Data-class and memory-scope choices accept documented names and aliases only; JSON/CLI
-numeric enum spellings are rejected before mutation.
+`DataRetentionOperation` is emitted as `Prune`, `DeleteSession`, `DeleteAttachment`, `ResetMemory`, `FactoryReset`, or `ResetWorkspace`. The two DELETE routes construct the corresponding target operation from `{id}`; callers do not send a body. `MemoryResetScope` is emitted as `Entry`, `Attachments`, `Workspace`, `Saga`, or `Lexicon`. Enum input matching is case-insensitive; responses use the canonical casing shown here. `RetentionDataClass` response values likewise retain their CLR casing, such as `ActiveSessions`. `RetentionRuleUpdateRequest.dataClass` names one configured rule. Matching is case-insensitive after hyphens, underscores, and spaces are removed; grouped aliases include `attachments`, `workspace-indexes`, `accounting`, and `daemon-history`, while typed attachment, batch-file, workspace, and accounting subclasses resolve to their governing rule. `days` is clamped to 1–3,650 and is required when `enabled` is `true`. It is optional when `enabled` is `false`; disabling a rule preserves its prior day value and does not add a capability restriction to explicit deletion. `GET /api/data/retention` returns the complete effective policy, including sweep bounds, accounting floor, and protected session ids. A successful PUT persists the normalized rule and makes it immediately authoritative for subsequent GET, status, and planning calls. The same process-authoritative snapshot controls subsequent inference- and guardrail-log planning and apply calls. Log writers only create, secure, and append dated files; they never enumerate or delete historical files. The former host/security day fields are removed. A query without `from` searches all dated files, and only the canonical `AuditLogs` / `GuardrailLogs` retention rules can trigger age-based mutation. Mutation selectors and `enabled` are required: omission never selects a default destructive scope or silently substitutes `false`. The sole presence-aware field is retention `days`, under the rule above. Data-class and memory-scope choices accept documented names and aliases only; JSON/CLI numeric enum spellings are rejected before mutation.
 
-**Status.** `DataRetentionStatus` contains `generatedAt`, `items`, aggregate `rows`, `files`, and
-`estimatedBytes`, plus `preservedOutsideSelectedRoot`. Each `DataRetentionStatusItem` has
-`dataClass`, `rows`, `files`, `estimatedBytes`, `policyEnabled`, nullable `retentionDays`, `store`,
-and safe `provenance`. The typed class list and physical ownership are defined in DESIGN §5.4.7.
-For a composite physical owner, `rows` includes its canonical row plus owned companion, index, and
-provenance rows. File counts and `estimatedBytes` describe managed files that actually exist at
-inspection time; they do not estimate missing metadata targets or SQLite page allocation.
-Batch input/output/error items count role references, so one uploaded file may appear in more than
-one of those items; the response-level aggregate totals exclude those reference-only roles and sum
-physical owners. The response contains no plaintext content, secret, or host source path.
+**Status.** `DataRetentionStatus` contains `generatedAt`, `items`, aggregate `rows`, `files`, and `estimatedBytes`, plus `preservedOutsideSelectedRoot`. Each `DataRetentionStatusItem` has `dataClass`, `rows`, `files`, `estimatedBytes`, `policyEnabled`, nullable `retentionDays`, `store`, and safe `provenance`. The typed class list and physical ownership are defined in DESIGN §5.4.7. For a composite physical owner, `rows` includes its canonical row plus owned companion, index, and provenance rows. File counts and `estimatedBytes` describe managed files that actually exist at inspection time; they do not estimate missing metadata targets or SQLite page allocation. Batch input/output/error items count role references, so one uploaded file may appear in more than one of those items; the response-level aggregate totals exclude those reference-only roles and sum physical owners. The response contains no plaintext content, secret, or host source path.
 
-**Dry-run plan.** `DataRetentionPlan` contains `planId`, the normalized `request`, `generatedAt`,
-per-class `items`, `blockers`, `conflicts`, aggregate `rows`/`files`/`estimatedBytes`/
-`derivedRecords`, deterministic `candidateIds`, and `requiresConfirmation`. Every item reports
-`dataClass`, `rows`, `files`, `estimatedBytes`, and `derivedRecords`. Blockers report
-`dataClass`, `resourceId`, `reasonCode`, and a sanitized `message`; conflicts report `code`,
-`resourceId`, and `message`. Planning reads the same dependency graph used by apply and does not
-write rows, files, operation history, or checkpoints.
+**Dry-run plan.** `DataRetentionPlan` contains `planId`, the normalized `request`, `generatedAt`, per-class `items`, `blockers`, `conflicts`, aggregate `rows`/`files`/`estimatedBytes`/ `derivedRecords`, deterministic `candidateIds`, and `requiresConfirmation`. Every item reports `dataClass`, `rows`, `files`, `estimatedBytes`, and `derivedRecords`. Blockers report `dataClass`, `resourceId`, `reasonCode`, and a sanitized `message`; conflicts report `code`, `resourceId`, and `message`. Planning reads the same dependency graph used by apply and does not write rows, files, operation history, or checkpoints.
 
-**Apply.** Apply recomputes the current plan. If `expectedPlanId` is present and differs, the server
-returns `Data.PlanChanged`; clients must preview again. The bundled CLI always fetches the exact
-plan immediately before `--apply`, shows it in human mode, confirms its id and totals, and sends
-that id as `expectedPlanId`; `--json --yes` performs the same binding but emits only the final apply
-result as one machine-readable JSON value. Policy prune leaves blocked/conflicting
-candidates untouched while applying unrelated eligible candidates. Explicit session/attachment
-deletion and scoped/global reset fail when their selected target has a blocker or conflict. A
-prune candidate that becomes protected after planning is preserved and reported through a
-`Data.PlanChanged` conflict while later independent candidates may still run. Its checkpoint stays
-before the earliest preserved candidate so recovery re-evaluates that boundary instead of silently
-skipping it. A
-successful `DataRetentionApplyResult` reports `operationId`, the applied `planId`, deleted
-row/file/estimated-byte/derived-record totals, `reconciled`, and the plan diagnostics. Execution is
-bounded, durable-operation-backed, checkpointed, and restart-idempotent. Each planned candidate
-receives a bounded post-delete ownership check for its selected rows, derived records, and owned
-files; `reconciled` is true only after every applicable candidate check succeeds. This is not a
-global orphan-vacuum operation.
+**Apply.** Apply recomputes the current plan. If `expectedPlanId` is present and differs, the server returns `Data.PlanChanged`; clients must preview again. The bundled CLI always fetches the exact plan immediately before `--apply`, shows it in human mode, confirms its id and totals, and sends that id as `expectedPlanId`; `--json --yes` performs the same binding but emits only the final apply result as one machine-readable JSON value. Policy prune leaves blocked/conflicting candidates untouched while applying unrelated eligible candidates. Explicit session/attachment deletion and scoped/global reset fail when their selected target has a blocker or conflict. A prune candidate that becomes protected after planning is preserved and reported through a `Data.PlanChanged` conflict while later independent candidates may still run. Its checkpoint stays before the earliest preserved candidate so recovery re-evaluates that boundary instead of silently skipping it. A successful `DataRetentionApplyResult` reports `operationId`, the applied `planId`, deleted row/file/estimated-byte/derived-record totals, `reconciled`, and the plan diagnostics. Execution is bounded, durable-operation-backed, checkpointed, and restart-idempotent. Each planned candidate receives a bounded post-delete ownership check for its selected rows, derived records, and owned files; `reconciled` is true only after every applicable candidate check succeeds. This is not a global orphan-vacuum operation.
 
-For every file-bearing prune candidate and explicit deletion, the durable checkpoint carries an
-exact `ARCAMUT2` manifest with the mutation subtype/target, managed-root role, normalized relative
-path, captured no-follow identity metadata, and operation-scoped same-parent quarantine prefix.
-Recovery examines only that manifest-declared namespace; unrelated or malformed quarantine is
-rejected fail-closed. Factory reset uses a separate whole-root recovery contract and re-inventories
-the complete managed roots when it resumes.
+For every file-bearing prune candidate and explicit deletion, the durable checkpoint carries an exact `ARCAMUT2` manifest with the mutation subtype/target, managed-root role, normalized relative path, captured no-follow identity metadata, and operation-scoped same-parent quarantine prefix. Recovery examines only that manifest-declared namespace; unrelated or malformed quarantine is rejected fail-closed. Factory reset uses a separate whole-root recovery contract and re-inventories the complete managed roots when it resumes.
 
-The dependency contract removes owned derived rows and bytes—attachment chunks/embeddings/index
-state with the attachment, Entry embeddings with Entries, and workspace embeddings with chunks.
-Managed-file deletion uses no-follow identity capture and apply-boundary revalidation; an object
-that changes identity is preserved with its metadata and the operation fails closed. Batch
-references protect uploaded files. Pinned Entries/context/attachments, protected sessions,
-active operations/inference/idempotency leases, outstanding budget reservations, and in-progress
-batches remain visible as blockers/conflicts. The effective accounting age is never shorter than
-`accountingMinimumDays`, and `Sessions.TotalCostUsd` is not accounting authority.
+The dependency contract removes owned derived rows and bytes—attachment chunks/embeddings/index state with the attachment, Entry embeddings with Entries, and workspace embeddings with chunks. Managed-file deletion uses no-follow identity capture and apply-boundary revalidation; an object that changes identity is preserved with its metadata and the operation fails closed. Batch references protect uploaded files. Pinned Entries/context/attachments, protected sessions, active operations/inference/idempotency leases, outstanding budget reservations, and in-progress batches remain visible as blockers/conflicts. The effective accounting age is never shorter than `accountingMinimumDays`, and `Sessions.TotalCostUsd` is not accounting authority.
 
-Deleting an attachment does not silently delete independently retained Saga or Lexicon facts.
-Their typed provenance remains and resolves the missing source as unavailable. Factory reset clears
-only managed data beneath the configured root and never silently deletes external backups,
-registered out-of-root workspace content, configuration, or security/credential/key material.
-The Forge-owned local histories are outside this API's implementation boundary and remain
-untouched; no coordinated cleanup integration is added by this feature. Prior terminal operation
-history is cleared in dependency order, while the successful factory reset necessarily leaves its
-own completed durable-operation marker as the audit/recovery record for that mutation. The
-`DaemonExecutions` status/plan item includes both process-local execution summaries and persisted
-Unseen Servant schedule watermarks, so factory-reset previews account for both before clearing them.
-Factory previews exclude reference-only batch roles and count dependency/index/provenance rows as
-derived records. Apply uses a restart-idempotent immediate database transaction plus a daemon-start
-gate, so an interrupted reset can resume and new managed work cannot enter after the final conflict
-check. Prune and explicit data mutations also share an atomic cross-kind single-flight start, while
-elapsed-time heartbeats keep ownership during a slow candidate.
-Inference and guardrail audit writers share a singleton managed-log publication gate with factory
-reset. The reset takes that gate before its database writer transaction and holds it through log
-inventory, quarantine, commit, cleanup, and reconciliation: an append that wins is counted and
-cleared, while an append waiting behind the reset is published afterward and is not reported as a
-deleted file. Each logger retains its private append serialization and best-effort failure behavior.
-Managed factory-reset files move into identity-verified, owner-only same-parent quarantine before
-the database commit. Rollback restores them; after commit cleanup removes them, and restart recovery
-re-inventories the managed roots, discovers any quarantine left by a crash, and resumes the
-idempotent whole-root cleanup.
-Logical row deletion and file unlinking do not promise physical secure erasure on SSD,
-copy-on-write, snapshot, WAL/free-page, cache, encrypted-replica, or backup media.
+Deleting an attachment does not silently delete independently retained Saga or Lexicon facts. Their typed provenance remains and resolves the missing source as unavailable. Factory reset clears only managed data beneath the configured root and never silently deletes external backups, registered out-of-root workspace content, configuration, or security/credential/key material. The Forge-owned local histories are outside this API's implementation boundary and remain untouched; no coordinated cleanup integration is added by this feature. Prior terminal operation history is cleared in dependency order, while the successful factory reset necessarily leaves its own completed durable-operation marker as the audit/recovery record for that mutation. The `DaemonExecutions` status/plan item includes both process-local execution summaries and persisted Unseen Servant schedule watermarks, so factory-reset previews account for both before clearing them. Factory previews exclude reference-only batch roles and count dependency/index/provenance rows as derived records. Apply uses a restart-idempotent immediate database transaction plus a daemon-start gate, so an interrupted reset can resume and new managed work cannot enter after the final conflict check. Prune and explicit data mutations also share an atomic cross-kind single-flight start, while elapsed-time heartbeats keep ownership during a slow candidate. Inference and guardrail audit writers share a singleton managed-log publication gate with factory reset. The reset takes that gate before its database writer transaction and holds it through log inventory, quarantine, commit, cleanup, and reconciliation: an append that wins is counted and cleared, while an append waiting behind the reset is published afterward and is not reported as a deleted file. Each logger retains its private append serialization and best-effort failure behavior. Managed factory-reset files move into identity-verified, owner-only same-parent quarantine before the database commit. Rollback restores them; after commit cleanup removes them, and restart recovery re-inventories the managed roots, discovers any quarantine left by a crash, and resumes the idempotent whole-root cleanup. Logical row deletion and file unlinking do not promise physical secure erasure on SSD, copy-on-write, snapshot, WAL/free-page, cache, encrypted-replica, or backup media.
 
-This route family maps `Data.InvalidRequest` and `Data.ConfirmationRequired` to **400**,
-`Data.NotFound` to **404**, `Data.PlanChanged`, `Data.Blocked`, and `Data.Conflict` to **409**, and
-`Data.ReconciliationFailed` to **500**. An unexpected apply failure is also **500**. The retention
-rule PUT route returns **400** for `Data.InvalidRequest`; an unexpected policy-store failure is
-**500**.
+This route family maps `Data.InvalidRequest` and `Data.ConfirmationRequired` to **400**, `Data.NotFound` to **404**, `Data.PlanChanged`, `Data.Blocked`, and `Data.Conflict` to **409**, and `Data.ReconciliationFailed` to **500**. An unexpected apply failure is also **500**. The retention rule PUT route returns **400** for `Data.InvalidRequest`; an unexpected policy-store failure is **500**.
 
 ### 8.21 The Proving Grounds (`POST /api/proving-grounds/trials/run`)
 
@@ -824,14 +549,7 @@ Prometheus text `0.0.4` via `System.Diagnostics.Metrics` + hand-rolled exporter 
 
 ### 8.23 Error code catalog and HTTP status mapping
 
-Wire-stable codes live on `ErrorCodes` (Core). General HTTP mapping authority is
-`ArcanumErrorMapper.ResolveStatusCode` (Api); the data-lifecycle family has the route-local mapping
-defined in §8.20. `ResolveStatusCodeDefaultBadRequest` treats unmapped codes as **400** on
-Apprentice/Campaign/Spell/Prompt/ProvingGrounds routes while still honoring explicit **500**
-mappings (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`,
-`Saga.SearchFailed`, `Hub.Error`). Unrecognized strings (including `Hub.Error` via default arm) →
-**500**. Keep in sync with `ErrorCodes.cs`, `ArcanumErrorMapper.cs`, and the route-local endpoint
-mappers and tests.
+Wire-stable codes live on `ErrorCodes` (Core). General HTTP mapping authority is `ArcanumErrorMapper.ResolveStatusCode` (Api); the data-lifecycle family has the route-local mapping defined in §8.20. `ResolveStatusCodeDefaultBadRequest` treats unmapped codes as **400** on Apprentice/Campaign/Spell/Prompt/ProvingGrounds routes while still honoring explicit **500** mappings (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`, `Saga.SearchFailed`, `Hub.Error`). Unrecognized strings (including `Hub.Error` via default arm) → **500**. Keep in sync with `ErrorCodes.cs`, `ArcanumErrorMapper.cs`, and the route-local endpoint mappers and tests.
 
 **Default / unmapped:** unlisted codes → **500**; `ResolveStatusCodeDefaultBadRequest` downgrades unmapped → **400** except the explicit **500** set above.
 
@@ -863,10 +581,7 @@ mappers and tests.
 | `Hub.Unhandled` | 500 | An exception escaped every endpoint and `ArcanumExceptionHandler` wrote the envelope |
 | `Validation.SpellOverride` | 500 | `OverrideSpellName` matched no spell. Client-side input, but the mapper has no entry for it, so the default arm still answers **500** |
 
-**Ollama:** providers use the `OpenAICompatible` contract and surface failures as `Hub.Error`.
-**Familiars:** `ClaudeCodeCli`/`CodexCli` providers surface a missing binary, a refused spawn, a
-deadline, or a non-zero exit as `Hub.Error` carrying the CLI's own message. `Provider.NotFound`
-maps to **404**.
+**Ollama:** providers use the `OpenAICompatible` contract and surface failures as `Hub.Error`. **Familiars:** `ClaudeCodeCli`/`CodexCli` providers surface a missing binary, a refused spawn, a deadline, or a non-zero exit as `Hub.Error` carrying the CLI's own message. `Provider.NotFound` maps to **404**.
 
 ### 8.24 OpenAI embeddings (`POST /v1/embeddings`)
 
