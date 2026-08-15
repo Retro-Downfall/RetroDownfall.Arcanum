@@ -3,10 +3,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -31,8 +34,32 @@ public static class GrimoireDatabaseBootstrapper
             secretStore,
             passphraseSource,
             scopeFactory,
+            heldInstallationLock: null,
+            cancellationToken);
+
+    /// <summary>
+    /// The same bootstrap, with the caller's already-held installation lock threaded through so
+    /// Covenant authority can be prepared under it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ArcanumMaintenanceLock"/> is internal, so this cannot be an overload of the public
+    /// entry point. The lock is optional rather than required because the CLI legitimately runs
+    /// alongside a host that already owns it; a null lock installs the schema and skips only the
+    /// authority preparation that needs exclusive ownership.
+    /// </remarks>
+    internal static Task EnsureInitializedAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
             ArcanumPaths.GrimoireDatabaseFile,
             ArcanumPaths.GrimoireDirectory,
+            heldInstallationLock,
             cancellationToken);
 
     /// <summary>
@@ -101,12 +128,29 @@ public static class GrimoireDatabaseBootstrapper
 
     }
 
+    internal static Task EnsureInitializedAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            heldInstallationLock: null,
+            cancellationToken);
+
     internal static async Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
         IServiceScopeFactory scopeFactory,
         string dbPath,
         string grimoireDirectory,
+        ArcanumMaintenanceLock? heldInstallationLock,
         CancellationToken cancellationToken)
     {
         SqliteNativeRuntime.Instance.Initialize();
@@ -168,7 +212,13 @@ public static class GrimoireDatabaseBootstrapper
 
         await SqliteConnectionPragmas.ApplyAsync(installConnection, cancellationToken).ConfigureAwait(false);
 
-        await InstallSchemaAsync(installConnection, scopeFactory, cancellationToken).ConfigureAwait(false);
+        await InstallSchemaAsync(
+            installConnection,
+            scopeFactory,
+            heldInstallationLock,
+            grimoireDirectory,
+            apiKey,
+            cancellationToken).ConfigureAwait(false);
 
         await installConnection.CloseAsync().ConfigureAwait(false);
 
@@ -188,30 +238,70 @@ public static class GrimoireDatabaseBootstrapper
     }
 
     /// <summary>
-    /// Installs the complete Grimoire schema from the declarative <c>Data/Schema/</c> tree — core
-    /// tables, FTS5 indexes, triggers, The Weave/Saga/Tapestry stores, and The Lexicon, all from one
-    /// source in one transaction (DESIGN §5.4.5). The durable schema is not optional, so a failure
-    /// here fails startup rather than leaving a half-built database behind.
-    ///
-    /// The optional <c>vec0</c> acceleration tier still degrades silently: the installer reports
-    /// whether sqlite-vec loaded and this method publishes that to
-    /// <see cref="WeaveIndexAvailability"/>, which is how Divination chooses vec0 KNN or its complete
-    /// managed cosine fallback (§21.2). If the DI scope itself cannot be resolved, availability stays
-    /// at its managed-only default.
+    /// Installs the complete Grimoire schema from the declarative <c>Data/Schema/</c> tree as the
+    /// three independently validated transaction tiers, then publishes the outcome through
+    /// <see cref="CovenantAvailability"/>.
     /// </summary>
+    /// <remarks>
+    /// Core is not optional, so its failure aborts startup. The two Covenant tiers fail at their own
+    /// boundaries and are published as unavailable or degraded, which is why the whole
+    /// <see cref="GrimoireSchemaInstallResult"/> is handed to the publisher rather than a success
+    /// flag.
+    ///
+    /// <para><see cref="WeaveIndexAvailability"/> is set to managed-only unconditionally. The
+    /// templated <c>vec0</c> accelerator tier it used to reflect no longer exists: the hermetic
+    /// SQLCipher runtime ships without extension loading, so managed cosine over the durable BLOB
+    /// tables is the only Divination search path and advertising anything else would be a lie
+    /// (§21.2).</para>
+    /// </remarks>
     private static async Task InstallSchemaAsync(
         SqliteConnection installConnection,
         IServiceScopeFactory scopeFactory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        string grimoireDirectory,
+        string masterApiKey,
         CancellationToken cancellationToken)
     {
 
-        int dimensions = new EmbeddingSettings().Dimensions;
-
-        WeaveIndexAvailability? availability = null;
-
-        Microsoft.Extensions.Logging.ILogger? logger = null;
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        // Settings resolution runs first and owns its own failure. It used to share a try block with
+        // an unrelated GetRequiredService<WeaveIndexAvailability>(), which AddArcanumGrimoireForCli
+        // never registered: the throw happened before the dimension assignment, the catch swallowed
+        // it, and every CLI bootstrap silently installed with the DEFAULT embedding dimension instead
+        // of the configured one. Keep the two resolutions separate, and keep the optional one
+        // nullable, so an absent registration can never again decide the embedding width.
+        int dimensions = ResolveEmbeddingDimensions(scope);
+
+        WeaveIndexAvailability? availability = scope.ServiceProvider.GetService<WeaveIndexAvailability>();
+
+        GrimoireSchemaInstaller installer = scope.ServiceProvider.GetRequiredService<GrimoireSchemaInstaller>();
+
+        GrimoireSchemaInitializationContext context = BuildInitializationContext(
+            heldInstallationLock,
+            grimoireDirectory,
+            masterApiKey);
+
+        GrimoireSchemaInstallResult result = await installer.InstallAsync(
+            installConnection,
+            dimensions,
+            context,
+            cancellationToken).ConfigureAwait(false);
+
+        _ = scope.ServiceProvider
+            .GetRequiredService<CovenantAvailability>()
+            .PublishSchema(result, CovenantHealthTransition.Bootstrap);
+
+        availability?.SetAvailable(false);
+
+    }
+
+    /// <summary>
+    /// Resolves the configured embedding width, falling back to the shipped default when the options
+    /// pipeline is not composed in this container.
+    /// </summary>
+    private static int ResolveEmbeddingDimensions(AsyncServiceScope scope)
+    {
 
         try
         {
@@ -219,15 +309,7 @@ public static class GrimoireDatabaseBootstrapper
             IOptionsMonitor<ArcanumSettings> optionsMonitor =
                 scope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
-            availability = scope.ServiceProvider.GetRequiredService<WeaveIndexAvailability>();
-
-            // GrimoireSchemaInstaller is a static class and cannot be an ILogger<T> category, so the
-            // logger is created by name (the same effective category a typed logger would produce).
-            logger = scope.ServiceProvider
-                .GetRequiredService<ILoggerFactory>()
-                .CreateLogger("RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaInstaller");
-
-            dimensions = ArcanumSettingClamps.EmbeddingsDimensions(
+            return ArcanumSettingClamps.EmbeddingsDimensions(
                 optionsMonitor.CurrentValue.ResolveEmbeddings().Dimensions);
 
         }
@@ -236,17 +318,45 @@ public static class GrimoireDatabaseBootstrapper
 
             Log.Warning(
                 ex,
-                "Embedding settings could not be resolved for schema installation; installing with the default dimension and the managed vector fallback.");
+                "Embedding settings could not be resolved for schema installation; installing with the default dimension.");
+
+            return new EmbeddingSettings().Dimensions;
 
         }
 
-        GrimoireSchemaInstallResult result = await GrimoireSchemaInstaller.InstallAsync(
-            installConnection,
-            dimensions,
-            logger,
-            cancellationToken).ConfigureAwait(false);
+    }
 
-        availability?.SetAvailable(result.VectorAccelerationAvailable);
+    /// <summary>
+    /// Builds the installation-local facts every tier initializer runs against.
+    /// </summary>
+    /// <remarks>
+    /// Both arms compute the same fingerprint from the same master key. The lock is what separates
+    /// them: with it the caller is the sole owner of this installation and authority is prepared under
+    /// it, and without it the caller is a CLI coexisting with a live host that already prepared
+    /// authority, so the context is built directly rather than under an ownership claim nobody holds.
+    /// </remarks>
+    private static GrimoireSchemaInitializationContext BuildInitializationContext(
+        ArcanumMaintenanceLock? heldInstallationLock,
+        string grimoireDirectory,
+        string masterApiKey)
+    {
+
+        DateTimeOffset installedAtUtc = DateTimeOffset.UtcNow;
+
+        if (heldInstallationLock is null)
+        {
+
+            return CovenantAuthorityBootstrapper.PrepareWithoutInstallationLock(
+                masterApiKey,
+                installedAtUtc);
+
+        }
+
+        return new CovenantAuthorityBootstrapper().PrepareUnderInstallationLock(
+            heldInstallationLock,
+            grimoireDirectory,
+            masterApiKey,
+            installedAtUtc);
 
     }
 

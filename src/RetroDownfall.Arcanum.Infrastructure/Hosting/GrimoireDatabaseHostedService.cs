@@ -95,8 +95,15 @@ public sealed class GrimoireDatabaseHostedService(
 
         try
         {
+            // The one lock this process owns, borrowed rather than re-acquired. Nesting a second
+            // FileShare.None acquisition inside the startup the first one guards would deadlock.
             await GrimoireDatabaseBootstrapper
-                .EnsureInitializedAsync(secretStore, passphraseSource, scopeFactory, cancellationToken)
+                .EnsureInitializedAsync(
+                    secretStore,
+                    passphraseSource,
+                    scopeFactory,
+                    _maintenanceLock,
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

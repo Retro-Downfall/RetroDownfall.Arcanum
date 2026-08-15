@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Tests.Fixtures;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
@@ -197,7 +199,7 @@ public sealed class BackupSessionImporterTests : IDisposable
 
         SqliteNativeRuntime.Instance.Initialize();
 
-        await using SqliteConnection connection = new(
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
             new SqliteConnectionStringBuilder
             {
 
@@ -207,14 +209,12 @@ public sealed class BackupSessionImporterTests : IDisposable
 
                 Pooling = false,
 
-            }.ToString());
+            }.ToString(),
+            CancellationToken.None);
 
-        await connection.OpenAsync();
-
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             1536,
-            logger: null,
             CancellationToken.None);
 
         return secret;

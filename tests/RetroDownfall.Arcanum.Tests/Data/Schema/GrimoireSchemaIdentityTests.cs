@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -83,14 +84,13 @@ public sealed class GrimoireSchemaIdentityTests
     private static async Task<SqliteConnection> InstallAsync()
     {
 
-        SqliteConnection connection = new("Data Source=:memory:");
+        SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            "Data Source=:memory:",
+            CancellationToken.None);
 
-        await connection.OpenAsync(CancellationToken.None);
-
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             Dimensions,
-            logger: null,
             CancellationToken.None);
 
         return connection;

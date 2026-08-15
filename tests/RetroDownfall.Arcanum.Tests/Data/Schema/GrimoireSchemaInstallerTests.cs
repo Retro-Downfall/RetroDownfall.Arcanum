@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -188,29 +189,45 @@ public sealed class GrimoireSchemaInstallerTests
     }
 
     /// <summary>
-    /// vec0 acceleration stays optional. sqlite-vec is not shipped, so the extension never loads and
-    /// the install reports no acceleration — while every durable BLOB companion table is present and
-    /// Divination keeps its complete managed cosine fallback (§21.2).
+    /// There is no vec0 acceleration tier to report. The hermetic SQLCipher runtime ships without
+    /// extension loading, so the templated <c>entry_embeddings_vec</c> shadow is simply absent and the
+    /// durable BLOB companion is the source of truth Divination's managed cosine search reads (§21.2).
     /// </summary>
     [Fact]
-    public async Task InstallAsync_reports_no_vector_acceleration_without_sqlite_vec()
+    public async Task InstallAsync_installs_no_vec0_shadow_over_the_durable_embedding_table()
     {
 
-        await using SqliteConnection connection = new("Data Source=:memory:");
-
-        await connection.OpenAsync(CancellationToken.None);
-
-        GrimoireSchemaInstallResult result = await GrimoireSchemaInstaller.InstallAsync(
-            connection,
-            Dimensions,
-            logger: null,
-            CancellationToken.None);
-
-        Assert.False(result.VectorAccelerationAvailable);
+        await using SqliteConnection connection = await InstallAsync();
 
         Assert.False(await TableExistsAsync(connection, "entry_embeddings_vec"));
 
         Assert.True(await TableExistsAsync(connection, "entry_embeddings"));
+
+    }
+
+    /// <summary>
+    /// Every tier installs healthy on a database this build has never touched. The three are reported
+    /// separately because they fail separately, so a green Core beside a failed Covenant tier is a
+    /// legitimate outcome the caller has to be able to see.
+    /// </summary>
+    [Fact]
+    public async Task InstallAsync_reports_every_tier_healthy_on_a_fresh_database()
+    {
+
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            "Data Source=:memory:",
+            CancellationToken.None);
+
+        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            Dimensions,
+            CancellationToken.None);
+
+        Assert.True(result.Core.IsHealthy);
+
+        Assert.True(result.CovenantCanonical.IsHealthy);
+
+        Assert.True(result.CovenantAccelerator.IsHealthy);
 
     }
 
@@ -222,10 +239,9 @@ public sealed class GrimoireSchemaInstallerTests
 
         string first = await GrimoireSchemaIdentity.ComputeAsync(connection, CancellationToken.None);
 
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             Dimensions,
-            logger: null,
             CancellationToken.None);
 
         string second = await GrimoireSchemaIdentity.ComputeAsync(connection, CancellationToken.None);
@@ -272,35 +288,42 @@ public sealed class GrimoireSchemaInstallerTests
     }
 
     /// <summary>
-    /// Installation atomicity: the durable schema is one transaction, so a failure part-way through
-    /// leaves the database exactly as it was rather than half-built.
+    /// Core installation atomicity: the tier's DDL and its seeded rows are one transaction, so a
+    /// failure part-way through leaves the database exactly as it was rather than half-built.
     /// </summary>
+    /// <remarks>
+    /// The fault is injected through the tier's data initializer, which runs after all of Core's DDL
+    /// and inside the same transaction. That is the latest point at which the tier can still fail, so
+    /// a rollback proven here covers every earlier statement too. Core also rethrows rather than
+    /// degrading, which is the other half of the contract: nothing else can be trusted without it.
+    /// </remarks>
     [Fact]
-    public async Task InstallObjectsInTransactionAsync_rolls_back_every_object_when_one_fails()
+    public async Task InstallAsync_rolls_the_whole_core_tier_back_when_its_seed_fails()
     {
 
-        await using SqliteConnection connection = new("Data Source=:memory:");
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            "Data Source=:memory:",
+            CancellationToken.None);
 
-        await connection.OpenAsync(CancellationToken.None);
+        GrimoireSchemaInstaller installer = new(
+            new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault()),
+            new GrimoireSchemaDataInitializers(
+            [
+                new ThrowingCoreDataInitializer(),
+                new CovenantCanonicalSchemaDataInitializer(),
+                new CovenantAcceleratorSchemaDataInitializer(),
+            ]));
 
-        List<GrimoireSchemaObject> withBrokenTail =
-        [
-            .. GrimoireSchemaCatalog.CoreObjects,
-            new GrimoireSchemaObject(GrimoireSchemaCategory.Tables, "Broken", "CREATE TABLE broken_syntax (;"),
-        ];
-
-        _ = await Assert.ThrowsAsync<SqliteException>(() =>
-            GrimoireSchemaInstaller.InstallObjectsInTransactionAsync(
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            installer.InstallAsync(
                 connection,
-                withBrokenTail,
                 Dimensions,
+                GrimoireSchemaTestInstaller.CreateContext(),
                 CancellationToken.None));
 
         Assert.False(await TableExistsAsync(connection, "Sessions"));
 
         Assert.False(await TableExistsAsync(connection, "lexicon_entries"));
-
-        Assert.False(await TableExistsAsync(connection, "broken_syntax"));
 
     }
 
@@ -339,18 +362,12 @@ public sealed class GrimoireSchemaInstallerTests
     }
 
     [Fact]
-    public async Task InstallAsync_writes_the_configured_embedding_dimension_into_accelerator_ddl()
+    public async Task InstallAsync_creates_the_managed_embedding_companion_tables()
     {
 
-        // sqlite-vec is not shipped, so the accelerator DDL cannot be installed here; assert the
-        // resolved statement instead — that is the whole templating contract.
-        foreach (GrimoireSchemaObject accelerator in GrimoireSchemaCatalog.AcceleratorObjects)
-        {
-
-            Assert.Contains("FLOAT[768]", GrimoireSchemaCatalog.Resolve(accelerator, 768), StringComparison.Ordinal);
-
-        }
-
+        // The templated vec0 accelerators these tables used to shadow are gone: the hermetic
+        // SQLCipher runtime omits extension loading, so managed cosine over these BLOB tables is
+        // the only search path and they are the source of truth rather than a fallback.
         await using SqliteConnection connection = await InstallAsync();
 
         Assert.True(await TableExistsAsync(connection, "entry_embeddings"));
@@ -410,54 +427,110 @@ public sealed class GrimoireSchemaInstallerTests
     }
 
     /// <summary>
-    /// The embedding-dimension mismatch check is a best-effort post-install diagnostic (§5.4.5): it
-    /// must log and continue. It ran unguarded and outside SqliteBusyRetry, so a probe failure —
-    /// an older table shape, a locked database — escaped InstallAsync and aborted host startup with a
-    /// raw SqliteException, not even the sanitized GrimoireDatabaseUnavailableException.
+    /// A manifest object that exists with no metadata row proves nothing about what installed it, so
+    /// Core refuses rather than converging onto it.
     /// </summary>
+    /// <remarks>
+    /// This shape used to be tolerated: <c>CREATE TABLE IF NOT EXISTS</c> left the foreign table
+    /// alone and the install continued over it. That is precisely the guess the tier gate now
+    /// declines to make, and Core refuses loudly instead of leaving a database half this build's and
+    /// half something else's.
+    /// </remarks>
     [Fact]
-    public async Task InstallAsync_survives_a_failing_embedding_dimension_probe()
+    public async Task InstallAsync_refuses_core_when_a_manifest_object_has_no_metadata_row()
     {
 
-        await using SqliteConnection connection = new("Data Source=:memory:");
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            "Data Source=:memory:",
+            CancellationToken.None);
 
-        await connection.OpenAsync(CancellationToken.None);
+        await ExecuteAsync(
+            connection,
+            """CREATE TABLE "entry_embeddings" ("EntryId" TEXT NOT NULL);""");
 
-        // CREATE TABLE IF NOT EXISTS leaves this pre-existing shape untouched, so the probe's
-        // SELECT "Dim" raises 'no such column'.
-        await using (SqliteCommand seed = connection.CreateCommand())
-        {
+        GrimoireSchemaRefusedException refused =
+            await Assert.ThrowsAsync<GrimoireSchemaRefusedException>(() =>
+                GrimoireSchemaTestInstaller.InstallAsync(
+                    connection,
+                    Dimensions,
+                    CancellationToken.None));
 
-            seed.CommandText = """CREATE TABLE "entry_embeddings" ("EntryId" TEXT NOT NULL);""";
+        Assert.Equal(GrimoireSchemaTransactionTier.Core, refused.Tier);
 
-            _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
+        Assert.Equal(GrimoireSchemaTierHealth.MetadataMissing, refused.Health);
 
-        }
+        Assert.False(await TableExistsAsync(connection, "Sessions"));
 
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+    }
+
+    /// <summary>
+    /// The embedding-dimension mismatch check is a best-effort post-install diagnostic (§5.4.5): it
+    /// warns and continues, and it never truncates.
+    /// </summary>
+    /// <remarks>
+    /// Deleting the stale vectors would be the tempting "fix" and the wrong one. Re-embedding is the
+    /// operator's decision because it costs provider spend, and a startup path that quietly discarded
+    /// the old vectors would make that decision for them and lose the only copy in the process.
+    /// </remarks>
+    [Fact]
+    public async Task InstallAsync_warns_but_keeps_embeddings_written_at_another_dimension()
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
+            VALUES ('entry-a', X'00', 8);
+            """);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             Dimensions,
-            logger: null,
             CancellationToken.None);
 
         Assert.True(await TableExistsAsync(connection, "Sessions"));
+
+        await using SqliteCommand surviving = connection.CreateCommand();
+
+        surviving.CommandText = """SELECT COUNT(*) FROM "entry_embeddings" WHERE "Dim" = 8;""";
+
+        Assert.Equal(1L, (long)(await surviving.ExecuteScalarAsync(CancellationToken.None))!);
 
     }
 
     private static async Task<SqliteConnection> InstallAsync()
     {
 
-        SqliteConnection connection = new("Data Source=:memory:");
+        SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            "Data Source=:memory:",
+            CancellationToken.None);
 
-        await connection.OpenAsync(CancellationToken.None);
-
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             Dimensions,
-            logger: null,
             CancellationToken.None);
 
         return connection;
+
+    }
+
+    /// <summary>
+    /// A Core initializer that fails at the one point where the tier's DDL is fully applied but the
+    /// transaction has not committed.
+    /// </summary>
+    private sealed class ThrowingCoreDataInitializer : IGrimoireSchemaDataInitializer
+    {
+
+        public GrimoireSchemaTransactionTier TransactionTier => GrimoireSchemaTransactionTier.Core;
+
+        public Task InitializeAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            GrimoireSchemaInitializationContext context,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("The core tier seed failed for this test.");
 
     }
 

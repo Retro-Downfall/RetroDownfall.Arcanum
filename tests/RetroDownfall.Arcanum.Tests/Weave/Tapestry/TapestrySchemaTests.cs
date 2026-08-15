@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
@@ -14,14 +15,13 @@ public sealed class TapestrySchemaTests
     private static async Task<SqliteConnection> OpenInitializedAsync(int dimensions = 64)
     {
 
-        SqliteConnection connection = new("Data Source=:memory:");
+        SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            "Data Source=:memory:",
+            CancellationToken.None);
 
-        await connection.OpenAsync();
-
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             dimensions,
-            logger: null,
             CancellationToken.None);
 
         return connection;
@@ -170,10 +170,9 @@ public sealed class TapestrySchemaTests
 
         await using SqliteConnection connection = await OpenInitializedAsync();
 
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             64,
-            logger: null,
             CancellationToken.None);
 
         Assert.Equal(

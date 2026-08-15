@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
@@ -19,10 +20,9 @@ public sealed class WeaveSchemaTests
 
         await connection.OpenAsync();
 
-        _ = await GrimoireSchemaInstaller.InstallAsync(
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             embeddingDimensions: 768,
-            logger: null,
             CancellationToken.None);
 
         string[] expectedTables =
@@ -163,18 +163,23 @@ public sealed class WeaveSchemaTests
     }
 
     /// <summary>
-    /// The installer installs, it never migrates: every statement is <c>IF NOT EXISTS</c>, so an
-    /// existing table with an older shape is left exactly as it is. That is the pre-user-data policy
-    /// working as designed — an incompatible local database is recreated, not upgraded in place
-    /// (README, "Local Grimoire reinstall").
+    /// The installer installs, it never migrates. An existing Weave table with an older shape and no
+    /// metadata row proving what wrote it makes the Core tier refuse outright, and the table is left
+    /// exactly as it was found rather than upgraded in place (README, "Local Grimoire reinstall").
     /// </summary>
+    /// <remarks>
+    /// This used to be a silent no-op: every statement was <c>IF NOT EXISTS</c>, so the install
+    /// simply stepped over the foreign table and carried on. Refusing is the stronger answer.
+    /// Continuing meant the process ran against a database it could not account for, and the only
+    /// evidence was a shape difference nobody was looking at.
+    /// </remarks>
     [Fact]
     public async Task InstallAsync_DoesNotUpgradeExistingWorkspaceChunkTable()
     {
 
-        await using SqliteConnection connection = new("Data Source=:memory:");
-
-        await connection.OpenAsync();
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            "Data Source=:memory:",
+            CancellationToken.None);
 
         await using (SqliteCommand create = connection.CreateCommand())
         {
@@ -198,11 +203,14 @@ public sealed class WeaveSchemaTests
 
         }
 
-        _ = await GrimoireSchemaInstaller.InstallAsync(
-            connection,
-            embeddingDimensions: 768,
-            logger: null,
-            CancellationToken.None);
+        GrimoireSchemaRefusedException refused =
+            await Assert.ThrowsAsync<GrimoireSchemaRefusedException>(() =>
+                GrimoireSchemaTestInstaller.InstallAsync(
+                    connection,
+                    embeddingDimensions: 768,
+                    CancellationToken.None));
+
+        Assert.Equal(GrimoireSchemaTierHealth.MetadataMissing, refused.Health);
 
         List<string> columns = [];
 

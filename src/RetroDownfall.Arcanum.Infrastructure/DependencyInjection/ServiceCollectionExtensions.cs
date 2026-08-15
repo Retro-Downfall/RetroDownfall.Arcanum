@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Events;
@@ -35,6 +36,8 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.Chronosync;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
@@ -164,6 +167,41 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
 
         services.AddSingleton(TimeProvider.System);
+
+        // Divination's managed cosine fallback is the only search path, and its availability flag is
+        // read on the CLI's own turn route. Its absence here was a real bug: schema installation
+        // resolved it with GetRequiredService and the resulting throw silently forced the default
+        // embedding dimension on every CLI bootstrap.
+        services.AddSingleton<WeaveIndexAvailability>();
+
+        services.AddSingleton<ICovenantSqliteConnectionInitializer>(
+            static _ => CovenantSqliteConnectionInitializer.Instance);
+
+        services.AddSingleton<IGrimoireSchemaDataInitializer, CoreGrimoireSchemaDataInitializer>();
+
+        services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantCanonicalSchemaDataInitializer>();
+
+        services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantAcceleratorSchemaDataInitializer>();
+
+        services.AddSingleton<GrimoireSchemaDataInitializers>();
+
+        services.AddSingleton(static _ => GrimoireSchemaTierOwnershipRegistry.CreateDefault());
+
+        services.AddSingleton<GrimoireSchemaManifestInspector>();
+
+        services.AddSingleton<GrimoireSchemaInstaller>();
+
+        // One instance behind both names. Two would let a reader observe an availability generation
+        // the publisher never advanced.
+        services.AddSingleton<CovenantAvailability>();
+
+        services.AddSingleton<ICovenantAvailability>(
+            static sp => sp.GetRequiredService<CovenantAvailability>());
+
+        services.AddSingleton<CovenantAuthoritySnapshotProvider>();
+
+        services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
+            static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
         services.AddDbContext<ArcanumDbContext>((sp, options) =>
             ArcanumDbContextOptionsConfigurator.Configure(
@@ -349,6 +387,7 @@ public static class ServiceCollectionExtensions
                 serviceProvider.GetRequiredService<ISecretStore>(),
                 serviceProvider.GetRequiredService<IBackupService>,
                 serviceProvider.GetRequiredService<TimeProvider>(),
+                serviceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
                 new BackupRestoreServiceOptions
                 {
 
@@ -522,6 +561,36 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireDbPassphraseSource, GrimoireDbPassphraseSource>();
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
         services.AddSingleton<WeaveIndexAvailability>();
+
+        services.AddSingleton<ICovenantSqliteConnectionInitializer>(
+            static _ => CovenantSqliteConnectionInitializer.Instance);
+
+        services.AddSingleton<IGrimoireSchemaDataInitializer, CoreGrimoireSchemaDataInitializer>();
+
+        services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantCanonicalSchemaDataInitializer>();
+
+        services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantAcceleratorSchemaDataInitializer>();
+
+        services.AddSingleton<GrimoireSchemaDataInitializers>();
+
+        services.AddSingleton(static _ => GrimoireSchemaTierOwnershipRegistry.CreateDefault());
+
+        services.AddSingleton<GrimoireSchemaManifestInspector>();
+
+        services.AddSingleton<GrimoireSchemaInstaller>();
+
+        // One instance behind both names. Two would let a reader observe an availability generation
+        // the publisher never advanced.
+        services.AddSingleton<CovenantAvailability>();
+
+        services.AddSingleton<ICovenantAvailability>(
+            static sp => sp.GetRequiredService<CovenantAvailability>());
+
+        services.AddSingleton<CovenantAuthoritySnapshotProvider>();
+
+        services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
+            static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
+
         services.AddScoped<IDivinationService, DivinationService>();
         services.AddScoped<EmbeddingsResetService>();
         services.AddScoped<ITapestryStore, TapestryStore>();

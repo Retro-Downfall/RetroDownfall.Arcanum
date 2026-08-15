@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -144,7 +144,9 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
-        services.AddSingleton<WeaveIndexAvailability>();
+        // The bootstrap resolves the whole schema-installation graph out of this container, and
+        // WeaveIndexAvailability comes with it.
+        _ = services.AddGrimoireSchemaInstallation();
 
         services.AddLogging();
 

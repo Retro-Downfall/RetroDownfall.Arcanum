@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Tests.Fixtures;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
@@ -1150,6 +1152,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
             secretStore,
             safetyBackups is null ? null : () => safetyBackups,
             TimeProvider.System,
+            GrimoireSchemaTestInstaller.Create(),
             options ?? new BackupRestoreServiceOptions());
 
     private BackupStatePaths Paths() => new(
@@ -1325,7 +1328,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
             SqliteNativeRuntime.Instance.Initialize();
 
-            await using SqliteConnection connection = new(
+            await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
                 new SqliteConnectionStringBuilder
                 {
 
@@ -1335,12 +1338,10 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
                     Pooling = false,
 
-                }.ToString());
+                }.ToString(),
+                CancellationToken.None);
 
-            await connection.OpenAsync();
-
-            _ = await RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaInstaller
-                .InstallAsync(connection, 1536, logger: null, CancellationToken.None);
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
 
             await using SqliteCommand seed = connection.CreateCommand();
 

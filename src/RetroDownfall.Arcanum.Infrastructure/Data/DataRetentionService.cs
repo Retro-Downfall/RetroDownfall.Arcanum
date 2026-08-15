@@ -28,6 +28,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
@@ -1423,12 +1425,11 @@ internal sealed partial class DataRetentionService(
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
-            rowsDeleted += await ExecuteAsync(
+            rowsDeleted += await DeleteSessionRowInTransactionAsync(
                 connection,
                 transaction,
-                "DELETE FROM Sessions WHERE lower(replace(Id, '-', '')) = @id",
-                cancellationToken,
-                ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
+                sessionId,
+                cancellationToken).ConfigureAwait(false);
 
             foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
             {
@@ -1594,6 +1595,37 @@ internal sealed partial class DataRetentionService(
             reconciled,
             plan.Blockers,
             plan.Conflicts);
+
+    }
+
+    /// <summary>
+    /// Removes the Session row itself, under the retention authorization its cascade requires.
+    /// </summary>
+    /// <remarks>
+    /// The Session owns its row in the turn capacity ledger, and that row leaves only through an
+    /// authorized retention or capacity transaction. Its delete guard begins denied on every
+    /// connection, including a pooled one handed back out, so the parent delete has to hold the
+    /// scope itself. The scope covers the delete alone and is released before the caller commits,
+    /// so no later statement in this transaction inherits it.
+    /// </remarks>
+    private static async Task<int> DeleteSessionRowInTransactionAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        using CovenantSqliteAuthorizationScope retention =
+            CovenantSqliteConnectionInitializer.Instance.Authorize(
+                (SqliteConnection)connection,
+                CovenantSqliteAuthorizationKind.SessionRetention);
+
+        return await ExecuteAsync(
+            connection,
+            transaction,
+            "DELETE FROM Sessions WHERE lower(replace(Id, '-', '')) = @id",
+            cancellationToken,
+            ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
     }
 
