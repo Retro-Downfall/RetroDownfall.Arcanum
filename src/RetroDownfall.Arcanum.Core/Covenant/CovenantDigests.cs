@@ -1191,6 +1191,49 @@ public static class CovenantDigests
         });
     }
 
+    /// <summary>
+    /// The ordered dependent-head vector a mutation preflight binds.
+    /// </summary>
+    /// <remarks>
+    /// Domain-separated from every other digest because it is the one value that summarizes state
+    /// the caller did not name: the Campaign heads a Global mutation would affect. Reusing another
+    /// tag here would let a vector digest and, say, a snapshot digest collide across purposes.
+    ///
+    /// <para>The caller supplies the vector already in canonical order. Sorting here would hide an
+    /// unordered scan, and an unordered scan is exactly the bug this digest exists to catch.</para>
+    /// </remarks>
+    public static CovenantDigest DependentHeadVector(DependentHeadVectorDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint scope = Code(input.Scope, nameof(input.Scope));
+        uint lane = Code(input.Lane, nameof(input.Lane));
+        uint operation = Code(input.Operation, nameof(input.Operation));
+        RequireOptionalGuid(input.CampaignId, nameof(input.CampaignId));
+        RequireInitialized(input.Entries, nameof(input.Entries));
+
+        return Hash(CovenantDomainTag.DependentHeadVector, writer =>
+        {
+            writer.WriteUInt32(scope);
+            WriteOptionalGuid(writer, input.CampaignId);
+            writer.WriteUtf8(input.NormalizedKey);
+            writer.WriteUInt32(lane);
+            writer.WriteUInt32(operation);
+            writer.WriteUInt64(input.KeyEpoch);
+            writer.WriteUInt64(input.KeyReclamationEpoch);
+            writer.WriteUInt64(input.CampaignRegistryEpoch);
+            writer.WriteCount((ulong)input.Entries.Length);
+
+            foreach (DependentHeadDigestInput entry in input.Entries)
+            {
+                writer.WriteGuid(entry.CampaignId);
+                writer.WriteByte(entry.HasConfirmedHead ? (byte)1 : (byte)0);
+                writer.WriteByte(entry.HasProposedHead ? (byte)1 : (byte)0);
+                writer.WriteUInt64(entry.ConfirmedLaneRevision);
+                writer.WriteUInt64(entry.ProposedLaneRevision);
+            }
+        });
+    }
+
     private static CovenantDigest Hash(CovenantDomainTag domainTag, Action<CovenantCanonicalHashWriter> write)
     {
         using CovenantCanonicalHashWriter writer = new();

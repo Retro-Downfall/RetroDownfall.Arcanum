@@ -288,6 +288,40 @@ public sealed class CovenantCompiler : ICovenantCompiler
         return Math.Max(3, checked(longestRun + 1));
     }
 
+    /// <summary>
+    /// Recomputes the authored-content hash for a stored version.
+    /// </summary>
+    /// <remarks>
+    /// The canonical loader has the stored bytes and the stored hash but not the object that
+    /// produced them, so verification needs the same preimage the compiler used. Exposing the two
+    /// hash functions is strictly safer than letting the loader assemble a preimage of its own that
+    /// could drift from this one.
+    /// </remarks>
+    public static CovenantDigest HashAuthored(string normalizedKey, ReadOnlySpan<byte> authoredUtf8)
+    {
+        ArgumentNullException.ThrowIfNull(normalizedKey);
+
+        return HashCanonicalArtifact(
+            CovenantDomainTag.Authored,
+            CompilerPolicyVersion,
+            normalizedKey,
+            authoredUtf8);
+    }
+
+    /// <summary>
+    /// Recomputes the compiled-fragment hash for a stored version.
+    /// </summary>
+    public static CovenantDigest HashFragment(string normalizedKey, ReadOnlySpan<byte> fragmentUtf8)
+    {
+        ArgumentNullException.ThrowIfNull(normalizedKey);
+
+        return HashCanonicalArtifact(
+            CovenantDomainTag.Fragment,
+            RendererPolicyVersion,
+            normalizedKey,
+            fragmentUtf8);
+    }
+
     private static CovenantDigest HashCanonicalArtifact(
         CovenantDomainTag domainTag,
         int policyVersion,

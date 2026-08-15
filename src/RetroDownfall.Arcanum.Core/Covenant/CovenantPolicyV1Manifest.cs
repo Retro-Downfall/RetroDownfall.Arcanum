@@ -39,7 +39,8 @@ public enum CovenantDomainTag : byte
     FamilyReinitializeApplyRequest = 31,
     Receipt = 32,
     TurnAggregate = 33,
-    CursorFilter = 34
+    CursorFilter = 34,
+    DependentHeadVector = 35
 }
 
 public static class CovenantPolicyV1Manifest
@@ -79,7 +80,8 @@ public static class CovenantPolicyV1Manifest
         CovenantDomainTag.FamilyReinitializeApplyRequest,
         CovenantDomainTag.Receipt,
         CovenantDomainTag.TurnAggregate,
-        CovenantDomainTag.CursorFilter
+        CovenantDomainTag.CursorFilter,
+        CovenantDomainTag.DependentHeadVector
     ]);
 
     public static IReadOnlyList<CovenantDomainTag> DomainTags => PolicyDomainTags;
@@ -121,6 +123,7 @@ public static class CovenantPolicyV1Manifest
             CovenantDomainTag.Receipt => "Arcanum.Covenant.Receipt.v1",
             CovenantDomainTag.TurnAggregate => "Arcanum.Covenant.TurnAggregate.v1",
             CovenantDomainTag.CursorFilter => "Arcanum.Covenant.CursorFilter.v1",
+            CovenantDomainTag.DependentHeadVector => "Arcanum.Covenant.DependentHeadVector.v1",
             _ => throw new ArgumentOutOfRangeException(nameof(domainTag))
         };
 

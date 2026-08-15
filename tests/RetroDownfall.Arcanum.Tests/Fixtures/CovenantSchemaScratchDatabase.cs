@@ -141,6 +141,30 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     }
 
     /// <summary>
+    /// Installs named core schema objects a Covenant suite genuinely depends on.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than wholesale. Installing the entire core tier would hide a Covenant object
+    /// that had grown an undeclared dependency on a core table, which is precisely the drift these
+    /// suites exist to catch.
+    /// </remarks>
+    public async Task InstallCoreObjectsAsync(
+        IReadOnlyList<string> names,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(names);
+
+        foreach (string name in names)
+        {
+
+            await ExecuteAsync(ReadCoreObjectSql(name), cancellationToken);
+
+        }
+
+    }
+
+    /// <summary>
     /// Installs the Covenant accelerator tier over an already-installed canonical tier.
     /// </summary>
     public async Task InstallAcceleratorAsync(CancellationToken cancellationToken)
