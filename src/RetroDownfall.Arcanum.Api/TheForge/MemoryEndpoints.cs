@@ -550,7 +550,6 @@ internal static class MemoryEndpoints
 
     }
 
-
     /// <summary>
     /// Copies the typed, content-free Covenant availability fields into the status block.
     /// </summary>
