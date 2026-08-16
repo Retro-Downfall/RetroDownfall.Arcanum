@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -226,6 +227,14 @@ public static class GrimoireDatabaseBootstrapper
             apiKey,
             cancellationToken).ConfigureAwait(false);
 
+        await RecoverProtectedMaintenanceAsync(
+            installConnection,
+            scopeFactory,
+            heldInstallationLock,
+            grimoireDirectory,
+            apiKey,
+            cancellationToken).ConfigureAwait(false);
+
         await installConnection.CloseAsync().ConfigureAwait(false);
 
         if (File.Exists(dbPath))
@@ -411,6 +420,115 @@ public static class GrimoireDatabaseBootstrapper
         }
 
         availability?.SetAvailable(false);
+
+    }
+
+    /// <summary>
+    /// Resolves any unfinished protected-erasure work and any active schema-repair journal, before
+    /// readiness.
+    /// </summary>
+    /// <remarks>
+    /// Both passes run on the install connection, under the caller's already-held installation lock,
+    /// and after the tiers have converged. Deleting a file is an effect SQLite cannot roll back, and
+    /// a half-changed catalog is one no consumer should open against; readiness is the signal every
+    /// pool, worker, and endpoint waits on, so this is the last honest place to resolve either.
+    ///
+    /// <para>Skipped entirely without an installation lock. A CLI running beside a live host does not
+    /// own the installation, and a second process adopting the host's unfinished erasure work would be
+    /// two deleters for one file (§10.17).</para>
+    ///
+    /// <para>A blocked local-erasure pass and a kept-closed repair are both logged rather than thrown.
+    /// Neither is a reason to refuse to start: the erasure blocker leaves the file, its producer row,
+    /// and its label untouched and visible, and the repair journal keeps Covenant admission closed on
+    /// its own.</para>
+    /// </remarks>
+    private static async Task RecoverProtectedMaintenanceAsync(
+        SqliteConnection installConnection,
+        IServiceScopeFactory scopeFactory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        string grimoireDirectory,
+        string masterApiKey,
+        CancellationToken cancellationToken)
+    {
+
+        if (heldInstallationLock is null)
+        {
+
+            return;
+
+        }
+
+        CovenantSqliteConnectionInitializer initializer = CovenantSqliteConnectionInitializer.Instance;
+
+        initializer.EnsureAuthorizationFunctions(installConnection);
+
+        CovenantLocalErasureStartupRecovery localErasure = new(
+            new ManagedFileErasureStateMachine(
+                initializer,
+                new ManagedFileCapabilityOpener(),
+                new ManagedFileOwnershipVerifier(),
+                TimeProvider.System));
+
+        Result<CovenantLocalErasureStartupRecoveryOutcome> erasure = await localErasure
+            .RecoverBeforeReadinessAsync(
+                heldInstallationLock,
+                grimoireDirectory,
+                installConnection,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (erasure.IsFailure || erasure.Value is CovenantLocalErasureStartupRecoveryOutcome.Blocked)
+        {
+
+            Log.Warning(
+                "Unfinished Covenant managed-file erasure work could not be resolved before readiness. "
+                + "The affected files, their producer rows, and their labels are untouched.");
+
+        }
+        else if (erasure.Value is CovenantLocalErasureStartupRecoveryOutcome.ManualEvidenceReady)
+        {
+
+            Log.Warning(
+                "A Covenant managed-file erasure ended as a manual blocker: the file did not match the "
+                + "ownership Arcanum recorded, so it was left in place with its label intact.");
+
+        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        if (scope.ServiceProvider.GetService<CovenantOperationGate>() is not { } gate)
+        {
+
+            return;
+
+        }
+
+        CovenantSchemaRepairStartupRecovery repair = new(
+            gate,
+            new CovenantSchemaRepairExecutor(
+                scope.ServiceProvider.GetRequiredService<GrimoireSchemaManifestInspector>(),
+                scope.ServiceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
+                BuildInitializationContext(heldInstallationLock, grimoireDirectory, masterApiKey),
+                ResolveEmbeddingDimensions(scope)),
+            initializer,
+            TimeProvider.System);
+
+        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await repair
+            .RecoverBeforeReadinessAsync(
+                heldInstallationLock,
+                grimoireDirectory,
+                installConnection,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure || recovered.Value is CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed)
+        {
+
+            Log.Warning(
+                "An interrupted Covenant schema repair could not be completed, so Covenant admission "
+                + "stays closed and its journal remains active for the next start.");
+
+        }
 
     }
 

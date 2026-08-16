@@ -51,6 +51,26 @@ public static class LongRunningOperationKinds
 
     public const string DataRetentionFactoryReset = "data-retention-factory-reset";
 
+    /// <summary>
+    /// Discarding and rebuilding the derived Covenant inspection index (#87).
+    /// </summary>
+    /// <remarks>
+    /// Server-generated identity only. A rebuild replaces a derived accelerator and never a canonical
+    /// row, so there is no authenticated preflight to name it after and no effect for a caller to
+    /// bind an apply request to.
+    /// </remarks>
+    public const string CovenantIndexRebuild = "covenant-index-rebuild";
+
+    /// <summary>
+    /// Dropping and reinstalling the whole Covenant schema family after protected erasure (#87).
+    /// </summary>
+    /// <remarks>
+    /// The one Covenant kind that carries a caller-supplied durable identity, because it replaces a
+    /// database: an operation whose only replay key is the HTTP response announcing it has no replay
+    /// key once that process is gone.
+    /// </remarks>
+    public const string CovenantFamilyReinitialize = "covenant-family-reinitialize";
+
     /// <summary>An inbound A2A Sending: a peer's task id bound to the Apprentice serving it (#62).</summary>
     public const string A2AInboundSending = "a2a-inbound-sending";
 

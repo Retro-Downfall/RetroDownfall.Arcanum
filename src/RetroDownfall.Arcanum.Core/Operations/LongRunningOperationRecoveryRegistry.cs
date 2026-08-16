@@ -238,6 +238,43 @@ public static class LongRunningOperationRecoveryRegistry
                 ManualRepairGuidance:
                     "Re-run the factory reset; quarantined trees are listed by 'arcanum doctor' until removed."),
 
+            // Both Covenant kinds start at checkpoint version 1 rather than 0. Neither ledger row is
+            // created before its first checkpoint — the rebuild writes one before its first batch and
+            // the reinitialize before it closes admission — so a version-0 row is not "not started
+            // yet", it is a payload this build cannot read, and resuming a database-replacing
+            // operation from one would be a guess (#87).
+            new LongRunningOperationRecoveryDescriptor(
+                LongRunningOperationKinds.CovenantIndexRebuild,
+                LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
+                Owner: "CovenantIndexRebuildCoordinator",
+                MinCheckpointVersion: 1,
+                MaxCheckpointVersion: 1,
+                LongRunningOperationStartupPriority.Readiness,
+                RecoveryIntent:
+                    "Resume the accelerator rebuild from its exact durable cursor. A changed dataset "
+                    + "generation, accelerator epoch, or Campaign-deletion sequence discards the partial "
+                    + "index rather than publishing it, and inspection search stays ineligible until the "
+                    + "rebuild verifies.",
+                ManualRepairGuidance:
+                    "The canonical prompt path never depends on this index. Re-run the rebuild; a discarded "
+                    + "partial generation is expected and costs work rather than correctness."),
+
+            new LongRunningOperationRecoveryDescriptor(
+                LongRunningOperationKinds.CovenantFamilyReinitialize,
+                LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
+                Owner: "CovenantFamilyReinitializeCoordinator",
+                MinCheckpointVersion: 1,
+                MaxCheckpointVersion: 1,
+                LongRunningOperationStartupPriority.BeforeStateWrites,
+                RecoveryIntent:
+                    "Reconstruct the exclusive recovery owner from the checkpoint, resume the closed "
+                    + "admission gate, and continue the exact phase the crash interrupted. Admission stays "
+                    + "closed until a reopen is proven, so a half-dropped family is never presented as a "
+                    + "working installation.",
+                ManualRepairGuidance:
+                    "Run 'arcanum operation show <id>' for the recorded phase. A manual file blocker leaves "
+                    + "the family intact and admission closed on purpose; resolve the file before retrying."),
+
             // Version 0 is admitted because the ledger row exists before its first checkpoint: a kill
             // between registering the Sending and writing the record leaves the row at 0, and the
             // handler's own "no readable record" path abandons it with a named a2a.* reason. Rejecting

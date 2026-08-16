@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
@@ -46,6 +47,9 @@ public sealed class RecoveryHandlerCoverageTests
             [LongRunningOperationKinds.DataRetentionFactoryReset] = typeof(DataRetentionFactoryResetRecoveryHandler),
             [LongRunningOperationKinds.A2AInboundSending] = typeof(A2AInboundSendingRecoveryHandler),
             [LongRunningOperationKinds.A2AOutboundSending] = typeof(A2AOutboundSendingRecoveryHandler),
+            [LongRunningOperationKinds.CovenantIndexRebuild] = typeof(CovenantIndexRebuildRecoveryHandler),
+            [LongRunningOperationKinds.CovenantFamilyReinitialize] =
+                typeof(CovenantFamilyReinitializeRecoveryHandler),
         };
 
     private static IReadOnlyList<Type> RegisteredHandlerTypes()

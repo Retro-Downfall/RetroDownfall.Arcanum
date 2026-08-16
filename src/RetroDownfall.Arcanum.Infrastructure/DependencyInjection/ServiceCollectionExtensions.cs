@@ -1222,12 +1222,79 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantSearchOutboxWorker(
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
 
-        // The long-running-operation adapter, its checkpoint envelope, and its recovery handler
-        // belong to a later slice. Only the base batch algorithm is registered here.
         services.AddScoped(
             static sp => new CovenantIndexRebuilder(
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        return services.AddCovenantErasureAndMaintenance();
+
+    }
+
+    /// <summary>
+    /// The shared erasure kernels, their pre-readiness recovery, and the maintenance coordinators.
+    /// </summary>
+    /// <remarks>
+    /// Each kernel is registered exactly once. A second registration would be a second managed-file
+    /// open, identity, compare-delete, or label-removal implementation, and only one of them could be
+    /// right about which file on disk belongs to Arcanum (§10.17).
+    ///
+    /// <para>Neither kernel resolves <c>ICovenantOperationGate</c>. They receive a caller-owned
+    /// authority instead, so an exclusive caller cannot self-deadlock by having a kernel try to
+    /// acquire an ordinary lease during its own drain.</para>
+    /// </remarks>
+    private static IServiceCollection AddCovenantErasureAndMaintenance(this IServiceCollection services)
+    {
+
+        services.AddSingleton<IManagedFileCapabilityOpener>(static _ => new ManagedFileCapabilityOpener());
+
+        services.AddSingleton<IManagedFileOwnershipVerifier>(static _ => new ManagedFileOwnershipVerifier());
+
+        services.AddScoped(
+            static sp => new ManagedFileErasureStateMachine(
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<IManagedFileCapabilityOpener>(),
+                sp.GetRequiredService<IManagedFileOwnershipVerifier>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddScoped<ICovenantProtectedArtifactErasureKernel>(
+            static sp => new CovenantProtectedArtifactErasureKernel(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddScoped<ICovenantManagedFileErasureKernel>(
+            static sp => new CovenantManagedFileErasureKernel(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ManagedFileErasureStateMachine>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddScoped<ICovenantLocalErasureStartupRecovery>(
+            static sp => new CovenantLocalErasureStartupRecovery(
+                sp.GetRequiredService<ManagedFileErasureStateMachine>()));
+
+        services.AddScoped(
+            static sp => new CovenantProtectedInventoryService(
+                sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        services.AddScoped(
+            static sp => new CovenantRequestedOperationStarter(
+                sp.GetRequiredService<ILongRunningOperationCoordinator>()));
+
+        services.AddScoped(
+            static sp => new CovenantIndexRebuildCoordinator(
+                sp.GetRequiredService<ILongRunningOperationCoordinator>(),
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<CovenantIndexRebuilder>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        // The two recovery handlers the registry requires for the kinds this slice adds. Registering
+        // a kind without its handler is the exact drift the coverage suite fails on (#40).
+        services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantIndexRebuildRecoveryHandler>();
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantFamilyReinitializeRecoveryHandler>();
 
         return services;
 
