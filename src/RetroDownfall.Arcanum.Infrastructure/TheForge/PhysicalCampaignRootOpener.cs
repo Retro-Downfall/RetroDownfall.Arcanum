@@ -34,7 +34,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.TheForge;
 /// volume root, and never crosses into a parent on a different volume: a bind mount or a mounted
 /// filesystem is a boundary, not a path segment.</para>
 /// </remarks>
-internal sealed class PhysicalCampaignRootOpener(ICampaignRootIdentityKeyProvider keys)
+/// <remarks>
+/// Declared <see langword="partial"/> so the marker-lifecycle capabilities live in their own file
+/// without becoming a second producer. The capability types are nested here because only this class may
+/// construct them, and only this class holds the identity key their digests are derived from — a
+/// sibling type that could mint a root capability would be a second answer to "who owns this
+/// directory", and the whole point of physical identity is that there is exactly one.
+/// </remarks>
+internal sealed partial class PhysicalCampaignRootOpener(ICampaignRootIdentityKeyProvider keys)
 {
 
     private static readonly byte[] LabelBytes =
