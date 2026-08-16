@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -212,6 +213,11 @@ public static class GrimoireDatabaseBootstrapper
 
         await SqliteConnectionPragmas.ApplyAsync(installConnection, cancellationToken).ConfigureAwait(false);
 
+        await ClassifyHostProcessToolsAsync(
+            installConnection,
+            scopeFactory,
+            cancellationToken).ConfigureAwait(false);
+
         await InstallSchemaAsync(
             installConnection,
             scopeFactory,
@@ -235,6 +241,88 @@ public static class GrimoireDatabaseBootstrapper
 
             readiness.MarkReady();
         }
+    }
+
+    /// <summary>
+    /// Runs the host-process-tools startup gate before any schema, pool, or key material exists.
+    /// </summary>
+    /// <remarks>
+    /// First, and on the install connection rather than a pool, because its whole purpose is to
+    /// decide whether this process may ever hold decrypted Covenant bytes. A blocked disposition
+    /// aborts startup with the offline command instead of degrading, since every alternative leaves
+    /// the process running beside an escape hatch whose evidence it could not confirm (§10.12).
+    ///
+    /// <para>The gate is optional to resolve for the same reason the authority provider below is: a
+    /// narrow container that only installs schema is a legitimate caller. When it is absent, the
+    /// runtime policy stays unpublished, which every Covenant consumer already reads as "not
+    /// permitted".</para>
+    /// </remarks>
+    private static async Task ClassifyHostProcessToolsAsync(
+        SqliteConnection installConnection,
+        IServiceScopeFactory scopeFactory,
+        CancellationToken cancellationToken)
+    {
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IHostProcessToolsMarkerStore? markers =
+            scope.ServiceProvider.GetService<IHostProcessToolsMarkerStore>();
+
+        HostProcessToolsRuntimePolicy? policy =
+            scope.ServiceProvider.GetService<HostProcessToolsRuntimePolicy>();
+
+        IHostProcessToolsEnvironmentProbe? environment =
+            scope.ServiceProvider.GetService<IHostProcessToolsEnvironmentProbe>();
+
+        if (markers is null || policy is null || environment is null)
+        {
+
+            return;
+
+        }
+
+        HostProcessToolsStartupGate gate = new(
+            markers,
+            new HostProcessToolsAuthorityStore(installConnection),
+            environment,
+            new HostProcessToolsMarkerPairJoiner(),
+            policy);
+
+        Result<HostProcessToolsStartupDecision> decision = await gate
+            .ClassifyAndPublishAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (decision.IsSuccess)
+        {
+
+            return;
+
+        }
+
+        // One blocked case is not a hard stop yet. `EscapeHatchWithoutTransition` means the durable
+        // state is provably clean and this host merely started with the opt-in armed — the exact
+        // situation the offline enable command exists to resolve, and that command ships with the
+        // operator surfaces in issue #89. Hard-failing today would leave a Development host with no
+        // way to start and no way to complete the transition, so it degrades: Covenant stays
+        // unpermitted for the life of the process, which is already the published policy, and the
+        // host runs without it. Every other blocked disposition means the durable evidence
+        // disagrees with itself, which cannot happen without a transition having been attempted,
+        // and those still stop startup (§10.15).
+        if (policy.Blocker is HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition)
+        {
+
+            Log.Warning(
+                "Arcanum started with the host-process-tools escape hatch armed and no completed transition. "
+                + "Covenant stays closed for this process. Run `{Command}` while the host is stopped "
+                + "once that command ships.",
+                HostProcessToolsStartupGate.OfflineCommand);
+
+            return;
+
+        }
+
+        throw new GrimoireDatabaseUnavailableException(decision.Error.Message);
+
     }
 
     /// <summary>
@@ -305,7 +393,10 @@ public static class GrimoireDatabaseBootstrapper
         CovenantEnvelopeMasterKeyProvider? keyProvider =
             scope.ServiceProvider.GetService<CovenantEnvelopeMasterKeyProvider>();
 
-        if (authorityProvider is not null && keyProvider is not null)
+        IHostProcessToolsRuntimePolicy? hostToolsPolicy =
+            scope.ServiceProvider.GetService<IHostProcessToolsRuntimePolicy>();
+
+        if (authorityProvider is not null && keyProvider is not null && hostToolsPolicy is not null)
         {
 
             await CovenantAuthorityStartupReconciler.ReconcileAsync(
@@ -313,6 +404,7 @@ public static class GrimoireDatabaseBootstrapper
                 authorityProvider,
                 keyProvider,
                 published,
+                hostToolsPolicy,
                 masterApiKey,
                 cancellationToken).ConfigureAwait(false);
 

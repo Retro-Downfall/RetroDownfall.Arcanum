@@ -43,7 +43,11 @@ public sealed record TurnCommitRequest
         GenerationProvenance contentProvenance,
         CovenantDigest? finalReceiptDigest = null,
         ImmutableArray<CovenantMutationIntent> mutations = default,
-        CovenantMutationBatchBinding? mutationBinding = null)
+        CovenantMutationBatchBinding? mutationBinding = null,
+        Guid? campaignId = null,
+        Guid? turnId = null,
+        CovenantDigest? producingPlanDigest = null,
+        CovenantDigest? producingAdmissionDigest = null)
     {
 
         ArgumentNullException.ThrowIfNull(finalText);
@@ -91,6 +95,29 @@ public sealed record TurnCommitRequest
                 nameof(mutations));
         }
 
+        CampaignId = campaignId == Guid.Empty
+            ? throw new ArgumentException(
+                "An optional Campaign identity cannot be empty when present.",
+                nameof(campaignId))
+            : campaignId;
+
+        TurnId = turnId == Guid.Empty
+            ? throw new ArgumentException(
+                "An optional turn identity cannot be empty when present.",
+                nameof(turnId))
+            : turnId;
+
+        if (producingPlanDigest.HasValue != producingAdmissionDigest.HasValue)
+        {
+            throw new ArgumentException(
+                "A producing Covenant plan and its admission are recorded as a pair or not at all.",
+                nameof(producingPlanDigest));
+        }
+
+        ProducingPlanDigest = producingPlanDigest;
+
+        ProducingAdmissionDigest = producingAdmissionDigest;
+
     }
 
     public Guid AssistantEntryId { get; }
@@ -113,6 +140,40 @@ public sealed record TurnCommitRequest
     public ImmutableArray<CovenantMutationIntent> Mutations { get; }
 
     public CovenantMutationBatchBinding? MutationBinding { get; }
+
+    /// <summary>The canonical Campaign this turn was bound to, for the label's owner index.</summary>
+    public Guid? CampaignId { get; }
+
+    /// <summary>The logical turn that produced the response, for the label's owner index.</summary>
+    public Guid? TurnId { get; }
+
+    /// <summary>The Covenant plan behind this response, when the call itself admitted Covenant.</summary>
+    public CovenantDigest? ProducingPlanDigest { get; }
+
+    /// <summary>The admission that froze that plan. Recorded only as a pair with it.</summary>
+    public CovenantDigest? ProducingAdmissionDigest { get; }
+
+    /// <summary>
+    /// The information-flow label this finalization has to persist beside its content.
+    /// </summary>
+    /// <remarks>
+    /// Built here rather than at the writer so there is exactly one derivation from a commit request
+    /// to a label: the assistant entry is the highest-volume tainted artifact in the product, and two
+    /// derivations would eventually disagree about which of them was authoritative (§10.12).
+    /// </remarks>
+    public DerivedArtifactWrite ToDerivedArtifactWrite() =>
+        new(
+            SensitiveArtifactKind.AssistantEntry,
+            AssistantEntryId,
+            SessionId,
+            CampaignId,
+            TurnId,
+            artifactRevision: 1,
+            DerivedArtifactContentDigest.ForText(FinalText),
+            ContentSensitivity,
+            ContentProvenance,
+            ProducingPlanDigest,
+            ProducingAdmissionDigest);
 
 }
 

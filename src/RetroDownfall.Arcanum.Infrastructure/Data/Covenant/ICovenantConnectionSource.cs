@@ -29,6 +29,10 @@ internal sealed class CovenantConnectionSource(ArcanumDbContext db) : ICovenantC
     public async ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
 
+        // The one choke point every canonical read and write passes through, and therefore the one
+        // place that can honestly latch "this process has held Covenant material".
+        CovenantProcessResidence.MarkOpened();
+
         if (db.Database.GetDbConnection() is not SqliteConnection connection)
         {
 

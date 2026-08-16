@@ -251,6 +251,38 @@ public sealed class GenerationProvenance : IEquatable<GenerationProvenance>
         return new SensitivityDigestInput(level, Mode, ExactGenerationIds, BloomBits);
     }
 
+    /// <summary>
+    /// The exact vector as the raw big-endian bytes <c>artifact_sensitivity</c> stores.
+    /// </summary>
+    /// <remarks>
+    /// Big-endian and already in this type's canonical order, which is the memcmp order SQLite
+    /// compares blobs in. That is what lets the table's CHECK constraint prove the slots are
+    /// strictly increasing — and therefore distinct — without unpacking them, so a duplicate cannot
+    /// pad the vector past the eight-generation ceiling and suppress the Bloom overflow.
+    /// </remarks>
+    public byte[] ToCanonicalExactBytes()
+    {
+        if (Mode != GenerationProvenanceMode.Exact)
+        {
+            throw new InvalidOperationException("Bloom-overflow provenance has no exact generation vector.");
+        }
+
+        byte[] bytes = new byte[ExactGenerationIds.Length * 16];
+
+        for (int index = 0; index < ExactGenerationIds.Length; index++)
+        {
+            _ = ExactGenerationIds[index].TryWriteBytes(bytes.AsSpan(index * 16, 16), bigEndian: true, out _);
+        }
+
+        return bytes;
+    }
+
+    /// <summary>The Bloom bitset as the raw bytes <c>artifact_sensitivity</c> stores.</summary>
+    public byte[] ToCanonicalBloomBytes() =>
+        Mode == GenerationProvenanceMode.BloomOverflow
+            ? [.. BloomBits]
+            : throw new InvalidOperationException("Exact provenance has no Bloom bitset.");
+
     public bool Equals(GenerationProvenance? other) =>
         other is not null
         && Mode == other.Mode
