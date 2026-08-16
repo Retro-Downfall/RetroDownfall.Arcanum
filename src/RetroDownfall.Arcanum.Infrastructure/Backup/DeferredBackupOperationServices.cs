@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -15,6 +16,19 @@ internal sealed class DeferredBackupOperationCoordinator(
         CancellationToken cancellationToken = default) =>
         Service.StartAsync(
             request,
+            ownerId,
+            leaseDuration,
+            cancellationToken);
+
+    public Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        string ownerId,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default) =>
+        Service.StartWithRequestIdentityAsync(
+            request,
+            identity,
             ownerId,
             leaseDuration,
             cancellationToken);
@@ -86,6 +100,12 @@ internal sealed class DeferredBackupOperationStore(
         LongRunningOperationCreateRequest request,
         CancellationToken cancellationToken = default) =>
         Service.CreateAsync(request, cancellationToken);
+
+    public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        CancellationToken cancellationToken = default) =>
+        Service.ResolveOrCreateAsync(request, identity, cancellationToken);
 
     public Task<LongRunningOperation?> TryStartSingleFlightAsync(
         LongRunningOperationCreateRequest request,

@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
+using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Covenant;
 
@@ -11,6 +13,7 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// absence changes how fast and how completely a query is answered, never whether the caller gets a
 /// usable result.
 /// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantSearchExecutionMode>))]
 public enum CovenantSearchExecutionMode : byte
 {
 
@@ -23,6 +26,7 @@ public enum CovenantSearchExecutionMode : byte
 /// <summary>
 /// What a caller should do about a degraded accelerator.
 /// </summary>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantSearchRebuildGuidance>))]
 public enum CovenantSearchRebuildGuidance : byte
 {
 
@@ -174,7 +178,7 @@ public sealed record CovenantSearchQuery(
     CovenantSearchKeyset? After)
 {
 
-    public int EffectivePageSize { get; } = CovenantManagementReadLimits.ClampPageSize(PageSize);
+    public int EffectivePageSize => CovenantManagementReadLimits.ClampPageSize(PageSize);
 
 }
 

@@ -95,6 +95,27 @@ public static class ErrorCodes
         /// </summary>
         public const string ProviderToolCallInvalid = "Hub.ProviderToolCallInvalid";
 
+        /// <summary>
+        /// A different turn already holds this Session's durable claim.
+        /// </summary>
+        /// <remarks>
+        /// A conflict rather than a queue. Two turns appending to one Session concurrently would each
+        /// see a history the other is about to change, and the second one to finish would publish an
+        /// answer to a question that no longer describes the conversation (§10.13).
+        /// </remarks>
+        public const string SessionTurnBusy = "Hub.SessionTurnBusy";
+
+        /// <summary>
+        /// A claim was presented whose history watermark no longer matches the Session.
+        /// </summary>
+        public const string SessionHistoryChanged = "Hub.SessionHistoryChanged";
+
+        /// <summary>
+        /// A nonterminal turn was captured by a physical backup and terminalized on restore, so its
+        /// claim can be reported but never resumed or replayed.
+        /// </summary>
+        public const string SessionTurnRestoredInterrupted = "Hub.SessionTurnRestoredInterrupted";
+
     }
 
     /// <summary>Campaign — forge workspace registration and paths.</summary>
@@ -120,6 +141,17 @@ public static class ErrorCodes
 
         /// <summary>No import payload was supplied and no readable <c>campaign.json</c> was found.</summary>
         public const string ImportFailed = "Campaign.ImportFailed";
+
+        /// <summary>
+        /// This Campaign has no resolved physical root, so nothing scoped to it may run.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately not a fallback to path text. A Campaign whose registered root cannot be
+        /// opened and proven is a Campaign whose Covenant scope and workspace tools would be aimed at
+        /// a directory nobody verified, and guessing is how a scoped write lands somewhere else
+        /// (§10.12).
+        /// </remarks>
+        public const string PathIdentityRequired = "Campaign.PathIdentityRequired";
 
     }
 
@@ -809,8 +841,33 @@ public static class ErrorCodes
         /// <summary>The supplied scope is malformed, uninitialized, or wrong for the operation.</summary>
         public const string InvalidScope = "Covenant.InvalidScope";
 
+        /// <summary>The supplied key does not match the frozen key grammar.</summary>
+        public const string InvalidKey = "Covenant.InvalidKey";
+
+        /// <summary>
+        /// The supplied content failed the compiler's Unicode, boundary, or byte-cost contract.
+        /// </summary>
+        public const string InvalidContent = "Covenant.InvalidContent";
+
         /// <summary>An opaque cursor failed authentication, bounds, or binding validation.</summary>
         public const string InvalidCursor = "Covenant.InvalidCursor";
+
+        /// <summary>
+        /// A cursor authenticated, but the dataset, canonical sequence, or accelerator state it bound
+        /// has moved on.
+        /// </summary>
+        /// <remarks>
+        /// Separate from <see cref="InvalidCursor"/> because the two answer different questions. This
+        /// one was genuinely issued here and its page simply no longer exists; an invalid cursor
+        /// cannot be trusted to say anything at all, including which query it belonged to (§10.11).
+        /// </remarks>
+        public const string StaleCursor = "Covenant.StaleCursor";
+
+        /// <summary>
+        /// The durable artifact behind this response was securely erased, so the recorded result can
+        /// be reported but never returned.
+        /// </summary>
+        public const string ArtifactErased = "Covenant.ArtifactErased";
 
         /// <summary>
         /// The caller holds no authority for this effect, or holds authority a surface may never carry.
@@ -844,6 +901,23 @@ public static class ErrorCodes
         public const string ManualRecoveryRequired = "Covenant.ManualRecoveryRequired";
 
         /// <summary>
+        /// A managed file that carries Covenant-derived content changed under Arcanum's handle, so
+        /// only its operator can remove it.
+        /// </summary>
+        /// <remarks>
+        /// Reported instead of deleting the changed file. Erasure that overwrote an operator's own
+        /// later edit would be destroying evidence the operator owns in order to complete a promise
+        /// Arcanum made about content it no longer controls (§10.16).
+        /// </remarks>
+        public const string ManualArtifactErasureRequired = "Covenant.ManualArtifactErasureRequired";
+
+        /// <summary>
+        /// Canonical rows are gone but local secure erasure has not finished proving every
+        /// application-controlled artifact absent.
+        /// </summary>
+        public const string ErasureIncomplete = "Covenant.ErasureIncomplete";
+
+        /// <summary>
         /// Two authority sources named different Campaigns, or a supplied path escaped the bound one.
         /// </summary>
         public const string CampaignBindingConflict = "Covenant.CampaignBindingConflict";
@@ -857,6 +931,17 @@ public static class ErrorCodes
         /// A no-context continuation required history that carries a Covenant-derived artifact.
         /// </summary>
         public const string SensitiveHistoryRequiresContext = "Covenant.SensitiveHistoryRequiresContext";
+
+        /// <summary>
+        /// A tool call would disclose Covenant-derived content to a declared sink, and the operator
+        /// did not approve it.
+        /// </summary>
+        /// <remarks>
+        /// A refusal rather than a redaction. Stripping the protected part and sending the rest would
+        /// mean the operator's approval decided the shape of the disclosure rather than whether it
+        /// happened (§10.14).
+        /// </remarks>
+        public const string SensitiveEgressRequiresApproval = "Covenant.SensitiveEgressRequiresApproval";
 
         /// <summary>
         /// A Covenant MCP tool was invoked by a turn that carries no staging capability.

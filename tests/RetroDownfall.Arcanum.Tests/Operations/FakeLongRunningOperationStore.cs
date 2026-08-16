@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -13,6 +14,8 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
     private readonly ConcurrentDictionary<Guid, LongRunningOperation> _operations = new();
 
     private readonly Lock _gate = new();
+
+    private readonly Dictionary<Guid, (CovenantDigest Digest, Guid OperationId)> _requestIdentities = [];
 
     private int _listCallCount;
 
@@ -68,6 +71,51 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         LongRunningOperationCreateRequest request,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(Seed(request.Kind, request.RecoveryPolicy, LongRunningOperationState.Pending));
+
+    /// <summary>
+    /// Mirrors the SQL store: one name maps to one operation forever, the same digest replays it, and
+    /// a different digest under the same name creates nothing.
+    /// </summary>
+    public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        CancellationToken cancellationToken = default)
+    {
+
+        lock (_gate)
+        {
+
+            if (_requestIdentities.TryGetValue(
+                    identity.RequestedOperationId,
+                    out (CovenantDigest Digest, Guid OperationId) existing))
+            {
+
+                return Task.FromResult(
+                    existing.Digest == identity.ApplyRequestDigest
+                        ? new LongRunningOperationRequestIdentityResult(
+                            LongRunningOperationRequestIdentityOutcome.Replayed,
+                            _operations[existing.OperationId])
+                        : new LongRunningOperationRequestIdentityResult(
+                            LongRunningOperationRequestIdentityOutcome.DigestConflict,
+                            Operation: null));
+
+            }
+
+            LongRunningOperation created = Seed(
+                request.Kind,
+                request.RecoveryPolicy,
+                LongRunningOperationState.Pending);
+
+            _requestIdentities[identity.RequestedOperationId] = (identity.ApplyRequestDigest, created.Id);
+
+            return Task.FromResult(
+                new LongRunningOperationRequestIdentityResult(
+                    LongRunningOperationRequestIdentityOutcome.Created,
+                    created));
+
+        }
+
+    }
 
     public Task<LongRunningOperation?> TryStartSingleFlightAsync(
         LongRunningOperationCreateRequest request,
@@ -302,6 +350,12 @@ internal sealed class PagingOnlyOperationStore(ILongRunningOperationStore inner)
 
     public Task<LongRunningOperation> CreateAsync(
         LongRunningOperationCreateRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
         CancellationToken cancellationToken = default) =>
         throw OutsideItsScope();
 

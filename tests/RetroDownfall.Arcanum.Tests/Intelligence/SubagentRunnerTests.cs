@@ -353,6 +353,14 @@ public sealed class SubagentRunnerTests
         /// <summary>Models a row another owner already claimed and moved.</summary>
         public bool RefuseComplete { get; init; }
 
+        public Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
+            LongRunningOperationCreateRequest request,
+            LongRunningOperationRequestIdentity identity,
+            string ownerId,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<LongRunningOperationLeaseResult> StartAsync(
             LongRunningOperationCreateRequest request,
             string ownerId,

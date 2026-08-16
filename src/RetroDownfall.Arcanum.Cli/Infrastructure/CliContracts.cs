@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -101,6 +102,135 @@ public sealed record SessionShowPayload(
 public sealed record CliFailure(
     CliExitCode ExitCode,
     string SafeMessage);
+
+/// <summary>
+/// One Covenant entry as <c>arcanum memory covenant list</c> and <c>show</c> render it.
+/// </summary>
+/// <remarks>
+/// A CLI projection of <see cref="CovenantHeadDto"/> rather than the DTO itself, because the two
+/// answer to different contracts: the wire shape is frozen by the API and this one is frozen by the
+/// <c>--json</c> promise. Authored content is absent by default for the same reason it is absent from
+/// the wire list — a listing is a listing of what exists (§10.16).
+/// </remarks>
+public sealed record CovenantEntryPayload(
+    Guid EntryId,
+    Guid VersionId,
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    CovenantLane Lane,
+    long Revision,
+    CovenantLifecycle Lifecycle,
+    CovenantOrigin Origin,
+    long ByteCost,
+    CovenantEffectiveShadowState Shadow,
+    CovenantEffectiveMaterialization Materialization,
+    DateTimeOffset UpdatedAtUtc);
+
+/// <summary>One page of Covenant entries, with the cursor a follow-up call would send.</summary>
+public sealed record CovenantListPayload(
+    CovenantEntryPayload[] Entries,
+    string? NextCursor,
+    bool Truncated,
+    CovenantSearchHealthDto Search);
+
+/// <summary>
+/// One scoped key with both lanes, and its history when <c>--history</c> was asked for.
+/// </summary>
+public sealed record CovenantShowPayload(
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    CovenantEntryPayload? Confirmed,
+    CovenantEntryPayload? Proposed,
+    long KeyEpoch,
+    CovenantVersionDto[] History);
+
+/// <summary>
+/// The server-authoritative plan a mutation is confirmed against.
+/// </summary>
+/// <remarks>
+/// Every number here comes from the preflight response, never from the CLI's own arithmetic. A client
+/// that computed its own byte cost or affected-Campaign count would be asking the operator to confirm
+/// a second opinion about an effect only the server can evaluate.
+/// </remarks>
+public sealed record CovenantMutationPlanPayload(
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    CovenantLane Lane,
+    CovenantOperation Operation,
+    Guid MutationId,
+    string? RenderedHash,
+    long? ByteCost,
+    long CurrentRevision,
+    CovenantEffectDecision LocalDecision,
+    long AffectedCampaignCount,
+    bool ExamplesTruncated,
+    bool AppliesToFutureCampaigns,
+    DateTimeOffset ExpiresAtUtc);
+
+/// <summary>The durable outcome of one committed Covenant mutation.</summary>
+public sealed record CovenantMutationResultPayload(
+    Guid MutationId,
+    CovenantMutationOutcome Outcome,
+    CovenantOperation Operation,
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    CovenantLane Lane,
+    long? Revision,
+    bool Replayed);
+
+/// <summary>What <c>arcanum memory covenant doctor</c> found, and what it would do about it.</summary>
+public sealed record CovenantDoctorPayload(
+    bool Enabled,
+    bool Available,
+    CovenantSearchHealthDto Search,
+    CovenantScopeCountDto[] Counts,
+    string? DegradationCode,
+    string[] AvailableRepairs);
+
+/// <summary>One Campaign's physical-root status and the exact verb that resolves it.</summary>
+public sealed record CampaignPathStatusPayload(
+    CampaignPathIdentityStatusItemDto[] Campaigns,
+    string? NextCursor,
+    bool Truncated);
+
+/// <summary>The server-opened plan a path operation is confirmed against.</summary>
+public sealed record CampaignPathPlanPayload(
+    Guid OperationId,
+    Guid CampaignId,
+    CampaignPathIdentityOperation Operation,
+    string? NormalizedDisplayPath,
+    string? CurrentIdentityDigest,
+    string? ProspectiveIdentityDigest,
+    bool MarkerConflict,
+    long ActiveTurnBlockerCount,
+    bool OldMarkerCleanupRequired,
+    DateTimeOffset ExpiresAtUtc);
+
+/// <summary>The durable outcome of one committed path operation.</summary>
+public sealed record CampaignPathResultPayload(
+    Guid CampaignId,
+    CampaignPathIdentityOperation Operation,
+    CampaignPathIdentityState State,
+    long PathRevision,
+    long DrainedTurnCount,
+    bool Replayed);
+
+/// <summary>Every Session's immutable Campaign binding, or the fact that it has none yet.</summary>
+public sealed record SessionBindingStatusPayload(
+    SessionCampaignBindingStatusItemDto[] Sessions,
+    string? NextCursor,
+    bool Truncated);
+
+/// <summary>The one immutable binding choice a legacy Session is allowed.</summary>
+public sealed record SessionBindingResultPayload(
+    Guid SessionId,
+    RetroDownfall.Arcanum.Core.TheForge.SessionCampaignBindingKind Kind,
+    Guid? CampaignId,
+    bool Replayed);
 
 public sealed record FileDownloadPayload(
     string Id,
@@ -890,6 +1020,28 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(InstallationResetPlan))]
 
 [JsonSerializable(typeof(InstallationResetResult))]
+
+[JsonSerializable(typeof(CovenantEntryPayload))]
+
+[JsonSerializable(typeof(CovenantListPayload))]
+
+[JsonSerializable(typeof(CovenantShowPayload))]
+
+[JsonSerializable(typeof(CovenantMutationPlanPayload))]
+
+[JsonSerializable(typeof(CovenantMutationResultPayload))]
+
+[JsonSerializable(typeof(CovenantDoctorPayload))]
+
+[JsonSerializable(typeof(CampaignPathStatusPayload))]
+
+[JsonSerializable(typeof(CampaignPathPlanPayload))]
+
+[JsonSerializable(typeof(CampaignPathResultPayload))]
+
+[JsonSerializable(typeof(SessionBindingStatusPayload))]
+
+[JsonSerializable(typeof(SessionBindingResultPayload))]
 
 [JsonSerializable(typeof(JsonElement))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

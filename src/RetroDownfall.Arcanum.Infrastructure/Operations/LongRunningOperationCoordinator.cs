@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
@@ -25,6 +26,52 @@ internal sealed class LongRunningOperationCoordinator(
             now,
             now.Add(leaseDuration),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        string ownerId,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default)
+    {
+
+        ValidateLeaseDuration(leaseDuration);
+
+        LongRunningOperationRequestIdentityResult resolved = await store
+            .ResolveOrCreateAsync(request, identity, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resolved.Outcome == LongRunningOperationRequestIdentityOutcome.DigestConflict)
+        {
+
+            return Result<LongRunningOperationRequestIdentityResult>.Failure(
+                new Error(
+                    ErrorCodes.Security.IdempotencyConflict,
+                    "This operation identity was already used for a different request."));
+
+        }
+
+        // Only a newly created operation is leased here. A replayed one may still be owned and
+        // running, and handing a second owner the same database-replacing work is precisely what the
+        // durable identity exists to prevent.
+        if (resolved.Outcome == LongRunningOperationRequestIdentityOutcome.Created
+            && resolved.Operation is { } created)
+        {
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+
+            LongRunningOperationLeaseResult lease = await store
+                .TryAcquireLeaseAsync(created.Id, ownerId, now, now.Add(leaseDuration), cancellationToken)
+                .ConfigureAwait(false);
+
+            return Result<LongRunningOperationRequestIdentityResult>.Success(
+                resolved with { Operation = lease.Operation });
+
+        }
+
+        return Result<LongRunningOperationRequestIdentityResult>.Success(resolved);
+
     }
 
     public Task<bool> HeartbeatAsync(

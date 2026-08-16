@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Covenant;
 
@@ -88,7 +90,7 @@ public sealed record CovenantListQuery(
     CovenantListKeyset? After)
 {
 
-    public int EffectivePageSize { get; } = CovenantManagementReadLimits.ClampPageSize(PageSize);
+    public int EffectivePageSize => CovenantManagementReadLimits.ClampPageSize(PageSize);
 
 }
 
@@ -121,7 +123,7 @@ public sealed record CovenantVersionQuery(
     CovenantVersionKeyset? After)
 {
 
-    public int EffectivePageSize { get; } = CovenantManagementReadLimits.ClampPageSize(PageSize);
+    public int EffectivePageSize => CovenantManagementReadLimits.ClampPageSize(PageSize);
 
 }
 
@@ -193,6 +195,7 @@ public sealed record CovenantSourcePage(
 /// <summary>
 /// What a prospective mutation would do to resolution.
 /// </summary>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantEffectDecision>))]
 public enum CovenantEffectDecision : byte
 {
 

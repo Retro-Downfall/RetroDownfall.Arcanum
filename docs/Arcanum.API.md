@@ -593,6 +593,15 @@ Wire-stable codes live on `ErrorCodes` (Core). General HTTP mapping authority is
 | `Data.ReconciliationFailed` | 500 | Data-lifecycle apply failed or post-delete reconciliation requires operator review |
 | `Hub.Unhandled` | 500 | An exception escaped every endpoint and `ArcanumExceptionHandler` wrote the envelope |
 | `Validation.SpellOverride` | 500 | `OverrideSpellName` matched no spell. Client-side input, but the mapper has no entry for it, so the default arm still answers **500** |
+| `Covenant.InvalidScope` / `InvalidKey` / `InvalidContent` / `InvalidCursor` | 400 | Covenant request shape, key grammar, content bounds, or an opaque cursor that failed bounds or binding validation (§8.28) |
+| `Covenant.ForbiddenAuthority`; `Covenant.SensitiveEgressRequiresApproval` | 403 | The caller holds no authority for this effect, or a Covenant-bearing disclosure the operator did not approve |
+| `Covenant.NotFound` | 404 | No such scope, key, version, or lane head. Also returned for an artifact owned by another Session, so a distinct code cannot confirm the identity exists |
+| `Covenant.ArtifactErased` | 410 | The durable receipt proves this existed and was securely erased; the result can be reported but never returned |
+| `Covenant.RevisionConflict` / `LifecycleConflict` / `StaleSnapshot` / `StaleCursor` / `CapacityExceeded` / `SensitiveHistoryRequiresContext` / `CampaignBindingConflict`; `Session.CampaignBindingRequired`; `Campaign.PathIdentityRequired`; `Hub.SessionTurnBusy` / `SessionHistoryChanged` / `SessionTurnRestoredInterrupted` | 409 | Optimistic-concurrency, lifecycle, epoch, capacity, binding, path-identity, and Session-turn conflicts. `StaleCursor` is separate from `InvalidCursor`: it authenticated here and its dataset moved on, while an invalid one cannot be trusted to say which query it belonged to |
+| `Hub.ContextBudgetExceeded` | 429 | Confirmed Covenant content could not fit; admission is all-or-fail, with an equivalent structured MCP failure before any side effect |
+| `Hub.ProviderToolBufferExceeded` | 502 | A provider streamed more buffered tool bytes or simultaneous call indexes than the code-owned transport bounds permit — an upstream fault, not a caller fault |
+| `Covenant.Unavailable` / `OperatorAuthorityUnavailable` / `HostToolsTransitionRequired` / `MaintenanceFailed` / `ManualArtifactErasureRequired` / `ManualRecoveryRequired` / `ErasureIncomplete` / `IntegrityFailure` | 503 | A Covenant tier, authority, maintenance step, erasure, or integrity contract is not currently able to serve. Each names an operator action rather than a retry |
+| `Covenant.IneligibleTurn` | — | **MCP-only, deliberately unmapped.** No HTTP route can produce it: the operator API arrives with authenticated authority and never asks whether a turn carried a staging capability. Giving it an arm would invite a route to start returning it |
 
 **Ollama:** providers use the `OpenAICompatible` contract and surface failures as `Hub.Error`. **Familiars:** `ClaudeCodeCli`/`CodexCli` providers surface a missing binary, a refused spawn, a deadline, or a non-zero exit as `Hub.Error` carrying the CLI's own message. `Provider.NotFound` maps to **404**.
 
@@ -611,6 +620,49 @@ Opt-in JSONL (`Arcanum:Host:AuditLog:*`); dated files, owner-only, with a soft d
 ### 8.27 Content guardrails (PII / toxicity / topics)
 
 Opt-in via `Arcanum:Features:Guardrails` (default false), with policy under `Arcanum:Security:Guardrails`. Input PII (GeneratedRegex) → `Guardrails.PiiDetected`; toxicity/topics → `Guardrails.Blocked`. Streaming output filtering is code-owned **buffered** mode. Audit JSONL + `GET /api/guardrails/audit` keeps the existing `ApiResponse<GuardrailAuditRecord[]>` body and accepts `from`, `to`, `stage`, `violationType`, `sessionId`, `limit`, and optional `cursor`. Its default/max page, newest-first snapshot semantics, `X-Arcanum-Next-Cursor` continuation, bounded reverse scan, query binding, and **400** `Validation.InvalidQuery` restart contract match `/api/audit`. Only redacted matched spans appear in logs/errors.
+
+### 8.28 Covenant public contract (frozen, not yet routed)
+
+Issue #88 freezes the request and response shapes the Covenant surfaces will use; issue #89 maps the routes and #87 implements maintenance and recovery. **No route in this section is registered yet.** It is documented here because four later slices build against these shapes, and a contract that four slices each invent separately is four contracts.
+
+Every shape is a named positional record registered with `ArcanumJsonContext`, every enum is string-only, and every request record owns a `Validate()` that produces the typed refusal below before anything reaches storage. `CovenantPublicContractInventory` is the closed list; `CovenantPublicContractInventoryTests` fails when a public Covenant `*Request`/`*Dto` is missing from it, when a declared entry names a type that no longer exists, when a shape carries an `object`/`JsonElement`/`JsonNode` member, or when a wire enum would accept an integer.
+
+| Planned route | Request | Response |
+|---|---|---|
+| `POST /api/memory/covenant/list` | `CovenantListRequest` | `CovenantPageDto` |
+| `POST /api/memory/covenant/query` | `CovenantQueryRequest` | `CovenantPageDto` |
+| `POST /api/memory/covenant/detail` | `CovenantDetailRequest` | `CovenantDetailDto` |
+| `POST /api/memory/covenant/versions` | `CovenantVersionsRequest` | `CovenantVersionPageDto` |
+| `POST /api/memory/covenant/sources` | `CovenantSourcesRequest` | `CovenantSourcesDto` |
+| `POST /api/memory/covenant/explain` | `CovenantExplainRequest` | `CovenantExplainDto` |
+| `POST /api/memory/covenant/set/prepare` | `CovenantSetPrepareRequest` | `CovenantMutationPreflightDto` |
+| `POST /api/memory/covenant/retire/prepare` | `CovenantRetirePrepareRequest` | `CovenantMutationPreflightDto` |
+| `PUT /api/memory/covenant` | `CovenantSetRequest` | `CovenantMutationResultDto` |
+| `POST /api/memory/covenant/retire` | `CovenantRetireRequest` | `CovenantMutationResultDto` |
+| `POST /api/memory/covenant/schema/repair` | `CovenantSchemaRepairRequest` | `CovenantSchemaRepairResultDto` |
+| `POST /api/memory/covenant/index/rebuild` | `CovenantIndexRebuildRequest` | `LongRunningOperationDto` (**202**) |
+| `POST /api/memory/covenant/schema/reinitialize/prepare` | `CovenantFamilyReinitializePrepareRequest` | `CovenantFamilyReinitializePlanDto` |
+| `POST /api/memory/covenant/schema/reinitialize` | `CovenantFamilyReinitializeApplyRequest` | `LongRunningOperationDto` (**202**) |
+| `POST /api/campaigns/path/status` | `CampaignPathIdentityStatusRequest` | `CampaignPathIdentityStatusPageDto` |
+| `POST /api/campaigns/{id}/path/prepare` | `CampaignPathPrepareRequest` | `CampaignPathIdentityPlanDto` |
+| `POST /api/campaigns/{id}/path/apply` | `CampaignPathApplyRequest` | `CampaignPathIdentityResultDto` |
+| `POST /api/sessions/campaign-binding/status` | `SessionCampaignBindingStatusRequest` | `SessionCampaignBindingStatusPageDto` |
+| `POST /api/sessions/campaign-binding/prepare` | `SessionCampaignBindingPrepareRequest` | `SessionCampaignBindingPlanDto` |
+| `POST /api/sessions/campaign-binding/apply` | `SessionCampaignBindingApplyRequest` | `SessionCampaignBindingResultDto` |
+
+**Bodies, never query strings.** Campaign identities, Covenant keys, filters, search text, and cursors are body fields on every route above, including the read-only ones. A URL is the one part of a request that nothing redacts, and an access log keeps it forever.
+
+**Frozen request bounds.** Search text ≤ 512 UTF-8 bytes and ≤ 32 terms (`Validation.InvalidQuery`); authored content 1–2,048 UTF-8 bytes (`Covenant.InvalidContent`); keys match `[a-z0-9][a-z0-9._-]{0,127}` (`Covenant.InvalidKey`); cursors and tokens ≤ 4,096 encoded characters, checked before decoding (`Covenant.InvalidCursor`); apply-request digests are exactly 64 hexadecimal characters (`Validation.InvalidBody`). `limit` is **clamped** to 1–200 with a default of 50 rather than refused, and the clamped value is exposed as `EffectiveLimit`. Byte bounds are UTF-8 bytes, not characters.
+
+**Explicit scope, always.** `CovenantCursorScopeSelection` (`Global`, `Campaign`, `AllScopes`) has no default; an omitted value is `Covenant.InvalidScope`, so an installation-wide read is never the result of a missing field. `Global`/`AllScopes` must not carry `campaignId`; `Campaign` must. Detail carries `CovenantScope`, which has no all-scopes member at all, because the same key can exist in Global and in every Campaign. A `Set` carries no lane — Confirmed is the only lane an operator authors — and a Global Proposed retirement is `Covenant.InvalidScope`.
+
+**Effective versus local state.** `CovenantHeadDto` reports `lifecycle` (local) and `shadow`/`materialization` (effective for the evaluated Campaign) separately. Both effective fields are `NotEvaluated` when the request supplied no `effectiveForCampaignId`, because the honest answer differs per Campaign; the evaluation Campaign is part of the filter digest a cursor binds.
+
+**Protected responses.** Every content-bearing Covenant read is written through `CovenantProtectedJsonResult<T>` or `CovenantProtectedStreamResult`: the operation lease is revalidated immediately before the first byte, the response is `Cache-Control: no-store` with any `ETag` and `Last-Modified` removed, and the lease is released after serialization completes. A conditional revalidation of protected content is a 304 on data the installation may since have erased.
+
+**Idempotency.** Covenant set and retirement use their canonical `mutationId` and the durable receipt ledger as the sole replay mechanism; a supplied HTTP `Idempotency-Key` has no semantic effect on these routes. Long-running Covenant operations bind a caller-generated `operationId` plus a stable `applyRequestDigest`: the same pair replays the durable operation, a different digest under the same id is `Security.IdempotencyConflict`, and neither depends on the process that issued the original **202** still being alive.
+
+`MemorySearchScope.All` continues to exclude Covenant. Covenant content search, sources, and explain use the typed routes above and always require Covenant read authority, so no existing default `All` request silently gains privilege.
 
 ---
 

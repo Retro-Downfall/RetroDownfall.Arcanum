@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -976,6 +978,20 @@ public sealed class BackupServiceTests : IDisposable
 
         public Task<LongRunningOperation> CreateAsync(
             LongRunningOperationCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+            LongRunningOperationCreateRequest request,
+            LongRunningOperationRequestIdentity identity,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
+            LongRunningOperationCreateRequest request,
+            LongRunningOperationRequestIdentity identity,
+            string ownerId,
+            TimeSpan leaseDuration,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

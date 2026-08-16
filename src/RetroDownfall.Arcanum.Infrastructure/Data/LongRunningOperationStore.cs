@@ -120,6 +120,219 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
             cancellationToken);
     }
 
+    public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(identity);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Kind);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.PublicSummary);
+
+        if (identity.RequestedOperationId == Guid.Empty)
+        {
+
+            throw new ArgumentException(
+                "A requested operation identity cannot be empty; an empty name would collide with every other empty one.",
+                nameof(identity));
+
+        }
+
+        if (!identity.ApplyRequestDigest.IsValid || !identity.EffectDigest.IsValid)
+        {
+
+            throw new ArgumentException(
+                "A requested operation identity carries a complete apply-request digest and effect digest.",
+                nameof(identity));
+
+        }
+
+        if (!LongRunningOperationPolicyCatalog.IsRegistered(request.Kind, request.RecoveryPolicy))
+        {
+
+            throw new ArgumentException(
+                $"Operation kind '{request.Kind}' is not registered with recovery policy '{request.RecoveryPolicy}'.",
+                nameof(request));
+
+        }
+
+        string kind = Bound(request.Kind, MaxKindLength);
+
+        string summary = Bound(request.PublicSummary, MaxSummaryLength);
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                // BEGIN IMMEDIATE: the lookup and the two inserts have to be one write transaction,
+                // or two concurrent applies both read "no such identity" and both create an
+                // operation, which is exactly the double start this identity exists to prevent.
+                await using DbTransaction transaction = await connection
+                    .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                    .ConfigureAwait(false);
+
+                Guid? existingOperationId = null;
+
+                byte[]? existingDigest = null;
+
+                await using (DbCommand lookup = connection.CreateCommand())
+                {
+
+                    lookup.Transaction = transaction;
+
+                    lookup.CommandText =
+                        """
+                        SELECT "OperationId", "ApplyRequestDigest"
+                        FROM long_running_operation_request_identities
+                        WHERE "RequestedOperationId" = @requested
+                        LIMIT 1
+                        """;
+
+                    Add(lookup, "@requested", Format(identity.RequestedOperationId));
+
+                    await using DbDataReader reader = await lookup
+                        .ExecuteReaderAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+
+                        existingOperationId = ParseGuid(reader.GetString(0));
+
+                        existingDigest = (byte[])reader.GetValue(1);
+
+                    }
+
+                }
+
+                if (existingOperationId is { } resolved)
+                {
+
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                    // A different digest under the same name means the caller changed what it was
+                    // asking for. Returning the existing operation would invite it to be treated as
+                    // the one that was requested.
+                    if (!identity.ApplyRequestDigest.Bytes.AsSpan().SequenceEqual(existingDigest ?? []))
+                    {
+
+                        return new LongRunningOperationRequestIdentityResult(
+                            LongRunningOperationRequestIdentityOutcome.DigestConflict,
+                            Operation: null);
+
+                    }
+
+                    LongRunningOperation? replayed = await GetAsync(resolved, cancellationToken).ConfigureAwait(false);
+
+                    return new LongRunningOperationRequestIdentityResult(
+                        LongRunningOperationRequestIdentityOutcome.Replayed,
+                        replayed);
+
+                }
+
+                Guid id = Guid.NewGuid();
+
+                await using (DbCommand insert = connection.CreateCommand())
+                {
+
+                    insert.Transaction = transaction;
+
+                    insert.CommandText =
+                        """
+                        INSERT INTO "LongRunningOperations"
+                            ("Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
+                             "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
+                             "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
+                             "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
+                             "PublicSummary", "TerminalErrorCode", "Revision")
+                        VALUES
+                            (@id, @kind, @state, @policy, @root, @parent,
+                             @session, @run, @inference, @reservation, @claim,
+                             @created, NULL, NULL, NULL, NULL, NULL,
+                             0, 0, NULL, NULL, @summary, NULL, 0)
+                        """;
+
+                    Add(insert, "@id", Format(id));
+                    Add(insert, "@kind", kind);
+                    Add(insert, "@state", (int)LongRunningOperationState.Pending);
+                    Add(insert, "@policy", (int)request.RecoveryPolicy);
+                    Add(insert, "@root", FormatNullable(request.RootOperationId));
+                    Add(insert, "@parent", FormatNullable(request.ParentOperationId));
+                    Add(insert, "@session", FormatNullable(request.SessionId));
+                    Add(insert, "@run", FormatNullable(request.RunId));
+                    Add(insert, "@inference", FormatNullable(request.InferenceRunId));
+                    Add(insert, "@reservation", FormatNullable(request.BudgetReservationId));
+                    Add(insert, "@claim", FormatNullable(request.IdempotencyClaimId));
+                    Add(insert, "@created", Format(request.CreatedAt));
+                    Add(insert, "@summary", summary);
+
+                    _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+
+                await using (DbCommand link = connection.CreateCommand())
+                {
+
+                    link.Transaction = transaction;
+
+                    link.CommandText =
+                        """
+                        INSERT INTO long_running_operation_request_identities
+                            ("OperationId", "RequestedOperationId", "ApplyRequestDigest", "EffectDigest", "CreatedAtUtc")
+                        VALUES
+                            (@operation, @requested, @apply, @effect, @created)
+                        """;
+
+                    Add(link, "@operation", Format(id));
+                    Add(link, "@requested", Format(identity.RequestedOperationId));
+                    Add(link, "@apply", identity.ApplyRequestDigest.Bytes);
+                    Add(link, "@effect", identity.EffectDigest.Bytes);
+                    Add(link, "@created", Format(request.CreatedAt));
+
+                    _ = await link.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return new LongRunningOperationRequestIdentityResult(
+                    LongRunningOperationRequestIdentityOutcome.Created,
+                    new LongRunningOperation(
+                        id,
+                        kind,
+                        LongRunningOperationState.Pending,
+                        request.RecoveryPolicy,
+                        request.RootOperationId,
+                        request.ParentOperationId,
+                        request.SessionId,
+                        request.RunId,
+                        request.InferenceRunId,
+                        request.BudgetReservationId,
+                        request.IdempotencyClaimId,
+                        request.CreatedAt,
+                        StartedAt: null,
+                        HeartbeatAt: null,
+                        CompletedAt: null,
+                        LeaseOwner: null,
+                        LeaseExpiresAt: null,
+                        AttemptCount: 0,
+                        CheckpointVersion: 0,
+                        CheckpointPayload: null,
+                        CheckpointReference: null,
+                        summary,
+                        TerminalErrorCode: null,
+                        Revision: 0));
+
+            },
+            cancellationToken);
+
+    }
+
     public Task<LongRunningOperation?> TryStartSingleFlightAsync(
         LongRunningOperationCreateRequest request,
         string ownerId,
