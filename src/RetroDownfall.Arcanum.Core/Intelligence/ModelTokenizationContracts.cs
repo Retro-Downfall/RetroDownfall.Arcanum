@@ -74,6 +74,28 @@ public enum ContextTokenSource
 
     [JsonStringEnumMemberName("reservedReasoning")]
     ReservedReasoning,
+
+    /// <summary>
+    /// Operator-authored Covenant content rendered in CONTEXT (§10.13).
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="SystemCodexSpell"/> because Confirmed Covenant is non-evictable
+    /// within memory admission while Codex and Spell content is not, and an operator inspecting
+    /// <c>mana</c> has to be able to see what the profile actually costs.
+    /// </remarks>
+    [JsonStringEnumMemberName("covenantConfirmed")]
+    CovenantConfirmed,
+
+    /// <summary>
+    /// Agent-authored Covenant content rendered as fenced DATA (§10.13).
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="LexiconSaga"/> because Proposed Covenant has the earliest eviction
+    /// tier of any prompt material, so its cost and its removals are the first thing a pressure
+    /// investigation needs to see.
+    /// </remarks>
+    [JsonStringEnumMemberName("covenantProposed")]
+    CovenantProposed,
 }
 
 /// <summary>A single classified token value.</summary>
@@ -244,13 +266,21 @@ public sealed record ContextTokenBreakdown
 }
 
 /// <summary>All material required to estimate one provider call.</summary>
+/// <remarks>
+/// <paramref name="SystemPromptAttribution"/> is the typed partition of the rendered system prompt
+/// when one exists. Supplying it is what keeps Covenant token counts out of the heading-and-fence
+/// classifier: without it the estimator would have to recognize <c>### The Covenant, Proposed</c> as
+/// a heading, and any untrusted content able to write that line would be able to move its own tokens
+/// into an operator-authored source (§10.13).
+/// </remarks>
 public sealed record ModelTokenizationRequest(
     ProviderSettings Provider,
     string Model,
     IReadOnlyList<ChatMessage> Messages,
     ChatOptions Options,
     int ReservedAnswerTokens,
-    int ReservedReasoningTokens);
+    int ReservedReasoningTokens,
+    SystemPromptAttributionMap? SystemPromptAttribution = null);
 
 /// <summary>Provider/model admission settings supplied to <see cref="IModelCallExecutor"/>.</summary>
 public sealed record ModelCallContext(

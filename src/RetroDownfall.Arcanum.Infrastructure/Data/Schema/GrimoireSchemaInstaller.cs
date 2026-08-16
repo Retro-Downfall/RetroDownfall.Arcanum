@@ -127,6 +127,13 @@ internal sealed class GrimoireSchemaInstaller(
 
         }
 
+        // The core schema contains guard triggers that call the arcanum_*_authorized functions, and
+        // SQLite resolves a function when it prepares a statement — so a seed that merely touches a
+        // guarded table fails with "no such function" on a connection that never registered them.
+        // Installation owns the schema those triggers belong to, so it guarantees them here rather
+        // than relying on every caller to have applied connection policy first.
+        Covenant.CovenantSqliteConnectionInitializer.Instance.EnsureAuthorizationFunctions(connection);
+
         return await SqliteBusyRetry.ExecuteAsync(
             () => InstallTierAsync(
                 connection,

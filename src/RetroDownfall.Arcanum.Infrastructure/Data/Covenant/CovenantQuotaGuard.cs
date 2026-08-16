@@ -212,7 +212,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
               );
             """;
 
-        Bind(command, "$session", request.SessionId.ToString("D"));
+        BindIdentity(command, "$session", request.SessionId);
 
         Bind(command, "$claims", request.ExpectedClaimCount);
 
@@ -352,7 +352,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         Bind(command, "$changed", Iso(DateTimeOffset.UtcNow));
 
-        Bind(command, "$reservation", identity.ReservationId.ToString("D"));
+        BindIdentity(command, "$reservation", identity.ReservationId);
 
         int affected = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -392,7 +392,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             WHERE ReservationId = $reservation;
             """;
 
-        Bind(command, "$reservation", reservationId.ToString("D"));
+        BindIdentity(command, "$reservation", reservationId);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -434,15 +434,15 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             VALUES ($reservation, $session, $assistant, $origin, $claim, $state, $created, $created);
             """;
 
-        Bind(command, "$reservation", identity.ReservationId.ToString("D"));
+        BindIdentity(command, "$reservation", identity.ReservationId);
 
-        Bind(command, "$session", identity.SessionId.ToString("D"));
+        BindIdentity(command, "$session", identity.SessionId);
 
-        Bind(command, "$assistant", identity.AssistantEntryId.ToString("D"));
+        BindIdentity(command, "$assistant", identity.AssistantEntryId);
 
         Bind(command, "$origin", (int)origin);
 
-        Bind(command, "$claim", claimId is { } claim ? claim.ToString("D") : DBNull.Value);
+        Bind(command, "$claim", claimId is { } claim ? claim : DBNull.Value);
 
         Bind(command, "$state", (int)state);
 
@@ -481,7 +481,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
             Bind(session, "$consumed", consumedDelta);
 
-            Bind(session, "$session", sessionId.ToString("D"));
+            BindIdentity(session, "$session", sessionId);
 
             int affected;
 
@@ -611,6 +611,19 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
     }
 
     private static void Bind(SqliteCommand command, string name, object value) =>
+        _ = command.Parameters.AddWithValue(name, value);
+
+    /// <summary>
+    /// Binds a row identity in the same representation EF writes.
+    /// </summary>
+    /// <remarks>
+    /// The value is bound as a <see cref="Guid"/> rather than as a formatted string so the provider
+    /// produces exactly the text EF stored. These tables carry real foreign keys to EF-owned
+    /// <c>Sessions</c> rows, and EF's SQLite mapping writes an uppercase <c>D</c>-format literal, so
+    /// a lowercase parameter matched nothing: every reservation and guard would have failed its
+    /// foreign key in a real host while passing against a suite that seeded its own lowercase rows.
+    /// </remarks>
+    private static void BindIdentity(SqliteCommand command, string name, Guid value) =>
         _ = command.Parameters.AddWithValue(name, value);
 
     private static string Iso(DateTimeOffset value) =>

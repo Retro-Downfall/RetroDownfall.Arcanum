@@ -66,6 +66,9 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         await SeedRegistryStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
 
+        await SeedInstallationTurnQuotaStateAsync(connection, transaction, cancellationToken)
+            .ConfigureAwait(false);
+
         await SeedOrConvergeAuthorityStateAsync(connection, transaction, context, installedAtUtc, cancellationToken)
             .ConfigureAwait(false);
 
@@ -102,6 +105,39 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         command.CommandText = """
             INSERT INTO campaign_registry_state (StateKey, RegistryEpoch)
             VALUES (1, 1)
+            ON CONFLICT (StateKey) DO NOTHING;
+            """;
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Seeds the exactly zeroed installation turn-capacity singleton.
+    /// </summary>
+    /// <remarks>
+    /// The counter moves are updates, not upserts, so an installation with no singleton cannot
+    /// finalize a single turn: the guard's capacity move reports a missing row and the whole
+    /// finalization rolls back. Zeroed is the one shape the table's insert trigger accepts without a
+    /// turn-capacity authorization, because it creates an owner and grants no capacity.
+    /// </remarks>
+    private static async Task SeedInstallationTurnQuotaStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            INSERT INTO installation_turn_quota_state (
+                StateKey,
+                ClaimCount,
+                ReservedFinalizationCount,
+                ConsumedFinalizationCount)
+            VALUES (1, 0, 0, 0)
             ON CONFLICT (StateKey) DO NOTHING;
             """;
 

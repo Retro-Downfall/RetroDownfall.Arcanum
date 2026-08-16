@@ -376,7 +376,11 @@ public sealed class CovenantOwnerCleanupTests
         using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance
             .Authorize(fixture.Connection, CovenantSqliteAuthorizationKind.SessionRetention);
 
-        await ExecuteAsync(fixture, $"DELETE FROM \"Sessions\" WHERE \"Id\" = '{sessionId:D}';");
+        // Uppercase, matching the representation EF writes and the fixture now seeds. A lowercase
+        // literal silently matches nothing and the sweep then reports a clean run over no work.
+        await ExecuteAsync(
+            fixture,
+            $"DELETE FROM \"Sessions\" WHERE \"Id\" = '{sessionId.ToString("D").ToUpperInvariant()}';");
 
     }
 
