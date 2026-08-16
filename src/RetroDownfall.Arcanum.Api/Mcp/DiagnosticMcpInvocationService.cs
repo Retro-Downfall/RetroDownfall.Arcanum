@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -38,6 +39,11 @@ public sealed class DiagnosticMcpInvocationService
         HostProcessToolPolicy.RunSpellScriptToolName,
         ToolRiskClassifier.ApplyPatchToolName,
         ToolRiskClassifier.WorkspaceCheckToolName,
+
+        // Both Covenant mutation tools need a live turn capability that this endpoint cannot mint,
+        // and blocking them by name also stops an external server that reuses either name.
+        CovenantToolNames.ProposeCovenant,
+        CovenantToolNames.RetireCovenant,
     };
 
     public const string BlockedToolMessage =

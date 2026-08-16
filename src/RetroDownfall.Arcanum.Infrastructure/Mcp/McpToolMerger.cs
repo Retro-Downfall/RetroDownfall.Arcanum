@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
 
@@ -21,6 +22,11 @@ internal static class McpToolMerger
             StringComparer.OrdinalIgnoreCase)
         {
             ToolRiskClassifier.SearchWorkspaceToolName,
+
+            // retire_covenant already arrives through the intrinsic set; propose_covenant is listed
+            // explicitly because it is not a Forbidden Art but must still be unshadowable — an
+            // external server that claimed the name would be handed the operator's profile writes.
+            CovenantToolNames.ProposeCovenant,
         };
 
     internal readonly record struct GlobalDedupResult(

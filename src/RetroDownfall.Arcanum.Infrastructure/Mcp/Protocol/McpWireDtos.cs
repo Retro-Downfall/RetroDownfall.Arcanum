@@ -105,6 +105,14 @@ public sealed record McpToolDefinitionWire
 
     [JsonPropertyName("inputSchema")]
     public required JsonElement InputSchema { get; init; }
+
+    /// <summary>
+    /// Optional MCP <c>outputSchema</c>: the shape of this tool's <c>structuredContent</c>. Omitted
+    /// for every tool that answers in text alone, so no existing descriptor gains a property.
+    /// </summary>
+    [JsonPropertyName("outputSchema")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? OutputSchema { get; init; }
 }
 
 /// <summary>
@@ -138,6 +146,14 @@ public sealed record McpToolsCallResultWire
 
     [JsonPropertyName("isError")]
     public bool IsError { get; init; }
+
+    /// <summary>
+    /// Optional MCP <c>structuredContent</c>: the typed result a tool with an <c>outputSchema</c>
+    /// returns beside its compact text fallback. A client that ignores it still gets a usable answer.
+    /// </summary>
+    [JsonPropertyName("structuredContent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? StructuredContent { get; init; }
 }
 
 /// <summary>
@@ -334,6 +350,64 @@ public sealed record ScribeLexiconParams(
 public sealed record DeleteLexiconParams([property: JsonPropertyName("name")] string Name);
 
 public sealed record SearchArchivesParams([property: JsonPropertyName("query")] string Query);
+
+/// <summary>
+/// Arguments accepted by the in-process <c>propose_covenant</c> tool.
+/// </summary>
+/// <remarks>
+/// Deliberately two fields. Scope, Campaign id, lane, origin, lifecycle, revision, attachment ids,
+/// and every authority field are server-derived, so the model cannot name a scope it may not write,
+/// claim provenance it did not receive, or assert a revision it never observed (§10.14).
+/// </remarks>
+public sealed record ProposeCovenantParams(
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("content")] string Content);
+
+/// <summary>
+/// Arguments accepted by the in-process <c>retire_covenant</c> tool.
+/// </summary>
+/// <remarks>
+/// The lane is the only choice the model has: the exact target and its expected revision come from
+/// the producing provider attempt's admission receipt, not from the call.
+/// </remarks>
+public sealed record RetireCovenantParams(
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("lane")] string Lane);
+
+/// <summary>
+/// The typed <c>structuredContent</c> a staged Covenant mutation returns.
+/// </summary>
+/// <remarks>
+/// Carries the compact redacted receipt and nothing else. No key, no authored content, no operator
+/// authority field: the operator reads committed content back through the authenticated Covenant
+/// API, and a tool result is not a place to republish profile text.
+///
+/// <para><c>status</c> says <c>staged</c>, never <c>published</c>. Publication happens only if the
+/// assistant response itself commits.</para>
+/// </remarks>
+public sealed record CovenantMutationStagedResultWire(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("mutationId")] string MutationId,
+    [property: JsonPropertyName("targetId")] string TargetId,
+    [property: JsonPropertyName("scope")] string Scope,
+    [property: JsonPropertyName("lane")] string Lane,
+    [property: JsonPropertyName("operation")] string Operation,
+    [property: JsonPropertyName("expectedRevision")] long ExpectedRevision,
+    [property: JsonPropertyName("renderedHash")] string? RenderedHash,
+    [property: JsonPropertyName("byteCost")] int? ByteCost);
+
+/// <summary>
+/// The typed <c>structuredContent</c> an expected Covenant tool failure returns.
+/// </summary>
+/// <remarks>
+/// An expected failure is still structured, because the model has to be able to tell "the operator
+/// declined" from "this key already has a staged change" without parsing prose. The message is
+/// code-owned and never echoes the key or the content it failed on.
+/// </remarks>
+public sealed record CovenantMutationFailureResultWire(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("message")] string Message);
 
 /// <summary>
 /// Arguments accepted by the in-process <c>read_saga</c> tool (RAG Phase 4 — semantic search over

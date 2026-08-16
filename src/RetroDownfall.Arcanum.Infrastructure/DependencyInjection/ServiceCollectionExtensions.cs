@@ -205,6 +205,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        // One table for the whole host: a Covenant capability is registered by the API pipeline and
+        // taken by the in-process MCP server, and those two run on different tasks.
+        services.AddSingleton<CovenantToolCapabilityRegistry>();
+
         services.AddCovenantAuthority();
 
         services.AddCampaignPathIdentity();
@@ -618,6 +622,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
+
+        // One table for the whole host: a Covenant capability is registered by the API pipeline and
+        // taken by the in-process MCP server, and those two run on different tasks.
+        services.AddSingleton<CovenantToolCapabilityRegistry>();
 
         services.AddCovenantAuthority();
 
@@ -1127,6 +1135,12 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantDisclosureJournal(
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
+
+        // Scoped with the journal it wraps: the guard's whole contract is that the receipt commits
+        // through that exact journal before the effect runs, so the two must share a lifetime.
+        services.AddScoped(
+            static sp => new CovenantToolEgressGuard(
+                sp.GetRequiredService<ICovenantDisclosureJournal>()));
 
         services.AddScoped(
             static sp => new CovenantQuotaGuard(sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));

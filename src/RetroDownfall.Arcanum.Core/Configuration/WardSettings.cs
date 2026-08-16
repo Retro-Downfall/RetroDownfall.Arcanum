@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
@@ -20,6 +21,7 @@ public sealed record WardSettings
         "replace_text_block",
         "delete_lexicon",
         "run_spell_script",
+        CovenantToolNames.RetireCovenant,
     };
 
     public IReadOnlyList<string> ForbiddenArts

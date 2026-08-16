@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
@@ -22,12 +23,23 @@ public static class ToolRiskClassifier
     public const string ReadCommandOutputToolName =
         "read_command_output";
 
+    /// <summary>
+    /// Tools that always require an operator Ward while Wards are on, whatever the configured
+    /// forbidden-arts list says.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="CovenantToolNames.RetireCovenant"/> is intrinsic because it deletes the operator's
+    /// own standing instructions on the model's initiative. An operator who replaces the configurable
+    /// list is choosing which tools they consider risky; they are not consenting to lose the prompt
+    /// for that one (§10.14).
+    /// </remarks>
     public static IReadOnlySet<string> IntrinsicWardToolNames { get; } =
         new[]
         {
             ExecuteCommandToolName,
             ApplyPatchToolName,
             WorkspaceCheckToolName,
+            CovenantToolNames.RetireCovenant,
         }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public static bool IsIntrinsicWardTool(string? toolName) =>
