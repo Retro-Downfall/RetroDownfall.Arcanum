@@ -3,7 +3,12 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -34,9 +39,177 @@ internal sealed record BackupSessionImportResult(
 /// transaction covers — they are copied into the live attachment tree before the commit — so they
 /// are unwound explicitly on every path that does not reach a successful commit, cancellation
 /// included.
+///
+/// <para>With <c>Arcanum:Features:Covenant</c> enabled the merge instead runs through
+/// <see cref="IProtectedArtifactTransferStore"/> under one atomic compound lease per Session, with
+/// an explicit destination Campaign for every Campaign-bound source. That path refuses a tainted
+/// Session outright rather than exporting protected content into a destination that never held it
+/// (§10.13). With the gate off, prompt bytes and behaviour are exactly what they were before.</para>
 /// </remarks>
 internal static class BackupSessionImporter
 {
+
+    /// <summary>
+    /// Imports through the protected transfer store, one atomic compound lease per Session.
+    /// </summary>
+    /// <remarks>
+    /// Every digest and count is derived from the source this method opened, never invented, and the
+    /// store re-derives all of them before it writes anything. The importer's manifest is therefore a
+    /// claim the store checks rather than an instruction it follows.
+    /// </remarks>
+    public static async Task<BackupSessionImportResult> ImportProtectedAsync(
+        CovenantSelectiveImportServices services,
+        string sourceDatabasePath,
+        string destinationDatabasePath,
+        IReadOnlyList<Guid> sessionIds,
+        string sourceAttachmentsRoot,
+        string destinationAttachmentsRoot,
+        string destinationGrimoireSecret,
+        string sourceGrimoireSecret,
+        IReadOnlyList<BackupSessionCampaignMapping> campaignMappings,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(services);
+
+        if (!File.Exists(sourceDatabasePath) || sourceGrimoireSecret.Length == 0)
+        {
+
+            return BackupSessionImportResult.Failed(
+                new BackupVerifyIssue(
+                    "backup.restore_import_source_unavailable",
+                    "The archive does not contain a readable Grimoire snapshot to import from."));
+
+        }
+
+        await using SqliteConnection destination = await BackupRestoreDatabaseWorker
+            .OpenAsync(destinationDatabasePath, destinationGrimoireSecret, readOnly: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        await CovenantSqliteConnectionInitializer.Instance
+            .InitializeAsync(destination, CovenantSqliteConnectionMode.ReadWrite, cancellationToken)
+            .ConfigureAwait(false);
+
+        long sessions = 0;
+
+        long entries = 0;
+
+        long attachments = 0;
+
+        long deduplicated = 0;
+
+        foreach (Guid sessionId in sessionIds)
+        {
+
+            Result<ImportedSessionCommitReceipt> imported = await ImportOneProtectedAsync(
+                services,
+                sourceDatabasePath,
+                sourceGrimoireSecret,
+                sourceAttachmentsRoot,
+                destination,
+                destinationAttachmentsRoot,
+                sessionId,
+                campaignMappings,
+                cancellationToken).ConfigureAwait(false);
+
+            if (imported.IsFailure)
+            {
+
+                return BackupSessionImportResult.Failed(
+                    new BackupVerifyIssue("backup.restore_import_refused", imported.Error.Message));
+
+            }
+
+            sessions++;
+
+            entries += imported.Value.Entries;
+
+            attachments += imported.Value.Attachments;
+
+            deduplicated += imported.Value.DeduplicatedBlobs;
+
+        }
+
+        return new BackupSessionImportResult(sessions, entries, attachments, sessions, deduplicated, []);
+
+    }
+
+    private static async Task<Result<ImportedSessionCommitReceipt>> ImportOneProtectedAsync(
+        CovenantSelectiveImportServices services,
+        string sourceDatabasePath,
+        string sourceGrimoireSecret,
+        string sourceAttachmentsRoot,
+        SqliteConnection destination,
+        string destinationAttachmentsRoot,
+        Guid sessionId,
+        IReadOnlyList<BackupSessionCampaignMapping> campaignMappings,
+        CancellationToken cancellationToken)
+    {
+
+        // One lease per Session, held from the first source read through the destination commit. The
+        // graph the store validated and the graph it copied cannot be two different reads.
+        await using ImportedSessionSourceLease sourceLease = ImportedSessionSourceLease.Adopt(
+            await BackupRestoreDatabaseWorker
+                .OpenAsync(sourceDatabasePath, sourceGrimoireSecret, readOnly: true, cancellationToken)
+                .ConfigureAwait(false),
+            sourceAttachmentsRoot);
+
+        Result<ImportedSessionTransferRequest> request = await BackupSessionImportPlanner
+            .PlanAsync(sourceLease, sessionId, campaignMappings, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (request.IsFailure)
+        {
+
+            return request.Error;
+
+        }
+
+        ProtectedTransferScope scope = request.Value.CampaignMapping is { } mapping
+            ? ProtectedTransferScope.ForCampaign(mapping.DestinationCampaignId)
+            : ProtectedTransferScope.Global;
+
+        Result<CovenantProtectedTransferLease> acquired = await services.Gate
+            .AcquireProtectedTransferAsync(
+                scope,
+                new CovenantExclusiveRecoveryOwner(
+                    request.Value.OperationId,
+                    CovenantExclusiveOperation.ProtectedSessionTransfer,
+                    request.Value.TransferEffectDigest),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+
+            return acquired.Error;
+
+        }
+
+        await using CovenantProtectedTransferLease transferLease = acquired.Value;
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
+            await services.TransferStore.CommitImportedSessionAsync(
+                request.Value,
+                sourceLease,
+                transferLease,
+                new ProtectedSessionImportDestination(destination, destinationAttachmentsRoot),
+                cancellationToken).ConfigureAwait(false);
+
+        // The caller of the store owns the lease, so the disposition is spent here — exactly once —
+        // and the finalizer runs only after it succeeds. A failed disposition leaves the journal
+        // pending and the owner adoptable, which is strictly safer than recording a terminal phase.
+        Result disposed = await transferLease
+            .CompleteAsync(completion.Disposition, completion.Finalizer, cancellationToken)
+            .ConfigureAwait(false);
+
+        return completion.Result.IsFailure
+            ? completion.Result.Error
+            : disposed.IsFailure
+                ? disposed.Error
+                : completion.Result;
+
+    }
 
     public static async Task<BackupSessionImportResult> ImportAsync(
         string sourceDatabasePath,

@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
@@ -39,5 +41,22 @@ internal interface ICovenantSqliteConnectionInitializer
     CovenantSqliteAuthorizationScope Authorize(
         SqliteConnection connection,
         CovenantSqliteAuthorizationKind kind);
+
+    /// <summary>
+    /// Grants restore-staging authority sanitization to the one sealed capability entitled to it.
+    /// </summary>
+    /// <remarks>
+    /// No raw connection parameter and no general authorization kind. The capability privately holds
+    /// the unpublished candidate connection and hands it nothing back; this method exists so the
+    /// grant has exactly one call site that can be pinned, rather than being reachable from anything
+    /// that can name the enum value.
+    ///
+    /// <para>The run identity is what makes the grant single-use: it is minted inside the
+    /// capability's one invocation and invalidated before control returns, so a scope obtained during
+    /// that invocation cannot be replayed by a later one.</para>
+    /// </remarks>
+    CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
+        RestoreStagingManagedAuthoritySanitizationCapability authority,
+        RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity);
 
 }

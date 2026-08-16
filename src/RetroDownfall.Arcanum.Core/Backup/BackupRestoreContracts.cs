@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Core.Backup;
 
@@ -165,6 +166,31 @@ public static class BackupRestoreFormatCatalog
 
 }
 
+/// <summary>
+/// What a restore is authorized to do with protected state the archive carries.
+/// </summary>
+/// <remarks>
+/// Three explicit choices rather than a Boolean, because "restore it" and "purge it" are opposite
+/// destructive acts and the default has to be neither. An archive holding Covenant canonical rows is
+/// a standing agreement between an operator and an agent; silently reinstating it on a machine the
+/// operator did not intend, or silently discarding it, are both decisions only the operator can make
+/// (§10.6).
+/// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupProtectedStateMode>))]
+public enum BackupProtectedStateMode
+{
+
+    /// <summary>Refuse before staging if the archive carries any protected state.</summary>
+    Reject = 0,
+
+    /// <summary>Preserve the archive's Covenant data and labels, only from a clean source.</summary>
+    RestoreProtectedState = 1,
+
+    /// <summary>Securely remove the whole Covenant family and every protected artifact in staging.</summary>
+    PurgeProtectedState = 2,
+
+}
+
 /// <summary>A single typed root rewrite requested for a restore.</summary>
 public sealed record BackupPathMapping(
     BackupPathMappingKind Kind,
@@ -180,7 +206,9 @@ public sealed record BackupRestoreRequest(
     bool RestoreMasterApiKey = false,
     bool DryRun = false,
     bool Confirmed = false,
-    bool CreateSafetyBackup = true);
+    bool CreateSafetyBackup = true,
+    BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
+    BackupSessionCampaignMapping[]? CampaignMappings = null);
 
 public sealed record BackupRestorePhaseRecord(
     BackupRestorePhase Phase,

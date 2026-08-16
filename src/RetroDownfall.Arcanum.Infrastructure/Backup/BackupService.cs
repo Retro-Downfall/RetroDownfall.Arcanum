@@ -12,7 +12,11 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Operations;
+
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
@@ -58,6 +62,15 @@ public sealed class BackupService : IBackupService
 
     private readonly ILongRunningOperationStore? _operationStore;
 
+    /// <summary>
+    /// The disclosure and lease capabilities a Covenant-enabled installation backs up under.
+    /// </summary>
+    /// <remarks>
+    /// Absent means the feature was never enabled, and the backup behaves exactly as it always has.
+    /// Present means no physical attempt crosses either effect boundary before its receipt commits.
+    /// </remarks>
+    private readonly CovenantBackupServices? _covenant;
+
     internal BackupService(
         BackupStatePaths paths,
         BackupInventoryPlanner planner,
@@ -88,7 +101,8 @@ public sealed class BackupService : IBackupService
         TimeProvider timeProvider,
         IGrimoireDbPassphraseSource? passphraseSource,
         ILongRunningOperationCoordinator? operationCoordinator,
-        ILongRunningOperationStore? operationStore)
+        ILongRunningOperationStore? operationStore,
+        CovenantBackupServices? covenant = null)
     {
 
         _paths = paths;
@@ -108,6 +122,8 @@ public sealed class BackupService : IBackupService
         _operationCoordinator = operationCoordinator;
 
         _operationStore = operationStore;
+
+        _covenant = covenant;
 
     }
 
@@ -170,6 +186,16 @@ public sealed class BackupService : IBackupService
 
         List<byte[]> sensitiveMemorySources = [];
 
+        // One installation read lease for the whole physical backup, acquired before the inventory is
+        // frozen and released only after the archive writer has finished or failed. Every full-scope
+        // read runs under this exact lease; a nested Global or Campaign acquisition would let reset
+        // drain one scope while another was still being copied into the archive.
+        CovenantInstallationReadLease? installationRead = null;
+
+        CovenantBackupDisclosureAcknowledgement? snapshotReceipt = null;
+
+        CovenantBackupDisclosureAcknowledgement? archiveReceipt = null;
+
         try
         {
 
@@ -187,6 +213,26 @@ public sealed class BackupService : IBackupService
                 unlock = await ReadDatabaseUnlockAsync().ConfigureAwait(false);
 
                 databasePassphrase = unlock.DatabasePassphrase;
+
+                if (_covenant is { } covenant)
+                {
+
+                    Result<CovenantInstallationReadLease> acquired = await covenant.Gate
+                        .AcquireInstallationReadAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (acquired.IsFailure)
+                    {
+
+                        throw new InvalidOperationException(
+                            "A protected backup could not acquire its installation read lease: "
+                            + acquired.Error.Message);
+
+                    }
+
+                    installationRead = acquired.Value;
+
+                }
 
                 durableOperation = await StartDurableOperationAsync(
                     request,
@@ -237,6 +283,14 @@ public sealed class BackupService : IBackupService
                     BackupArchivePaths.GrimoireDatabase.Replace(
                         '/',
                         Path.DirectorySeparatorChar));
+
+                // Immediately before page one. A receipt committed after the read would be unable to
+                // record the one case it exists for: a snapshot that copied protected pages and then
+                // crashed.
+                snapshotReceipt = await AcknowledgeSnapshotReadAsync(
+                    operationId,
+                    outputPath,
+                    cancellationToken).ConfigureAwait(false);
 
                 if (durableOperation is null)
                 {
@@ -472,6 +526,13 @@ public sealed class BackupService : IBackupService
                 .Select(static source => source.ToArchiveSource())
                 .ToArray();
 
+            // Immediately before the first output byte. The archive is a nonrevocable disclosure, so
+            // the accounting has to exist before the file can.
+            archiveReceipt = await AcknowledgeArchiveWriteAsync(
+                operationId,
+                outputPath,
+                cancellationToken).ConfigureAwait(false);
+
             BackupManifest effectiveManifest = durableOperation is null
                 ? await _codec.WriteAsync(
                     outputPath,
@@ -506,7 +567,9 @@ public sealed class BackupService : IBackupService
                     stagingDirectory,
                     "archive-published",
                     $"Backup archive was verified and published with {archiveInfo.Length} encrypted bytes.",
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None,
+                    snapshotReceipt,
+                    archiveReceipt).ConfigureAwait(false);
 
                 await CompleteDurableOperationAsync(
                     durableOperation,
@@ -554,11 +617,115 @@ public sealed class BackupService : IBackupService
 
             }
 
+            // Released only here: after the archive writer has completed or failed, never between the
+            // snapshot and the last output byte.
+            if (installationRead is not null)
+            {
+
+                await installationRead.DisposeAsync().ConfigureAwait(false);
+
+            }
+
             _ = stagingDirectory?.TryDelete();
 
         }
 
     }
+
+    /// <summary>
+    /// Commits the snapshot-read acknowledgement, or refuses the read.
+    /// </summary>
+    /// <remarks>
+    /// Commit failure prevents the corresponding read. Continuing past a barrier that did not commit
+    /// would produce exactly the unaccounted disclosure the barrier exists to prevent.
+    /// </remarks>
+    private async Task<CovenantBackupDisclosureAcknowledgement?> AcknowledgeSnapshotReadAsync(
+        Guid operationId,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+
+        if (_covenant is not { } covenant)
+        {
+
+            return null;
+
+        }
+
+        Result<CovenantBackupDisclosureAcknowledgement> acknowledged = await covenant.Boundary
+            .BeforeSnapshotReadAsync(
+                operationId,
+                BackupEffectIdentity(operationId),
+                DestinationIdentity(outputPath),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return acknowledged.IsSuccess
+            ? acknowledged.Value
+            : throw new InvalidOperationException(
+                "A protected backup could not commit its snapshot-read disclosure: "
+                + acknowledged.Error.Message);
+
+    }
+
+    /// <summary>
+    /// Commits the archive-write acknowledgement, or refuses the write.
+    /// </summary>
+    private async Task<CovenantBackupDisclosureAcknowledgement?> AcknowledgeArchiveWriteAsync(
+        Guid operationId,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+
+        if (_covenant is not { } covenant)
+        {
+
+            return null;
+
+        }
+
+        Result<CovenantBackupDisclosureAcknowledgement> acknowledged = await covenant.Boundary
+            .BeforeArchiveWriteAsync(
+                operationId,
+                BackupEffectIdentity(operationId),
+                DestinationIdentity(outputPath),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return acknowledged.IsSuccess
+            ? acknowledged.Value
+            : throw new InvalidOperationException(
+                "A protected backup could not commit its archive-write disclosure: "
+                + acknowledged.Error.Message);
+
+    }
+
+    /// <summary>
+    /// The backup's own stable identity, derived from its operation rather than from any path.
+    /// </summary>
+    private static CovenantDigest BackupEffectIdentity(Guid operationId) =>
+        new(SHA256.HashData(
+        [
+            .. System.Text.Encoding.ASCII.GetBytes("Arcanum.Covenant.BackupIdentity.v1"),
+            0x00,
+            .. operationId.ToByteArray(bigEndian: true),
+        ]));
+
+    /// <summary>
+    /// An opaque commitment to where the archive is going.
+    /// </summary>
+    /// <remarks>
+    /// A digest, never the path. Storing the destination itself would recreate inside the journal the
+    /// exposure the journal exists to account for, and a receipt only has to distinguish destinations,
+    /// not describe them (§10.13).
+    /// </remarks>
+    private static CovenantDigest DestinationIdentity(string outputPath) =>
+        new(SHA256.HashData(
+        [
+            .. System.Text.Encoding.ASCII.GetBytes("Arcanum.Covenant.BackupDestinationIdentity.v1"),
+            0x00,
+            .. System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(outputPath)),
+        ]));
 
     public Task<BackupInspectResult> InspectAsync(
         string archivePath,
@@ -718,7 +885,9 @@ public sealed class BackupService : IBackupService
         OwnedTemporaryDirectory? stagingDirectory,
         string phase,
         string summary,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CovenantBackupDisclosureAcknowledgement? snapshotReceipt = null,
+        CovenantBackupDisclosureAcknowledgement? archiveReceipt = null)
     {
 
         if (_operationCoordinator is null || _operationStore is null)
@@ -744,7 +913,12 @@ public sealed class BackupService : IBackupService
             request.Overwrite,
             phase,
             stagingDirectory?.VolumeId,
-            stagingDirectory?.FileId);
+            stagingDirectory?.FileId,
+            snapshotReceipt?.OperationId ?? archiveReceipt?.OperationId,
+            snapshotReceipt is null ? null : Convert.ToHexString(snapshotReceipt.ReceiptDigest.Bytes),
+            snapshotReceipt?.PhysicalAttemptOrdinal,
+            archiveReceipt is null ? null : Convert.ToHexString(archiveReceipt.ReceiptDigest.Bytes),
+            archiveReceipt?.PhysicalAttemptOrdinal);
 
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
             checkpoint,

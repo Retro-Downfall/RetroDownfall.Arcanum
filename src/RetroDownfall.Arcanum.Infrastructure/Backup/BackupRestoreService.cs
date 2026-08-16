@@ -1483,15 +1483,31 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Commit);
 
-        BackupSessionImportResult import = await BackupSessionImporter.ImportAsync(
-            Path.Combine(stagedRoot, "arcanum.db"),
-            _paths.DatabasePath,
-            plan.SelectedSessionIds,
-            Path.Combine(stagedRoot, "attachments"),
-            _paths.AttachmentsDirectory,
-            destinationSecret.Value,
-            ReadStagedSecret(extractRoot),
-            cancellationToken).ConfigureAwait(false);
+        // With Covenant enabled the merge runs through the protected transfer store under one atomic
+        // compound lease per Session; with it off, the plaintext path is byte-for-byte what it always
+        // was. The gate decides, not the request, because a caller cannot be allowed to choose the
+        // weaker of two import paths.
+        BackupSessionImportResult import = _options.SelectiveImport is { } selectiveImport
+            ? await BackupSessionImporter.ImportProtectedAsync(
+                selectiveImport,
+                Path.Combine(stagedRoot, "arcanum.db"),
+                _paths.DatabasePath,
+                plan.SelectedSessionIds,
+                Path.Combine(stagedRoot, "attachments"),
+                _paths.AttachmentsDirectory,
+                destinationSecret.Value,
+                ReadStagedSecret(extractRoot),
+                request.CampaignMappings ?? [],
+                cancellationToken).ConfigureAwait(false)
+            : await BackupSessionImporter.ImportAsync(
+                Path.Combine(stagedRoot, "arcanum.db"),
+                _paths.DatabasePath,
+                plan.SelectedSessionIds,
+                Path.Combine(stagedRoot, "attachments"),
+                _paths.AttachmentsDirectory,
+                destinationSecret.Value,
+                ReadStagedSecret(extractRoot),
+                cancellationToken).ConfigureAwait(false);
 
         if (import.Issues.Length > 0)
         {
