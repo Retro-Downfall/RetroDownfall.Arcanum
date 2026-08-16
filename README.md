@@ -605,6 +605,25 @@ Installation reset requires an explicit scope and mode. Workspace scope removes 
 
 This feature uses the existing canonical tables and file layouts. It adds no schema object and requires no local/test database recreation. If a later retention change alters a canonical schema, the pre-user-data reinstall policy in [DESIGN §5.4.5](docs/Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency) applies at that time.
 
+### Covenant provider retention and deletion
+
+**Enabling The Covenant sends memory to your providers, and Arcanum cannot un-send it.** `Arcanum:Features:Covenant` is **off by default**, and the default is a guarantee rather than a suggestion: an installation that never names the key adds no Covenant prompt bytes, performs no Covenant read, and produces byte-identical prompts to a build without the feature.
+
+When it is on, eligible content is sent on **every primary, fallback, retry, compression, and tool-loop provider attempt**, and a single turn may reach different configured providers and models. Arcanum suppresses only *its own* explicit cache instructions on Covenant-bearing calls. A provider's own request logging and automatic prompt caching happen outside this process, and no local control reaches them.
+
+**What local erasure does and does not cover.** `arcanum data reset-memory`, protected-state purge, Covenant family reinitialize, and factory erasure remove Arcanum's copies. They cannot revoke content already retained in provider logs or automatic prompt caches, in encrypted backup copies you have taken, in unmanaged files a tool wrote outside Arcanum's managed set, or in any other nonrevocable disclosure. Arcanum reports local erasure and nonrevocable external disclosure **separately and honestly** rather than folding them into one reassuring number ([DESIGN §10.15](docs/Arcanum.DESIGN.md#1015-covenant-derived-output-protection-and-host-process-taint)).
+
+**Deleting the external copy is a separate action you take with the provider.** Arcanum resolves help targets by exact endpoint host or exact Familiar kind — never by the display name you gave a provider in `arcanum.json`, because a name-driven link would send you to `openai.com` to read the retention policy of a gateway OpenAI has never seen a byte from:
+
+| Configured provider | Where its retention policy lives |
+|---|---|
+| An `api.openai.com` endpoint | [OpenAI API data usage](https://developers.openai.com/api/docs/guides/your-data#default-usage-policies-by-endpoint) |
+| The Codex CLI Familiar | [How your data improves model performance](https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/) |
+| The Claude Code CLI Familiar | [Claude data handling and retention](https://privacy.claude.com/en/collections/10672565-data-handling-retention) |
+| Anything else — proxy, gateway, self-hosted, Ollama | Arcanum does not recognize it and will not guess. Review the endpoint you configured under Compendium's **Providers** page and read that operator's own policy. |
+
+Compendium renders this same disclosure and these same resolved help actions **before** the enable toggle is constructed, in that order. A warning shown underneath the switch is read after the decision, which makes it a receipt rather than a warning.
+
 ### Optional HTTPS
 
 HTTP remains the default on **loopback**. `Arcanum:Host:Https:Enabled` adds a TLS listener; with `Arcanum:Host:ListenAny` / `ARCANUM_HOST_ANY`, HTTPS is **required and exclusive**. A PFX password comes from the exact `CertificatePasswordEnvironmentVariable`, or `ARCANUM_HTTPS_CERTIFICATE_PASSWORD` when that reference is omitted; PEM ignores it. Values never enter configuration or API/Compendium responses. Clients do not bypass TLS validation. PFX vs PEM shapes and Compendium self-signed generation: [Compendium's complete configuration reference](docs/Compendium.README.md#complete-configuration-reference) / [secrets and HTTPS](docs/Compendium.README.md#secrets-and-https).
