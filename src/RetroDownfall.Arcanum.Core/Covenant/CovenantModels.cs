@@ -29,6 +29,16 @@ public readonly record struct CovenantKey
 
     public override string ToString() => Value;
 
+    /// <summary>
+    /// Whether a candidate matches the key grammar, without constructing one.
+    /// </summary>
+    /// <remarks>
+    /// A public wire request has to answer "is this a key" as a typed refusal, and a constructor that
+    /// throws is the wrong shape for that: catching an exception to decide a 400 makes malformed
+    /// input an exceptional path and costs a stack capture per bad request.
+    /// </remarks>
+    public static bool IsWellFormed(string value) => value is not null && IsValid(value);
+
     private static bool IsValid(string value)
     {
         if (value.Length is < 1 or > CovenantLimits.MaxKeyCharacters)

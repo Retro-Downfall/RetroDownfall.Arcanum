@@ -1,3 +1,6 @@
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Core.Operations;
 
 /// <summary>
@@ -167,6 +170,60 @@ public sealed record LongRunningOperationCreateRequest(
     Guid? BudgetReservationId = null,
     Guid? IdempotencyClaimId = null);
 
+/// <summary>
+/// The caller-supplied durable identity of one prepare/apply operation.
+/// </summary>
+/// <param name="RequestedOperationId">
+/// The name the caller asked the operation to be created under. Unique across the ledger, so a
+/// retried apply resolves to the operation it already started instead of starting a second one.
+/// </param>
+/// <param name="ApplyRequestDigest">
+/// The stable digest of the apply request. Independent of token bytes, boot salt, timestamps, and key
+/// version, which is what lets replay survive a restart, a secret rotation, and an expired token.
+/// </param>
+/// <param name="EffectDigest">The canonical effect the plan described, kept as durable evidence.</param>
+/// <remarks>
+/// Optional on <see cref="LongRunningOperationCreateRequest"/> and required by the operations that
+/// replace a database. An operation whose only replay key is the HTTP response that announced it has
+/// no replay key at all once the process that wrote that response is gone (§10.16).
+/// </remarks>
+public sealed record LongRunningOperationRequestIdentity(
+    Guid RequestedOperationId,
+    CovenantDigest ApplyRequestDigest,
+    CovenantDigest EffectDigest);
+
+/// <summary>
+/// What a request-identity resolution did.
+/// </summary>
+public enum LongRunningOperationRequestIdentityOutcome
+{
+
+    /// <summary>No operation existed under this identity, so one was created.</summary>
+    Created = 0,
+
+    /// <summary>An operation already existed under this identity with the same apply digest.</summary>
+    Replayed = 1,
+
+    /// <summary>
+    /// An operation exists under this identity with a different apply digest. Nothing was created.
+    /// </summary>
+    DigestConflict = 2,
+
+}
+
+/// <summary>
+/// The outcome of one request-identity resolution.
+/// </summary>
+/// <remarks>
+/// <paramref name="Operation"/> is null exactly when the outcome is
+/// <see cref="LongRunningOperationRequestIdentityOutcome.DigestConflict"/>: the caller asked for a
+/// different effect under a name that is already taken, and returning the existing operation would
+/// invite it to be treated as the one that was requested.
+/// </remarks>
+public sealed record LongRunningOperationRequestIdentityResult(
+    LongRunningOperationRequestIdentityOutcome Outcome,
+    LongRunningOperation? Operation);
+
 public sealed record LongRunningOperationQuery(
     string? Kind = null,
     LongRunningOperationState? State = null,
@@ -269,6 +326,19 @@ public interface ILongRunningOperationStore
         LongRunningOperationCreateRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Creates the operation under a caller-supplied durable identity, or resolves the one that
+    /// identity already names.
+    /// </summary>
+    /// <remarks>
+    /// The identity row and the operation row are written in one transaction, so a crash between them
+    /// cannot leave an operation nobody can find by name or a name pointing at nothing.
+    /// </remarks>
+    Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        CancellationToken cancellationToken = default);
+
     Task<LongRunningOperation?> TryStartSingleFlightAsync(
         LongRunningOperationCreateRequest request,
         string ownerId,
@@ -361,6 +431,22 @@ public interface ILongRunningOperationCoordinator
 {
     Task<LongRunningOperationLeaseResult> StartAsync(
         LongRunningOperationCreateRequest request,
+        string ownerId,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Starts, or replays, an operation the caller named itself.
+    /// </summary>
+    /// <remarks>
+    /// A replayed operation is returned without acquiring a second lease: the first caller may still
+    /// be running it, and handing a second owner the same work is precisely what the durable identity
+    /// exists to prevent. A digest conflict returns
+    /// <c>Security.IdempotencyConflict</c> and creates nothing.
+    /// </remarks>
+    Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
         string ownerId,
         TimeSpan leaseDuration,
         CancellationToken cancellationToken = default);

@@ -42,6 +42,55 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Hub.ContextBudgetExceeded =>
                 StatusCodes.Status429TooManyRequests,
 
+            // The Covenant contract (§10.16). Every arm below is deliberate: an unmapped Covenant
+            // code reaches the operator as a 500, which says "Arcanum broke" about a decision the
+            // installation made on purpose and the caller can act on.
+            ErrorCodes.Covenant.InvalidScope
+                or ErrorCodes.Covenant.InvalidKey
+                or ErrorCodes.Covenant.InvalidContent
+                or ErrorCodes.Covenant.InvalidCursor =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.Covenant.ForbiddenAuthority
+                or ErrorCodes.Covenant.SensitiveEgressRequiresApproval =>
+                StatusCodes.Status403Forbidden,
+
+            ErrorCodes.Covenant.NotFound =>
+                StatusCodes.Status404NotFound,
+
+            // 410 rather than 404: the durable receipt proves this existed and was erased, and a
+            // caller replaying a committed mutation deserves that distinction.
+            ErrorCodes.Covenant.ArtifactErased =>
+                StatusCodes.Status410Gone,
+
+            ErrorCodes.Covenant.RevisionConflict
+                or ErrorCodes.Covenant.LifecycleConflict
+                or ErrorCodes.Covenant.StaleSnapshot
+                or ErrorCodes.Covenant.StaleCursor
+                or ErrorCodes.Covenant.CapacityExceeded
+                or ErrorCodes.Covenant.SensitiveHistoryRequiresContext
+                or ErrorCodes.Covenant.CampaignBindingConflict
+                or ErrorCodes.Hub.SessionTurnBusy
+                or ErrorCodes.Hub.SessionHistoryChanged
+                or ErrorCodes.Hub.SessionTurnRestoredInterrupted
+                or ErrorCodes.Session.CampaignBindingRequired
+                or ErrorCodes.Campaign.PathIdentityRequired =>
+                StatusCodes.Status409Conflict,
+
+            // A hostile provider is an upstream fault, not a caller fault.
+            ErrorCodes.Hub.ProviderToolBufferExceeded =>
+                StatusCodes.Status502BadGateway,
+
+            ErrorCodes.Covenant.Unavailable
+                or ErrorCodes.Covenant.OperatorAuthorityUnavailable
+                or ErrorCodes.Covenant.HostToolsTransitionRequired
+                or ErrorCodes.Covenant.MaintenanceFailed
+                or ErrorCodes.Covenant.ManualArtifactErasureRequired
+                or ErrorCodes.Covenant.ManualRecoveryRequired
+                or ErrorCodes.Covenant.ErasureIncomplete
+                or ErrorCodes.Covenant.IntegrityFailure =>
+                StatusCodes.Status503ServiceUnavailable,
+
             ErrorCodes.Hub.Model =>
                 StatusCodes.Status404NotFound,
 

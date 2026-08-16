@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Serialization;
+
 namespace RetroDownfall.Arcanum.Core.Covenant;
 
 /// <summary>
@@ -9,6 +12,7 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// rebuilding when the ground moved, and a progress record that quietly re-captured would hide the
 /// discontinuity.
 /// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantIndexRebuildPhase>))]
 public enum CovenantIndexRebuildPhase : byte
 {
 

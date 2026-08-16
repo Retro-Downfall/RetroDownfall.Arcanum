@@ -419,6 +419,12 @@ internal sealed class CountingOperationStore(ILongRunningOperationStore inner) :
         CancellationToken cancellationToken = default) =>
         inner.CreateAsync(request, cancellationToken);
 
+    public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+        LongRunningOperationCreateRequest request,
+        LongRunningOperationRequestIdentity identity,
+        CancellationToken cancellationToken = default) =>
+        inner.ResolveOrCreateAsync(request, identity, cancellationToken);
+
     public Task<LongRunningOperation?> TryStartSingleFlightAsync(
         LongRunningOperationCreateRequest request,
         string ownerId,
