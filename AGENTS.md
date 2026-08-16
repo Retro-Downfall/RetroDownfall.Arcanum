@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Full agent orientation lives in **[`docs/Arcanum.README.md`](docs/Arcanum.README.md)** — read it
+> Full agent orientation lives in **[`README.md`](README.md)** — read it
 > before making non-trivial changes. `docs/Arcanum.DESIGN.md` is the authoritative architecture/
 > persistence/testing reference; `docs/Arcanum.API.md` is the exact HTTP contract; `docs/Arcanum.Command.Reference.md`
 > is the complete CLI surface. This file is a fast-start summary, not a replacement.
@@ -25,7 +25,7 @@ and degrades to a signed folder-based self-contained publish when it is not.
 3. **`Result`/`Result<T>` flow** for domain ops; the endpoint is the one place that turns a `Result` into an envelope + status code.
 4. **C# house style:** one blank line after each line of code (not around braces/control statements); file-scoped namespaces; positional records for DTOs; **no `[JsonPropertyName]`** on `/api` wire types (OpenAI `/v1` and MCP JSON-RPC types are the explicit exceptions); primary constructors for DI.
 5. **Thematic (D&D) naming.** New domain concepts must fit the existing metaphor table in the README (`Campaign`, `Spell`, `Ward`, `Sanctum`, `Grimoire`, `Apprentice`, `The Weave`, …) unless they're genuinely universal terms like `Prompt`/`Workspace`. Propose new names before implementing.
-6. **Docs travel with code.** Architecture/persistence/testing → `Arcanum.DESIGN.md`; API contracts → `Arcanum.API.md`; CLI surface → `Arcanum.Command.Reference.md`; config keys → `Compendium.README.md`; agent orientation → `Arcanum.README.md`. Update the owning doc in the same change set as the code.
+6. **Docs travel with code.** Architecture/persistence/testing → `Arcanum.DESIGN.md`; API contracts → `Arcanum.API.md`; CLI surface → `Arcanum.Command.Reference.md`; config keys → `Compendium.README.md`; agent orientation → the root `README.md`. Update the owning doc in the same change set as the code.
 7. **Strict CSP:** first-party browser UI externalizes all JS/CSS (no inline first-party `<script>`).
 
 ## Build, test, verify

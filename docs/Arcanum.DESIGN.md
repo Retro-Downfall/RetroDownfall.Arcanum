@@ -10,13 +10,13 @@ Arcanum's documentation contract contains seven canonical documents and one focu
 - [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) — the human-readable companion to DESIGN (conceptual prose, navigation, turn-lifecycle and dependency-direction diagrams, and pointers into DESIGN for contracts).
 - [`Arcanum.API.md`](Arcanum.API.md) — the source of truth for native and OpenAI-compatible API routes, wire contracts, status mapping, and public error codes.
 - [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) — the complete user-facing CLI command, argument, option, alias, interactive-command, output, and exit-code reference.
-- [`Arcanum.README.md`](Arcanum.README.md) — the agent/operator primer for Cursor prompts (summarized architecture/design, repo layout, invariants, verification commands, brief CLI quick reference) plus the required reinstall instruction.
+- [`README.md`](../README.md) — the agent/operator primer for Cursor prompts (summarized architecture/design, repo layout, invariants, verification commands, brief CLI quick reference) plus the required reinstall instruction.
 - [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) — the only complete `arcanum.json` key/default/bounds and credential-reference listing.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — the verified breakpoint map and task-based debugging recipes.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md) — the focused companion for the shared model/tool loop, attachment continuation ordering, materialization ledger, memory promotion gate, and Command Center context projection. It elaborates §10.7 but does not supersede this document.
 
 When a change under `src/`, packaging scripts, or workflows alters a fact described here, update the
-owning section in the same change set. Pair operator-visible behavior with `Arcanum.README.md`,
+owning section in the same change set. Pair operator-visible behavior with the root `README.md`,
 API changes with `Arcanum.API.md`, configuration-surface changes with `Compendium.README.md`,
 CLI surface changes with `Arcanum.Command.Reference.md`, navigation updates with
 `Arcanum.Design.Human.md`, and debugging guides with
@@ -118,7 +118,7 @@ A Familiar is a transport, not a managed runtime, and the distinction is load-be
 
 ### 2.3 Naming conventions
 
-See [Arcanum.README.md §Naming metaphor](Arcanum.README.md#naming-metaphor) for the complete metaphor. DESIGN.md uses the thematic names throughout.
+See [README §Naming metaphor](../README.md#naming-metaphor) for the complete metaphor. DESIGN.md uses the thematic names throughout.
 
 ---
 
@@ -1091,7 +1091,7 @@ developers use a binary that can still read the existing schema to create and ve
 `.arcbackup` for anything that must be preserved, then stop every host/daemon, delete `arcanum.db`
 plus `-wal`/`-shm`, and restart to reinstall. There is intentionally no incremental or data
 migration. Copy-pastable developer commands are in
-[Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
+[README, “Local Grimoire reinstall”](../README.md#local-grimoire-reinstall).
 
 Unified retention is an orchestration layer over the existing canonical tables, encrypted blob
 trees, and JSONL files. Issue #43 added no schema object, so existing local and test databases
@@ -4807,7 +4807,7 @@ contradiction in the document that owns that contract. Update the owning documen
 - `Arcanum.Command.Reference.md` for CLI commands, arguments, options, aliases, interactive
   commands, output modes, and exit behavior;
 - `Compendium.README.md` for the complete public configuration surface and editor behavior;
-- `Arcanum.README.md` for concise agent/operator orientation and runnable commands;
+- the root `README.md` for concise agent/operator orientation and runnable commands;
 - `Arcanum.Design.Human.md` for human navigation without duplicating technical or configuration
   contracts;
 - `Arcanum.DEBUGGING.Human.md` for verified breakpoint and debugging recipes.
@@ -5138,7 +5138,7 @@ apps set matching `CFBundleName` / `CFBundleDisplayName`.
   `CFBundleShortVersionString` is the numeric `MAJOR.MINOR.PATCH`, and `CFBundleVersion` is the
   GitHub run number.
 - `arcanum-osx-arm64.zip` contains the signed, folder-based self-contained CLI publish plus
-  `docs/Arcanum.README.md` packaged as `README.md`. macOS is Native AOT when the build host has
+  the repository-root `README.md`. macOS is Native AOT when the build host has
   `ld64.lld`, and falls back to a self-contained **JIT CoreCLR folder publish** when it does not.
   The packaging script is unchanged by this: Native AOT emits the executable under the same name in
   the same publish directory, so the staging, rename, and signing steps are identical. Both shapes
@@ -5594,7 +5594,7 @@ model-call or tool-round count, and their database transaction is never held acr
 - **Local reinstall policy.** A Grimoire created before the current inference-accounting schema must
   be recreated. Stop every Arcanum host/daemon, back up anything needed, delete the database plus
   its `-wal`/`-shm` sidecars, then restart. There is intentionally no data migration. Copy-pastable
-  commands are in [Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
+  commands are in [README, “Local Grimoire reinstall”](../README.md#local-grimoire-reinstall).
 - **Spend authority.** Daily spend = **`BillableOperations.CompletedAt` (UTC day) + outstanding `BudgetReservations`**. `Sessions.TotalCostUsd` / `TotalTokensUsed` remain a **projection/cache** updated via `IncrementSessionTokensAndCostAsync` for UI convenience — not admission authority. When a durable run exists, the session cost projection uses the accounting root's accumulated reconciled per-call cost; compatibility paths without a run retain the equivalent usage-based calculation.
 - **One resolver, gate and report.** `DailySpendAuthority.ResolveLocalSpendAsync` is the single implementation of the spend authority above: it prefers `IBudgetReservationService` (committed + outstanding) and falls back to `IGrimoireRepository.GetTodaySpendAsync` — the `Sessions.TotalCostUsd` projection — only on a host with no reservation service (tests / early bootstrap). Both `BudgetMonitor.CheckAsync` and `GET /api/budget` resolve through it, so the figure an operator is *shown* can never drift from the figure they are *refused* on. Reading the projection directly on a reporting surface is the specific bug this prevents: it is keyed on `Sessions.CreatedAt`, so a session opened yesterday and still being worked in today contributes nothing to today, and it knows nothing of calls in flight.
 - **Budget gate.** `BudgetMonitor.CheckAsync` resolves spend through `DailySpendAuthority`, plus today's **known** delegated spend. At 100% of `Arcanum:Cost:Budget:DailyLimitUsd` it returns `Budget.Exceeded` (HTTP 429 on the buffered path). The code-owned 80% alert threshold dispatches a Comm Link warning and records a `BudgetAlerts` row.

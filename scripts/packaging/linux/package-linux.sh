@@ -184,7 +184,7 @@ publish_cli() {
     mv "$staged_host" "$stage_dir/arcanum"
   fi
   chmod +x "$stage_dir/arcanum"
-  cp "$REPO_ROOT/docs/Arcanum.README.md" "$stage_dir/README.md"
+  cp "$REPO_ROOT/README.md" "$stage_dir/README.md"
 
   require_staged_natives "$stage_dir" libe_sqlcipher.so libonigwrap.so
 
@@ -213,7 +213,7 @@ publish_gui() {
 
   mkdir -p "$stage_dir"
   cp -a "$publish_dir/." "$stage_dir/"
-  cp "$REPO_ROOT/docs/Arcanum.README.md" "$stage_dir/README.md"
+  cp "$REPO_ROOT/README.md" "$stage_dir/README.md"
 
   echo "==> Creating $archive"
   tar -C "$WORK/stage" -czf "$archive" "$folder_name"

@@ -623,7 +623,7 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
 - Architecture and design source of truth: [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)
 - API source of truth: [`Arcanum.API.md`](Arcanum.API.md)
 - Human navigation guide: [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)
-- Agent/operator primer: [`Arcanum.README.md`](Arcanum.README.md)
+- Agent/operator primer: [`README.md`](../README.md)
 - Complete configuration reference: [`Compendium.README.md`](Compendium.README.md)
 - The breakpoints above are verified against the code. Correct any discrepancy here and update the
   owning architecture, API, or configuration document when its contract also changed.

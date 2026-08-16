@@ -26,7 +26,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 ///
 /// There is no migration chain and no <c>__EFMigrationsHistory</c>: Arcanum has no installed base,
 /// so the schema is installed fresh and an incompatible local database is recreated
-/// (<c>docs/Arcanum.README.md</c>, "Local Grimoire reinstall").
+/// (<c>README.md</c>, "Local Grimoire reinstall").
 /// </summary>
 internal static class GrimoireSchemaCatalog
 {

@@ -12,7 +12,7 @@ This file is the source of truth for Arcanum's public configuration elements and
 other canonical documents are [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for architecture and design,
 [`Arcanum.API.md`](Arcanum.API.md) for native and OpenAI-compatible API contracts,
 [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for complete CLI usage,
-[`Arcanum.README.md`](Arcanum.README.md) for agent/operator orientation,
+[`README.md`](../README.md) for agent/operator orientation,
 [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for conceptual navigation,
 and [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) for verified breakpoint and recipe guides.
 Configuration changes update this reference, `SettingDescriptors`, validation,
