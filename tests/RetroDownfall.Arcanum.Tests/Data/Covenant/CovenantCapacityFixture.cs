@@ -81,7 +81,9 @@ internal static class CovenantCapacityFixture
             VALUES ($id, 'active', $created, $created);
             """;
 
-        _ = command.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+        // Bound as a Guid so the seeded row carries the same text EF writes, which is what the
+        // capacity ledger's foreign keys actually resolve against.
+        _ = command.Parameters.AddWithValue("$id", sessionId);
 
         _ = command.Parameters.AddWithValue("$created", Iso(SeedTime));
 

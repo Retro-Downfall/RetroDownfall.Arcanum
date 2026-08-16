@@ -348,14 +348,18 @@ public sealed class GrimoireFixture : IDisposable
 
         DeleteTemplateFiles();
 
-        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
-        {
-            DataSource = _templatePath,
-            Password = _passphrase,
-            Pooling = false,
-        }.ToString());
-
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        // Opened through the central initializer rather than raw, exactly as the host bootstrapper
+        // does. The core schema's guard triggers call the arcanum_*_authorized scalar functions the
+        // initializer registers, so a raw connection fails an authorized seed with "no such
+        // function" instead of allowing or denying it.
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = _templatePath,
+                Password = _passphrase,
+                Pooling = false,
+            }.ToString(),
+            cancellationToken).ConfigureAwait(false);
 
         // Mirrors GrimoireDatabaseBootstrapper: one installer creates the complete schema — Grimoire
         // core tables, FTS, triggers, The Weave/Saga/Tapestry BLOB stores, and The Lexicon — so every
@@ -367,7 +371,15 @@ public sealed class GrimoireFixture : IDisposable
 
         await using SqliteCommand checkpoint = connection.CreateCommand();
 
-        checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+        // Checkpoint, then leave the template in rollback-journal mode. The initializer switches
+        // every connection it touches to WAL, and journal mode is persisted in the file header, so a
+        // WAL template would hand every copy a database that was already WAL before the copy's own
+        // connection converted it — which is exactly the state the sidecar-leak regressions exist to
+        // reproduce, and they can only reproduce it if the copy performs the conversion itself.
+        checkpoint.CommandText = """
+            PRAGMA wal_checkpoint(TRUNCATE);
+            PRAGMA journal_mode=DELETE;
+            """;
 
         _ = await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 

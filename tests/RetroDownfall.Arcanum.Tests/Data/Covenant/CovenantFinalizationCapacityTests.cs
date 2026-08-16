@@ -332,7 +332,9 @@ public sealed class CovenantFinalizationCapacityTests
     private static Task<long> CountAsync(CovenantCanonicalFixture fixture, string column) =>
         CovenantCapacityFixture.ScalarAsync(
             fixture,
-            $"SELECT {column} FROM session_turn_quota_state WHERE SessionId = '{SessionId:D}';",
+            // Uppercase because the counter row is created by the Sessions insert trigger from the
+            // stored identity, and EF writes a Guid as an uppercase D-format literal.
+            $"SELECT {column} FROM session_turn_quota_state WHERE SessionId = '{SessionId.ToString("D").ToUpperInvariant()}';",
             Token);
 
 }

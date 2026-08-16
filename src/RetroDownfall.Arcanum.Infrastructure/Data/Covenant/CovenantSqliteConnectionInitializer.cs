@@ -153,6 +153,31 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
     }
 
     /// <summary>
+    /// Registers the authorization functions without touching pragmas or existing authorizations.
+    /// </summary>
+    /// <remarks>
+    /// The schema's guard triggers call these functions, and SQLite resolves a function at
+    /// <em>prepare</em> time — so a statement that merely touches a guarded table fails with "no
+    /// such function" on a connection that never registered them, whether or not the guard would
+    /// have allowed the write. Schema installation therefore has to guarantee the functions exist
+    /// before it runs a single statement, independently of whether the caller applied connection
+    /// policy first.
+    ///
+    /// <para>Deliberately no <c>Reset()</c>: this is called on connections that may already hold a
+    /// live authorization scope, and dropping it here would revoke a permission mid-operation.</para>
+    /// </remarks>
+    internal void EnsureAuthorizationFunctions(SqliteConnection connection)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        _nativeRuntime.Initialize();
+
+        RegisterAuthorizationFunctions(connection, States.GetOrCreateValue(connection));
+
+    }
+
+    /// <summary>
     /// Registers every authorization function against this connection's own state. Schema triggers
     /// call these to decide whether a privileged write is permitted; with no scope open they all
     /// return 0.

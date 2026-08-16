@@ -227,12 +227,26 @@ public static class ServiceCollectionExtensions
         // activate in the CLI container.
         services.TryAddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
 
-        services.AddScoped<IGrimoireRepository, GrimoireRepository>();
+        // An explicit factory rather than a type registration: the Covenant mutation kernel is
+        // internal, so the composed constructor cannot be reached by a reflective activator.
+        services.AddScoped<IGrimoireRepository>(
+            static sp => new GrimoireRepository(
+                sp.GetRequiredService<ArcanumDbContext>(),
+                sp.GetRequiredService<ISessionAttachmentStore>(),
+                sp.GetRequiredService<ILogger<GrimoireRepository>>(),
+                sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
+                sp.GetService<ISessionAttachmentIndexMaintenance>(),
+                sp.GetService<CovenantMutationKernel>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
         // interface reach Campaign-binding writes it has no business performing (§10.12).
         services.AddScoped<ISessionTurnBeginStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
+
+        // The batch-aware finalizer is the same scoped instance again, exposed as the narrow
+        // publication port so a caller cannot reach entry writes through it (§10.13).
+        services.AddScoped<IGrimoireTurnCommitter>(
             static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
 
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
@@ -747,12 +761,26 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILexiconService, LexiconService>();
 
         services.AddSingleton(TimeProvider.System);
-        services.AddScoped<IGrimoireRepository, GrimoireRepository>();
+        // An explicit factory rather than a type registration: the Covenant mutation kernel is
+        // internal, so the composed constructor cannot be reached by a reflective activator.
+        services.AddScoped<IGrimoireRepository>(
+            static sp => new GrimoireRepository(
+                sp.GetRequiredService<ArcanumDbContext>(),
+                sp.GetRequiredService<ISessionAttachmentStore>(),
+                sp.GetRequiredService<ILogger<GrimoireRepository>>(),
+                sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
+                sp.GetService<ISessionAttachmentIndexMaintenance>(),
+                sp.GetService<CovenantMutationKernel>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
         // interface reach Campaign-binding writes it has no business performing (§10.12).
         services.AddScoped<ISessionTurnBeginStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
+
+        // The batch-aware finalizer is the same scoped instance again, exposed as the narrow
+        // publication port so a caller cannot reach entry writes through it (§10.13).
+        services.AddScoped<IGrimoireTurnCommitter>(
             static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
         services.AddScoped<ICampaignRepository, CampaignRepository>();
         services.AddScoped<IPromptRepository, PromptRepository>();
@@ -1078,8 +1106,27 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICovenantStore>(
             static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));
 
+        // The turn-plan seam. Scoped because it reads through the scoped store and hands back a
+        // lease the turn owns for its whole lifetime (§10.13).
+        services.AddScoped<ICovenantContextProvider>(
+            static sp => new CovenantContextProvider(
+                sp.GetRequiredService<ICovenantAvailability>(),
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<ICovenantStore>(),
+                sp.GetRequiredService<ICovenantLinker>()));
+
         services.AddScoped<ICovenantSearchIndex>(
             static sp => new CovenantSearchIndex(sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        // One boot identity for the whole process. A disclosure subject records which boot created
+        // it so startup can tell an adoptable orphan from a turn that is still live, and a per-scope
+        // identity would make every subject look like it belonged to a boot that had already ended.
+        services.AddSingleton<CovenantProcessBootIdentity>();
+
+        services.AddScoped<ICovenantDisclosureJournal>(
+            static sp => new CovenantDisclosureJournal(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
 
         services.AddScoped(
             static sp => new CovenantQuotaGuard(sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));

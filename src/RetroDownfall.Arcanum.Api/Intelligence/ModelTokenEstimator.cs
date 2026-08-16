@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
 
@@ -160,7 +161,12 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
 
             if (message.Role == ChatRole.System)
             {
-                EstimateSystemMessage(estimates, message, profile, tokenizer);
+                EstimateSystemMessage(
+                    estimates,
+                    message,
+                    profile,
+                    tokenizer,
+                    request.SystemPromptAttribution);
                 foreach (AIContent content in message.Contents)
                 {
                     if (content is not TextContent)
@@ -345,13 +351,43 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
         };
     }
 
+    /// <summary>
+    /// Attributes one rendered system prompt across its sources.
+    /// </summary>
+    /// <remarks>
+    /// Covenant spans are removed from the text before the heading-and-fence classifier runs and are
+    /// charged from the typed partition instead. The classifier then sees exactly the line structure
+    /// a pre-Covenant prompt would have had, so every existing source keeps its previous count and
+    /// no untrusted line can claim a Covenant source by imitating its heading (§10.13).
+    /// </remarks>
     private static void EstimateSystemMessage(
         Dictionary<ContextTokenSource, MutableEstimate> estimates,
         ChatMessage message,
         ResolvedModelTokenizationProfile profile,
-        Tokenizer tokenizer)
+        Tokenizer tokenizer,
+        SystemPromptAttributionMap? attribution)
     {
         string text = message.Text ?? string.Empty;
+
+        if (attribution is { HasCovenantContent: true }
+            && string.Equals(attribution.Prompt, text, StringComparison.Ordinal))
+        {
+            AddText(
+                estimates,
+                ContextTokenSource.CovenantConfirmed,
+                attribution.Concatenate(CovenantPromptAttribution.CovenantConfirmed),
+                profile,
+                tokenizer);
+            AddText(
+                estimates,
+                ContextTokenSource.CovenantProposed,
+                attribution.Concatenate(CovenantPromptAttribution.CovenantProposed),
+                profile,
+                tokenizer);
+
+            text = attribution.ExcludingCovenant();
+        }
+
         if (text.Length == 0)
         {
             return;

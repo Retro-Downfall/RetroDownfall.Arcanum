@@ -34,6 +34,26 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
     private readonly ISessionAttachmentIndexMaintenance? _attachmentIndex;
 
+    /// <summary>
+    /// The Covenant publisher, absent in hosts that compose no Covenant tier.
+    /// </summary>
+    /// <remarks>
+    /// Optional rather than required so a lightweight host, a migration path, or a suite with no
+    /// Covenant schema can still finalize turns. Absence refuses publication explicitly instead of
+    /// silently dropping a staged batch.
+    /// </remarks>
+    private readonly CovenantMutationKernel? _covenantKernel;
+
+    /// <summary>
+    /// The durable finalization-guard capacity ledger.
+    /// </summary>
+    /// <remarks>
+    /// Always present, unlike the Covenant kernel. Guard capacity lives in the always-installed core
+    /// tier and its schema trigger refuses a guard with no consumed reservation, so a host with no
+    /// Covenant capability still has to move these counters to finalize an ordinary turn.
+    /// </remarks>
+    private readonly CovenantQuotaGuard _finalizationCapacity;
+
     internal Func<Guid, CancellationToken, ValueTask>? AfterLegacyBackfillCountedForTesting { get; set; }
 
     internal Func<Guid, CancellationToken, ValueTask>? AfterRollupRemainingCountedForTesting { get; set; }
@@ -48,6 +68,22 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ILogger<GrimoireRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions,
         ISessionAttachmentIndexMaintenance? attachmentIndex = null)
+        : this(db, attachments, logger, arcOptions, attachmentIndex, covenantKernel: null)
+    {
+    }
+
+    /// <summary>
+    /// The composed constructor. Internal because the Covenant mutation kernel is an Infrastructure
+    /// implementation detail: a public parameter of that type would put the canonical write path on
+    /// the assembly's public surface.
+    /// </summary>
+    internal GrimoireRepository(
+        ArcanumDbContext db,
+        ISessionAttachmentStore attachments,
+        ILogger<GrimoireRepository> logger,
+        IOptionsSnapshot<ArcanumSettings> arcOptions,
+        ISessionAttachmentIndexMaintenance? attachmentIndex,
+        CovenantMutationKernel? covenantKernel)
     {
         _db = db;
 
@@ -60,6 +96,10 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         _arcOptions = arcOptions;
 
         _attachmentIndex = attachmentIndex;
+
+        _covenantKernel = covenantKernel;
+
+        _finalizationCapacity = new CovenantQuotaGuard();
     }
 
     public async Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
