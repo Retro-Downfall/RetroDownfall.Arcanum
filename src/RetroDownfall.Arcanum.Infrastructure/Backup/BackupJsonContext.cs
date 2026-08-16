@@ -29,7 +29,16 @@ internal sealed record BackupOperationCheckpoint(
     bool Overwrite,
     string Phase,
     ulong? StagingVolumeId = null,
-    ulong? StagingFileId = null);
+    ulong? StagingFileId = null,
+
+    // The disclosure subject and the receipts already acknowledged for it. Crash recovery closes or
+    // resumes the same subject rather than opening a second one, so a known-unattempted effect is
+    // never disclosed twice — and an attempt that did happen is never dropped from the count.
+    Guid? DisclosureSubjectId = null,
+    string? SnapshotReadReceiptDigestHex = null,
+    ulong? SnapshotReadAttemptOrdinal = null,
+    string? ArchiveWriteReceiptDigestHex = null,
+    ulong? ArchiveWriteAttemptOrdinal = null);
 
 internal sealed class PortableBackupRecoveryMaterial : IDisposable
 {

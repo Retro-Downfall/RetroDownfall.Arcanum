@@ -2,6 +2,8 @@ using System.Data;
 using System.Runtime.CompilerServices;
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
@@ -116,6 +118,23 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         }
 
         return AuthorizeCore(connection, kind);
+
+    }
+
+    /// <inheritdoc />
+    public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
+        RestoreStagingManagedAuthoritySanitizationCapability authority,
+        RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity)
+    {
+
+        ArgumentNullException.ThrowIfNull(authority);
+
+        ArgumentNullException.ThrowIfNull(runIdentity);
+
+        // The capability revalidates its own unpublished candidate and owner, then hands back only an
+        // ordinary one-shot scope. It never returns the connection, transaction, command, or kernel,
+        // so this method cannot become a way to obtain any of them.
+        return authority.BorrowCode11Scope(this, runIdentity);
 
     }
 

@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -14,6 +16,13 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 
 public sealed class BackupInventoryPlannerTests : IDisposable
 {
+
+    /// <summary>
+    /// The native provider has to be installed before the first connection is constructed. Doing it
+    /// here rather than relying on some earlier suite having done it keeps this class from passing or
+    /// failing according to the order the runner happened to pick.
+    /// </summary>
+    static BackupInventoryPlannerTests() => SqliteNativeRuntime.Instance.Initialize();
 
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),

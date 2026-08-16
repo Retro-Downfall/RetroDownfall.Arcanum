@@ -405,7 +405,8 @@ public static class ServiceCollectionExtensions
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 serviceProvider.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 new DeferredBackupOperationCoordinator(serviceProvider),
-                new DeferredBackupOperationStore(serviceProvider)));
+                new DeferredBackupOperationStore(serviceProvider),
+                ResolveCovenantBackupServices(serviceProvider)));
 
         services.TryAddEnumerable(
             ServiceDescriptor.Scoped<
@@ -429,9 +430,93 @@ public static class ServiceCollectionExtensions
                             .CurrentValue.ResolveEmbeddings().Dimensions
                         ?? new EmbeddingSettings().Dimensions),
 
+                    // Present only while the gate is on. Absent is not a degraded protected import,
+                    // it is the pre-Covenant plaintext path that installations without the feature
+                    // have always used.
+                    SelectiveImport = ResolveSelectiveImport(serviceProvider),
+
                 }));
 
         return services;
+
+    }
+
+    /// <summary>
+    /// Resolves the disclosure and lease capabilities a protected physical backup runs under.
+    /// </summary>
+    /// <remarks>
+    /// Null when the gate is off, which is the pre-Covenant backup this installation has always
+    /// taken. A partially resolved set is deliberately not possible: a disclosure boundary without a
+    /// lease would account for a read nothing fenced.
+    /// </remarks>
+    private static CovenantBackupServices? ResolveCovenantBackupServices(IServiceProvider serviceProvider)
+    {
+
+        bool enabled = serviceProvider
+            .GetService<IOptionsMonitor<ArcanumSettings>>()?
+            .CurrentValue.Features.Covenant
+            ?? false;
+
+        if (!enabled)
+        {
+
+            return null;
+
+        }
+
+        ICovenantOperationGate? gate = serviceProvider.GetService<ICovenantOperationGate>();
+
+        ICovenantDisclosureJournal? journal = serviceProvider.GetService<ICovenantDisclosureJournal>();
+
+        return gate is null || journal is null
+            ? null
+            : new CovenantBackupServices(
+                gate,
+                new CovenantBackupDisclosureBoundary(
+                    journal,
+                    () => Guid.TryParse(
+                        serviceProvider
+                            .GetRequiredService<CovenantAuthoritySnapshotProvider>()
+                            .Current?.InstallationIdentity,
+                        out Guid installationId)
+                        ? installationId
+                        : Guid.Empty,
+                    serviceProvider.GetRequiredService<TimeProvider>()));
+
+    }
+
+    /// <summary>
+    /// Resolves the protected selective-import path, or reports that this installation has none.
+    /// </summary>
+    /// <remarks>
+    /// Null is a real answer rather than a failure. With <c>Arcanum:Features:Covenant</c> off there is
+    /// no operation gate to drain against and no protected state to fence, and a restore that demanded
+    /// them anyway would refuse an import that has always been allowed.
+    /// </remarks>
+    private static CovenantSelectiveImportServices? ResolveSelectiveImport(IServiceProvider serviceProvider)
+    {
+
+        bool enabled = serviceProvider
+            .GetService<IOptionsMonitor<ArcanumSettings>>()?
+            .CurrentValue.Features.Covenant
+            ?? false;
+
+        if (!enabled)
+        {
+
+            return null;
+
+        }
+
+        ICovenantOperationGate? gate = serviceProvider.GetService<ICovenantOperationGate>();
+
+        return gate is null
+            ? null
+            : new CovenantSelectiveImportServices(
+                gate,
+                new ProtectedArtifactTransferStore(
+                    CovenantSqliteConnectionInitializer.Instance,
+                    serviceProvider.GetRequiredService<TimeProvider>()));
 
     }
 
@@ -1112,6 +1197,20 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICampaignAvailabilityReader>(
             static sp => new CampaignAvailabilityReader(
                 sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        // One codec, registered once. Registration, cleanup, restore cleanup, and compare-delete all
+        // resolve this instance, because two implementations that agree today drift tomorrow and the
+        // first divergence is a cleanup that declines to recognise the marker registration wrote.
+        services.AddSingleton<ICampaignPathMarkerCodec>(
+            static sp => new CampaignPathMarkerCodec(
+                sp.GetRequiredService<ICampaignRootIdentityKeyProvider>()));
+
+        services.AddScoped<ICampaignPathMarkerLifecycle>(
+            static sp => new CampaignPathMarkerLifecycle(
+                sp.GetRequiredService<ICampaignPathMarkerCodec>(),
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                CovenantSqliteConnectionInitializer.Instance,
+                sp.GetRequiredService<TimeProvider>()));
 
         return services;
 
