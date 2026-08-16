@@ -221,7 +221,7 @@ public sealed class CovenantSearchQueryCompilerTests
         foreach (double invalid in (double[])[double.NaN, double.PositiveInfinity, double.NegativeInfinity])
         {
 
-            Assert.Equal("Covenant.InvalidCursor", CovenantSearchKeyset.EncodeScore(invalid).Error.Code);
+            Assert.Equal(ErrorCodes.Covenant.InvalidCursor, CovenantSearchKeyset.EncodeScore(invalid).Error.Code);
 
         }
 

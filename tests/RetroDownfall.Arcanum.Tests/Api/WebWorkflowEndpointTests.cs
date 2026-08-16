@@ -1196,7 +1196,8 @@ public sealed class WebWorkflowEndpointTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
 
@@ -1212,7 +1213,8 @@ public sealed class WebWorkflowEndpointTests
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
 

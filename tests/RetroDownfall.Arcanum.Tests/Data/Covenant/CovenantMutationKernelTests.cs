@@ -240,7 +240,7 @@ public sealed class CovenantMutationKernelTests
                 CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.back", "Two.", 2, 2)),
             Token);
 
-        Assert.Equal("Covenant.LifecycleConflict", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, refused.Error.Code);
 
         Result<IReadOnlyList<CovenantMutationReceipt>> allowed = await CovenantMutationFixture.ApplyAsync(
             fixture,
@@ -300,7 +300,7 @@ public sealed class CovenantMutationKernelTests
                 CovenantMutationFixture.AgentPropose(CampaignOne, "campaign.idea", "Two.", 2, 2)),
             Token);
 
-        Assert.Equal("Covenant.LifecycleConflict", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, refused.Error.Code);
 
     }
 
@@ -379,7 +379,7 @@ public sealed class CovenantMutationKernelTests
                 CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.cas", "Two.", 7, 1)),
             Token);
 
-        Assert.Equal("Covenant.RevisionConflict", stale.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.RevisionConflict, stale.Error.Code);
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
 
@@ -407,7 +407,7 @@ public sealed class CovenantMutationKernelTests
                 CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.dup", "Two.", 0, 1)),
             Token);
 
-        Assert.Equal("Covenant.RevisionConflict", duplicate.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.RevisionConflict, duplicate.Error.Code);
 
     }
 
@@ -431,7 +431,7 @@ public sealed class CovenantMutationKernelTests
                     0)),
             Token);
 
-        Assert.Equal("Covenant.LifecycleConflict", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, refused.Error.Code);
 
     }
 
@@ -544,7 +544,7 @@ public sealed class CovenantMutationKernelTests
                 CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.stale", "One.", 0, 0)),
             Token);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
     }
 
@@ -575,7 +575,7 @@ public sealed class CovenantMutationKernelTests
                     expectedKeyEpoch: 0)),
             Token);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
     }
 
@@ -596,7 +596,7 @@ public sealed class CovenantMutationKernelTests
                 CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.registry", "One.", 0, 0)),
             Token);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
     }
 

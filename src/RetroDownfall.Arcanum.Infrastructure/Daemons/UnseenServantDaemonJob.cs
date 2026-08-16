@@ -134,7 +134,7 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
             OverrideSpellName: string.IsNullOrWhiteSpace(_job.TargetSpell) ? null : _job.TargetSpell.Trim());
 
         Result<PromptTurnResult> result = await intelligence
-            .ExecutePromptAsync(ping, ct)
+            .ExecutePromptAsync(ping, ArcanumInvocationContext.None, ct)
             .ConfigureAwait(false);
 
         if (result.IsSuccess)

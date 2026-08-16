@@ -110,7 +110,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         {
 
             return new Error(
-                "Covenant.Unavailable",
+                ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier has no state row, so no turn snapshot can be bound to a dataset.");
 
         }
@@ -119,7 +119,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         {
 
             return new Error(
-                "Covenant.IntegrityFailure",
+                ErrorCodes.Covenant.IntegrityFailure,
                 "The active Covenant head set exceeds its hard bound, so the canonical tier is not linkable.");
 
         }
@@ -137,7 +137,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         catch (ArgumentException exception)
         {
 
-            return new Error("Covenant.IntegrityFailure", exception.Message);
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
 
         }
 
@@ -682,7 +682,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         if (!found)
         {
 
-            return new Error("Covenant.NotFound", "No Covenant version with that identity exists.");
+            return new Error(ErrorCodes.Covenant.NotFound, "No Covenant version with that identity exists.");
 
         }
 
@@ -690,7 +690,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         {
 
             return new Error(
-                "Covenant.IntegrityFailure",
+                ErrorCodes.Covenant.IntegrityFailure,
                 "This Covenant version carries more attachment sources than its hard bound allows.");
 
         }
@@ -707,7 +707,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         catch (ArgumentException exception)
         {
 
-            return new Error("Covenant.IntegrityFailure", exception.Message);
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
 
         }
 
@@ -980,7 +980,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
             _ => Result<CovenantOperationScope?>.Failure(
                 new Error(
-                    "Covenant.InvalidScope",
+                    ErrorCodes.Covenant.InvalidScope,
                     "The Covenant scope selection and Campaign identity do not agree.")),
         };
 
@@ -1015,7 +1015,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         {
 
             return new Error(
-                "Covenant.ForbiddenAuthority",
+                ErrorCodes.Covenant.ForbiddenAuthority,
                 "An all-scopes Covenant read requires the installation read capability.");
 
         }
@@ -1034,7 +1034,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         return matches
             ? Result.Success()
             : new Error(
-                "Covenant.ForbiddenAuthority",
+                ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant lease does not cover the scope the read names.");
 
     }
@@ -1100,7 +1100,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         if (damage is not null && lane == CovenantLane.Confirmed)
         {
 
-            return new Error("Covenant.IntegrityFailure", damage);
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, damage);
 
         }
 
@@ -1136,7 +1136,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         catch (Exception exception) when (exception is ArgumentException or OverflowException)
         {
 
-            return new Error("Covenant.IntegrityFailure", exception.Message);
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
 
         }
 

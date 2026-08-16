@@ -70,6 +70,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -108,6 +109,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -290,6 +292,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -314,6 +317,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "Email me at alice@example.com", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -345,6 +349,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "say something", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -370,6 +375,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "alice@example.com", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -401,6 +407,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -562,6 +569,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "what time is it?", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -595,6 +603,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "make progress", SkipSpellRouting = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -642,6 +651,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "detect no progress", SkipSpellRouting = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -665,6 +675,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "retry", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -698,6 +709,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 UnattendedMode = false,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -738,6 +750,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 UnattendedMode = false,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -766,6 +779,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "run", SkipSpellRouting = true, UnattendedMode = false },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -795,6 +809,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "run", SkipSpellRouting = true, UnattendedMode = false },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -826,6 +841,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 UnattendedMode = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -902,6 +918,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                                    SkipSpellRouting = true,
                                    UnattendedMode = false,
                                },
+                               InvocationContexts.AttendedSession(),
                                CancellationToken.None))
             {
                 seen.Add(evt);
@@ -957,6 +974,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1000,6 +1018,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1034,6 +1053,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 OverrideSpellName = "primary",
                 SkipSpellRouting = false,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1071,6 +1091,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 OverrideSpellName = "open",
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1115,6 +1136,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 OverrideSpellName = "browse-restricted",
                 DisableMcpTools = disableMcpTools,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1162,6 +1184,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 OverrideSpellName = folderName,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1195,6 +1218,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 OverrideSpellName = "Primary",
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1218,6 +1242,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", Model = "missing", SkipSpellRouting = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1271,6 +1296,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
                 BaseRequest() with { Prompt = "cancel", SkipSpellRouting = true, DisableMcpTools = true },
+                InvocationContexts.AttendedSession(),
                 cts.Token))
             {
             }
@@ -1285,6 +1311,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "   ", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1305,6 +1332,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "fail", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1422,6 +1450,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 AttachedFiles = files,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
@@ -1447,6 +1476,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 OverrideSpellName = "missing-spell",
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1472,6 +1502,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 OverrideSpellPath = "/tmp/outside/SPELL.md",
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1501,6 +1532,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 OverrideSpellPath = badPath,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1530,6 +1562,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 OverrideSpellPath = spellPath,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1556,6 +1589,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 AttachedFiles = files,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1578,6 +1612,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 AttachedFiles = [new("  ", "content")],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1601,6 +1636,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 AttachedFiles = [new("big.txt", new string('x', oversizedLength))],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -1670,6 +1706,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1764,6 +1801,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     new CoreChatMessage("user", "prior question"),
                 ],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1773,9 +1811,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario33_SessionBeginFailure_StillReturnsInference()
+    public async Task Scenario33_SessionBeginFailure_AbortsBeforeProviderDispatch()
     {
 
+        // Inverted by issue #83. A begin failure used to be caught into an empty handle and the turn
+        // continued, so a deleted Campaign, a missing Session, or a binding mismatch all produced a
+        // normal-looking answer attached to nothing durable (§10.12).
         FakeGrimoireRepository grimoire = new() { ThrowOnBegin = true };
 
         ScriptingChatClient chat = new();
@@ -1792,11 +1833,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
-        Assert.True(result.IsSuccess);
+        Assert.False(result.IsSuccess);
 
-        Assert.Equal("inference despite begin failure", result.Value!.Text);
+        // The buffered projection reports in-turn aborts as Hub.Error; the begin failure's own message
+        // survives, and carrying the typed storage code all the way out is a turn-result change that
+        // belongs with the turn-publication slice.
+        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
+
+        // The provider was never dialled, so its scripted answer is still queued.
+        Assert.Equal(0, chat.BufferedCallCount);
 
     }
 
@@ -1820,6 +1868,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         // Phase 0: finalize failure is a hard turn failure (GrimoireTurnWriter contract).
@@ -1853,6 +1902,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1891,6 +1941,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -1936,6 +1987,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2025,6 +2077,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2082,6 +2135,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2237,6 +2291,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 ToolPolicy = ToolPolicy.ReadOnlyTools,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2276,6 +2331,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 StatelessMessages = [new CoreChatMessage("user", "inspect the workspace")],
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2345,6 +2401,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             TurnResponseMode.Buffered,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: false,
@@ -2467,6 +2524,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2644,6 +2702,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2705,6 +2764,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -2759,6 +2819,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     WorkingDirectory = _workspace.Root,
                     SkipSpellRouting = true,
                 },
+                InvocationContexts.AttendedSession(),
                 CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -2816,6 +2877,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None,
             auditContext);
 
@@ -2878,6 +2940,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     WorkingDirectory = _workspace.Root,
                     SkipSpellRouting = true,
                 },
+                InvocationContexts.AttendedSession(),
                 cancellation.Token));
 
         Assert.Single(grimoire.MandatoryInteractions);
@@ -2956,6 +3019,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -2999,6 +3063,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 OverrideSpellName = "folder-spell",
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3084,6 +3149,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3148,6 +3214,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3206,6 +3273,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3246,6 +3314,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 ToolPolicy = ToolPolicy.NoForbiddenArts,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3287,6 +3356,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 UnattendedMode = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3322,6 +3392,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 UnattendedMode = false,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3572,6 +3643,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     SkipSpellRouting = false,
                     UnattendedMode = false,
                 },
+                InvocationContexts.AttendedSession(),
                 CancellationToken.None);
 
             Assert.True(result.IsSuccess);
@@ -3663,6 +3735,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     SkipSpellRouting = true,
                     DisableMcpTools = true,
                 },
+                InvocationContexts.AttendedSession(),
                 CancellationToken.None)
             .GetAsyncEnumerator();
         Task<IntelligenceEvent> toolResult = ReadUntilToolResultAsync(
@@ -3731,6 +3804,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "tool fail", SkipSpellRouting = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3767,6 +3841,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "what time is it?", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None,
             auditContext);
 
@@ -3825,6 +3900,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None,
             new InferenceAuditContext { RequestType = "reasoning-audit" });
 
@@ -3852,6 +3928,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3905,6 +3982,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> buffered = await bufferedWizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hi", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(buffered.IsSuccess);
@@ -3953,6 +4031,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -3987,6 +4066,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4042,6 +4122,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4067,6 +4148,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4101,6 +4183,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4149,6 +4232,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 MaxOutputTokens = 1_000,
                 Reasoning = new ReasoningRequestOptions(BudgetTokens: 600),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4326,6 +4410,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 MaxOutputTokens = 128,
 
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -4421,6 +4506,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     DisableMcpTools = true,
 
                 },
+                InvocationContexts.AttendedSession(),
                 cancellation.Token));
 
         Assert.Equal(attachmentIds[..2], openedAttachmentIds);
@@ -4509,6 +4595,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
 
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
@@ -4579,6 +4666,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4619,6 +4707,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4669,6 +4758,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "guard", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -4700,6 +4790,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "tools", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4735,6 +4826,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -4762,6 +4854,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "account", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -4827,6 +4920,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = false,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4877,6 +4971,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     SkipSpellRouting = false,
                     DisableMcpTools = true,
                 },
+                InvocationContexts.AttendedSession(),
                 callerCancellation.Token));
 
         BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
@@ -4929,6 +5024,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     SkipSpellRouting = false,
                     DisableMcpTools = true,
                 },
+                InvocationContexts.AttendedSession(),
                 callerCancellation.Token));
 
         BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
@@ -5016,6 +5112,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "how does Foo work?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5054,6 +5151,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5130,6 +5228,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     DisableMcpTools = true,
 
                 },
+                InvocationContexts.AttendedSession(),
                 CancellationToken.None);
 
         ScriptingChatClient streamingChat = new();
@@ -5189,6 +5288,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5223,6 +5323,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = string.Empty },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5277,6 +5378,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "what theme do I like?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5311,6 +5413,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5335,6 +5438,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5389,6 +5493,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "how does Foo work?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5439,6 +5544,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = false,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5469,6 +5575,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png")],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -5508,6 +5615,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 ],
 
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5543,6 +5651,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png")],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -5571,6 +5680,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png")],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -5605,6 +5715,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                         "image/png"))
                     .ToList(),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -5639,6 +5750,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                         "image/png"),
                 ],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -5666,6 +5778,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/tiff")],
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -5708,6 +5821,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6104,6 +6218,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     Effort: ReasoningEffortLevel.High,
                     Output: requestedOutput),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6174,6 +6289,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6209,6 +6325,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6256,6 +6373,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6289,6 +6407,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6375,6 +6494,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.None),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6816,6 +6936,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -6875,6 +6996,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -6924,6 +7046,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -6961,6 +7084,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -7053,6 +7177,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 DisableMcpTools = true,
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -7156,6 +7281,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -7298,6 +7424,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 NoRetrieval: true),
 
+            InvocationContexts.AttendedSession(),
+
             CancellationToken.None);
 
         Assert.True(preview.IsSuccess);
@@ -7422,6 +7550,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 MaxOutputTokens: 1_200),
 
+            InvocationContexts.AttendedSession(),
+
             CancellationToken.None);
 
         Assert.True(preview.IsSuccess);
@@ -7502,6 +7632,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 NoRetrieval: true),
 
+            InvocationContexts.AttendedSession(),
+
             CancellationToken.None);
 
         Assert.True(preview.IsSuccess);
@@ -7555,6 +7687,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 Model: ModelName,
 
                 WorkingDirectory: _workspace.Root),
+
+            InvocationContexts.AttendedSession(),
 
             CancellationToken.None);
 
@@ -7669,6 +7803,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         GrimoireTurnWriter grimoireTurnWriter = new(
             grimoire,
+            grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
             new SessionEventHub(NullLogger<SessionEventHub>.Instance),
             NullLogger<GrimoireTurnWriter>.Instance);
 
@@ -8230,7 +8365,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     {
         List<IntelligenceEvent> events = [];
 
-        await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, CancellationToken.None, auditContext))
+        await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None, auditContext))
         {
             events.Add(evt);
         }
@@ -8600,7 +8735,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
-    private sealed class FakeGrimoireRepository : IGrimoireRepository
+    private sealed class FakeGrimoireRepository : IGrimoireRepository, ISessionTurnBeginStore
     {
 
         public Session? Session { get; init; }
@@ -8667,6 +8802,42 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult((
                 FixedSessionId ?? sessionId ?? Guid.NewGuid(),
                 LastAssistantEntryId.Value));
+
+        }
+
+        public ValueTask<Result<Guid>> CreateBoundSessionAsync(
+            CanonicalCampaignContext campaign,
+            string title,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<Guid>.Success(FixedSessionId ?? Guid.NewGuid()));
+
+        public async ValueTask<Result<AssistantReplyBeginReceipt>> BeginAssistantReplyAsync(
+            Guid existingSessionId,
+            CanonicalCampaignContext campaign,
+            string prompt,
+            string model,
+            CancellationToken cancellationToken)
+        {
+
+            if (ThrowOnBegin)
+            {
+                // The port reports a failed begin, it does not throw: the whole point of the narrow
+                // contract is that a caller cannot mistake the failure for an ordinary turn.
+                return new Error(ErrorCodes.Grimoire.WriteFailed, "begin failed");
+            }
+
+            (Guid sessionId, Guid assistantEntryId) = await BeginAssistantReplyAsync(
+                existingSessionId,
+                prompt,
+                model,
+                cancellationToken);
+
+            return Result<AssistantReplyBeginReceipt>.Success(
+                new AssistantReplyBeginReceipt(
+                    sessionId,
+                    Guid.NewGuid(),
+                    assistantEntryId,
+                    new SessionTurnInputPreflight(sessionId, campaign.Binding, 0, 0)));
 
         }
 

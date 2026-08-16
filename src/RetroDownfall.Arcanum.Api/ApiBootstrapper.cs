@@ -449,6 +449,14 @@ public static class ApiBootstrapper
 
         services.AddScoped<IContextPreviewService>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
 
+        // The one Campaign-resolution seam for inference. Registered here rather than in the shared
+        // Infrastructure composition because its callers are all HTTP endpoints: the CLI bootstrap has
+        // no authenticated boundary at which a Campaign authority decision could be established.
+        services.AddScoped<ICanonicalCampaignContextResolver>(static sp => new CanonicalCampaignContextResolver(
+            sp.GetRequiredService<ISessionCampaignBindingReader>(),
+            sp.GetRequiredService<ICampaignPathIdentityReader>(),
+            sp.GetRequiredService<ICampaignAvailabilityReader>()));
+
         services.AddScoped<WebResearchWorkflowService>();
 
         services.AddScoped<IBuiltInToolRegistry, BuiltInToolRegistry>();

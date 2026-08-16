@@ -135,10 +135,10 @@ public sealed class PromptExecuteFlowTests
   private sealed class FailingIntelligenceProvider : IArcanumIntelligenceProvider
   {
 
-    public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default, InferenceAuditContext? auditContext = null) =>
+    public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) =>
       Task.FromResult(Result<PromptTurnResult>.Failure(new Error("Hub.Error", "inference failed")));
 
-    public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, CancellationToken cancellationToken = default, InferenceAuditContext? auditContext = null) =>
+    public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) =>
       EmptyStream();
 
     private static async IAsyncEnumerable<IntelligenceEvent> EmptyStream()
@@ -153,7 +153,7 @@ public sealed class PromptExecuteFlowTests
   private sealed class FailingStreamIntelligenceProvider : IArcanumIntelligenceProvider
   {
 
-    public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default, InferenceAuditContext? auditContext = null) =>
+    public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) =>
       Task.FromResult(Result<PromptTurnResult>.Success(new PromptTurnResult("ok", null)));
 
     // W3.4 Group A: fails before streaming any frame, so the response has not started and the
@@ -162,7 +162,8 @@ public sealed class PromptExecuteFlowTests
     // InferenceExecuteWriterTests.WriteStreamAsync_LateStreamExceptionAfterStart_DoesNotWriteErrorFrame).
     public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
       PingRequest request,
-      [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+      ArcanumInvocationContext invocationContext,
+      [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
       InferenceAuditContext? auditContext = null)
     {
       await Task.Yield();

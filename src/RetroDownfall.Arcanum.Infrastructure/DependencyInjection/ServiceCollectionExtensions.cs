@@ -64,6 +64,7 @@ using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Infrastructure.TheForge;
 
 namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 
@@ -204,6 +205,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        services.AddCovenantAuthority();
+
+        services.AddCampaignPathIdentity();
+
         services.AddCovenantPersistence();
 
         services.AddDbContext<ArcanumDbContext>((sp, options) =>
@@ -223,6 +228,12 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
 
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
+
+        // The narrow turn-begin port is deliberately a separate registration over the same scoped
+        // instance. Resolving it through IGrimoireRepository would let any holder of the broad
+        // interface reach Campaign-binding writes it has no business performing (§10.12).
+        services.AddScoped<ISessionTurnBeginStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
 
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
 
@@ -594,6 +605,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        services.AddCovenantAuthority();
+
+        services.AddCampaignPathIdentity();
+
         services.AddCovenantPersistence();
 
         services.AddScoped<IDivinationService, DivinationService>();
@@ -733,6 +748,12 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
+
+        // The narrow turn-begin port is deliberately a separate registration over the same scoped
+        // instance. Resolving it through IGrimoireRepository would let any holder of the broad
+        // interface reach Campaign-binding writes it has no business performing (§10.12).
+        services.AddScoped<ISessionTurnBeginStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
         services.AddScoped<ICampaignRepository, CampaignRepository>();
         services.AddScoped<IPromptRepository, PromptRepository>();
         services.AddScoped<IApprenticeRepository, ApprenticeRepository>();
@@ -926,6 +947,94 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+    /// <summary>
+    /// The Covenant authority boundary: one authority issuer, one envelope key generation, one codec,
+    /// one diagnostic tagger, and the single publisher that swaps them all at once.
+    /// </summary>
+    /// <remarks>
+    /// Every one of these is a singleton holding process-wide key material or a process-wide authority
+    /// view. A scoped codec would derive its own counters per request, and two counter sequences under
+    /// one key is a repeated nonce.
+    ///
+    /// <para>The issuer lives in Core so it can reach the internal factories of the values it mints.
+    /// Registering it here rather than there keeps composition in one place without letting any other
+    /// assembly construct an operator authority context.</para>
+    /// </remarks>
+    private static IServiceCollection AddCovenantAuthority(this IServiceCollection services)
+    {
+
+        services.AddSingleton<IOperatorAuthorityContextIssuer>(
+            static sp => new OperatorAuthorityContextIssuer(
+                sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>()));
+
+        services.AddSingleton<CovenantEnvelopeMasterKeyProvider>();
+
+        services.AddSingleton<ICovenantEnvelopeMasterKeyProvider>(
+            static sp => sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>());
+
+        services.AddSingleton<ICovenantEnvelopeCodec>(
+            static sp => new CovenantEnvelopeCodec(
+                sp.GetRequiredService<ICovenantEnvelopeMasterKeyProvider>(),
+                sp.GetService<TimeProvider>() ?? TimeProvider.System));
+
+        services.AddSingleton<ICovenantDiagnosticKeySource>(
+            static sp => sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>());
+
+        services.AddSingleton<ICovenantDiagnosticTagger>(
+            static sp => new CovenantDiagnosticTagger(
+                sp.GetRequiredService<ICovenantDiagnosticKeySource>()));
+
+        services.AddSingleton<ICovenantAuthorityTransitionPublisher>(
+            static sp => new CovenantAuthorityTransitionPublisher(
+                sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
+                sp.GetRequiredService<CovenantAuthoritySnapshotProvider>()));
+
+        return services;
+
+    }
+
+    /// <summary>
+    /// Canonical Campaign identity: one root-identity key, one physical opener, and the two readers
+    /// that turn a supplied directory into a registered Campaign.
+    /// </summary>
+    /// <remarks>
+    /// The key provider and the opener are singletons because the key is process-wide and its OS
+    /// credential read must happen once, not once per turn. The readers are scoped because they run
+    /// through the scoped Grimoire connection.
+    ///
+    /// <para>The resolver itself lives in Api and is registered there, beside the endpoints that are its
+    /// only callers. Registering it here would put a Campaign-authority decision in the container that
+    /// Infrastructure composes for the CLI bootstrap, which has no HTTP boundary to establish it.</para>
+    /// </remarks>
+    private static IServiceCollection AddCampaignPathIdentity(this IServiceCollection services)
+    {
+
+        services.AddSingleton<CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton<ICampaignRootIdentityKeyProvider>(
+            static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
+
+        services.AddSingleton(
+            static sp => new PhysicalCampaignRootOpener(
+                sp.GetRequiredService<ICampaignRootIdentityKeyProvider>()));
+
+        services.AddScoped<ISessionCampaignBindingReader>(
+            static sp => new SessionCampaignBindingReader(
+                sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        services.AddScoped<ICampaignPathIdentityReader>(
+            static sp => new CampaignPathIdentityReader(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<PhysicalCampaignRootOpener>()));
+
+        services.AddScoped<ICampaignAvailabilityReader>(
+            static sp => new CampaignAvailabilityReader(
+                sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        return services;
+
+    }
+
     /// <summary>
     /// The Covenant persistence boundary: one gate, one store, one mutation kernel, one quota guard,
     /// one search index, and the single-writer workers behind them.

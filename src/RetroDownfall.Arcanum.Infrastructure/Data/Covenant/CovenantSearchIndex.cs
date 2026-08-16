@@ -139,7 +139,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
             // A corrupt, locked, or version-mismatched index is a degradation, not a failure: the
             // caller still gets an answer, from canonical, with explicit guidance.
-            return new Error("Covenant.Unavailable", exception.Message);
+            return new Error(ErrorCodes.Covenant.Unavailable, exception.Message);
 
         }
 
@@ -414,7 +414,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
             _ => Result<CovenantOperationScope?>.Failure(
                 new Error(
-                    "Covenant.InvalidScope",
+                    ErrorCodes.Covenant.InvalidScope,
                     "The Covenant scope selection and Campaign identity do not agree.")),
         };
 
@@ -444,7 +444,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         {
 
             return new Error(
-                "Covenant.ForbiddenAuthority",
+                ErrorCodes.Covenant.ForbiddenAuthority,
                 "An all-scopes Covenant search requires the installation read capability.");
 
         }
@@ -454,7 +454,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         return held.Kind == required.Value.Kind && held.CampaignId == required.Value.CampaignId
             ? Result.Success()
             : new Error(
-                "Covenant.ForbiddenAuthority",
+                ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant lease does not cover the scope the search names.");
 
     }

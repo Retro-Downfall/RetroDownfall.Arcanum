@@ -142,7 +142,8 @@ public sealed class UnseenServantDaemonJobTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
             LastPrompt = request.Prompt;
@@ -152,7 +153,8 @@ public sealed class UnseenServantDaemonJobTests
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new NotSupportedException();
     }

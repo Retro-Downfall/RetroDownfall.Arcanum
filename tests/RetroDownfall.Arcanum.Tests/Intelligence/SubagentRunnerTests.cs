@@ -68,6 +68,13 @@ public sealed class SubagentRunnerTests
         Assert.Equal("child summary", result.Summary);
         Assert.NotEqual(Guid.Empty, result.RunId);
 
+        // A subagent inherits no Covenant content and exposes no mutation tool, and the invocation
+        // context is where that is now decided rather than being a consequence of an empty request.
+        Assert.Same(ArcanumInvocationContext.None, facade.InvocationContext);
+        Assert.False(facade.InvocationContext!.CanReadCovenant);
+        Assert.False(facade.InvocationContext.CanStageCovenantMutation);
+        Assert.Equal(ArcanumExecutionSurface.InternalBackground, facade.InvocationContext.Surface);
+
         PingRequest request = Assert.IsType<PingRequest>(facade.Request);
         Assert.Null(request.SessionId);
         Assert.Empty(request.WorkingDirectory);
@@ -272,6 +279,8 @@ public sealed class SubagentRunnerTests
 
         public PingRequest? Request { get; private set; }
 
+        public ArcanumInvocationContext? InvocationContext { get; private set; }
+
         public Action? OnExecute { get; init; }
 
         /// <summary>Held open to model a child turn that outlives the durable lease.</summary>
@@ -281,6 +290,7 @@ public sealed class SubagentRunnerTests
 
         public async Task<Result<PromptTurnResult>> ExecuteBufferedAsync(
             PingRequest request,
+            ArcanumInvocationContext invocationContext,
             bool hasIdempotencyKey,
             CancellationToken executionToken,
             InferenceAuditContext? auditContext = null)
@@ -289,6 +299,7 @@ public sealed class SubagentRunnerTests
             _ = auditContext;
             executionToken.ThrowIfCancellationRequested();
             Request = request;
+            InvocationContext = invocationContext;
             OnExecute?.Invoke();
             _ = _entered.TrySetResult();
 
@@ -302,6 +313,7 @@ public sealed class SubagentRunnerTests
 
         public IAsyncEnumerable<IntelligenceEvent> ExecuteIntelligenceStreamAsync(
             PingRequest request,
+            ArcanumInvocationContext invocationContext,
             bool hasIdempotencyKey,
             CancellationToken executionToken,
             InferenceAuditContext? auditContext = null) =>
@@ -309,6 +321,7 @@ public sealed class SubagentRunnerTests
 
         public IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseAsync(
             PingRequest request,
+            ArcanumInvocationContext invocationContext,
             bool hasIdempotencyKey,
             string completionId,
             string model,

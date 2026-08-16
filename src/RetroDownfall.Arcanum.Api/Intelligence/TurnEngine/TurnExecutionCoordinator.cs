@@ -23,12 +23,16 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
     public Task<Result<PromptTurnResult>> ExecuteBufferedAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         bool hasIdempotencyKey,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext = null)
     {
+        ArgumentNullException.ThrowIfNull(invocationContext);
+
         TurnExecutionRequest turnRequest = new(
             request,
+            invocationContext,
             TurnResponseMode.Buffered,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: false,
@@ -40,12 +44,16 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
     public IAsyncEnumerable<IntelligenceEvent> ExecuteIntelligenceStreamAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         bool hasIdempotencyKey,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext = null)
     {
+        ArgumentNullException.ThrowIfNull(invocationContext);
+
         TurnExecutionRequest turnRequest = new(
             request,
+            invocationContext,
             TurnResponseMode.Streaming,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: true,
@@ -136,14 +144,18 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
     public IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         bool hasIdempotencyKey,
         string completionId,
         string model,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext = null)
     {
+        ArgumentNullException.ThrowIfNull(invocationContext);
+
         TurnExecutionRequest turnRequest = new(
             request,
+            invocationContext,
             TurnResponseMode.Streaming,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: true,

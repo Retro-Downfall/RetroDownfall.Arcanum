@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
@@ -32,10 +33,14 @@ internal static class InferenceExecuteWriter
         HttpContext httpContext,
         IArcanumIntelligenceProvider intelligence,
         PingRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CanonicalCampaignContext? campaign = null)
     {
         Result<PromptTurnResult> turn = await intelligence
-            .ExecutePromptAsync(request, cancellationToken)
+            .ExecutePromptAsync(
+                request,
+                ArcanumInvocationContexts.ForTurn(httpContext, request, campaign),
+                cancellationToken)
             .ConfigureAwait(false);
 
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
@@ -77,7 +82,8 @@ internal static class InferenceExecuteWriter
         IArcanumIntelligenceProvider intelligence,
         PingRequest request,
         CancellationToken cancellationToken,
-        InferenceAuditContext? auditContext = null)
+        InferenceAuditContext? auditContext = null,
+        CanonicalCampaignContext? campaign = null)
     {
         // Prefer RequestServices in production; tolerate null/partial providers in unit tests.
         IServiceProvider? services = httpContext.RequestServices;
@@ -122,7 +128,11 @@ internal static class InferenceExecuteWriter
 
         try
         {
-            await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(request, ct, auditContext).ConfigureAwait(false))
+            await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(
+                request,
+                ArcanumInvocationContexts.ForTurn(httpContext, request, campaign),
+                ct,
+                auditContext).ConfigureAwait(false))
             {
                 if (clientGone)
                 {

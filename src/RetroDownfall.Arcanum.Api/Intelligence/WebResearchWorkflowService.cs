@@ -518,6 +518,7 @@ public sealed class WebResearchWorkflowService(
                     Prompt = synthesisPrompt,
 
                 },
+                ArcanumInvocationContext.None,
                 cancellationToken,
                 new InferenceAuditContext
                 {
@@ -886,8 +887,8 @@ public sealed class WebResearchWorkflowService(
             ScryingFoci: request.ScryingFoci,
             UnattendedMode: request.UnattendedMode);
 
-        Result<PingRequest> resolved = await PingRequestResolver
-            .ResolveCampaignAsync(
+        Result<PingRequest> resolved = await CampaignWorkspaceFill
+            .ApplyAsync(
                 envelope,
                 campaigns,
                 cancellationToken)

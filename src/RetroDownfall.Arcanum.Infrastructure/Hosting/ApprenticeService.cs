@@ -1054,7 +1054,7 @@ internal sealed class ApprenticeService(
                     SkipSpellRouting: true);
 
                 Result<PromptTurnResult> planResult = await intelligence
-                    .ExecutePromptAsync(planRequest, linkedCts.Token)
+                    .ExecutePromptAsync(planRequest, ArcanumInvocationContext.None, linkedCts.Token)
                     .ConfigureAwait(false);
 
                 if (planResult.IsFailure)
@@ -1690,7 +1690,7 @@ internal sealed class ApprenticeService(
                 SkipSpellRouting: true);
 
             Result<PromptTurnResult> weaveResult = await intelligence
-                .ExecutePromptAsync(weaveRequest, cancellationToken)
+                .ExecutePromptAsync(weaveRequest, ArcanumInvocationContext.None, cancellationToken)
                 .ConfigureAwait(false);
 
             if (weaveResult.IsFailure)
@@ -2589,7 +2589,7 @@ internal sealed class ApprenticeService(
                     SkipSpellRouting: true);
 
             await foreach (IntelligenceEvent frame in intelligence
-                .StreamPromptAsync(stepRequest, linkedCts.Token)
+                .StreamPromptAsync(stepRequest, ArcanumInvocationContext.None, linkedCts.Token)
                 .ConfigureAwait(false))
             {
 

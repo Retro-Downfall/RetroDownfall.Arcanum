@@ -307,7 +307,7 @@ public sealed class CovenantIndexRebuildTests
                 new FixedCovenantConnectionSource(fixture.Connection))
             .AdvanceBatchAsync(null, lease, Token);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
     }
 

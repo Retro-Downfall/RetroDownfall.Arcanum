@@ -221,21 +221,21 @@ public sealed class CovenantOperationGateTests
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete),
             Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", campaignCodeOnGlobal.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, campaignCodeOnGlobal.Error.Code);
 
         Result<CovenantCampaignExclusiveLease> resetCodeOnCampaign = await gate.AcquireCampaignExclusiveAsync(
             CovenantOperationGateFixture.CampaignOne,
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
             Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", resetCodeOnCampaign.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, resetCodeOnCampaign.Error.Code);
 
         Result<CovenantProtectedTransferLease> wrongTransferCode = await gate.AcquireProtectedTransferAsync(
             ProtectedTransferScope.Global,
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair),
             Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", wrongTransferCode.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, wrongTransferCode.Error.Code);
 
     }
 
@@ -254,7 +254,7 @@ public sealed class CovenantOperationGateTests
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete),
             Token);
 
-        Assert.Equal("Covenant.NotFound", acquired.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.NotFound, acquired.Error.Code);
 
     }
 
@@ -273,7 +273,7 @@ public sealed class CovenantOperationGateTests
             CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
             Token);
 
-        Assert.Equal("Covenant.Unavailable", blocked.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, blocked.Error.Code);
 
         await using CovenantReadLease otherCampaign = (await gate.AcquireReadAsync(
             CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignTwo),
@@ -286,7 +286,7 @@ public sealed class CovenantOperationGateTests
 
         Result<CovenantInstallationReadLease> installation = await gate.AcquireInstallationReadAsync(Token);
 
-        Assert.Equal("Covenant.Unavailable", installation.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, installation.Error.Code);
 
     }
 
@@ -301,29 +301,29 @@ public sealed class CovenantOperationGateTests
             Token)).Value;
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireReadAsync(
                 CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignTwo),
                 Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireInstallationReadAsync(Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireAcceleratorAsync(Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireCleanupAsync(CovenantOperationScope.Global, Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireMcpAsync(CovenantOperationScope.Global, Token)).Error.Code);
 
     }
@@ -383,7 +383,7 @@ public sealed class CovenantOperationGateTests
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
             Token);
 
-        Assert.Equal("Covenant.MaintenanceFailed", exclusive.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, exclusive.Error.Code);
 
         // Admission reopened: the refused close left no owner behind.
         await using CovenantReadLease afterwards =
@@ -416,7 +416,7 @@ public sealed class CovenantOperationGateTests
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
             Token);
 
-        Assert.Equal("Covenant.ManualRecoveryRequired", resumed.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resumed.Error.Code);
 
     }
 
@@ -459,12 +459,12 @@ public sealed class CovenantOperationGateTests
         await exclusive.DisposeAsync();
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Error.Code);
 
         // An ordinary acquisition can never take over a kept-closed owner.
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireExclusiveAsync(
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair),
                 Token)).Error.Code);
@@ -493,7 +493,7 @@ public sealed class CovenantOperationGateTests
 
         Result second = await exclusive.CompleteAsync(CovenantExclusiveLeaseDisposition.CommitAndReopen, Token);
 
-        Assert.Equal("Covenant.LifecycleConflict", second.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, second.Error.Code);
 
     }
 
@@ -510,7 +510,7 @@ public sealed class CovenantOperationGateTests
         await exclusive.DisposeAsync();
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Error.Code);
 
         await using CovenantExclusiveLease resumed = (await gate.ResumeExclusiveAsync(
@@ -537,7 +537,7 @@ public sealed class CovenantOperationGateTests
         await exclusive.DisposeAsync();
 
         Assert.Equal(
-            "Covenant.ManualRecoveryRequired",
+            ErrorCodes.Covenant.ManualRecoveryRequired,
             (await gate.ResumeCampaignExclusiveAsync(
                 CovenantOperationGateFixture.CampaignOne,
                 CovenantOperationGateFixture.Owner(
@@ -546,21 +546,21 @@ public sealed class CovenantOperationGateTests
                 Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.ManualRecoveryRequired",
+            ErrorCodes.Covenant.ManualRecoveryRequired,
             (await gate.ResumeCampaignExclusiveAsync(
                 CovenantOperationGateFixture.CampaignOne,
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete, effectSeed: 99),
                 Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.ForbiddenAuthority",
+            ErrorCodes.Covenant.ForbiddenAuthority,
             (await gate.ResumeCampaignExclusiveAsync(
                 CovenantOperationGateFixture.CampaignOne,
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
                 Token)).Error.Code);
 
         Assert.Equal(
-            "Covenant.ManualRecoveryRequired",
+            ErrorCodes.Covenant.ManualRecoveryRequired,
             (await gate.ResumeCampaignExclusiveAsync(
                 CovenantOperationGateFixture.CampaignTwo,
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete),
@@ -590,7 +590,7 @@ public sealed class CovenantOperationGateTests
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair),
             Token);
 
-        Assert.Equal("Covenant.LifecycleConflict", second.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, second.Error.Code);
 
     }
 
@@ -631,7 +631,7 @@ public sealed class CovenantOperationGateTests
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair),
             Token);
 
-        Assert.Equal("Covenant.ManualRecoveryRequired", resumed.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resumed.Error.Code);
 
     }
 
@@ -650,7 +650,7 @@ public sealed class CovenantOperationGateTests
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete),
             Token);
 
-        Assert.Equal("Covenant.ManualRecoveryRequired", unjournaled.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, unjournaled.Error.Code);
 
         gate.AdoptDurableRecoveryOwner(
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete),
@@ -731,13 +731,13 @@ public sealed class CovenantOperationGateTests
             finalizer,
             Token);
 
-        Assert.Equal("Covenant.MaintenanceFailed", outcome.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, outcome.Error.Code);
 
         Assert.Equal(1, finalizer.Invocations);
 
         Result retry = await exclusive.CompleteAsync(CovenantExclusiveLeaseDisposition.CommitAndReopen, Token);
 
-        Assert.Equal("Covenant.LifecycleConflict", retry.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, retry.Error.Code);
 
     }
 
@@ -773,7 +773,7 @@ public sealed class CovenantOperationGateTests
 
         // No second read lease may be combined with the compound lease: its own scope is closed.
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireReadAsync(
                 CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
                 Token)).Error.Code);
@@ -797,7 +797,7 @@ public sealed class CovenantOperationGateTests
 
         availability.Mutate(current => current with { DatasetGeneration = Guid.NewGuid() });
 
-        Assert.Equal("Covenant.StaleSnapshot", (await reader.RevalidateAsync(Token)).Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, (await reader.RevalidateAsync(Token)).Error.Code);
 
     }
 
@@ -814,7 +814,7 @@ public sealed class CovenantOperationGateTests
 
         authority.Advance();
 
-        Assert.Equal("Covenant.ForbiddenAuthority", (await turn.RevalidateAsync(Token)).Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, (await turn.RevalidateAsync(Token)).Error.Code);
 
     }
 
@@ -830,7 +830,7 @@ public sealed class CovenantOperationGateTests
 
         availability.Mutate(current => current with { AcceleratorEpoch = current.AcceleratorEpoch + 1 });
 
-        Assert.Equal("Covenant.StaleSnapshot", (await accelerator.RevalidateAsync(Token)).Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, (await accelerator.RevalidateAsync(Token)).Error.Code);
 
     }
 
@@ -844,7 +844,7 @@ public sealed class CovenantOperationGateTests
 
         await reader.DisposeAsync();
 
-        Assert.Equal("Covenant.StaleSnapshot", (await reader.RevalidateAsync(Token)).Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, (await reader.RevalidateAsync(Token)).Error.Code);
 
         // Repeated disposal is a no-op rather than a second release of a slot another lease may own.
         await reader.DisposeAsync();
@@ -868,7 +868,7 @@ public sealed class CovenantOperationGateTests
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(authority: authority);
 
         Assert.Equal(
-            "Covenant.OperatorAuthorityUnavailable",
+            ErrorCodes.Covenant.OperatorAuthorityUnavailable,
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Error.Code);
 
     }
@@ -891,7 +891,7 @@ public sealed class CovenantOperationGateTests
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
 
         Assert.Equal(
-            "Covenant.Unavailable",
+            ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Error.Code);
 
     }

@@ -72,7 +72,7 @@ internal sealed class CovenantOwnerDeletionReader
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? new CovenantCleanupCursor(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2) != 0)
             : new Error(
-                "Covenant.Unavailable",
+                ErrorCodes.Covenant.Unavailable,
                 "The Covenant family has no cleanup cursor, so it cannot consume owner deletions.");
 
     }
@@ -174,7 +174,7 @@ internal sealed class CovenantOwnerDeletionReader
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1
             ? Result.Success()
-            : new Error("Covenant.Unavailable", "The Covenant cleanup cursor row is missing.");
+            : new Error(ErrorCodes.Covenant.Unavailable, "The Covenant cleanup cursor row is missing.");
 
     }
 

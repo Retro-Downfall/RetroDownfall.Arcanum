@@ -226,7 +226,7 @@ public sealed class CovenantSearchIndexTests
                 new FixedCovenantConnectionSource(fixture.Connection))
             .SearchAsync(Query("marker", CovenantCursorScopeSelection.AllScopes, null), scoped, Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
     }
 
@@ -246,7 +246,7 @@ public sealed class CovenantSearchIndexTests
                 new FixedCovenantConnectionSource(fixture.Connection))
             .SearchAsync(Query("marker", CovenantCursorScopeSelection.Campaign, CampaignOne), other, Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
     }
 
@@ -266,7 +266,7 @@ public sealed class CovenantSearchIndexTests
                 new FixedCovenantConnectionSource(fixture.Connection))
             .SearchAsync(Query("marker", CovenantCursorScopeSelection.Global, null), lease, Token);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
     }
 

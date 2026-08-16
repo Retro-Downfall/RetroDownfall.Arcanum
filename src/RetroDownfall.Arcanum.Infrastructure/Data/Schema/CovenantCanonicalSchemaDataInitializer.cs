@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -44,6 +45,17 @@ internal sealed class CovenantCanonicalSchemaDataInitializer : IGrimoireSchemaDa
 
             await VerifyExistingStateAsync(connection, transaction, context, cancellationToken)
                 .ConfigureAwait(false);
+
+            // Converging here rather than in the core transaction is what keeps a master-key rotation
+            // from being blocked by an unhealthy canonical tier: the core row always advances, and the
+            // dataset-keyed envelope epoch advances only where its dataset actually lives (§10.12).
+            _ = await CovenantEnvelopeStateStore.ConvergeAsync(
+                connection,
+                transaction,
+                context.MasterKeyVersion,
+                context.MasterKeyFingerprint,
+                context.InstalledAtUtc,
+                cancellationToken).ConfigureAwait(false);
 
             return;
 

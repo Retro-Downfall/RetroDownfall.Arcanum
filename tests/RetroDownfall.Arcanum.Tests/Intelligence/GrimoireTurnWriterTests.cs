@@ -23,6 +23,7 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -30,20 +31,21 @@ public sealed class GrimoireTurnWriterTests
 {
 
     [Fact]
-    public async Task TryBeginBufferedAssistantReplyAsync_StatelessRequest_ReturnsEmptyHandle()
+    public async Task BeginBufferedAssistantReplyAsync_StatelessRequest_ReturnsEmptyHandle()
     {
 
         GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository());
 
-        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
             new PingRequest(
                 Prompt: "hello",
                 Model: "test-model",
                 WorkingDirectory: string.Empty,
                 StatelessMessages: [new CoreChatMessage("user", "prior")]),
+            InvocationContexts.AttendedSession(),
             "hello",
             "test-model",
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Null(handle.AssistantEntryId);
 
@@ -54,7 +56,7 @@ public sealed class GrimoireTurnWriterTests
     }
 
     [Fact]
-    public async Task TryBeginBufferedAssistantReplyAsync_SessionRequest_BeginsAndPublishes()
+    public async Task BeginBufferedAssistantReplyAsync_SessionRequest_BeginsAndPublishes()
     {
 
         Guid sessionId = Guid.NewGuid();
@@ -66,23 +68,31 @@ public sealed class GrimoireTurnWriterTests
 
         };
 
-        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        FakeSessionTurnBeginStore beginStore = new();
 
-        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+        GrimoireTurnWriter writer = CreateWriter(grimoire, beginStore);
+
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
             new PingRequest(
                 Prompt: "hello",
                 Model: "test-model",
                 WorkingDirectory: string.Empty,
                 SessionId: sessionId),
+            InvocationContexts.AttendedSession(),
             "hello",
             "test-model",
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(sessionId, handle.SessionId);
 
         Assert.NotNull(handle.AssistantEntryId);
 
-        Assert.Equal(1, grimoire.BeginCallCount);
+        Assert.Equal(1, beginStore.BeginCalls);
+
+        // The request named a Session, so nothing may create one.
+        Assert.Equal(0, beginStore.CreateCalls);
+
+        Assert.Equal(sessionId, beginStore.LastBeginSessionId);
 
         Assert.Equal(1, grimoire.RecentEntriesPublishCount);
 
@@ -96,15 +106,16 @@ public sealed class GrimoireTurnWriterTests
 
         GrimoireTurnWriter writer = CreateWriter(grimoire);
 
-        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
             new PingRequest(
                 Prompt: "hello",
                 Model: "test-model",
                 WorkingDirectory: string.Empty,
                 SessionId: Guid.NewGuid()),
+            InvocationContexts.AttendedSession(),
             "hello",
             "test-model",
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
 
@@ -168,15 +179,16 @@ public sealed class GrimoireTurnWriterTests
 
         GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
 
-        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
             new PingRequest(
                 Prompt: "hello",
                 Model: "test-model",
                 WorkingDirectory: string.Empty,
                 SessionId: Guid.NewGuid()),
+            InvocationContexts.AttendedSession(),
             "hello",
             "test-model",
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
 
@@ -240,24 +252,28 @@ public sealed class GrimoireTurnWriterTests
     }
 
     [Fact]
-    public async Task TryBeginBufferedAssistantReplyAsync_OperationCanceled_Rethrows()
+    public async Task BeginBufferedAssistantReplyAsync_OperationCanceled_Rethrows()
     {
 
-        TrackingGrimoireRepository grimoire = new() { BeginThrowsCanceled = true };
+        FakeSessionTurnBeginStore beginStore = new()
+        {
+            BeginThrows = new OperationCanceledException("begin cancelled"),
+        };
 
-        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository(), beginStore);
 
         using CancellationTokenSource cts = new();
 
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            writer.TryBeginBufferedAssistantReplyAsync(
-                new PingRequest(
+            writer.BeginBufferedAssistantReplyAsync(
+                    new PingRequest(
                     Prompt: "hello",
                     Model: "test-model",
                     WorkingDirectory: string.Empty,
                     SessionId: Guid.NewGuid()),
+                InvocationContexts.AttendedSession(),
                 "hello",
                 "test-model",
                 cts.Token));
@@ -391,25 +407,24 @@ public sealed class GrimoireTurnWriterTests
     }
 
     [Fact]
-    public async Task TryBeginBufferedAssistantReplyAsync_RethrowsOperationCanceledException()
+    public async Task BeginBufferedAssistantReplyAsync_RethrowsOperationCanceledException()
     {
 
-        TrackingGrimoireRepository grimoire = new()
+        FakeSessionTurnBeginStore beginStore = new()
         {
-
             BeginThrows = new OperationCanceledException("begin cancelled"),
-
         };
 
-        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository(), beginStore);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            writer.TryBeginBufferedAssistantReplyAsync(
-                new PingRequest(
+            writer.BeginBufferedAssistantReplyAsync(
+                    new PingRequest(
                     Prompt: "hello",
                     Model: "test-model",
                     WorkingDirectory: string.Empty,
                     SessionId: Guid.NewGuid()),
+                InvocationContexts.AttendedSession(),
                 "hello",
                 "test-model",
                 CancellationToken.None));
@@ -417,31 +432,91 @@ public sealed class GrimoireTurnWriterTests
     }
 
     [Fact]
-    public async Task TryBeginBufferedAssistantReplyAsync_SwallowsNonCancellationPersistenceFailure()
+    public async Task BeginBufferedAssistantReplyAsync_DoesNotDowngradeBeginFailureToHandleFreeTurn()
     {
 
-        TrackingGrimoireRepository grimoire = new()
+        // The exact defect this slice removes. A deleted Campaign, a missing Session, or a binding
+        // mismatch used to be caught and returned as an empty handle, so the turn continued and the
+        // operator received a normal-looking answer that nothing durable was attached to (§10.12).
+        FakeSessionTurnBeginStore beginStore = new()
         {
-
-            BeginThrows = new InvalidOperationException("db down"),
-
+            BeginResult = Result<AssistantReplyBeginReceipt>.Failure(
+                new Error(ErrorCodes.Session.NotFound, "Session not found.")),
         };
 
-        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository(), beginStore);
 
-        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+        Result<GrimoireTurnWriter.TurnHandle> result = await writer.BeginBufferedAssistantReplyAsync(
             new PingRequest(
                 Prompt: "hello",
                 Model: "test-model",
                 WorkingDirectory: string.Empty,
                 SessionId: Guid.NewGuid()),
+            InvocationContexts.AttendedSession(),
             "hello",
             "test-model",
             CancellationToken.None);
 
-        Assert.Null(handle.AssistantEntryId);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Session.NotFound, result.Error.Code);
 
-        Assert.Null(handle.SessionId);
+    }
+
+    [Fact]
+    public async Task BeginBufferedAssistantReplyAsync_CampaignDeletedBeforeBeginCreatesNoEntries()
+    {
+
+        FakeSessionTurnBeginStore beginStore = new()
+        {
+            BeginResult = Result<AssistantReplyBeginReceipt>.Failure(
+                new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
+        };
+
+        TrackingGrimoireRepository grimoire = new();
+
+        GrimoireTurnWriter writer = CreateWriter(grimoire, beginStore);
+
+        Result<GrimoireTurnWriter.TurnHandle> result = await writer.BeginBufferedAssistantReplyAsync(
+            new PingRequest(
+                Prompt: "hello",
+                Model: "test-model",
+                WorkingDirectory: string.Empty,
+                SessionId: Guid.NewGuid()),
+            InvocationContexts.AttendedSession(),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Campaign.NotFound, result.Error.Code);
+
+        // No placeholder was published, because none was written.
+        Assert.Equal(0, grimoire.RecentEntriesPublishCount);
+
+    }
+
+    [Fact]
+    public async Task BeginBufferedAssistantReplyAsync_ARequestWithNoSessionCreatesOneBoundToTheResolvedCampaign()
+    {
+
+        FakeSessionTurnBeginStore beginStore = new();
+
+        GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository(), beginStore);
+
+        Result<GrimoireTurnWriter.TurnHandle> result = await writer.BeginBufferedAssistantReplyAsync(
+            new PingRequest(
+                Prompt: "hello",
+                Model: "test-model",
+                WorkingDirectory: string.Empty),
+            InvocationContexts.AttendedSession(),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, beginStore.CreateCalls);
+        Assert.Equal(1, beginStore.BeginCalls);
+        Assert.True(beginStore.LastCampaign!.Value.IsCampaignBound);
 
     }
 
@@ -629,7 +704,7 @@ public sealed class GrimoireTurnWriterTests
     }
 
     [Fact]
-    public async Task TryBeginBufferedAssistantReplyAsync_PublishFailure_PreservesHandleAndLogs()
+    public async Task BeginBufferedAssistantReplyAsync_PublishFailure_PreservesHandleAndLogs()
     {
         Guid sessionId = Guid.NewGuid();
         TrackingGrimoireRepository grimoire = new()
@@ -640,11 +715,12 @@ public sealed class GrimoireTurnWriterTests
         CapturingLogger logger = new();
         GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
 
-        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
             new PingRequest("hello", SessionId: sessionId),
+            InvocationContexts.AttendedSession(),
             "hello",
             "test-model",
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(sessionId, handle.SessionId);
         Assert.NotNull(handle.AssistantEntryId);
@@ -748,20 +824,25 @@ public sealed class GrimoireTurnWriterTests
             async () => _ = await pendingEvent);
     }
 
-    private static GrimoireTurnWriter CreateWriter(IGrimoireRepository grimoire) =>
-        CreateWriter(grimoire, NullLogger<GrimoireTurnWriter>.Instance);
-
     private static GrimoireTurnWriter CreateWriter(
         IGrimoireRepository grimoire,
-        ILogger<GrimoireTurnWriter> logger) =>
-        CreateWriter(grimoire, logger, CreateHub());
+        FakeSessionTurnBeginStore? beginStore = null) =>
+        CreateWriter(grimoire, NullLogger<GrimoireTurnWriter>.Instance, beginStore);
 
     private static GrimoireTurnWriter CreateWriter(
         IGrimoireRepository grimoire,
         ILogger<GrimoireTurnWriter> logger,
-        SessionEventHub hub) =>
+        FakeSessionTurnBeginStore? beginStore = null) =>
+        CreateWriter(grimoire, logger, CreateHub(), beginStore);
+
+    private static GrimoireTurnWriter CreateWriter(
+        IGrimoireRepository grimoire,
+        ILogger<GrimoireTurnWriter> logger,
+        SessionEventHub hub,
+        FakeSessionTurnBeginStore? beginStore = null) =>
         new(
             grimoire,
+            beginStore ?? new FakeSessionTurnBeginStore(),
             hub,
             logger);
 

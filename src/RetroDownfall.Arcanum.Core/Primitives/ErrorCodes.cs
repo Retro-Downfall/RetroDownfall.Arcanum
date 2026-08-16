@@ -137,6 +137,12 @@ public static class ErrorCodes
         /// <summary>Explicit <c>POST /api/sessions/{id}/rest</c> could not enqueue Campaign Log consolidation.</summary>
         public const string RestQueueFull = "Session.RestQueueFull";
 
+        /// <summary>
+        /// This Session predates immutable Campaign binding, so no authority can be derived from it
+        /// until an authenticated operator resolves the binding (§10.12).
+        /// </summary>
+        public const string CampaignBindingRequired = "Session.CampaignBindingRequired";
+
     }
 
     /// <summary>Attachment — standalone session-attachment lifecycle.</summary>
@@ -168,6 +174,9 @@ public static class ErrorCodes
     {
 
         public const string LoreNotFound = "Grimoire.LoreNotFound";
+
+        /// <summary>A durable Grimoire write did not commit. The transaction wrote nothing.</summary>
+        public const string WriteFailed = "Grimoire.WriteFailed";
 
     }
 
@@ -759,6 +768,78 @@ public static class ErrorCodes
 
         /// <summary>The submitted Sanctum configuration is internally inconsistent.</summary>
         public const string InvalidConfig = "Sanctum.InvalidConfig";
+
+    }
+
+    /// <summary>
+    /// Covenant — the durable operator-and-agent profile, its authority boundary, and its tiers.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately content-free. Every message paired with one of these codes describes a decision,
+    /// never a Covenant key, authored fragment, compiled fragment, or raw content hash: these codes
+    /// travel through logs, metrics, and unauthenticated status surfaces where the content behind the
+    /// decision has no authority to be (§10.12).
+    /// </remarks>
+    public static class Covenant
+    {
+
+        /// <summary>A Covenant tier is absent, damaged, closed, or otherwise not open for this work.</summary>
+        public const string Unavailable = "Covenant.Unavailable";
+
+        /// <summary>The requested scope, key, version, or lane head does not exist.</summary>
+        public const string NotFound = "Covenant.NotFound";
+
+        /// <summary>The supplied scope is malformed, uninitialized, or wrong for the operation.</summary>
+        public const string InvalidScope = "Covenant.InvalidScope";
+
+        /// <summary>An opaque cursor failed authentication, bounds, or binding validation.</summary>
+        public const string InvalidCursor = "Covenant.InvalidCursor";
+
+        /// <summary>
+        /// The caller holds no authority for this effect, or holds authority a surface may never carry.
+        /// </summary>
+        public const string ForbiddenAuthority = "Covenant.ForbiddenAuthority";
+
+        /// <summary>
+        /// Operator authority cannot be issued at all — a tainted, unestablished, or closed installation.
+        /// </summary>
+        public const string OperatorAuthorityUnavailable = "Covenant.OperatorAuthorityUnavailable";
+
+        /// <summary>A lease, snapshot, epoch, generation, or revision the caller froze has moved on.</summary>
+        public const string StaleSnapshot = "Covenant.StaleSnapshot";
+
+        /// <summary>An expected revision lost its compare-and-swap against the current head.</summary>
+        public const string RevisionConflict = "Covenant.RevisionConflict";
+
+        /// <summary>The operation contradicts the current lifecycle state of its subject.</summary>
+        public const string LifecycleConflict = "Covenant.LifecycleConflict";
+
+        /// <summary>A bounded resource — rows, bytes, versions, receipts, or capacity — is full.</summary>
+        public const string CapacityExceeded = "Covenant.CapacityExceeded";
+
+        /// <summary>Persisted state failed its own integrity contract and must not be used.</summary>
+        public const string IntegrityFailure = "Covenant.IntegrityFailure";
+
+        /// <summary>A maintenance, cleanup, or synchronization step did not complete.</summary>
+        public const string MaintenanceFailed = "Covenant.MaintenanceFailed";
+
+        /// <summary>Automatic recovery is refused; an authenticated operator operation is required.</summary>
+        public const string ManualRecoveryRequired = "Covenant.ManualRecoveryRequired";
+
+        /// <summary>
+        /// Two authority sources named different Campaigns, or a supplied path escaped the bound one.
+        /// </summary>
+        public const string CampaignBindingConflict = "Covenant.CampaignBindingConflict";
+
+        /// <summary>
+        /// The host was started with the unsandboxed escape hatch but without matching durable markers.
+        /// </summary>
+        public const string HostToolsTransitionRequired = "Covenant.HostToolsTransitionRequired";
+
+        /// <summary>
+        /// A no-context continuation required history that carries a Covenant-derived artifact.
+        /// </summary>
+        public const string SensitiveHistoryRequiresContext = "Covenant.SensitiveHistoryRequiresContext";
 
     }
 

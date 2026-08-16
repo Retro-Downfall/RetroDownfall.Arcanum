@@ -201,6 +201,8 @@ Arcanum has exactly two ways to start a turn, and neither is a second implementa
 
 Continuation is spelled the same on both: `-c`/`--continue` for the most recent Session, `-r`/`--resume [<id>]` for a named one. The `session` family is management only — it lists, shows, forks, renames, exports, and compacts Sessions, and it never starts a turn.
 
+**Campaign resolution is verified, not inferred.** Every turn entry point resolves its Campaign through the one canonical resolver before any inference happens, so `--session`, `--campaign`, and the working directory must agree. A resumed Session that names a different Campaign than the current directory is a typed conflict rather than a silent choice between them, and a `--session` value naming a Session that does not exist is an error rather than a quietly created new conversation. Both exit `1` with the error code on stderr, or on stdout under `--json` ([DESIGN §10.12](Arcanum.DESIGN.md#1012-covenant-invocation-authority-and-campaign-binding)). No Covenant command exists yet; the operator surfaces arrive with issue #88.
+
 ## CLI command tree
 
 Top-level families group as follows. The core mirrors Claude Code; the rest is Arcanum-specific capability that Claude Code has no analog for and that this reference does not attempt to reduce.

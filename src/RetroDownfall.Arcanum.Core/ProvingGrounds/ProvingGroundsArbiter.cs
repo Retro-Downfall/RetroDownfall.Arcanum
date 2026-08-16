@@ -239,8 +239,10 @@ public sealed class ProvingGroundsArbiter(
             Temperature: 0f,
             StatelessMessages: messages);
 
+        // A semantic judge is unattended internal inference. It receives no Covenant context and
+        // exposes no mutation tool, which is exactly what None means (§10.12).
         Result<PromptTurnResult> result = await intelligence
-            .ExecutePromptAsync(ping, cancellationToken)
+            .ExecutePromptAsync(ping, ArcanumInvocationContext.None, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)

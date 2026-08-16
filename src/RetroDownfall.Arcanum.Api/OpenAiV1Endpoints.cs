@@ -260,7 +260,11 @@ internal static partial class OpenAiV1Endpoints
         CancellationToken cancellationToken,
         InferenceAuditContext? auditContext = null)
     {
-        Result<PromptTurnResult> result = await intelligence.ExecutePromptAsync(ping, cancellationToken, auditContext).ConfigureAwait(false);
+        Result<PromptTurnResult> result = await intelligence.ExecutePromptAsync(
+            ping,
+            ArcanumInvocationContexts.ForStatelessTurn(httpContext, ping),
+            cancellationToken,
+            auditContext).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -499,7 +503,11 @@ internal static partial class OpenAiV1Endpoints
             // (ADR 0004 transport/replay boundary). Tests inject a fake IArcanumIntelligenceProvider;
             // resolving ITurnExecutionFacade here would bypass that fake.
             IAsyncEnumerator<IntelligenceEvent> enumerator =
-                intelligence.StreamPromptAsync(ping, ct, auditContext).GetAsyncEnumerator(ct);
+                intelligence.StreamPromptAsync(
+                    ping,
+                    ArcanumInvocationContexts.ForStatelessTurn(httpContext, ping),
+                    ct,
+                    auditContext).GetAsyncEnumerator(ct);
 
             Task<bool> move = enumerator.MoveNextAsync().AsTask();
 

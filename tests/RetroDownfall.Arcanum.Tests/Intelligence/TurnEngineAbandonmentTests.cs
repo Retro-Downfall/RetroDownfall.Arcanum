@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -41,6 +42,7 @@ public sealed class TurnEngineAbandonmentTests
     private static TurnExecutionRequest CreateTurnRequest() =>
         new(
             new PingRequest("abandonment"),
+            InvocationContexts.AttendedSession(),
             TurnResponseMode.Streaming,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: true,

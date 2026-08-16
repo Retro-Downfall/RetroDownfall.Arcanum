@@ -36,11 +36,15 @@ public sealed partial class WizardIntelligenceProvider
 
         ContextPreviewRequest request,
 
-        CancellationToken cancellationToken = default)
+        ArcanumInvocationContext invocationContext,
+
+        CancellationToken cancellationToken)
 
     {
 
         ArgumentNullException.ThrowIfNull(request);
+
+        ArgumentNullException.ThrowIfNull(invocationContext);
 
         PingRequest turn = new(
 

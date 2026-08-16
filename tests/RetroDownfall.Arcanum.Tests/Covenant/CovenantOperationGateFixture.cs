@@ -196,7 +196,7 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
         return ValueTask.FromResult(
             succeed
                 ? Result.Success()
-                : Result.Failure(new Error("Covenant.MaintenanceFailed", "The durable journal did not advance.")));
+                : Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, "The durable journal did not advance.")));
 
     }
 

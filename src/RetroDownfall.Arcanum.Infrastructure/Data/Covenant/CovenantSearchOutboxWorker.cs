@@ -74,7 +74,7 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed before this synchronization batch could apply.");
 
         }
@@ -83,7 +83,7 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant accelerator epoch changed before this synchronization batch could apply.");
 
         }
@@ -387,7 +387,7 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         catch (SqliteException exception)
         {
 
-            return new Error("Covenant.IntegrityFailure", exception.Message);
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
 
         }
 
