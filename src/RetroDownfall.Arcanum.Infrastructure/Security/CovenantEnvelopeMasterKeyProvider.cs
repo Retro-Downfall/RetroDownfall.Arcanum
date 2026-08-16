@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -64,6 +65,10 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
     {
 
         ArgumentNullException.ThrowIfNull(transition);
+
+        // Deriving Covenant envelope keys puts Covenant-authorizing material in this process, so it
+        // latches residence for the same reason a canonical connection does (§10.12).
+        CovenantProcessResidence.MarkOpened();
 
         try
         {

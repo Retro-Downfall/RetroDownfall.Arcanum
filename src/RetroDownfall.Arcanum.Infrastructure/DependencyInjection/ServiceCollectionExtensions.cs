@@ -1025,6 +1025,43 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
                 sp.GetRequiredService<CovenantAuthoritySnapshotProvider>()));
 
+        return services.AddHostProcessToolsAuthority();
+
+    }
+
+    /// <summary>
+    /// The host-process-tools taint boundary: one marker slot, one trusted environment probe, one
+    /// pure joiner, and the process-wide policy the startup gate publishes into.
+    /// </summary>
+    /// <remarks>
+    /// The policy is a singleton and is deliberately registered under both its concrete and interface
+    /// types: the startup gate needs the publisher, every consumer needs only the read side, and both
+    /// have to be the same instance or a consumer would read an unpublished default forever.
+    ///
+    /// <para>No transition service is registered. Enabling the escape hatch requires a stopped host,
+    /// so it is composed by its own offline entry point against a connection that process owns, and a
+    /// resolvable singleton would invite a running host to call it.</para>
+    /// </remarks>
+    private static IServiceCollection AddHostProcessToolsAuthority(this IServiceCollection services)
+    {
+
+        services.AddSingleton<HostProcessToolsRuntimePolicy>();
+
+        services.AddSingleton<IHostProcessToolsRuntimePolicy>(
+            static sp => sp.GetRequiredService<HostProcessToolsRuntimePolicy>());
+
+        services.AddSingleton<IHostProcessToolsMarkerPairJoiner, HostProcessToolsMarkerPairJoiner>();
+
+        services.AddSingleton<IHostProcessToolsMarkerStore>(
+            static sp => new HostProcessToolsMarkerStore(sp.GetRequiredService<IOsCredentialStore>()));
+
+        // An explicit factory with an optional options resolution: this probe runs during bootstrap
+        // in containers that never bound the options pipeline, and a required resolution there would
+        // turn a missing registration into a startup failure rather than a hardened default.
+        services.AddSingleton<IHostProcessToolsEnvironmentProbe>(
+            static sp => new HostProcessToolsEnvironmentProbe(
+                sp.GetService<IOptions<ArcanumSettings>>()));
+
         return services;
 
     }
@@ -1125,6 +1162,28 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ICovenantSearchIndex>(
             static sp => new CovenantSearchIndex(sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        // The information-flow ledger and the derived-output producers that route through it. All
+        // scoped, because each writes its label inside the transaction its caller already owns on the
+        // scoped Grimoire connection; a singleton would have to open a second one and lose exactly
+        // the atomicity the label exists for (§10.12).
+        services.AddScoped<IArtifactSensitivityLedger>(
+            static sp => new ArtifactSensitivityLedger(sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        services.AddScoped(
+            static sp => new SessionDerivedArtifactStore(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddScoped<ISessionSummaryArtifactStore>(
+            static sp => sp.GetRequiredService<SessionDerivedArtifactStore>());
+
+        services.AddScoped<ISessionTitleArtifactStore>(
+            static sp => sp.GetRequiredService<SessionDerivedArtifactStore>());
+
+        services.AddScoped<IProtectedAssistantArtifactReader>(
+            static sp => new ProtectedAssistantArtifactReader(
+                sp.GetRequiredService<ICovenantConnectionSource>()));
 
         // One boot identity for the whole process. A disclosure subject records which boot created
         // it so startup can tell an adoptable orphan from a turn that is still live, and a per-scope

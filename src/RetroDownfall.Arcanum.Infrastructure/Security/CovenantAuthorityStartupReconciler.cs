@@ -24,6 +24,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 ///
 /// <para>Failure here never aborts startup. Authority stays unpublished, which every consumer already
 /// reads as "no operator authority", and the rest of Arcanum keeps working.</para>
+///
+/// <para>The host-tools runtime policy is consulted first and is not advisory. A process the startup
+/// gate told is tainted, blocked, or simply unclassified must never derive an envelope key or publish
+/// an authority snapshot, because both are the material that makes Covenant readable — and on a
+/// tainted installation arbitrary same-identity code can read whatever this process holds.</para>
 /// </remarks>
 internal static class CovenantAuthorityStartupReconciler
 {
@@ -33,6 +38,7 @@ internal static class CovenantAuthorityStartupReconciler
         CovenantAuthoritySnapshotProvider authorityProvider,
         CovenantEnvelopeMasterKeyProvider keyProvider,
         CovenantAvailabilitySnapshot availability,
+        IHostProcessToolsRuntimePolicy hostToolsPolicy,
         string masterApiKey,
         CancellationToken cancellationToken)
     {
@@ -44,6 +50,19 @@ internal static class CovenantAuthorityStartupReconciler
         ArgumentNullException.ThrowIfNull(keyProvider);
 
         ArgumentNullException.ThrowIfNull(availability);
+
+        ArgumentNullException.ThrowIfNull(hostToolsPolicy);
+
+        if (!hostToolsPolicy.CovenantPermitted)
+        {
+
+            Log.Warning(
+                "Covenant authority stays unavailable: the host-process-tools startup gate has not permitted it ({Disposition}).",
+                hostToolsPolicy.Disposition?.ToString() ?? "Unclassified");
+
+            return;
+
+        }
 
         try
         {

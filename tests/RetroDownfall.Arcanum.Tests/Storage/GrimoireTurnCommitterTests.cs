@@ -9,7 +9,9 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
@@ -221,6 +223,159 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
         Assert.Equal(string.Empty, await ReadContentAsync(assistantEntryId));
         Assert.Null(await ReadGuardOutcomeAsync(assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_LabelsACovenantDerivedResponseInTheSameTransaction()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        Guid generation = Guid.NewGuid();
+
+        Result<TurnCommitReceipt> committed = await Committer().CommitTurnAsync(
+            new TurnCommitRequest(
+                assistantEntryId,
+                sessionId,
+                AssistantFinalizationOutcome.Committed,
+                "the tainted answer",
+                CovenantTask6Fixture.D(51),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([generation])),
+            CancellationToken.None);
+
+        Assert.True(committed.IsSuccess, committed.Error.Message);
+        Assert.Equal("the tainted answer", await ReadContentAsync(assistantEntryId));
+
+        Assert.Equal(
+            (long)ContentSensitivity.CovenantDerived,
+            await ScalarAsync(
+                "SELECT SensitivityCode FROM artifact_sensitivity WHERE ArtifactId = $id;",
+                assistantEntryId));
+
+        // The Session projection is what the response-cache filter reads, so it has to move in the
+        // same transaction rather than being recomputed later from the labels.
+        Assert.Equal(
+            1L,
+            await ScalarAsync(
+                "SELECT TaintedArtifactCount FROM session_sensitivity_state WHERE SessionId = $id;",
+                sessionId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_LeavesNoLabelForAnUntaintedResponse()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        _ = await Committer().CommitTurnAsync(
+            Request(sessionId, assistantEntryId, "an ordinary answer"),
+            CancellationToken.None);
+
+        Assert.Null(await ScalarAsync(
+            "SELECT SensitivityCode FROM artifact_sensitivity WHERE ArtifactId = $id;",
+            assistantEntryId));
+
+        Assert.Null(await ScalarAsync(
+            "SELECT TaintedArtifactCount FROM session_sensitivity_state WHERE SessionId = $id;",
+            sessionId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_DiscardsWithoutLabellingAnEntryThatNoLongerExists()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        Result<TurnCommitReceipt> discarded = await Committer().CommitTurnAsync(
+            new TurnCommitRequest(
+                assistantEntryId,
+                sessionId,
+                AssistantFinalizationOutcome.Discarded,
+                string.Empty,
+                CovenantTask6Fixture.D(52),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.NewGuid()])),
+            CancellationToken.None);
+
+        Assert.True(discarded.IsSuccess, discarded.Error.Message);
+
+        // A label pointing at a deleted placeholder would keep the Session tainted for content
+        // nobody can read.
+        Assert.Null(await ScalarAsync(
+            "SELECT SensitivityCode FROM artifact_sensitivity WHERE ArtifactId = $id;",
+            assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_RollsBackTheResponseWhenItsLabelContradictsAnExistingOne()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        // Evidence from an earlier attempt against this same assistant identity, describing
+        // different bytes. A crash between labelling and finalizing leaves exactly this.
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(CancellationToken.None);
+        }
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(connection));
+
+        Result<LabeledArtifactWriteReceipt> seeded = await ledger.LabelAsync(
+            new DerivedArtifactWrite(
+                SensitiveArtifactKind.AssistantEntry,
+                assistantEntryId,
+                sessionId,
+                null,
+                null,
+                artifactRevision: 1,
+                DerivedArtifactContentDigest.ForText("an earlier tainted answer"),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.NewGuid()])),
+            CancellationToken.None);
+
+        Assert.True(seeded.IsSuccess, seeded.Error.Message);
+
+        Result<TurnCommitReceipt> conflicting = await Committer().CommitTurnAsync(
+            new TurnCommitRequest(
+                assistantEntryId,
+                sessionId,
+                AssistantFinalizationOutcome.Committed,
+                "a different answer",
+                CovenantTask6Fixture.D(54),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.NewGuid()])),
+            CancellationToken.None);
+
+        Assert.True(conflicting.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, conflicting.Error.Code);
+        Assert.Equal(string.Empty, await ReadContentAsync(assistantEntryId));
+        Assert.Null(await ReadGuardOutcomeAsync(assistantEntryId));
+    }
+
+    private async Task<long?> ScalarAsync(string sql, Guid id)
+    {
+        await using SqliteCommand command = ((SqliteConnection)_db!.Database.GetDbConnection()).CreateCommand();
+
+        if (command.Connection!.State != System.Data.ConnectionState.Open)
+        {
+            await command.Connection.OpenAsync(CancellationToken.None);
+        }
+
+        command.CommandText = sql;
+
+        _ = command.Parameters.AddWithValue("$id", id.ToString().ToUpperInvariant());
+
+        object? value = await command.ExecuteScalarAsync(CancellationToken.None);
+
+        return value is null or DBNull ? null : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static TurnCommitRequest Request(

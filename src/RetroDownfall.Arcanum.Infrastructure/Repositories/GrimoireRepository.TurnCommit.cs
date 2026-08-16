@@ -158,6 +158,21 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             }
 
+            Result labelled = await LabelAssistantEntryAsync(
+                request,
+                connection,
+                sqliteTransaction,
+                cancellationToken).ConfigureAwait(false);
+
+            if (labelled.IsFailure)
+            {
+
+                await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return labelled.Error;
+
+            }
+
             await InsertFinalizationGuardAsync(
                 connection,
                 sqliteTransaction,
@@ -182,6 +197,44 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             throw;
 
         }
+
+    }
+
+    /// <summary>
+    /// Writes the assistant entry's information-flow label inside the finalization transaction.
+    /// </summary>
+    /// <remarks>
+    /// Same transaction as the content, deliberately: a Covenant-derived response whose label did
+    /// not land would be protected content sitting in the Grimoire with nothing recording that it is
+    /// protected, and every reader downstream — cache filters, exports, generic search — would treat
+    /// it as ordinary. A label failure therefore fails the whole finalization rather than degrading
+    /// (§10.12).
+    ///
+    /// <para>A discarded placeholder is not labelled. There is no durable artifact left to describe,
+    /// and a label pointing at a deleted entry would keep the Session projection tainted for content
+    /// nobody can read.</para>
+    /// </remarks>
+    private static async Task<Result> LabelAssistantEntryAsync(
+        TurnCommitRequest request,
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+
+        if (request.Outcome is AssistantFinalizationOutcome.Discarded)
+        {
+
+            return Result.Success();
+
+        }
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ArtifactSensitivityLedger.WriteWithinAsync(
+            connection,
+            transaction,
+            request.ToDerivedArtifactWrite(),
+            cancellationToken).ConfigureAwait(false);
+
+        return labelled.IsFailure ? labelled.Error : Result.Success();
 
     }
 

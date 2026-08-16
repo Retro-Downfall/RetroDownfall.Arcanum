@@ -28,6 +28,19 @@ public static class ArcanumCredentialIdentity
     /// </remarks>
     public const string CampaignRootIdentityKeyAccount = "campaign-root-identity-key";
 
+    /// <summary>
+    /// The dedicated slot recording that this installation once enabled unsandboxed host-process
+    /// tools.
+    /// </summary>
+    /// <remarks>
+    /// Its own account precisely because it must outlive everything else. A database reset, a
+    /// restore from an untainted archive, a master-key rotation, and an ordinary credential cleanup
+    /// all leave this slot alone; only the attested full-installation reinitialize may compare-delete
+    /// it. A marker folded into another secret would be erased by the first operation that rotated
+    /// that secret, which is the evidence loss this second marker exists to prevent.
+    /// </remarks>
+    public const string HostProcessToolsTaintAccount = "host-process-tools-taint";
+
     /// <summary>OS credential account used by the native Perplexity web-research provider.</summary>
     public const string PerplexityApiKeyAccount = "provider-perplexity-api-key";
 
