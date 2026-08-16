@@ -106,7 +106,7 @@ if [[ -f "$STAGE_DIR/$PUBLISHED_NAME" ]]; then
   mv "$STAGE_DIR/$PUBLISHED_NAME" "$STAGE_DIR/arcanum"
 fi
 chmod +x "$STAGE_DIR/arcanum"
-cp "$REPO_ROOT/docs/Arcanum.README.md" "$STAGE_DIR/README.md"
+cp "$REPO_ROOT/README.md" "$STAGE_DIR/README.md"
 
 # The csproj enables Native AOT on macOS only when ld64.lld is present and otherwise falls back to a
 # self-contained CoreCLR folder publish. That fallback signs, notarizes, launches, and passes every
