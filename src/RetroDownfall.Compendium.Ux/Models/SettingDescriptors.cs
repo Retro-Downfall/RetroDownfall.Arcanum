@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
@@ -97,6 +98,7 @@ public static class SettingDescriptors
         new("features.guardrails", ConfigSection.Features, "Content filters", "Apply safety filters to block inappropriate content.", SettingKind.Bool),
         new("features.workspaceChecks", ConfigSection.Features, "Workspace validation", "Verify workspace setup before running commands.", SettingKind.Bool),
         new("features.memoryManagement", ConfigSection.Features, "Memory controls", "Allow users to delete, pin, or compress conversation memory.", SettingKind.Bool),
+        new("features.covenant", ConfigSection.Features, "Use The Covenant", CovenantExternalRetentionDisclosure.EnablementText, SettingKind.Bool, HelpRoute: SettingHelpRoute.ConfiguredProviderRetention),
 
         // Integration facts and allowlists
         new("integrations.a2A.serverPath", ConfigSection.Integrations, "AI-to-AI endpoint", "Web path for other AI systems to connect to.", SettingKind.String, Placeholder: "/api/conclave/a2a", Group: "AI collaboration"),

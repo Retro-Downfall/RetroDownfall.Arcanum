@@ -204,4 +204,44 @@ public sealed class ArcanumSettingsBindingTests
         Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
     }
 
+    /// <summary>
+    /// Issue #89 — The Covenant is off unless an operator wrote <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// Both halves matter. A default of <c>false</c> is the whole disabled-path guarantee: an
+    /// installation that never mentions the key adds no prompt bytes and performs no Covenant read.
+    /// Binding <c>true</c> through the <em>generated</em> binder is the other half, because the
+    /// generator silently skips <c>init</c>-only properties (dotnet/runtime#107856) — a
+    /// <c>Covenant { get; init; }</c> would leave the feature permanently off while
+    /// <c>arcanum.json</c> still said otherwise.
+    /// </remarks>
+    [Fact]
+    public void Covenant_feature_defaults_false_and_binds_true_through_generated_configuration()
+    {
+
+        Assert.False(new FeatureSettings().Covenant);
+
+        Assert.True(BindArcanum("""{"Arcanum":{"features":{"covenant":true}}}""").Features.Covenant);
+
+        Assert.False(BindArcanum("""{"Arcanum":{"features":{}}}""").Features.Covenant);
+
+    }
+
+    private static ArcanumSettings BindArcanum(string json)
+    {
+
+        using MemoryStream stream = new(System.Text.Encoding.UTF8.GetBytes(json));
+
+        IConfigurationRoot configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
+
+        ServiceCollection services = new();
+
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        return provider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+    }
+
 }
