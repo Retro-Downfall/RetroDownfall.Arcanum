@@ -11,7 +11,7 @@ The repository has seven canonical documents and one focused companion:
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) owns architecture, design, persistence, runtime, packaging, and test contracts.
 - [`Arcanum.API.md`](Arcanum.API.md) owns native and OpenAI-compatible HTTP contracts.
 - [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) owns complete CLI syntax, options, aliases, interactive commands, output modes, and exit behavior.
-- [`Arcanum.README.md`](Arcanum.README.md) is the contributor and operator primer.
+- [`README.md`](../README.md) is the contributor and operator primer.
 - This guide explains how the pieces fit together.
 - [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) is the complete public configuration reference.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) is the verified breakpoint and debugging recipe guide.
@@ -195,7 +195,7 @@ Several rules make persistence reliable:
 - atomic files use owner-only staging, durable flush, replacement, and identity-owned cleanup;
 - security-sensitive reads use no-follow handles, size ceilings, and identity revalidation.
 
-Arcanum is still in the pre-user-data schema phase, which is exactly why the schema has no migration machinery: there is nobody to migrate. A schema change edits the object file in place, and an incompatible local database is recreated rather than upgraded. Follow the destructive recovery procedure in [`Arcanum.README.md`](Arcanum.README.md#local-grimoire-reinstall) only after preserving anything needed.
+Arcanum is still in the pre-user-data schema phase, which is exactly why the schema has no migration machinery: there is nobody to migrate. A schema change edits the object file in place, and an incompatible local database is recreated rather than upgraded. Follow the destructive recovery procedure in [`README.md`](../README.md#local-grimoire-reinstall) only after preserving anything needed.
 
 Persisted attachment and operation payloads use authenticated encrypted blobs. The file-encryption lifecycle supports migration, verification, key rotation, resumable checkpoints, and safe retained key retirement.
 

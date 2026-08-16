@@ -199,7 +199,7 @@ try {
         if ($stagedHost -ne $stagedArcanum) {
             Move-Item -LiteralPath $stagedHost -Destination $stagedArcanum -Force
         }
-        Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\Arcanum.README.md") -Destination (Join-Path $stageDir "README.md")
+        Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination (Join-Path $stageDir "README.md")
 
         Assert-StagedNatives -StageDir $stageDir -Names @("e_sqlcipher.dll", "libonigwrap.dll")
 
@@ -231,7 +231,7 @@ try {
 
         New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
         Copy-Item -Path (Join-Path $publishDir "*") -Destination $stageDir -Recurse -Force
-        Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\Arcanum.README.md") -Destination (Join-Path $stageDir "README.md")
+        Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination (Join-Path $stageDir "README.md")
 
         if ($Sign) {
             Invoke-StageAuthenticodeSign -StageDir $stageDir

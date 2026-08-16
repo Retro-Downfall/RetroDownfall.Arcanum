@@ -1316,7 +1316,7 @@ The following documents own or explain the detailed contracts summarized here:
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security,
   testing, and current implementation evidence.
-- [`Arcanum.README.md`](Arcanum.README.md): agent and operator orientation plus current feature
+- [`README.md`](../README.md): agent and operator orientation plus current feature
   status.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim
   lifecycle for readers who do not need implementation-level contracts.
