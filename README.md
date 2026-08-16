@@ -1,5 +1,7 @@
 # Retro Downfall Arcanum
 
+See [`Retro Downfall`](https://retrodownfall.com) to apply for collaborator privileges. [`Retro Downfall`](https://retrodownfall.com) will pay for your subscription to this repository. If you are found to be a trust-worthy contributor, then more and more privileges and benefits await...
+
 > **Agent orientation document.** This README gives an AI coding agent or operator the shortest
 > useful context for Arcanum. **[`Arcanum.DESIGN.md`](docs/Arcanum.DESIGN.md)** is authoritative for
 > architecture, persistence, runtime behavior, packaging, and testing. Exact HTTP contracts belong
