@@ -1,5 +1,6 @@
 using System.Text.Json;
 
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -61,6 +62,13 @@ internal sealed partial class ArcanumInternalToolServer
             ["delete_lexicon"] = ExecuteDeleteLexiconAsync,
 
             ["search_archives"] = ExecuteSearchArchivesAsync,
+
+            // Always registered, never unconditionally advertised. Registration keeps runtime
+            // enablement and schema-repair recovery working without rebuilding connection
+            // partitions; the handlers recheck the live facts and fail closed on their own.
+            [CovenantToolNames.ProposeCovenant] = ExecuteProposeCovenantAsync,
+
+            [CovenantToolNames.RetireCovenant] = ExecuteRetireCovenantAsync,
 
             ["read_saga"] = ExecuteReadSagaAsync,
 

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -773,6 +774,17 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             .ToHashSet(StringComparer.Ordinal);
 
         Assert.Contains("send_commlink_alert", listedNames);
+
+        // The two Covenant mutation handlers are registered unconditionally and advertised only
+        // while the feature gate and canonical tier are live, so on a host that composed no Covenant
+        // tier they are exactly the registered-but-unlisted names (§10.14). Everything else must
+        // still match one-for-one: an advertised tool with no handler, or a handler nobody can see,
+        // is a wiring bug either way.
+        registeredNames.ExceptWith((string[])
+        [
+            CovenantToolNames.ProposeCovenant,
+            CovenantToolNames.RetireCovenant,
+        ]);
 
         Assert.Equal(registeredNames, listedNames);
 

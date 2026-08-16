@@ -78,6 +78,23 @@ public static class ErrorCodes
         /// <summary>Last-resort code for an exception that escaped every endpoint.</summary>
         public const string Unhandled = "Hub.Unhandled";
 
+        /// <summary>
+        /// A provider attempt streamed more buffered tool-name and argument bytes, or more
+        /// simultaneous call indexes, than the code-owned transport bounds permit.
+        /// </summary>
+        /// <remarks>
+        /// Crossing a bound aborts the whole attempt and clears every private buffer before any
+        /// classification or dispatch, so a provider cannot exhaust host memory by never terminating
+        /// a tool call (§10.14).
+        /// </remarks>
+        public const string ProviderToolBufferExceeded = "Hub.ProviderToolBufferExceeded";
+
+        /// <summary>
+        /// A streamed tool call never assembled into one coherent identity: a changed final name or
+        /// call id, a reused call index, malformed UTF-8, or an incomplete termination.
+        /// </summary>
+        public const string ProviderToolCallInvalid = "Hub.ProviderToolCallInvalid";
+
     }
 
     /// <summary>Campaign — forge workspace registration and paths.</summary>
@@ -840,6 +857,16 @@ public static class ErrorCodes
         /// A no-context continuation required history that carries a Covenant-derived artifact.
         /// </summary>
         public const string SensitiveHistoryRequiresContext = "Covenant.SensitiveHistoryRequiresContext";
+
+        /// <summary>
+        /// A Covenant MCP tool was invoked by a turn that carries no staging capability.
+        /// </summary>
+        /// <remarks>
+        /// MCP-only. The operator API has authenticated authority and never reaches this code; a tool
+        /// call reaches it whenever the feature, the tier, the invocation, or the tool policy stopped
+        /// permitting a mutation between advertisement and dispatch (§10.14).
+        /// </remarks>
+        public const string IneligibleTurn = "Covenant.IneligibleTurn";
 
     }
 

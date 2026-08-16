@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -73,6 +74,12 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _searchArchivesSchema;
 
+    private readonly JsonElement _proposeCovenantSchema;
+
+    private readonly JsonElement _retireCovenantSchema;
+
+    private readonly JsonElement _covenantMutationOutputSchema;
+
     private readonly JsonElement _readSagaSchema;
 
     private readonly JsonElement _attachSessionFileSchema;
@@ -114,6 +121,14 @@ internal sealed partial class ArcanumInternalToolServer
     private readonly bool _a2aClientEnabled;
 
     private readonly bool _allowHostProcessTools;
+
+    /// <summary>
+    /// The live Covenant availability publisher, or <see langword="null"/> on a host that composed no
+    /// Covenant tier at all. Both Covenant handlers are registered either way and refuse on their own.
+    /// </summary>
+    private readonly ICovenantAvailability? _covenantAvailability;
+
+    private readonly CovenantToolCapabilityRegistry? _covenantCapabilities;
 
     /// <summary>
     /// In-flight <c>tools/call</c> request ids to their linked <see cref="CancellationTokenSource"/>, so
@@ -267,6 +282,17 @@ internal sealed partial class ArcanumInternalToolServer
 
         _allowHostProcessTools = allowHostProcessTools;
 
+        // Resolved once from a throwaway scope because both are host singletons. A host that composed
+        // no Covenant tier resolves nothing and the two handlers stay inert.
+        using (IServiceScope composition = scopeFactory.CreateScope())
+        {
+
+            _covenantAvailability = composition.ServiceProvider.GetService<ICovenantAvailability>();
+
+            _covenantCapabilities = composition.ServiceProvider.GetService<CovenantToolCapabilityRegistry>();
+
+        }
+
         _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
 
         _ambientConnectionKey = string.IsNullOrWhiteSpace(ambientConnectionKey)
@@ -301,6 +327,12 @@ internal sealed partial class ArcanumInternalToolServer
         _deleteLexiconSchema = BuildDeleteLexiconSchema();
 
         _searchArchivesSchema = BuildSearchArchivesSchema();
+
+        _proposeCovenantSchema = BuildProposeCovenantSchema();
+
+        _retireCovenantSchema = BuildRetireCovenantSchema();
+
+        _covenantMutationOutputSchema = BuildCovenantMutationOutputSchema();
 
         _readSagaSchema = BuildReadSagaSchema();
 
@@ -923,6 +955,32 @@ internal sealed partial class ArcanumInternalToolServer
                 });
         }
 
+        if (CovenantToolsAvailable())
+        {
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = CovenantToolNames.ProposeCovenant,
+                    Description =
+                        "Propose one standing preference the operator has expressed, so it is honored in later sessions without being restated. "
+                        + "It is stored for their review and is never treated as an instruction until they confirm it. "
+                        + "Use it for durable preferences about how they want you to work, not for facts about the task at hand.",
+                    InputSchema = _proposeCovenantSchema,
+                    OutputSchema = _covenantMutationOutputSchema,
+                });
+
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = CovenantToolNames.RetireCovenant,
+                    Description =
+                        "Retire one standing preference that this turn actually showed you, when the operator says it no longer applies. "
+                        + "It requires their approval, and it can only target content admitted into this exact model call.",
+                    InputSchema = _retireCovenantSchema,
+                    OutputSchema = _covenantMutationOutputSchema,
+                });
+        }
+
         if (_settings.EnableArchiveSearch)
         {
             tools.Add(
@@ -1071,6 +1129,9 @@ internal sealed partial class ArcanumInternalToolServer
             PersistedToolInvocationAmbient.Current;
         ApprenticeToolInvocationContext? previousApprenticeAmbient =
             ApprenticeToolInvocationAmbient.Current;
+        CovenantToolCapabilityGrant? previousCovenantAmbient =
+            CovenantToolInvocationAmbient.Current;
+        CovenantToolCapabilityGrant? takenCovenantCapability = null;
         try
         {
             JsonElement toolArguments = call.Arguments;
@@ -1107,6 +1168,17 @@ internal sealed partial class ArcanumInternalToolServer
                     ? apprenticeContext
                     : null;
 
+            // Taken before dispatch, exactly once, on the server's own task. A handler that resolved
+            // its own capability could be raced by a second call reusing the same request id.
+            if (CovenantToolNames.IsCovenantMutationTool(call.Name)
+                && _covenantCapabilities is not null
+                && _covenantCapabilities.TryTake(_ambientConnectionKey, requestKey) is { IsSuccess: true } grant)
+            {
+                takenCovenantCapability = grant.Value;
+            }
+
+            CovenantToolInvocationAmbient.Current = takenCovenantCapability;
+
             if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
             {
 
@@ -1135,6 +1207,19 @@ internal sealed partial class ArcanumInternalToolServer
                 previousPersistedAmbient;
             ApprenticeToolInvocationAmbient.Current =
                 previousApprenticeAmbient;
+            CovenantToolInvocationAmbient.Current = previousCovenantAmbient;
+
+            if (takenCovenantCapability is { } spent)
+            {
+                // Drain first, then free the id. Freeing it first would let a later call install a
+                // capability under an id whose previous handler is still finishing.
+                await spent.Capability.DisposeAsync().ConfigureAwait(false);
+
+                _ = _covenantCapabilities?.Remove(
+                    _ambientConnectionKey,
+                    requestKey,
+                    spent.Nonce);
+            }
 
             SessionAttachmentToolAmbient.UnbindRequest(_ambientConnectionKey, requestKey);
             ApplyPatchInvocationBinding.UnbindRequest(
