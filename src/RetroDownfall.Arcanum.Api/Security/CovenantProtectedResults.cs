@@ -19,6 +19,11 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// kind of rule a second surface forgets. A protected page that picked up an <c>ETag</c> from a
 /// generic filter would become conditionally revalidatable, and a 304 is a cache hit on content the
 /// installation may since have erased (§10.16).
+///
+/// <para>Issue #89 widened the emitted tuple from a bare <c>no-store</c> to the full
+/// <c>no-store, private</c> / <c>Pragma: no-cache</c> / <c>Expires: 0</c> set now owned by
+/// <see cref="CovenantProtectedResponseHeaders"/>, so that every protected path — buffered, streamed,
+/// and refused — emits the same headers rather than two nearly identical ones (§10.18).</para>
 /// </remarks>
 internal static class CovenantProtectedResponse
 {
@@ -26,19 +31,7 @@ internal static class CovenantProtectedResponse
     /// <summary>
     /// Marks a response uncacheable and strips every validator that could make it conditional.
     /// </summary>
-    internal static void Seal(HttpResponse response)
-    {
-
-        response.Headers.CacheControl = "no-store";
-
-        // Removed rather than merely not set. Another filter may have added one earlier in the
-        // pipeline, and a validator on a no-store response is exactly the combination a
-        // permissive intermediary resolves in the wrong direction.
-        response.Headers.Remove(HeaderNames.ETag);
-
-        response.Headers.Remove(HeaderNames.LastModified);
-
-    }
+    internal static void Seal(HttpResponse response) => CovenantProtectedResponseHeaders.Apply(response);
 
 }
 

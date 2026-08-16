@@ -109,6 +109,11 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         Assert.Contains(ArcanumApiHeaders.StructuredOutputWarning, policy.ExposedHeaders);
 
+        // Issue #89: the server echoes the context policy it actually applied. A browser client that
+        // could send X-Arcanum-Context-Policy but never read back what was honoured would be guessing
+        // about whether its request suppressed durable context or silently kept it.
+        Assert.Contains(ArcanumApiHeaders.ContextPolicy, policy.ExposedHeaders);
+
     }
 
     [Fact]

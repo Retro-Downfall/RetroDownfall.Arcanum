@@ -12,4 +12,11 @@ public static class ArcanumApiHeaders
 
     /// <summary>Advisory notice emitted when a <c>/v1</c> structured-output request was downgraded.</summary>
     public const string StructuredOutputWarning = "X-Arcanum-Structured-Output-Warning";
+
+    /// <summary>
+    /// The one header that suppresses durable context injection for a request. Its only legal value
+    /// is the lowercase literal <c>none</c>; every other value is a 400 decided before the body is
+    /// read (DESIGN §10.18).
+    /// </summary>
+    public const string ContextPolicy = "X-Arcanum-Context-Policy";
 }

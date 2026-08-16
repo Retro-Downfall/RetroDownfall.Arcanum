@@ -627,6 +627,15 @@ public static class ServiceCollectionExtensions
         // taken by the in-process MCP server, and those two run on different tasks.
         services.AddSingleton<CovenantToolCapabilityRegistry>();
 
+        // The one bridge from Arcanum:Features:Covenant to the in-memory gate every Covenant path
+        // reads. Registered as a singleton and started as a hosted service so the same instance owns
+        // the subscription it later disposes; two instances would leave one publishing after
+        // shutdown, and a disable is the one publication that must not be lost.
+        services.AddSingleton<CovenantFeatureConfigurationPublisher>();
+
+        services.AddHostedService(
+            static sp => sp.GetRequiredService<CovenantFeatureConfigurationPublisher>());
+
         services.AddCovenantAuthority();
 
         services.AddCampaignPathIdentity();
@@ -1203,6 +1212,16 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped(
             static sp => new CovenantQuotaGuard(sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        // Scoped beside the quota guard it reserves through, and given the same process boot identity
+        // the disclosure journal uses. Startup tells an adoptable prior-boot claim from one this
+        // process still owns by comparing that identity; a per-scope boot ID would make every live
+        // claim look abandoned.
+        services.AddScoped<ISessionTurnClaimCoordinator>(
+            static sp => new SessionTurnClaimStore(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<CovenantQuotaGuard>(),
+                sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
 
         services.AddScoped(
             static sp => new CovenantMutationKernel(sp.GetRequiredService<CovenantQuotaGuard>()));

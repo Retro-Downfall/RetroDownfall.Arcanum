@@ -32,7 +32,8 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Equal(1, descriptor.MaxCheckpointVersion);
 
         Assert.Single(
-            LongRunningOperationRecoveryRegistry.Descriptors.Values.Where(entry => entry.Kind == kind));
+            LongRunningOperationRecoveryRegistry.Descriptors.Values,
+            entry => entry.Kind == kind);
 
     }
 

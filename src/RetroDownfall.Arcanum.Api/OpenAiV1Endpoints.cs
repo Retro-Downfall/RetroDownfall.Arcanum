@@ -55,6 +55,7 @@ internal static partial class OpenAiV1Endpoints
     {
         _ = v1.MapPost("/chat/completions", HandleChatCompletionsAsync)
             .WithName("PostOpenAiChatCompletions")
+            .AllowCovenantContext()
             .WithLargeRequestBody()
             .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
     }

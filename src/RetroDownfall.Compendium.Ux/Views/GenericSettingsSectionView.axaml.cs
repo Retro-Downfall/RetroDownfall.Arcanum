@@ -2,7 +2,9 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data;
 using Avalonia.Media;
+using System.Collections.Immutable;
 using System.ComponentModel;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Compendium.Ux.Models;
 using RetroDownfall.Compendium.Ux.ViewModels;
 using RetroDownfall.Compendium.Ux.Views.Controls;
@@ -194,6 +196,15 @@ public partial class GenericSettingsSectionView : UserControl
 
         }
 
+        // Disclosure first, then the control it warns about. A warning rendered underneath the
+        // switch is read after the decision, which makes it a receipt rather than a warning.
+        if (descriptor.HelpRoute is SettingHelpRoute route)
+        {
+
+            return CreateDisclosedField(field, root, route);
+
+        }
+
         return descriptor.Kind switch
         {
             SettingKind.Bool => CreateToggle(field),
@@ -241,6 +252,106 @@ public partial class GenericSettingsSectionView : UserControl
         };
 
     }
+
+    /// <summary>
+    /// Renders one setting whose consequences reach outside this machine: the shared disclosure, then
+    /// every resolved help action, then the control itself.
+    /// </summary>
+    /// <remarks>
+    /// The order is the contract, and the test asserts construction order rather than the presence of
+    /// the pieces. The help targets are resolved here rather than declared on the descriptor because
+    /// the right retention page depends on which providers this installation actually has configured,
+    /// and a URI baked into a static table is one nobody re-evaluates when that changes (§10.18).
+    ///
+    /// <para>Only a <see cref="CovenantRetentionHelpKind.ProviderRetentionDocumentation"/> target is
+    /// handed to the URI launcher. The other two arms are an in-app page and a repository document;
+    /// treating all three as links is how an internal route reaches a browser.</para>
+    /// </remarks>
+    private static Control CreateDisclosedField(
+        GenericSettingFieldViewModel field,
+        ConfigurationViewModel root,
+        SettingHelpRoute route)
+    {
+
+        StackPanel panel = new()
+        {
+            Spacing = 6,
+            Margin = new Avalonia.Thickness(0, 0, 0, 12),
+        };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = field.Descriptor.Description,
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.85,
+        });
+
+        foreach (CovenantRetentionHelpTarget target in ResolveHelpTargets(route, root))
+        {
+
+            panel.Children.Add(CreateHelpAction(target));
+
+        }
+
+        panel.Children.Add(CreateToggle(field));
+
+        return panel;
+
+    }
+
+    private static ImmutableArray<CovenantRetentionHelpTarget> ResolveHelpTargets(
+        SettingHelpRoute route,
+        ConfigurationViewModel root) =>
+        route switch
+        {
+            SettingHelpRoute.ConfiguredProviderRetention =>
+                CovenantExternalRetentionDisclosure.ResolveHelpTargets(root.Providers.BuildProviders()),
+            _ => [],
+        };
+
+    private static Control CreateHelpAction(CovenantRetentionHelpTarget target)
+    {
+
+        Button action = new()
+        {
+            Content = DescribeHelpTarget(target),
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+            Tag = target,
+        };
+
+        action.Click += (sender, args) =>
+        {
+
+            if (target.Kind != CovenantRetentionHelpKind.ProviderRetentionDocumentation)
+            {
+
+                return;
+
+            }
+
+            if (sender is Button clicked
+                && TopLevel.GetTopLevel(clicked)?.Launcher is { } launcher)
+            {
+
+                _ = launcher.LaunchUriAsync(new Uri(target.Uri));
+
+            }
+
+        };
+
+        return action;
+
+    }
+
+    private static string DescribeHelpTarget(CovenantRetentionHelpTarget target) =>
+        target.Kind switch
+        {
+            CovenantRetentionHelpKind.ProviderRetentionDocumentation =>
+                $"Read {target.Provider}'s data retention policy",
+            CovenantRetentionHelpKind.ConfiguredProvidersPage =>
+                $"{target.Provider} is not a provider Arcanum recognizes — review it under Providers",
+            _ => "What Arcanum can and cannot erase",
+        };
 
     private static Control CreateToggle(GenericSettingFieldViewModel field)
     {

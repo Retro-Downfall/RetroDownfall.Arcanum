@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Security;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text.Json;
@@ -107,7 +108,9 @@ internal static class InferenceExecuteWriter
 
         httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
 
-        httpContext.Response.Headers.CacheControl = "no-cache";
+        // Never a bare assignment; see SseStreamWriter.PrepareResponse. A protected stream keeps
+        // its exact private tuple, and an ordinary one keeps the shipped streaming default.
+        CovenantProtectedResponseHeaders.ApplyStreamingDefaultWithoutWeakening(httpContext);
 
         httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
 

@@ -625,6 +625,8 @@ Opt-in via `Arcanum:Features:Guardrails` (default false), with policy under `Arc
 
 Issue #88 freezes the request and response shapes the Covenant surfaces will use; issue #89 maps the routes and #87 implements maintenance and recovery. **No route in this section is registered yet.** It is documented here because four later slices build against these shapes, and a contract that four slices each invent separately is four contracts.
 
+> **Issue #89 status.** The authenticated boundary these routes will sit behind is now in place — see [§8.29](#829-x-arcanum-context-policy-and-the-covenant-pre-binding-boundary) — and `MemoryStatusDto` gained its content-free `covenant` block. The routes themselves are still unmapped.
+
 Every shape is a named positional record registered with `ArcanumJsonContext`, every enum is string-only, and every request record owns a `Validate()` that produces the typed refusal below before anything reaches storage. `CovenantPublicContractInventory` is the closed list; `CovenantPublicContractInventoryTests` fails when a public Covenant `*Request`/`*Dto` is missing from it, when a declared entry names a type that no longer exists, when a shape carries an `object`/`JsonElement`/`JsonNode` member, or when a wire enum would accept an integer.
 
 | Planned route | Request | Response |
@@ -658,11 +660,43 @@ Every shape is a named positional record registered with `ArcanumJsonContext`, e
 
 **Effective versus local state.** `CovenantHeadDto` reports `lifecycle` (local) and `shadow`/`materialization` (effective for the evaluated Campaign) separately. Both effective fields are `NotEvaluated` when the request supplied no `effectiveForCampaignId`, because the honest answer differs per Campaign; the evaluation Campaign is part of the filter digest a cursor binds.
 
-**Protected responses.** Every content-bearing Covenant read is written through `CovenantProtectedJsonResult<T>` or `CovenantProtectedStreamResult`: the operation lease is revalidated immediately before the first byte, the response is `Cache-Control: no-store` with any `ETag` and `Last-Modified` removed, and the lease is released after serialization completes. A conditional revalidation of protected content is a 304 on data the installation may since have erased.
+**Protected responses.** Every content-bearing Covenant read is written through `CovenantProtectedJsonResult<T>` or `CovenantProtectedStreamResult`: the operation lease is revalidated immediately before the first byte, the response carries the exact tuple in [§8.29](#829-x-arcanum-context-policy-and-the-covenant-pre-binding-boundary) with any `ETag` and `Last-Modified` removed, and the lease is released after serialization completes. A conditional revalidation of protected content is a 304 on data the installation may since have erased.
 
 **Idempotency.** Covenant set and retirement use their canonical `mutationId` and the durable receipt ledger as the sole replay mechanism; a supplied HTTP `Idempotency-Key` has no semantic effect on these routes. Long-running Covenant operations bind a caller-generated `operationId` plus a stable `applyRequestDigest`: the same pair replays the durable operation, a different digest under the same id is `Security.IdempotencyConflict`, and neither depends on the process that issued the original **202** still being alive.
 
 `MemorySearchScope.All` continues to exclude Covenant. Covenant content search, sources, and explain use the typed routes above and always require Covenant read authority, so no existing default `All` request silently gains privilege.
+
+### 8.29 `X-Arcanum-Context-Policy` and the Covenant pre-binding boundary
+
+Issue #89 lands the authenticated boundary every Covenant route will sit behind. It applies today to every `/api` and `/v1` route, whether or not any Covenant route exists yet.
+
+**Decision order.** API-key authentication → `X-Arcanum-Context-Policy` validation → Covenant authority issuance → body-size enforcement → source-generated binding. Everything before "body-size enforcement" happens with **zero bytes of the request body read**. Authentication is strictly first: a wrong key presented with a malformed policy header returns **401**, never 400, because a 400 would tell an unauthenticated caller that they reached a real route and that only their header spelling was wrong.
+
+**The header.**
+
+| Sent | Result |
+|---|---|
+| absent | `Default` — durable context may be injected |
+| exactly `none` (one header, lowercase ASCII) | `None` — durable context is suppressed for this request; the server echoes `X-Arcanum-Context-Policy: none` |
+| `NONE`, `None`, ` none`, `none `, `""`, `none,none`, any other value | **400** `Covenant.InvalidScope`, before binding |
+| the header repeated | **400** `Covenant.InvalidScope` — refused, never merged |
+| any value on a route that cannot inject Covenant content | **400** `Covenant.InvalidScope` |
+
+Repetition is refused rather than merged because every merge rule — first wins, last wins, comma-join — is a guess about which of two disagreeing senders meant it. A route that cannot inject context refuses the header rather than ignoring it, because a caller that sent `none` to a route that silently discarded it believes it suppressed content it in fact sent. `X-Arcanum-Context-Policy` is in the CORS exposed-header set so a browser client can read back the decision instead of assuming it.
+
+Routes that accept the header today: `PostIntelligencePing`, `PostIntelligencePingStream`, `PostIntelligenceContextInspect`, `PostOpenAiChatCompletions`, `TestPrompt`, `Prompt_Execute`, `Prompt_ExecuteStream`, `Spell_Execute`, `Spell_ExecuteStream`, `Spell_Cast`.
+
+**The protected response tuple.** Every protected success *and* failure emits exactly:
+
+```text
+Cache-Control: no-store, private
+Pragma: no-cache
+Expires: 0
+```
+
+with `ETag` and `Last-Modified` removed. `private` survives intermediaries that treat an unqualified `no-store` as advisory; `Pragma` and `Expires` cover HTTP/1.0-era caches that ignore `Cache-Control`. It is applied on response start, so it also covers framework-generated refusals no handler wrote. Streaming responses keep their `Cache-Control: no-cache` default when they are *not* protected and are never downgraded when they are — headers cannot be corrected after the first byte.
+
+**Authority.** A route declares exactly one `CovenantAuthorityRequirement`; the boundary issues a context bound to it and to the current clean authority epoch, and an endpoint filter rechecks — never reissues — that epoch after binding. A missing context is **403** `Covenant.ForbiddenAuthority`; an epoch that moved (host-tools taint, key rotation) is **503** `Covenant.OperatorAuthorityUnavailable`. `ProtectedRead` cannot be declared as an operator requirement, so a context minted for an inspection page can never authorize a mutation.
 
 ---
 

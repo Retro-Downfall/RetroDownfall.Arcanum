@@ -78,6 +78,19 @@ public sealed record FeatureSettings
 
     public bool MemoryManagement { get; set; }
 
+    /// <summary>
+    /// Whether The Covenant participates in turns. Default <c>false</c>, and the default is the
+    /// contract: an installation that never names this key adds no Covenant prompt bytes, performs
+    /// no Covenant read, and produces byte-identical prompts to a build without the feature.
+    /// </summary>
+    /// <remarks>
+    /// Enabling it sends eligible content on every provider attempt, so the operator sees
+    /// <see cref="RetroDownfall.Arcanum.Core.Covenant.CovenantExternalRetentionDisclosure.EnablementText"/>
+    /// and the resolved provider-retention help targets before the toggle is interactive
+    /// (§10.18).
+    /// </remarks>
+    public bool Covenant { get; set; }
+
 }
 
 /// <summary>

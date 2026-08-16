@@ -113,6 +113,7 @@ internal static class IntelligenceEndpoints
                 : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
         })
         .WithName("PostIntelligencePing")
+        .AllowCovenantContext()
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(0, ArcanumJsonContext.Default.PingRequest));
 
@@ -322,6 +323,7 @@ internal static class IntelligenceEndpoints
 
         })
         .WithName("PostIntelligencePingStream")
+        .AllowCovenantContext()
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
 
@@ -539,7 +541,8 @@ internal static class IntelligenceEndpoints
 
             })
 
-            .WithName("PostIntelligenceContextInspect");
+            .WithName("PostIntelligenceContextInspect")
+            .AllowCovenantContext();
 
         return apiGroup;
     }
