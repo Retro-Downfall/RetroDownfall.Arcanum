@@ -1213,6 +1213,16 @@ public static class ServiceCollectionExtensions
         services.AddScoped(
             static sp => new CovenantQuotaGuard(sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
 
+        // Scoped beside the quota guard it reserves through, and given the same process boot identity
+        // the disclosure journal uses. Startup tells an adoptable prior-boot claim from one this
+        // process still owns by comparing that identity; a per-scope boot ID would make every live
+        // claim look abandoned.
+        services.AddScoped<ISessionTurnClaimCoordinator>(
+            static sp => new SessionTurnClaimStore(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<CovenantQuotaGuard>(),
+                sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
+
         services.AddScoped(
             static sp => new CovenantMutationKernel(sp.GetRequiredService<CovenantQuotaGuard>()));
 

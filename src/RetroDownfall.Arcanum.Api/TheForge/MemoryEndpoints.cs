@@ -16,7 +16,11 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Lexicon;
 
@@ -42,6 +46,11 @@ internal static class MemoryEndpoints
     private const string AttachmentRetention = "Bound to the session; deleting an attachment does not delete Saga or Lexicon facts derived from it.";
 
     private const string AttachmentIndexRetention = "Derived and rebuildable from bound attachment versions; removed with the attachment or index reset.";
+
+    private const string CovenantRetention =
+        "Durable immutable versions until an operator retires the entry or a Covenant reset, family "
+            + "reinitialize, or factory erasure removes it. Content already sent to a provider is "
+            + "outside every local erasure path.";
 
     private const string LexiconRetention = "Durable until that explicitly named Lexicon entity is deleted.";
 
@@ -125,6 +134,7 @@ internal static class MemoryEndpoints
             sessionId,
             db,
             options.CurrentValue,
+            context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestAborted).ConfigureAwait(false);
 
         string traceId = TraceId(context);
@@ -149,6 +159,7 @@ internal static class MemoryEndpoints
             sessionId,
             db,
             options.CurrentValue,
+            context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestAborted).ConfigureAwait(false);
 
         Result<MemorySourcesDto> result;
@@ -197,6 +208,7 @@ internal static class MemoryEndpoints
             sessionId,
             db,
             options.CurrentValue,
+            context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestAborted).ConfigureAwait(false);
 
         Result<MemoryExplainDto> result;
@@ -538,10 +550,84 @@ internal static class MemoryEndpoints
 
     }
 
+
+    /// <summary>
+    /// Copies the typed, content-free Covenant availability fields into the status block.
+    /// </summary>
+    /// <remarks>
+    /// Copied, never computed. The snapshot is the one published capability truth every gate reads,
+    /// and a status surface that derived its own view could tell an operator Covenant is healthy while
+    /// the turn path refuses to touch it.
+    ///
+    /// <para>Aggregate counts are deliberately absent here and arrive with the bounded canonical count
+    /// read. When canonical state is degraded or unavailable this reports that state rather than
+    /// inventing a zero: "you have no Covenant entries" and "your Covenant could not be read" are
+    /// different sentences, and only one of them is an emergency (§10.18).</para>
+    /// </remarks>
+    private static CovenantStatusDto? BuildCovenantStatus(
+        ICovenantAvailability? availability,
+        FeatureSettings features)
+    {
+
+        if (availability is null)
+        {
+
+            return null;
+
+        }
+
+        CovenantAvailabilitySnapshot snapshot = availability.Current;
+
+        return new CovenantStatusDto(
+            Enabled: features.Covenant && snapshot.FeatureEnabled,
+            Available: snapshot.Canonical is CovenantCapabilityState.Healthy,
+            Counts: [],
+            GlobalConfirmedRenderedBytes: 0,
+            CampaignConfirmedRenderedBytes: 0,
+            CampaignProposedRenderedBytes: 0,
+            RenderedByteCeilingPerSection: CovenantLimits.MaxGlobalConfirmedRenderedBytes,
+            Search: new CovenantSearchHealthDto(
+                ToSearchHealth(snapshot.Accelerator, snapshot.FtsSynchronization),
+                CovenantSearchExecutionMode.Fts,
+                ToRebuildGuidance(snapshot)),
+            Retention: CovenantRetention,
+            DegradationCode: snapshot.CanonicalDiagnosticCode ?? snapshot.AcceleratorDiagnosticCode);
+
+    }
+
+    /// <summary>
+    /// The one remediation this snapshot actually calls for, most specific first.
+    /// </summary>
+    /// <remarks>
+    /// Order matters. An unavailable accelerator cannot be waited out, so reporting "wait for
+    /// synchronization" there would send an operator to sit through a state that will never change.
+    /// </remarks>
+    private static CovenantSearchRebuildGuidance ToRebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
+        snapshot.Accelerator is CovenantCapabilityState.Unavailable
+            ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
+            : snapshot.RebuildRequired
+                ? CovenantSearchRebuildGuidance.RebuildRequired
+                : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
+                    ? CovenantSearchRebuildGuidance.None
+                    : CovenantSearchRebuildGuidance.WaitForSynchronization;
+
+    private static CovenantSearchHealthState ToSearchHealth(
+        CovenantCapabilityState accelerator,
+        CovenantFtsSynchronizationState synchronization) =>
+        accelerator switch
+        {
+            CovenantCapabilityState.Unavailable => CovenantSearchHealthState.Unavailable,
+            CovenantCapabilityState.Degraded => CovenantSearchHealthState.Degraded,
+            _ => synchronization is CovenantFtsSynchronizationState.Synchronized
+                ? CovenantSearchHealthState.Healthy
+                : CovenantSearchHealthState.Synchronizing,
+        };
+
     private static async Task<Result<MemoryStatusDto>> BuildStatusAsync(
         Guid? sessionId,
         ArcanumDbContext db,
         ArcanumSettings settings,
+        ICovenantAvailability? availability,
         CancellationToken cancellationToken)
     {
 
@@ -676,7 +762,7 @@ internal static class MemoryEndpoints
         ];
 
         return Result<MemoryStatusDto>.Success(
-            new MemoryStatusDto(sessionId, session?.Title, stores));
+            new MemoryStatusDto(sessionId, session?.Title, stores, BuildCovenantStatus(availability, features)));
 
     }
 

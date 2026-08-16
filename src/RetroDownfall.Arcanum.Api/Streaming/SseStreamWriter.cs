@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Security;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Http;
 
@@ -16,7 +17,10 @@ internal static class SseStreamWriter
 
         httpContext.Response.ContentType = "text/event-stream; charset=utf-8";
 
-        httpContext.Response.Headers.CacheControl = "no-cache";
+        // Never a bare assignment. A protected stream already carries "no-store, private", and
+        // overwriting it here would weaken a response whose headers can no longer be corrected
+        // once the first event has left (DESIGN §10.18).
+        CovenantProtectedResponseHeaders.ApplyStreamingDefaultWithoutWeakening(httpContext);
 
         httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
 

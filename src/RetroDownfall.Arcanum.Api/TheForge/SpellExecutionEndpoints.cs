@@ -137,6 +137,7 @@ internal static partial class SpellExecutionEndpoints
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
         .WithName("Spell_Execute")
+        .AllowCovenantContext()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(3, ArcanumJsonContext.Default.SpellExecuteRequest));
 
         apiGroup.MapPost(
@@ -259,6 +260,7 @@ internal static partial class SpellExecutionEndpoints
                     .ConfigureAwait(false);
             })
         .WithName("Spell_ExecuteStream")
+        .AllowCovenantContext()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(3, ArcanumJsonContext.Default.SpellExecuteRequest));
 
         apiGroup.MapGet(
@@ -641,7 +643,8 @@ internal static partial class SpellExecutionEndpoints
 
                 return Results.Ok(ApiResponse<SpellCastResult>.FromResult(result, traceId));
             })
-        .WithName("Spell_Cast");
+        .WithName("Spell_Cast")
+        .AllowCovenantContext();
 
         return apiGroup;
     }

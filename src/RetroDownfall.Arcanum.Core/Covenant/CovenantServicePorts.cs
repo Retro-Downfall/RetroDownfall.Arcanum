@@ -12,34 +12,57 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// deliberately do not have. The HTTP layer maps requests to these calls and owns the cursor
 /// envelope; nothing below here knows what a cursor string looks like (§10.16).
 ///
-/// <para>Every method returns a lease-bound result. The lease is held across serialization, so a
-/// reset that lands mid-response is refused before the first byte rather than discovered by a client
-/// holding half a page of content that no longer exists.</para>
+/// <para>Every content-bearing method borrows a caller-owned snapshot lease and returns a plain
+/// result. The endpoint acquires that lease, hands it here, and then holds it across serialization,
+/// so a reset that lands mid-response is refused before the first byte rather than discovered by a
+/// client holding half a page of content that no longer exists. The service never acquires or
+/// releases a lease of its own: a service that could escalate its own coverage would make the gate's
+/// drain guarantee unprovable, because a reader could appear inside an operation that had already
+/// finished draining (§10.18).</para>
+///
+/// <para><see cref="StatusAsync"/> is the one exception and takes no lease. It is content-free
+/// capability health, reachable wherever <c>/api/memory/status</c> is, and requiring a Covenant lease
+/// for it would make the aggregate status surface unavailable exactly when an operator is trying to
+/// find out why Covenant is unavailable.</para>
 /// </remarks>
 public interface ICovenantManagementService
 {
 
     ValueTask<Result<CovenantPageDto>> ListAsync(
         CovenantListRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CovenantPageDto>> QueryAsync(
         CovenantQueryRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CovenantDetailDto>> DetailAsync(
         CovenantDetailRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CovenantVersionPageDto>> VersionsAsync(
         CovenantVersionsRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CovenantSourcesDto>> SourcesAsync(
         CovenantSourcesRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
-    ValueTask<Result<CovenantExplainDto>> ExplainAsync(
+    /// <summary>
+    /// Explains one explicit evaluation against a fresh management-only snapshot.
+    /// </summary>
+    /// <remarks>
+    /// It detaches its own state lease rather than borrowing the caller's, because explain runs the
+    /// live loader, linker, and admission code over a snapshot it creates for the purpose. Borrowing
+    /// the caller's read lease would either explain a different snapshot than the one it evaluated or
+    /// force a nested acquisition, and a nested acquisition inside a drain is a deadlock.
+    /// </remarks>
+    ValueTask<CovenantLeasedServiceResult<CovenantExplainDto>> ExplainAsync(
         CovenantExplainRequest request,
         CancellationToken cancellationToken);
 
@@ -60,18 +83,22 @@ public interface ICovenantMutationService
 
     ValueTask<Result<CovenantMutationPreflightDto>> PrepareSetAsync(
         CovenantSetPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CovenantMutationPreflightDto>> PrepareRetireAsync(
         CovenantRetirePrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CovenantMutationResultDto>> SetAsync(
         CovenantSetRequest request,
+        CovenantWriteLease writeLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CovenantMutationResultDto>> RetireAsync(
         CovenantRetireRequest request,
+        CovenantWriteLease writeLease,
         CancellationToken cancellationToken);
 
 }
@@ -118,16 +145,44 @@ public interface ICampaignPathIdentityService
 
     ValueTask<Result<CampaignPathIdentityStatusPageDto>> StatusAsync(
         CampaignPathIdentityStatusRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<CampaignPathIdentityPlanDto>> PreparePathAsync(
         Guid campaignId,
         CampaignPathPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
-    ValueTask<Result<CampaignPathIdentityResultDto>> ApplyPathAsync(
+    /// <summary>
+    /// Reads the completed receipt and any active marker intent in one snapshot, under a short read
+    /// lease, before anything closes Campaign admission.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="ApplyPathAsync"/> because a replay must not cost an exclusive
+    /// acquisition. Closing and draining a Campaign's admission to answer "you already did this" would
+    /// make the cheapest possible request the most disruptive one, and a client retrying a completed
+    /// operation is the most common request this surface sees.
+    /// </remarks>
+    ValueTask<Result<CampaignPathApplyProbe>> ProbeApplyAsync(
         Guid campaignId,
         CampaignPathApplyRequest request,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Runs the crash-recoverable marker protocol under a Campaign-exclusive lease the caller
+    /// acquired after releasing its probe lease.
+    /// </summary>
+    /// <remarks>
+    /// The probe lease must be released first. Holding a read lease while waiting for an exclusive
+    /// drain over the same Campaign is a self-deadlock: the drain waits for the reader that is
+    /// waiting for the drain.
+    /// </remarks>
+    ValueTask<CovenantExclusiveLeasedServiceResult<CampaignPathIdentityResultDto>> ApplyPathAsync(
+        Guid campaignId,
+        CampaignPathApplyRequest request,
+        CovenantCampaignExclusiveLease exclusiveLease,
         CancellationToken cancellationToken);
 
 }
@@ -145,14 +200,17 @@ public interface ISessionCampaignBindingService
 
     ValueTask<Result<SessionCampaignBindingStatusPageDto>> StatusAsync(
         SessionCampaignBindingStatusRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<SessionCampaignBindingPlanDto>> PrepareBindingAsync(
         SessionCampaignBindingPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
     ValueTask<Result<SessionCampaignBindingResultDto>> ApplyBindingAsync(
         SessionCampaignBindingApplyRequest request,
+        CovenantWriteLease writeLease,
         CancellationToken cancellationToken);
 
 }

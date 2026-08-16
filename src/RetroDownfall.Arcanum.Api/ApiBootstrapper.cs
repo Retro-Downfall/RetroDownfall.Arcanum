@@ -354,7 +354,11 @@ public static class ApiBootstrapper
                     // would make the documented cursor-pagination contract unfollowable from a browser.
                     policy.WithExposedHeaders(
                         ArcanumApiHeaders.AuditNextCursor,
-                        ArcanumApiHeaders.StructuredOutputWarning);
+                        ArcanumApiHeaders.StructuredOutputWarning,
+                        // Echoed back so a browser client can confirm the policy the server actually
+                        // applied. AllowAnyHeader already admits it on the request; a client that
+                        // could send it but never read back what was honoured would be guessing.
+                        ArcanumApiHeaders.ContextPolicy);
                 });
         });
 
@@ -618,6 +622,16 @@ public static class ApiBootstrapper
             if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
             {
 
+                // Authentication stays first, so a wrong key plus a malformed context policy is a
+                // 401 rather than a 400: a 400 would confirm to an unauthenticated caller that they
+                // reached a real route and that their header spelling was the only problem.
+                if (await ApplyCovenantPreBindingPolicyAsync(context).ConfigureAwait(false))
+                {
+
+                    return;
+
+                }
+
                 await next().ConfigureAwait(false);
 
                 return;
@@ -627,6 +641,147 @@ public static class ApiBootstrapper
             await ApiKeyAuthenticator.Unauthorized(context).ExecuteAsync(context).ConfigureAwait(false);
 
         });
+    }
+
+    /// <summary>
+    /// Decides this request's Covenant context policy and issues its typed authority, both before the
+    /// endpoint delegate — and therefore before parameter binding — runs.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="true"/> when it has already written a refusal and the pipeline must stop.
+    ///
+    /// <para>Order is the contract: API-key authentication, then context-policy validation, then
+    /// authority issuance, then body-size enforcement and binding. Deciding either of these after
+    /// binding would mean deciding after the body was read — and <c>POST /v1/files</c> raises the
+    /// multipart ceiling to 513 MiB, so "after binding" can mean half a gigabyte spooled to disk for a
+    /// caller whose header was never going to be accepted (§10.18).</para>
+    ///
+    /// <para>A route that did not declare <see cref="CovenantContextPolicyRequirementMetadata"/>
+    /// rejects the header outright rather than ignoring it. A caller that sent <c>none</c> to a route
+    /// that silently discarded it believes it suppressed durable context it in fact sent.</para>
+    /// </remarks>
+    private static async Task<bool> ApplyCovenantPreBindingPolicyAsync(HttpContext context)
+    {
+
+        Endpoint? endpoint = context.GetEndpoint();
+
+        bool allowsContext =
+            endpoint?.Metadata.GetMetadata<CovenantContextPolicyRequirementMetadata>() is not null;
+
+        Result<CovenantContextPolicy> policy = CovenantContextPolicyParser.Parse(context.Request);
+
+        if (policy.IsFailure)
+        {
+
+            await CovenantAuthorityRefusal
+                .InvalidContextPolicy(context, policy.Error)
+                .ExecuteAsync(context)
+                .ConfigureAwait(false);
+
+            return true;
+
+        }
+
+        if (policy.Value is CovenantContextPolicy.None && !allowsContext)
+        {
+
+            await CovenantAuthorityRefusal
+                .InvalidContextPolicy(
+                    context,
+                    new Error(
+                        ErrorCodes.Covenant.InvalidScope,
+                        $"{ArcanumApiHeaders.ContextPolicy} is not meaningful on this route."))
+                .ExecuteAsync(context)
+                .ConfigureAwait(false);
+
+            return true;
+
+        }
+
+        CovenantRequestFeatures.RecordContextPolicy(context, policy.Value);
+
+        if (policy.Value is CovenantContextPolicy.None)
+        {
+
+            // Echoed so a client can confirm the policy the server actually applied rather than
+            // assuming its header was understood. It is exposed through CORS for the same reason.
+            context.Response.Headers[ArcanumApiHeaders.ContextPolicy] = "none";
+
+        }
+
+        if (endpoint?.Metadata.GetMetadata<CovenantAuthorityRequirementMetadata>() is not
+            { } requirementMetadata)
+        {
+
+            return false;
+
+        }
+
+        IOperatorAuthorityContextIssuer? issuer =
+            context.RequestServices.GetService<IOperatorAuthorityContextIssuer>();
+
+        if (issuer is null)
+        {
+
+            // A host composed without the Covenant authority stack cannot mint a context, and a
+            // route that declared a requirement must not run without one. The filter refuses on the
+            // absent feature; nothing here invents authority to fill the gap.
+            return false;
+
+        }
+
+        Result<OperatorAuthorityContext> issued = issuer.Issue(requirementMetadata.Requirement);
+
+        if (issued.IsFailure)
+        {
+
+            CovenantRequestFeatures.MarkProtectedResponse(context);
+
+            await new CovenantUnavailableAuthorityResult(issued.Error)
+                .ExecuteAsync(context)
+                .ConfigureAwait(false);
+
+            return true;
+
+        }
+
+        CovenantRequestFeatures.MarkProtectedResponse(context);
+
+        CovenantRequestFeatures.RecordAuthority(
+            context,
+            new CovenantAuthorityFeature(
+                issued.Value,
+                requirementMetadata.Requirement,
+                issued.Value.AuthorityEpoch));
+
+        return false;
+
+    }
+
+    private sealed class CovenantUnavailableAuthorityResult(Error error) : IResult
+    {
+
+        public async Task ExecuteAsync(HttpContext httpContext)
+        {
+
+            CovenantProtectedResponseHeaders.Apply(httpContext.Response);
+
+            httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(error.Code);
+
+            httpContext.Response.ContentType = "application/json; charset=utf-8";
+
+            await System.Text.Json.JsonSerializer
+                .SerializeAsync(
+                    httpContext.Response.Body,
+                    ApiResponse<bool>.FromResult(
+                        Result<bool>.Failure(error),
+                        httpContext.TraceIdentifier),
+                    ArcanumJsonContext.Default.ApiResponseBoolean,
+                    httpContext.RequestAborted)
+                .ConfigureAwait(false);
+
+        }
+
     }
 
     /// <summary>

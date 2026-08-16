@@ -607,6 +607,7 @@ internal static class PromptEndpoints
                         traceId));
             })
         .WithName("TestPrompt")
+        .AllowCovenantContext()
         .WithLargeRequestBody();
 
         apiGroup.MapPost(
@@ -780,6 +781,7 @@ internal static class PromptEndpoints
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
         .WithName("Prompt_Execute")
+        .AllowCovenantContext()
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(2, ArcanumJsonContext.Default.PromptExecuteRequest));
 
@@ -911,6 +913,7 @@ internal static class PromptEndpoints
                     .ConfigureAwait(false);
             })
         .WithName("Prompt_ExecuteStream")
+        .AllowCovenantContext()
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(2, ArcanumJsonContext.Default.PromptExecuteRequest));
 

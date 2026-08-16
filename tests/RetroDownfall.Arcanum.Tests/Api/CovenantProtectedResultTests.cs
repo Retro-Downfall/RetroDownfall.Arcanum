@@ -55,7 +55,14 @@ public sealed class CovenantProtectedResultTests
 
         Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
 
-        Assert.Equal("no-store", context.Response.Headers.CacheControl.ToString());
+        // Issue #89 widened this from a bare no-store. The two extra headers are for the
+        // HTTP/1.0-era intermediaries that ignore Cache-Control entirely, and "private" survives the
+        // caches that treat an unqualified no-store as advisory.
+        Assert.Equal("no-store, private", context.Response.Headers.CacheControl.ToString());
+
+        Assert.Equal("no-cache", context.Response.Headers.Pragma.ToString());
+
+        Assert.Equal("0", context.Response.Headers.Expires.ToString());
 
         Assert.True(string.IsNullOrEmpty(context.Response.Headers.ETag.ToString()));
 
@@ -117,7 +124,14 @@ public sealed class CovenantProtectedResultTests
 
         Assert.Contains(ErrorCodes.Covenant.Unavailable, body, StringComparison.Ordinal);
 
-        Assert.Equal("no-store", context.Response.Headers.CacheControl.ToString());
+        // Issue #89 widened this from a bare no-store. The two extra headers are for the
+        // HTTP/1.0-era intermediaries that ignore Cache-Control entirely, and "private" survives the
+        // caches that treat an unqualified no-store as advisory.
+        Assert.Equal("no-store, private", context.Response.Headers.CacheControl.ToString());
+
+        Assert.Equal("no-cache", context.Response.Headers.Pragma.ToString());
+
+        Assert.Equal("0", context.Response.Headers.Expires.ToString());
 
         Assert.Equal(1, lease.Disposals);
 
@@ -179,7 +193,14 @@ public sealed class CovenantProtectedResultTests
 
         Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
 
-        Assert.Equal("no-store", context.Response.Headers.CacheControl.ToString());
+        // Issue #89 widened this from a bare no-store. The two extra headers are for the
+        // HTTP/1.0-era intermediaries that ignore Cache-Control entirely, and "private" survives the
+        // caches that treat an unqualified no-store as advisory.
+        Assert.Equal("no-store, private", context.Response.Headers.CacheControl.ToString());
+
+        Assert.Equal("no-cache", context.Response.Headers.Pragma.ToString());
+
+        Assert.Equal("0", context.Response.Headers.Expires.ToString());
 
         Assert.Equal("protected bytes", ReadBody(context));
 
