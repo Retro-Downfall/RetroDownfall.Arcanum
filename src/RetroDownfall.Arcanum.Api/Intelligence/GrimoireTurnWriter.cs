@@ -4,7 +4,9 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.TheForge;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Telemetry;
@@ -21,6 +23,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public sealed class GrimoireTurnWriter(
     IGrimoireRepository grimoire,
+    ISessionTurnBeginStore turnBeginStore,
     SessionEventHub sessionEventHub,
     ILogger<GrimoireTurnWriter> logger)
 {
@@ -39,37 +42,43 @@ public sealed class GrimoireTurnWriter(
 
     }
 
-    public async Task<TurnHandle> TryBeginBufferedAssistantReplyAsync(
+    /// <summary>
+    /// Begins a buffered turn, or reports exactly why it could not.
+    /// </summary>
+    /// <remarks>
+    /// Returns a <see cref="Result{T}"/> rather than a best-effort handle. The old contract caught every
+    /// begin failure and returned an empty handle, so a deleted Campaign, a missing Session, or a
+    /// binding mismatch all produced an ordinary-looking turn that simply persisted nothing — and the
+    /// operator saw a normal answer to a conversation that no longer existed (§10.12).
+    /// </remarks>
+    public Task<Result<TurnHandle>> BeginBufferedAssistantReplyAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         string prompt,
         string targetModel,
-        CancellationToken cancellationToken)
-    {
-
-        return await TryBeginAssistantReplyCoreAsync(
+        CancellationToken cancellationToken) =>
+        BeginAssistantReplyCoreAsync(
             request,
+            invocationContext,
             prompt,
             targetModel,
             cancellationToken,
-            "Grimoire could not begin assistant reply for model {ModelName}.").ConfigureAwait(false);
+            "Grimoire could not begin assistant reply for model {ModelName}.");
 
-    }
-
-    public async Task<TurnHandle> TryBeginStreamedAssistantReplyAsync(
+    /// <inheritdoc cref="BeginBufferedAssistantReplyAsync"/>
+    public Task<Result<TurnHandle>> BeginStreamedAssistantReplyAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         string prompt,
         string targetModel,
-        CancellationToken cancellationToken)
-    {
-
-        return await TryBeginAssistantReplyCoreAsync(
+        CancellationToken cancellationToken) =>
+        BeginAssistantReplyCoreAsync(
             request,
+            invocationContext,
             prompt,
             targetModel,
             cancellationToken,
-            "Grimoire could not start streamed session persistence for model {ModelName}.").ConfigureAwait(false);
-
-    }
+            "Grimoire could not start streamed session persistence for model {ModelName}.");
 
     /// <summary>
     /// Persists the assistant entry, then publishes to the session event hub.
@@ -692,55 +701,67 @@ public sealed class GrimoireTurnWriter(
             : string.Join(", ", normalized);
     }
 
-    private async Task<TurnHandle> TryBeginAssistantReplyCoreAsync(
+    private async Task<Result<TurnHandle>> BeginAssistantReplyCoreAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         string prompt,
         string targetModel,
         CancellationToken cancellationToken,
         string beginFailureLogMessage)
     {
 
-        TurnHandle handle = new();
+        ArgumentNullException.ThrowIfNull(invocationContext);
 
+        // A stateless turn has no durable Session by construction, so there is nothing to begin and
+        // nothing to fail. It is the one legitimate handle-free success.
         if (IsStateless(request))
         {
+            return Result<TurnHandle>.Success(new TurnHandle());
+        }
 
-            return handle;
+        CanonicalCampaignContext campaign = invocationContext.Campaign ?? CanonicalCampaignContext.GlobalOnly;
+
+        // A request naming a Session must use that Session or fail; only a request naming none may
+        // create one, and it creates it bound to the Campaign the resolver already decided.
+        Result<Guid> sessionId = request.SessionId is { } existing && existing != Guid.Empty
+            ? Result<Guid>.Success(existing)
+            : await turnBeginStore
+                .CreateBoundSessionAsync(campaign, prompt, cancellationToken)
+                .ConfigureAwait(false);
+
+        if (sessionId.IsFailure)
+        {
+
+            logger.LogWarning(beginFailureLogMessage, targetModel);
+
+            return sessionId.Error;
 
         }
+
+        Result<AssistantReplyBeginReceipt> receipt = await turnBeginStore
+            .BeginAssistantReplyAsync(sessionId.Value, campaign, prompt, targetModel, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (receipt.IsFailure)
+        {
+
+            logger.LogWarning(beginFailureLogMessage, targetModel);
+
+            return receipt.Error;
+
+        }
+
+        TurnHandle handle = new()
+        {
+            SessionId = receipt.Value.SessionId,
+            AssistantEntryId = receipt.Value.AssistantEntryId,
+        };
 
         try
         {
 
-            (Guid sid, Guid aid) = await grimoire
-                .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, cancellationToken)
+            await PublishLatestSavedEntriesAsync(receipt.Value.SessionId, 2, cancellationToken)
                 .ConfigureAwait(false);
-
-            handle.SessionId = sid;
-
-            handle.AssistantEntryId = aid;
-
-            try
-            {
-
-                await PublishLatestSavedEntriesAsync(sid, 2, cancellationToken).ConfigureAwait(false);
-
-            }
-            catch (OperationCanceledException)
-            {
-
-                throw;
-
-            }
-            catch (Exception ex)
-            {
-
-                logger.LogWarning(
-                    ex,
-                    "Session event hub could not publish begin-assistant entries for model {ModelName}.",
-                    targetModel);
-
-            }
 
         }
         catch (OperationCanceledException)
@@ -752,11 +773,16 @@ public sealed class GrimoireTurnWriter(
         catch (Exception ex)
         {
 
-            logger.LogWarning(ex, beginFailureLogMessage, targetModel);
+            // Publication is best-effort on purpose: the rows are already committed, and failing the
+            // turn here would discard a durable answer over an event nobody is required to receive.
+            logger.LogWarning(
+                ex,
+                "Session event hub could not publish begin-assistant entries for model {ModelName}.",
+                targetModel);
 
         }
 
-        return handle;
+        return Result<TurnHandle>.Success(handle);
 
     }
 

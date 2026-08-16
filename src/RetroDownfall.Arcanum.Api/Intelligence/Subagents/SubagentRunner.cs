@@ -91,6 +91,7 @@ internal sealed class SubagentRunner(
                 result = await turnCoordinator.Value
                     .ExecuteBufferedAsync(
                         childRequest,
+                        ArcanumInvocationContext.None,
                         hasIdempotencyKey: false,
                         cancellationToken)
                     .ConfigureAwait(false);

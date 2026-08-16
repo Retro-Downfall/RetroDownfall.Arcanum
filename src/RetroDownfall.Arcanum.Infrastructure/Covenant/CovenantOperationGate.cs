@@ -198,7 +198,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         if (campaignId == Guid.Empty)
         {
 
-            return new Error("Covenant.InvalidScope", "A Campaign-exclusive operation requires a Campaign identity.");
+            return new Error(ErrorCodes.Covenant.InvalidScope, "A Campaign-exclusive operation requires a Campaign identity.");
 
         }
 
@@ -438,7 +438,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
     private static Error ForbiddenOperationShape() =>
         new(
-            "Covenant.ForbiddenAuthority",
+            ErrorCodes.Covenant.ForbiddenAuthority,
             "This exclusive Covenant operation code cannot be used with this acquisition shape.");
 
     private static (ClosureSlot Slot, CovenantLeaseKind LeaseKind) ClassifyOwner(
@@ -514,7 +514,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         return state.Value == CovenantCampaignScopeState.Live
             ? Result.Success()
             : new Error(
-                "Covenant.NotFound",
+                ErrorCodes.Covenant.NotFound,
                 "The Campaign this exclusive operation names is not live on this installation.");
 
     }
@@ -534,7 +534,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         if (scope is { IsInitialized: false })
         {
 
-            return new Error("Covenant.InvalidScope", "An uninitialized Covenant operation scope cannot be leased.");
+            return new Error(ErrorCodes.Covenant.InvalidScope, "An uninitialized Covenant operation scope cannot be leased.");
 
         }
 
@@ -560,7 +560,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
 
                 return new Error(
-                    "Covenant.Unavailable",
+                    ErrorCodes.Covenant.Unavailable,
                     "A Covenant operation is closing this scope, so no new lease may be taken over it.");
 
             }
@@ -629,7 +629,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
 
                 return new Error(
-                    "Covenant.Unavailable",
+                    ErrorCodes.Covenant.Unavailable,
                     "Another Covenant operation already owns this scope.");
 
             }
@@ -659,7 +659,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             }
 
             return new Error(
-                "Covenant.MaintenanceFailed",
+                ErrorCodes.Covenant.MaintenanceFailed,
                 "Covenant leases over this scope did not drain within the operation bound, so nothing was changed.");
 
         }
@@ -706,7 +706,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
 
                 return new Error(
-                    "Covenant.ManualRecoveryRequired",
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
                     "No Covenant operation with this exact recovery identity holds this scope closed.");
 
             }
@@ -715,7 +715,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
 
                 return new Error(
-                    "Covenant.LifecycleConflict",
+                    ErrorCodes.Covenant.LifecycleConflict,
                     "This closed Covenant scope already has a live recovery lease.");
 
             }
@@ -931,7 +931,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         {
 
             return new Error(
-                "Covenant.OperatorAuthorityUnavailable",
+                ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                 "Installation authority has not been established, so no Covenant lease can be bound to it.");
 
         }
@@ -944,7 +944,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         {
 
             return new Error(
-                "Covenant.Unavailable",
+                ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier is not healthy, so no ordinary lease can be taken over it.");
 
         }
@@ -968,7 +968,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         {
 
             return new Error(
-                "Covenant.ForbiddenAuthority",
+                ErrorCodes.Covenant.ForbiddenAuthority,
                 "Installation authority changed after this Covenant lease was taken.");
 
         }
@@ -979,7 +979,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed after this lease was taken.");
 
         }
@@ -989,7 +989,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant accelerator epoch changed after this lease was taken.");
 
         }
@@ -998,7 +998,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         {
 
             return new Error(
-                "Covenant.Unavailable",
+                ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier stopped being healthy while this lease was held.");
 
         }
@@ -1056,7 +1056,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
 
                 return new Error(
-                    "Covenant.LifecycleConflict",
+                    ErrorCodes.Covenant.LifecycleConflict,
                     "This exclusive Covenant lease no longer owns its closed scope.");
 
             }
@@ -1196,7 +1196,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
                 return ValueTask.FromResult(
                     Result.Failure(
-                        new Error("Covenant.StaleSnapshot", "This Covenant lease has already been released.")));
+                        new Error(ErrorCodes.Covenant.StaleSnapshot, "This Covenant lease has already been released.")));
 
             }
 
@@ -1206,7 +1206,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 return ValueTask.FromResult(
                     Result.Failure(
                         new Error(
-                            "Covenant.Unavailable",
+                            ErrorCodes.Covenant.Unavailable,
                             "A Covenant operation revoked this lease so its scope could be closed.")));
 
             }
@@ -1262,7 +1262,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             return ValueTask.FromResult(
                 Volatile.Read(ref _releaseClaimed) != 0
                     ? Result.Failure(
-                        new Error("Covenant.StaleSnapshot", "This Covenant lease has already been released."))
+                        new Error(ErrorCodes.Covenant.StaleSnapshot, "This Covenant lease has already been released."))
                     : gate.Revalidate(Snapshot, exclusive: true));
 
         }

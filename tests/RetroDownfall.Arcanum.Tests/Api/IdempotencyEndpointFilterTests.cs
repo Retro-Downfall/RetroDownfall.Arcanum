@@ -651,9 +651,12 @@ public sealed class IdempotencyEndpointFilterTests
 
         // Simulated attachment-bearing turn: AttachmentReferences present so the body hash
         // includes attachment identity; FakeIntelligence still counts executions.
+        //
+        // No Session ID: a supplied one must now identify an existing Session, because canonical
+        // Campaign resolution never silently substitutes a new one (§10.12). This turn's subject is
+        // idempotent replay, not Session identity.
         PingRequest request = new(
             Prompt: "idempotent attachment ping",
-            SessionId: Guid.NewGuid(),
             AttachmentReferences: [Guid.NewGuid()]);
 
         string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);

@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Api.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
@@ -98,8 +99,8 @@ internal static partial class SpellExecutionEndpoints
                         statusCode: StatusCodes.Status400BadRequest);
                 }
 
-                Result<PingRequest> resolvedPing = await PingRequestResolver
-                    .ResolveCampaignAsync(pingResult.Value, campaignRepository, ctx.RequestAborted)
+                Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
+                    .ResolveAsync(pingResult.Value, ctx.RequestServices, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)
@@ -113,7 +114,13 @@ internal static partial class SpellExecutionEndpoints
                 }
 
                 Result<PromptTurnResult> turn = await intelligence
-                    .ExecutePromptAsync(resolvedPing.Value, ctx.RequestAborted)
+                    .ExecutePromptAsync(
+                        resolvedPing.Value.Request,
+                        ArcanumInvocationContexts.ForTurn(
+                            ctx,
+                            resolvedPing.Value.Request,
+                            resolvedPing.Value.Campaign),
+                        ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 Result<PromptResponseDto> envelopeResult = turn.IsFailure
@@ -223,8 +230,8 @@ internal static partial class SpellExecutionEndpoints
                     return;
                 }
 
-                Result<PingRequest> resolvedPing = await PingRequestResolver
-                    .ResolveCampaignAsync(pingResult.Value, campaignRepository, ctx.RequestAborted)
+                Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
+                    .ResolveAsync(pingResult.Value, ctx.RequestServices, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)
@@ -242,7 +249,13 @@ internal static partial class SpellExecutionEndpoints
                 }
 
                 await InferenceExecuteWriter
-                    .WriteStreamAsync(ctx, intelligence, resolvedPing.Value, ctx.RequestAborted)
+                    .WriteStreamAsync(
+                        ctx,
+                        intelligence,
+                        resolvedPing.Value.Request,
+                        ctx.RequestAborted,
+                        auditContext: null,
+                        resolvedPing.Value.Campaign)
                     .ConfigureAwait(false);
             })
         .WithName("Spell_ExecuteStream")

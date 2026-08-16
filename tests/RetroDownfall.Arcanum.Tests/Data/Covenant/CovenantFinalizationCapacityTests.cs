@@ -150,7 +150,7 @@ public sealed class CovenantFinalizationCapacityTests
             Token,
             commit: false);
 
-        Assert.Equal("Covenant.LifecycleConflict", released.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, released.Error.Code);
 
     }
 
@@ -235,7 +235,7 @@ public sealed class CovenantFinalizationCapacityTests
             Token,
             commit: false);
 
-        Assert.Equal("Covenant.NotFound", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.NotFound, refused.Error.Code);
 
         Assert.Equal(
             0,
@@ -281,7 +281,7 @@ public sealed class CovenantFinalizationCapacityTests
             Token,
             commit: false);
 
-        Assert.Equal("Covenant.StaleSnapshot", wrongCounts.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, wrongCounts.Error.Code);
 
         Result released = await CovenantCapacityFixture.InTransactionAsync(
             fixture,

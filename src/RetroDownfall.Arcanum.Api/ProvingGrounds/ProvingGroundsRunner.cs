@@ -62,7 +62,7 @@ public sealed partial class ProvingGroundsRunner(
         }
 
         Result<PromptTurnResult> turn = await intelligence
-            .ExecutePromptAsync(pingResult.Value!, cancellationToken)
+            .ExecutePromptAsync(pingResult.Value!, ArcanumInvocationContext.None, cancellationToken)
             .ConfigureAwait(false);
 
         if (turn.IsFailure)

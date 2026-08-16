@@ -465,7 +465,7 @@ public abstract class CovenantOperationLease : ICovenantOperationLease
     public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
         IsDisposed
             ? ValueTask.FromResult(
-                Result.Failure(new Error("Covenant.StaleSnapshot", "This Covenant lease has already been released.")))
+                Result.Failure(new Error(ErrorCodes.Covenant.StaleSnapshot, "This Covenant lease has already been released.")))
             : _registration.RevalidateAsync(cancellationToken);
 
     public async ValueTask DisposeAsync()
@@ -536,7 +536,7 @@ public abstract class CovenantExclusiveOperationLease
 
             return Result.Failure(
                 new Error(
-                    "Covenant.LifecycleConflict",
+                    ErrorCodes.Covenant.LifecycleConflict,
                     "This exclusive Covenant lease has already used its one disposition."));
 
         }

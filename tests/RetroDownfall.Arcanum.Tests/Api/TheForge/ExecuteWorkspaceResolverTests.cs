@@ -137,15 +137,15 @@ public sealed class ExecuteWorkspaceResolverTests : IAsyncLifetime
 
 }
 
-public sealed class PingRequestResolverTests
+public sealed class CampaignWorkspaceFillTests
 {
 
     [Fact]
-    public async Task ResolveCampaignAsync_NoCampaignId_ReturnsOriginal()
+    public async Task ApplyAsync_NoCampaignId_ReturnsOriginal()
     {
         PingRequest request = new(Prompt: "hi");
 
-        Result<PingRequest> result = await PingRequestResolver.ResolveCampaignAsync(
+        Result<PingRequest> result = await CampaignWorkspaceFill.ApplyAsync(
             request,
             new FakeCampaignRepository(),
             CancellationToken.None);
@@ -156,11 +156,11 @@ public sealed class PingRequestResolverTests
     }
 
     [Fact]
-    public async Task ResolveCampaignAsync_WithWorkingDirectory_SkipsLookup()
+    public async Task ApplyAsync_WithWorkingDirectory_SkipsLookup()
     {
         PingRequest request = new(Prompt: "hi", WorkingDirectory: "/already/set", CampaignId: Guid.NewGuid());
 
-        Result<PingRequest> result = await PingRequestResolver.ResolveCampaignAsync(
+        Result<PingRequest> result = await CampaignWorkspaceFill.ApplyAsync(
             request,
             new FakeCampaignRepository(),
             CancellationToken.None);
@@ -171,7 +171,7 @@ public sealed class PingRequestResolverTests
     }
 
     [Fact]
-    public async Task ResolveCampaignAsync_HydratesWorkingDirectoryFromCampaign()
+    public async Task ApplyAsync_HydratesWorkingDirectoryFromCampaign()
     {
         Guid campaignId = Guid.NewGuid();
 
@@ -183,7 +183,7 @@ public sealed class PingRequestResolverTests
 
         PingRequest request = new(Prompt: "hi", CampaignId: campaignId);
 
-        Result<PingRequest> result = await PingRequestResolver.ResolveCampaignAsync(
+        Result<PingRequest> result = await CampaignWorkspaceFill.ApplyAsync(
             request,
             repo,
             CancellationToken.None);
@@ -194,11 +194,11 @@ public sealed class PingRequestResolverTests
     }
 
     [Fact]
-    public async Task ResolveCampaignAsync_MissingCampaign_Fails()
+    public async Task ApplyAsync_MissingCampaign_Fails()
     {
         PingRequest request = new(Prompt: "hi", CampaignId: Guid.NewGuid());
 
-        Result<PingRequest> result = await PingRequestResolver.ResolveCampaignAsync(
+        Result<PingRequest> result = await CampaignWorkspaceFill.ApplyAsync(
             request,
             new FakeCampaignRepository(),
             CancellationToken.None);

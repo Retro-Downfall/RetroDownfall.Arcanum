@@ -215,7 +215,7 @@ public sealed class CovenantLinker : ICovenantLinker
         };
 
     private static Result IntegrityFailure(string message) =>
-        Result.Failure(new Error("Covenant.IntegrityFailure", message));
+        Result.Failure(new Error(ErrorCodes.Covenant.IntegrityFailure, message));
 
     private sealed class CandidateComparer : IComparer<CovenantSnapshotCandidate>
     {

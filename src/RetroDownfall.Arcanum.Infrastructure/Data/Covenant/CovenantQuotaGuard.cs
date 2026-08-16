@@ -225,7 +225,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         return affected == 1
             ? Result.Success()
             : new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Session turn-capacity counters changed before retention could return them.");
 
     }
@@ -267,7 +267,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
     private static Error? Exceeds(long current, long added, long ceiling, string what) =>
         checked(current + added) > ceiling
             ? new Error(
-                "Covenant.CapacityExceeded",
+                ErrorCodes.Covenant.CapacityExceeded,
                 $"This mutation would exceed the bound on {what}.")
             : null;
 
@@ -292,7 +292,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         {
 
             return new Error(
-                "Covenant.NotFound",
+                ErrorCodes.Covenant.NotFound,
                 "There is no finalization capacity reservation with that identity.");
 
         }
@@ -319,7 +319,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         {
 
             return new Error(
-                "Covenant.LifecycleConflict",
+                ErrorCodes.Covenant.LifecycleConflict,
                 "This finalization capacity reservation has already reached a terminal state.");
 
         }
@@ -360,7 +360,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         {
 
             return new Error(
-                "Covenant.LifecycleConflict",
+                ErrorCodes.Covenant.LifecycleConflict,
                 "This finalization capacity reservation changed state before the transition could apply.");
 
         }
@@ -496,7 +496,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
                 // A CHECK refusal here is the ceiling doing its job, not a defect.
                 return new Error(
-                    "Covenant.CapacityExceeded",
+                    ErrorCodes.Covenant.CapacityExceeded,
                     "This Session has exhausted its turn-claim or finalization-guard capacity.");
 
             }
@@ -505,7 +505,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             {
 
                 return new Error(
-                    "Covenant.NotFound",
+                    ErrorCodes.Covenant.NotFound,
                     "This Session has no turn-capacity counter row.");
 
             }
@@ -533,14 +533,14 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
             return await installation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1
                 ? Result.Success()
-                : new Error("Covenant.NotFound", "The installation turn-capacity counter row is missing.");
+                : new Error(ErrorCodes.Covenant.NotFound, "The installation turn-capacity counter row is missing.");
 
         }
         catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
         {
 
             return new Error(
-                "Covenant.CapacityExceeded",
+                ErrorCodes.Covenant.CapacityExceeded,
                 "This installation has exhausted its turn-claim or finalization-guard capacity.");
 
         }

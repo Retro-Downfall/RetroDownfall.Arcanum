@@ -260,7 +260,7 @@ public sealed class CovenantOwnerCleanupTests
             Token,
             commit: false);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
         Assert.Equal(
             0,
@@ -289,7 +289,7 @@ public sealed class CovenantOwnerCleanupTests
             Token,
             commit: false);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
     }
 

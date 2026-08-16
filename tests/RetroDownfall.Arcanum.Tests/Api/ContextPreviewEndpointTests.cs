@@ -53,7 +53,10 @@ public sealed class ContextPreviewEndpointTests(ArcanumWebApplicationFactory fac
 
             Prompt: string.Empty,
 
-            SessionId: Guid.NewGuid(),
+            // No Session ID: a supplied one must now identify an existing Session. Inspection is an
+            // operator surface and resolves its Campaign canonically like any other (§10.12); the
+            // unknown-Session refusal has its own test below.
+            SessionId: null,
 
             ShowContent: false,
 
@@ -222,6 +225,45 @@ public sealed class ContextPreviewEndpointTests(ArcanumWebApplicationFactory fac
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
         Assert.Equal(previousCalls, factory.FakeIntelligence.PreviewContextCallCount);
+
+    }
+
+    [SkippableFact]
+
+    public async Task PostContextPreview_unknown_session_is_refused_rather_than_previewed()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        int previousPreviewCalls = factory.FakeIntelligence.PreviewContextCallCount;
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        // A supplied Session ID must identify an existing Session. The old resolver ignored an
+        // unknown one and previewed anyway, which reported context for a conversation that did not
+        // exist and could not have produced it (§10.12).
+        ContextPreviewRequest request = new(
+
+            Prompt: string.Empty,
+
+            SessionId: Guid.NewGuid());
+
+        HttpResponseMessage response = await client.PostAsync(
+
+            "/api/intelligence/context/inspect",
+
+            new StringContent(
+
+                JsonSerializer.Serialize(request, ArcanumJsonContext.Default.ContextPreviewRequest),
+
+                Encoding.UTF8,
+
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        Assert.Equal(previousPreviewCalls, factory.FakeIntelligence.PreviewContextCallCount);
 
     }
 

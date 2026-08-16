@@ -171,7 +171,7 @@ public sealed class CovenantQuotaTests
             CovenantOperationScope.Global,
             Nothing with { NewEntries = CovenantLimits.MaxStableEntriesPerScope + 1 });
 
-        Assert.Equal("Covenant.CapacityExceeded", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refused.Error.Code);
 
     }
 
@@ -201,7 +201,7 @@ public sealed class CovenantQuotaTests
 
             Result<CovenantQuotaSnapshot> refused = await RunAsync(fixture, CovenantOperationScope.Global, demand);
 
-            Assert.Equal("Covenant.CapacityExceeded", refused.Error.Code);
+            Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refused.Error.Code);
 
         }
 
@@ -222,14 +222,14 @@ public sealed class CovenantQuotaTests
             scope,
             Nothing with { NewAgentVersions = CovenantLimits.MaxAgentVersionsPerCampaign + 1 });
 
-        Assert.Equal("Covenant.CapacityExceeded", refusedVersions.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refusedVersions.Error.Code);
 
         Result<CovenantQuotaSnapshot> refusedBytes = await RunAsync(
             fixture,
             scope,
             Nothing with { NewAgentBytes = CovenantLimits.MaxAgentBytesPerCampaign + 1L });
 
-        Assert.Equal("Covenant.CapacityExceeded", refusedBytes.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refusedBytes.Error.Code);
 
         Result<CovenantQuotaSnapshot> allowed = await RunAsync(
             fixture,
@@ -275,7 +275,7 @@ public sealed class CovenantQuotaTests
                     0)),
             Token);
 
-        Assert.Equal("Covenant.CapacityExceeded", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refused.Error.Code);
 
     }
 

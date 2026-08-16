@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -33,6 +34,7 @@ public sealed class TurnIdempotencyAmbientTests
 
         TurnExecutionRequest turnRequest = new(
             request,
+            InvocationContexts.AttendedSession(),
             TurnResponseMode.Buffered,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: false,

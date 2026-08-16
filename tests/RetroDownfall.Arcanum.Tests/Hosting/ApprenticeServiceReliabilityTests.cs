@@ -1306,13 +1306,15 @@ public sealed class ApprenticeServiceReliabilityTests
     {
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new NotImplementedException();
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
             foreach (IntelligenceEvent frame in frames)
@@ -1331,13 +1333,15 @@ public sealed class ApprenticeServiceReliabilityTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new NotImplementedException();
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new InvalidOperationException("Branch fault injection.");
 
@@ -1352,7 +1356,8 @@ public sealed class ApprenticeServiceReliabilityTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
 
@@ -1363,7 +1368,8 @@ public sealed class ApprenticeServiceReliabilityTests
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new NotImplementedException();
 

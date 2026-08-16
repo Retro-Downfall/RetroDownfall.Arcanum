@@ -75,6 +75,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest(),
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -112,6 +113,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest(),
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -150,6 +152,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest(),
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -177,6 +180,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest(),
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -214,14 +218,18 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest(),
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
         Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
 
-        // One user Entry and one Session for the run, however many candidates were tried.
+        // One user Entry and one Session for the run, however many candidates were tried. Begin now
+        // always names an already-created Session rather than passing null and letting the repository
+        // invent one, so the recorded identity is the Session the turn created up front (§10.12).
         (Guid? requestedSessionId, string prompt) = Assert.Single(grimoire.BeginCalls);
-        Assert.Null(requestedSessionId);
+        Assert.NotNull(requestedSessionId);
+        Assert.NotEqual(Guid.Empty, requestedSessionId!.Value);
         Assert.Equal("hello", prompt);
 
         // The surviving candidate finalized the seeded assistant row; nothing was discarded.
@@ -257,6 +265,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest(),
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -369,7 +378,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
 
-        await wizard.ExecutePromptAsync(BaseRequest(), CancellationToken.None);
+        await wizard.ExecutePromptAsync(BaseRequest(), InvocationContexts.AttendedSession(), CancellationToken.None);
 
         Assert.False(tracker.IsHealthy(providerA.Name));
 
@@ -400,7 +409,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(BaseRequest(), CancellationToken.None);
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(BaseRequest(), InvocationContexts.AttendedSession(), CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
@@ -428,7 +437,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, withHealthTracker: false, providerA);
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(BaseRequest(), CancellationToken.None);
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(BaseRequest(), InvocationContexts.AttendedSession(), CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
@@ -476,7 +485,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
         };
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, CancellationToken.None);
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, result.Error.Code);
@@ -566,7 +575,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
         };
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, CancellationToken.None);
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, result.Error.Code);
@@ -658,7 +667,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
         };
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, CancellationToken.None);
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
 
         Assert.True(result.IsSuccess);
         Assert.Equal("answer from compatible B", result.Value.Text);
@@ -870,6 +879,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 Reasoning = new ReasoningRequestOptions(
                     Output: protectedOnly ? ReasoningOutputMode.None : ReasoningOutputMode.Summary),
             },
+            InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -987,6 +997,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<ToolExecutionPipeline>.Instance),
             new GrimoireTurnWriter(
                 grimoire,
+                grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
                 new SessionEventHub(NullLogger<SessionEventHub>.Instance),
                 NullLogger<GrimoireTurnWriter>.Instance),
             CreateInferenceContextBuilder(grimoire, settings),
@@ -1058,7 +1069,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     {
         List<IntelligenceEvent> events = [];
 
-        await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, CancellationToken.None))
+        await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None))
         {
             events.Add(evt);
         }
@@ -1436,7 +1447,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
     }
 
-    private sealed class FakeGrimoireRepository : IGrimoireRepository
+    private sealed class FakeGrimoireRepository : IGrimoireRepository, ISessionTurnBeginStore
     {
 
         public Task<Session?> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -1463,6 +1474,35 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             BeginCalls.Add((sessionId, prompt));
 
             return Task.FromResult((sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
+
+        }
+
+        public ValueTask<Result<Guid>> CreateBoundSessionAsync(
+            CanonicalCampaignContext campaign,
+            string title,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<Guid>.Success(Guid.NewGuid()));
+
+        public async ValueTask<Result<AssistantReplyBeginReceipt>> BeginAssistantReplyAsync(
+            Guid existingSessionId,
+            CanonicalCampaignContext campaign,
+            string prompt,
+            string model,
+            CancellationToken cancellationToken)
+        {
+
+            (Guid sessionId, Guid assistantEntryId) = await BeginAssistantReplyAsync(
+                existingSessionId,
+                prompt,
+                model,
+                cancellationToken);
+
+            return Result<AssistantReplyBeginReceipt>.Success(
+                new AssistantReplyBeginReceipt(
+                    sessionId,
+                    Guid.NewGuid(),
+                    assistantEntryId,
+                    new SessionTurnInputPreflight(sessionId, campaign.Binding, 0, 0)));
 
         }
 

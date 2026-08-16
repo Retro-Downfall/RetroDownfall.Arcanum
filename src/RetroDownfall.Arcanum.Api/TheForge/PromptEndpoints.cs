@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Infrastructure.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Api.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
@@ -741,8 +742,8 @@ internal static class PromptEndpoints
                     ToolPolicy: body.ToolPolicy,
                     AdditionalSystemPrompt: renderResult.Value.RenderedText);
 
-                Result<PingRequest> resolvedPing = await PingRequestResolver
-                    .ResolveCampaignAsync(ping, campaignRepository, ctx.RequestAborted)
+                Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
+                    .ResolveAsync(ping, ctx.RequestServices, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)
@@ -756,7 +757,13 @@ internal static class PromptEndpoints
                 }
 
                 Result<PromptTurnResult> turn = await intelligence
-                    .ExecutePromptAsync(resolvedPing.Value, ctx.RequestAborted)
+                    .ExecutePromptAsync(
+                        resolvedPing.Value.Request,
+                        ArcanumInvocationContexts.ForTurn(
+                            ctx,
+                            resolvedPing.Value.Request,
+                            resolvedPing.Value.Campaign),
+                        ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 Result<PromptResponseDto> envelopeResult = turn.IsFailure
@@ -875,8 +882,8 @@ internal static class PromptEndpoints
                     ToolPolicy: body.ToolPolicy,
                     AdditionalSystemPrompt: renderResult.Value.RenderedText);
 
-                Result<PingRequest> resolvedPing = await PingRequestResolver
-                    .ResolveCampaignAsync(ping, campaignRepository, ctx.RequestAborted)
+                Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
+                    .ResolveAsync(ping, ctx.RequestServices, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)
@@ -894,7 +901,13 @@ internal static class PromptEndpoints
                 }
 
                 await InferenceExecuteWriter
-                    .WriteStreamAsync(ctx, intelligence, resolvedPing.Value, ctx.RequestAborted)
+                    .WriteStreamAsync(
+                        ctx,
+                        intelligence,
+                        resolvedPing.Value.Request,
+                        ctx.RequestAborted,
+                        auditContext: null,
+                        resolvedPing.Value.Campaign)
                     .ConfigureAwait(false);
             })
         .WithName("Prompt_ExecuteStream")

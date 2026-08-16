@@ -80,7 +80,7 @@ internal sealed class CovenantCleanupWorker(
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed before this cleanup batch could apply.");
 
         }
@@ -339,7 +339,7 @@ internal sealed class CovenantCleanupWorker(
 
         return value is byte[] bytes
             ? new Guid(bytes)
-            : new Error("Covenant.Unavailable", "The Covenant canonical tier has no state row.");
+            : new Error(ErrorCodes.Covenant.Unavailable, "The Covenant canonical tier has no state row.");
 
     }
 

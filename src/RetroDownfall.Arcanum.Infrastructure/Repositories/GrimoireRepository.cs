@@ -18,7 +18,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
-public sealed class GrimoireRepository : IGrimoireRepository
+public sealed partial class GrimoireRepository : IGrimoireRepository
 {
     private const int MaxLegacyBackfillPerSweep = 200;
 

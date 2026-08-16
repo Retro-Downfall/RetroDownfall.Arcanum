@@ -97,7 +97,7 @@ public readonly record struct CovenantSearchKeyset(
         {
 
             return new Error(
-                "Covenant.InvalidCursor",
+                ErrorCodes.Covenant.InvalidCursor,
                 "A Covenant search score must be a finite IEEE-754 binary64 value.");
 
         }

@@ -58,7 +58,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed before this mutation batch could commit.");
 
         }
@@ -67,7 +67,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant key-reclamation epoch changed before this mutation batch could commit.");
 
         }
@@ -79,7 +79,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "The Campaign registry epoch changed before this mutation batch could commit.");
 
         }
@@ -335,7 +335,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         {
 
             return new Error(
-                "Covenant.StaleSnapshot",
+                ErrorCodes.Covenant.StaleSnapshot,
                 "This normalized key changed after the mutation was prepared.");
 
         }
@@ -346,7 +346,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         {
 
             return new Error(
-                "Covenant.RevisionConflict",
+                ErrorCodes.Covenant.RevisionConflict,
                 "The targeted Covenant lane head is not at the expected revision.");
 
         }
@@ -476,7 +476,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             {
 
                 return new Error(
-                    "Covenant.LifecycleConflict",
+                    ErrorCodes.Covenant.LifecycleConflict,
                     "There is no Covenant head in this scope and lane to retire.");
 
             }
@@ -494,7 +494,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             {
 
                 return new Error(
-                    "Covenant.LifecycleConflict",
+                    ErrorCodes.Covenant.LifecycleConflict,
                     "An agent cannot reactivate a retired Proposed Covenant lane.");
 
             }
@@ -503,7 +503,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             {
 
                 return new Error(
-                    "Covenant.LifecycleConflict",
+                    ErrorCodes.Covenant.LifecycleConflict,
                     "This Covenant head is retired and reactivation was not requested.");
 
             }
@@ -562,7 +562,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         {
 
             return new Error(
-                "Covenant.Unavailable",
+                ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier has no state row, so nothing can be published against it.");
 
         }

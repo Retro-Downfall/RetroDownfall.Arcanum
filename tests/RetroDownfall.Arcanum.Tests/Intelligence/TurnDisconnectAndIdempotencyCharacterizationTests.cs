@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -81,6 +82,7 @@ public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
 
         TurnExecutionRequest request = new(
             forged,
+            InvocationContexts.AttendedSession(),
             TurnResponseMode.Streaming,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: true,

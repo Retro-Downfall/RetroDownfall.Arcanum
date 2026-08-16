@@ -362,7 +362,7 @@ internal sealed class CovenantIndexRebuilder(
         catch (SqliteException exception)
         {
 
-            return new Error("Covenant.IntegrityFailure", exception.Message);
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
 
         }
 

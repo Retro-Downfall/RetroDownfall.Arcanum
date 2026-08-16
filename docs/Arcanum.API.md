@@ -365,6 +365,19 @@ Read-only model-aware estimate (`ManaCountRequest` → `ManaCountResult`); no in
 
 Prompt input uses the production ping bound. When `campaignId` is supplied without `workingDirectory`, the endpoint resolves the Campaign's server-host path exactly as buffered and streaming inference do; an unknown Campaign returns **404**.
 
+**Canonical Campaign resolution (§10.12).** Every inference and preview route now resolves Campaign authority through the one canonical resolver before doing any other work, and the sources must agree rather than the first populated one winning:
+
+| Condition | Status | Code |
+|---|---|---|
+| `sessionId` names a Session that does not exist | **404** | `Session.NotFound` |
+| `sessionId` names a Session that predates immutable Campaign binding | **409** | `Session.CampaignBindingRequired` |
+| `campaignId`, the Session's binding, or the supplied `workingDirectory` name different Campaigns | **409** | `Covenant.CampaignBindingConflict` |
+| `workingDirectory` is supplied but is not contained by the resolved Campaign's registered root | **409** | `Covenant.CampaignBindingConflict` |
+| a Global-only Session is given any Campaign source | **409** | `Covenant.CampaignBindingConflict` |
+| the resolved Campaign no longer exists | **404** | `Campaign.NotFound` |
+
+A supplied Session ID is never silently replaced with a new Session, and an unregistered working directory contributes nothing only while no other source has established a Campaign. The Campaign a turn resolves to is server-owned: no request body, MCP schema, or tool argument can name it directly.
+
 The endpoint uses `WizardIntelligenceProvider`'s production routing, RAG readers, tool builder and policy filters, `SystemPromptBuilder.BuildDocument`, `InferenceContextBuilder.TryApplyContextCompressionIfNeeded`, and `IModelTokenEstimator`. It never enters the turn coordinator, invokes a tool, reserves turn budget, creates an assistant Entry, persists preview files/images as attachments, or calls the main inference model. `overrideSpellName` uses the same forced-Spell load and dependency resolution as a live turn and continues to resolve when `noRetrieval:true`; only automatic semantic Spell routing is skipped. `disableAllTools` and `additionalSystemPrompt` let a research dry run reproduce synthesis policy without executing it. `noRetrieval:true` skips embedding/RAG and automatic semantic Spell routing, with explicit unavailable reasons. Model-visible content is omitted unless `showContent:true`; that opt-in returns the assembled system prompt and messages through the authenticated operator API. Pre-call token values are labeled `exact`, `estimated`, `unknown`, or `reserved`; provider-reported values are never fabricated.
 
 `arcanum run --dry-run` always requests `noRetrieval:true`, making it a spend-free static, pre-inference plan rather than an exact copy of the eventual live `PingRequest`. It validates and shows the resolved user payload, forced Spell, server context, tool policy, output reserve, and sampling controls without search or provider inference. A later live Agent handoff may still add locally produced `PatternSnapshot` and `ChronosyncDelta` context before inference.

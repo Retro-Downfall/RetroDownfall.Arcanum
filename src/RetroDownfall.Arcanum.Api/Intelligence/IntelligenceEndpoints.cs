@@ -65,8 +65,8 @@ internal static class IntelligenceEndpoints
                     statusCode: StatusCodes.Status400BadRequest);
             }
 
-            Result<PingRequest> resolvedRequest = await PingRequestResolver
-                .ResolveCampaignAsync(body, campaignRepository, cancellationToken)
+            Result<CanonicalPingTurn> resolvedRequest = await CanonicalPingResolution
+                .ResolveAsync(body, httpContext.RequestServices, cancellationToken)
                 .ConfigureAwait(false);
 
             if (resolvedRequest.IsFailure)
@@ -89,7 +89,14 @@ internal static class IntelligenceEndpoints
                 ClientIp = httpContext.Connection.RemoteIpAddress?.ToString(),
             };
 
-            Result<PromptTurnResult> turn = await intelligence.ExecutePromptAsync(resolvedRequest.Value, cancellationToken, pingAuditContext).ConfigureAwait(false);
+            Result<PromptTurnResult> turn = await intelligence.ExecutePromptAsync(
+                resolvedRequest.Value.Request,
+                ArcanumInvocationContexts.ForTurn(
+                    httpContext,
+                    resolvedRequest.Value.Request,
+                    resolvedRequest.Value.Campaign),
+                cancellationToken,
+                pingAuditContext).ConfigureAwait(false);
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
@@ -274,10 +281,8 @@ internal static class IntelligenceEndpoints
                 return;
             }
 
-            ICampaignRepository campaignRepository = httpContext.RequestServices.GetRequiredService<ICampaignRepository>();
-
-            Result<PingRequest> resolvedRequest = await PingRequestResolver
-                .ResolveCampaignAsync(body, campaignRepository, ct)
+            Result<CanonicalPingTurn> resolvedRequest = await CanonicalPingResolution
+                .ResolveAsync(body, httpContext.RequestServices, ct)
                 .ConfigureAwait(false);
 
             if (resolvedRequest.IsFailure)
@@ -306,7 +311,13 @@ internal static class IntelligenceEndpoints
             };
 
             await InferenceExecuteWriter
-                .WriteStreamAsync(httpContext, intelligence, resolvedRequest.Value, ct, pingStreamAuditContext)
+                .WriteStreamAsync(
+                    httpContext,
+                    intelligence,
+                    resolvedRequest.Value.Request,
+                    ct,
+                    pingStreamAuditContext,
+                    resolvedRequest.Value.Campaign)
                 .ConfigureAwait(false);
 
         })
@@ -467,9 +478,9 @@ internal static class IntelligenceEndpoints
 
                 }
 
-                Result<PingRequest> resolvedTurn = await PingRequestResolver
+                Result<CanonicalPingTurn> resolvedTurn = await CanonicalPingResolution
 
-                    .ResolveCampaignAsync(previewTurn, campaignRepository, cancellationToken)
+                    .ResolveAsync(previewTurn, httpContext.RequestServices, cancellationToken)
 
                     .ConfigureAwait(false);
 
@@ -495,13 +506,18 @@ internal static class IntelligenceEndpoints
 
                 {
 
-                    WorkingDirectory = resolvedTurn.Value.WorkingDirectory,
+                    WorkingDirectory = resolvedTurn.Value.Request.WorkingDirectory,
 
                 };
 
                 Result<ContextPreviewResult> preview = await previewService
 
-                    .PreviewContextAsync(effectiveRequest, cancellationToken)
+                    .PreviewContextAsync(
+                        effectiveRequest,
+                        ArcanumInvocationContexts.ForInspection(
+                            httpContext,
+                            campaign: resolvedTurn.Value.Campaign),
+                        cancellationToken)
 
                     .ConfigureAwait(false);
 

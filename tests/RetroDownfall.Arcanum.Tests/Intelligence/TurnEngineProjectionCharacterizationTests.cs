@@ -671,6 +671,7 @@ public sealed class TurnEngineProjectionCharacterizationTests
     private static TurnExecutionRequest CreateTurnRequest(TurnResponseMode mode) =>
         new(
             new PingRequest("test"),
+            InvocationContexts.AttendedSession(),
             mode,
             TurnPurpose.Interactive,
             HumanInteractionAvailable: mode == TurnResponseMode.Streaming,

@@ -4,8 +4,14 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 
 /// <summary>Internal logical-run request. Does not carry leases or HTTP surface modes.</summary>
+/// <remarks>
+/// <see cref="InvocationContext"/> is the caller's authority classification, carried by reference from
+/// the facade to the runner and on to commit. It is not nullable and has no default: a turn whose
+/// authority was optional would eventually be a turn whose authority was forgotten (§10.12).
+/// </remarks>
 internal sealed record TurnExecutionRequest(
     PingRequest Request,
+    ArcanumInvocationContext InvocationContext,
     TurnResponseMode ResponseMode,
     TurnPurpose Purpose,
     bool HumanInteractionAvailable,

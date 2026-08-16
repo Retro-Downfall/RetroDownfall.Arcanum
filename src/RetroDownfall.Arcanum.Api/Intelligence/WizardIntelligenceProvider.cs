@@ -121,12 +121,16 @@ public sealed partial class WizardIntelligenceProvider(
 
     public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
-        CancellationToken cancellationToken = default,
+        ArcanumInvocationContext invocationContext,
+        CancellationToken cancellationToken,
         InferenceAuditContext? auditContext = null)
     {
+        ArgumentNullException.ThrowIfNull(invocationContext);
+
         return await ResolveCoordinator()
             .ExecuteBufferedAsync(
                 request,
+                invocationContext,
                 TurnIdempotencyAmbient.Current,
                 cancellationToken,
                 auditContext)
@@ -135,12 +139,16 @@ public sealed partial class WizardIntelligenceProvider(
 
     public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
         PingRequest request,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default,
+        ArcanumInvocationContext invocationContext,
+        [EnumeratorCancellation] CancellationToken cancellationToken,
         InferenceAuditContext? auditContext = null)
     {
+        ArgumentNullException.ThrowIfNull(invocationContext);
+
         await foreach (IntelligenceEvent frame in ResolveCoordinator()
             .ExecuteIntelligenceStreamAsync(
                 request,
+                invocationContext,
                 TurnIdempotencyAmbient.Current,
                 cancellationToken,
                 auditContext)
@@ -193,6 +201,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         Result<PromptTurnResult> result = await ExecutePromptCoreAsync(
                 request.Request,
+                request.InvocationContext,
                 cancellationToken,
                 auditContext,
                 EmitBufferedFrameAsync)
@@ -252,6 +261,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         await foreach (IntelligenceEvent frame in StreamPromptCoreAsync(
                 request.Request,
+                request.InvocationContext,
                 cancellationToken,
                 auditContext)
             .WithCancellation(cancellationToken)
@@ -553,6 +563,7 @@ public sealed partial class WizardIntelligenceProvider(
 
     private async Task<Result<PromptTurnResult>> ExecutePromptCoreAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         CancellationToken cancellationToken = default,
         InferenceAuditContext? auditContext = null,
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
@@ -629,6 +640,7 @@ public sealed partial class WizardIntelligenceProvider(
                 InferenceAttemptResult single = await DrainBufferedInferenceAttemptAsync(
                         singleLease,
                         request,
+                        invocationContext,
                         inferenceToken,
                         callerToken,
                         auditContext,
@@ -641,6 +653,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         return await ExecutePromptWithFallbackAsync(
                 request,
+                invocationContext,
                 inferenceToken,
                 callerToken,
                 auditContext,
@@ -650,6 +663,7 @@ public sealed partial class WizardIntelligenceProvider(
 
     private async Task<Result<PromptTurnResult>> ExecutePromptWithFallbackAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         CancellationToken inferenceToken,
         CancellationToken callerToken,
         InferenceAuditContext? auditContext,
@@ -739,6 +753,7 @@ public sealed partial class WizardIntelligenceProvider(
                 InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(
                         lease,
                         request,
+                        invocationContext,
                         inferenceToken,
                         callerToken,
                         auditContext,
@@ -813,6 +828,7 @@ public sealed partial class WizardIntelligenceProvider(
     private async Task<InferenceAttemptResult> DrainBufferedInferenceAttemptAsync(
         ChatClientLease lease,
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         CancellationToken inferenceToken,
         CancellationToken callerToken,
         InferenceAuditContext? auditContext,
@@ -827,6 +843,7 @@ public sealed partial class WizardIntelligenceProvider(
         await foreach (IntelligenceEvent frame in RunInferenceAttemptAsync(
                 lease,
                 request,
+                invocationContext,
                 request.Prompt,
                 TurnResponseMode.Buffered,
                 classification,
@@ -861,6 +878,7 @@ public sealed partial class WizardIntelligenceProvider(
 
     private async IAsyncEnumerable<IntelligenceEvent> StreamPromptCoreAsync(
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         [EnumeratorCancellation] CancellationToken cancellationToken = default,
         InferenceAuditContext? auditContext = null)
     {
@@ -963,6 +981,7 @@ public sealed partial class WizardIntelligenceProvider(
             IAsyncEnumerator<IntelligenceEvent> singleEnumerator = RunInferenceAttemptAsync(
                 singleLease,
                 request,
+                invocationContext,
                 prompt,
                 TurnResponseMode.Streaming,
                 singleClassification,
@@ -1115,6 +1134,7 @@ public sealed partial class WizardIntelligenceProvider(
             IAsyncEnumerator<IntelligenceEvent> enumerator = RunInferenceAttemptAsync(
                 lease,
                 request,
+                invocationContext,
                 prompt,
                 TurnResponseMode.Streaming,
                 classification,
@@ -1424,6 +1444,7 @@ public sealed partial class WizardIntelligenceProvider(
     private async IAsyncEnumerable<IntelligenceEvent> RunInferenceAttemptAsync(
         ChatClientLease lease,
         PingRequest request,
+        ArcanumInvocationContext invocationContext,
         string prompt,
         TurnResponseMode mode,
         StreamFailureClassification classification,
@@ -1510,9 +1531,26 @@ public sealed partial class WizardIntelligenceProvider(
         }
         else if (!streaming)
         {
-            grimoireTurn = await grimoireTurnWriter
-                .TryBeginBufferedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
+            Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
+                .BeginBufferedAssistantReplyAsync(
+                    request,
+                    invocationContext,
+                    prompt,
+                    targetModel,
+                    inferenceToken)
                 .ConfigureAwait(false);
+
+            if (begun.IsFailure)
+            {
+                // Fail before prompt construction, tool advertisement, or provider dispatch. A turn
+                // whose Session or Campaign binding could not be honoured has no answer to give, and
+                // continuing would produce one nothing durable is attached to (§10.12).
+                yield return new IntelligenceEvent(IntelligenceEventType.Error, begun.Error.Message);
+
+                yield break;
+            }
+
+            grimoireTurn = begun.Value;
 
             streamTurnBegunEarly = true;
 
@@ -1523,9 +1561,23 @@ public sealed partial class WizardIntelligenceProvider(
         }
         else if (attachmentsEnabled && !InferenceContextBuilder.HasStatelessMessages(request))
         {
-            grimoireTurn = await grimoireTurnWriter
-                .TryBeginStreamedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
+            Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
+                .BeginStreamedAssistantReplyAsync(
+                    request,
+                    invocationContext,
+                    prompt,
+                    targetModel,
+                    inferenceToken)
                 .ConfigureAwait(false);
+
+            if (begun.IsFailure)
+            {
+                yield return new IntelligenceEvent(IntelligenceEventType.Error, begun.Error.Message);
+
+                yield break;
+            }
+
+            grimoireTurn = begun.Value;
 
             streamTurnBegunEarly = true;
 
@@ -2157,9 +2209,23 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (streaming && !streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
         {
-            grimoireTurn = await grimoireTurnWriter
-                .TryBeginStreamedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
+            Result<GrimoireTurnWriter.TurnHandle> lateBegun = await grimoireTurnWriter
+                .BeginStreamedAssistantReplyAsync(
+                    request,
+                    invocationContext,
+                    prompt,
+                    targetModel,
+                    inferenceToken)
                 .ConfigureAwait(false);
+
+            if (lateBegun.IsFailure)
+            {
+                yield return new IntelligenceEvent(IntelligenceEventType.Error, lateBegun.Error.Message);
+
+                yield break;
+            }
+
+            grimoireTurn = lateBegun.Value;
 
             if (seed is not null)
             {

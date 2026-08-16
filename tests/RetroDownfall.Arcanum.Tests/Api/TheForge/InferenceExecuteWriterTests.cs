@@ -469,13 +469,15 @@ public sealed class InferenceExecuteWriterTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new NotSupportedException();
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
             Entered.SetResult();

@@ -202,7 +202,7 @@ public sealed class CovenantStoreTests
             lease,
             Token);
 
-        Assert.Equal("Covenant.IntegrityFailure", overflow.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, overflow.Error.Code);
 
     }
 
@@ -258,7 +258,7 @@ public sealed class CovenantStoreTests
             lease,
             Token);
 
-        Assert.Equal("Covenant.IntegrityFailure", snapshot.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, snapshot.Error.Code);
 
     }
 
@@ -307,7 +307,7 @@ public sealed class CovenantStoreTests
             wrongScope,
             Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", mismatched.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, mismatched.Error.Code);
 
     }
 
@@ -523,7 +523,7 @@ public sealed class CovenantStoreTests
             scoped,
             Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
         // The same scoped lease is enough for its own scope.
         Result<CovenantListPage> allowed = await fixture.Store.ReadListPageAsync(
@@ -814,7 +814,7 @@ public sealed class CovenantStoreTests
             scoped,
             Token);
 
-        Assert.Equal("Covenant.ForbiddenAuthority", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
     }
 
@@ -881,7 +881,7 @@ public sealed class CovenantStoreTests
             lease,
             Token);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
     }
 

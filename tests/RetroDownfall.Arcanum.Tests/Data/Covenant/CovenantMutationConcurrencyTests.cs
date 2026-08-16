@@ -93,7 +93,7 @@ public sealed class CovenantMutationConcurrencyTests
             results.Where(static result => result.IsFailure),
             result => Assert.Contains(
                 result.Error.Code,
-                (string[])["Covenant.RevisionConflict", "Covenant.StaleSnapshot"]));
+                (string[])[ErrorCodes.Covenant.RevisionConflict, ErrorCodes.Covenant.StaleSnapshot]));
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_heads;"));
 
@@ -174,13 +174,13 @@ public sealed class CovenantMutationConcurrencyTests
 
             // A busy or locked writer is a lost race, not a defect: the owner retries the whole
             // transaction, and here losing is the outcome under test.
-            return new Error("Covenant.StaleSnapshot", exception.Message);
+            return new Error(ErrorCodes.Covenant.StaleSnapshot, exception.Message);
 
         }
         catch (InvalidOperationException exception)
         {
 
-            return new Error("Covenant.RevisionConflict", exception.Message);
+            return new Error(ErrorCodes.Covenant.RevisionConflict, exception.Message);
 
         }
 

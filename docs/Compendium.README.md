@@ -35,7 +35,7 @@ The navigation is intentionally limited to:
    Readiness comes from the running host over `GET /api/providers/{name}/familiar-probe`; Compendium does not spawn processes. When the host is not running, the page says so and names `arcanum serve` rather than spinning, and the hidden-models list stays fully editable — nothing about editing depends on the probe. Compendium never offers to sign in: remediation is a command you run yourself, and Arcanum never reads the CLI's credential store.
 5. **Security** — Ward and guardrail policy, unsafe-process acknowledgement, metrics authentication, distinct Perception/Spell/Campaign roots, and upload and image MIME allowlists.
 6. **Workspaces** — default root and explicit write permission.
-7. **Features** — flat capability opt-ins, including Conclave/A2A, Apprentices, embeddings, Saga, Scrying, attachments, browsing, guardrails, workspace checks, and memory management.
+7. **Features** — flat capability opt-ins, including Conclave/A2A, Apprentices, embeddings, Saga, Scrying, attachments, browsing, guardrails, workspace checks, and memory management. The Covenant introduces no configuration key yet: through issue #83 its runtime is composed but reached by no endpoint, command, or tool, so there is nothing for an operator to enable. `Arcanum:Features:Covenant` arrives with the operator surfaces in issue #88.
 8. **Integrations** — A2A identity/allowlist, CommLink webhook environment reference and allowlists, embedding provider/model facts, MCP plaintext-host policy, trusted workspace-check executable, and custom profiles.
 9. **Execution** — operator-controlled host concurrency and backpressure for Apprentices, SSE streams, and batches.
 10. **Cost** — default/per-model pricing and daily budget policy.

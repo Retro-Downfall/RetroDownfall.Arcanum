@@ -34,7 +34,7 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
         if (campaignId == Guid.Empty)
         {
 
-            return new Error("Covenant.InvalidScope", "A Campaign scope requires a nonempty Campaign identity.");
+            return new Error(ErrorCodes.Covenant.InvalidScope, "A Campaign scope requires a nonempty Campaign identity.");
 
         }
 

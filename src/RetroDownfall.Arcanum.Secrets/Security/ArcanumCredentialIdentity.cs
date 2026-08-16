@@ -18,6 +18,16 @@ public static class ArcanumCredentialIdentity
     /// <summary>Dedicated master key for encrypted attachment/upload/batch blobs.</summary>
     public const string FileEncryptionKeyAccount = "file-encryption-master-key";
 
+    /// <summary>
+    /// Installation-private key that turns a physical directory into an opaque Campaign root identity.
+    /// </summary>
+    /// <remarks>
+    /// Its own account rather than a derivation of the master API key, because its lifetime differs:
+    /// API-key rotation and Covenant reset must both leave every registered Campaign root recognisable,
+    /// and only a full installation reset regenerates it.
+    /// </remarks>
+    public const string CampaignRootIdentityKeyAccount = "campaign-root-identity-key";
+
     /// <summary>OS credential account used by the native Perplexity web-research provider.</summary>
     public const string PerplexityApiKeyAccount = "provider-perplexity-api-key";
 

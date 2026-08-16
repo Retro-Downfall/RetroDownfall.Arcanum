@@ -280,7 +280,7 @@ internal sealed class Loremaster(
                     try
                     {
                         Result<PromptTurnResult> result = await intelligence
-                            .ExecutePromptAsync(ping, stoppingToken)
+                            .ExecutePromptAsync(ping, ArcanumInvocationContext.None, stoppingToken)
                             .ConfigureAwait(false);
 
                         if (result.IsFailure)

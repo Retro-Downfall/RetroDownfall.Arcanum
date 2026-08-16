@@ -288,9 +288,35 @@ public static class GrimoireDatabaseBootstrapper
             context,
             cancellationToken).ConfigureAwait(false);
 
-        _ = scope.ServiceProvider
+        CovenantAvailabilitySnapshot published = scope.ServiceProvider
             .GetRequiredService<CovenantAvailability>()
             .PublishSchema(result, CovenantHealthTransition.Bootstrap);
+
+        // Authority publication and envelope key derivation happen after the install transactions
+        // commit and before readiness. Publishing earlier would leave the process asserting a
+        // generation a rolled-back transaction never recorded (§10.12).
+        //
+        // Both are optional resolutions, like the Weave availability flag above: a narrow container
+        // that installs the schema without composing the authority boundary is a legitimate caller,
+        // and a GetRequiredService here would turn that into a startup failure.
+        CovenantAuthoritySnapshotProvider? authorityProvider =
+            scope.ServiceProvider.GetService<CovenantAuthoritySnapshotProvider>();
+
+        CovenantEnvelopeMasterKeyProvider? keyProvider =
+            scope.ServiceProvider.GetService<CovenantEnvelopeMasterKeyProvider>();
+
+        if (authorityProvider is not null && keyProvider is not null)
+        {
+
+            await CovenantAuthorityStartupReconciler.ReconcileAsync(
+                installConnection,
+                authorityProvider,
+                keyProvider,
+                published,
+                masterApiKey,
+                cancellationToken).ConfigureAwait(false);
+
+        }
 
         availability?.SetAvailable(false);
 

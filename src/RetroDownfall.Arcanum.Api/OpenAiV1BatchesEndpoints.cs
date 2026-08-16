@@ -475,7 +475,9 @@ internal static partial class OpenAiV1Endpoints
                 failure.Message));
         }
 
-        Result<PromptTurnResult> result = await intelligence.ExecutePromptAsync(ping, cancellationToken).ConfigureAwait(false);
+        Result<PromptTurnResult> result = await intelligence
+            .ExecutePromptAsync(ping, ArcanumInvocationContext.None, cancellationToken)
+            .ConfigureAwait(false);
 
         if (result.IsFailure)
         {

@@ -1750,6 +1750,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
     {
         return new GrimoireTurnWriter(
             repository,
+            repository,
             hub ?? CreateSessionEventHub(),
             logger ?? NullLogger<GrimoireTurnWriter>.Instance);
 

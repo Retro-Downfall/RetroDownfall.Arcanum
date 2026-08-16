@@ -253,7 +253,7 @@ public sealed class CovenantSearchOutboxWorkerTests
             Token,
             availability: availability);
 
-        Assert.Equal("Covenant.StaleSnapshot", refused.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
         Assert.Equal(1, await Count(fixture, "covenant_search_outbox"));
 

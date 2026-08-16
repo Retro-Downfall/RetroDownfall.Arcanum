@@ -1568,7 +1568,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
             PingRequest request,
 
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+
+            CancellationToken cancellationToken,
 
             InferenceAuditContext? auditContext = null)
 
@@ -1588,7 +1590,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
             PingRequest request,
 
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
 
             InferenceAuditContext? auditContext = null)
 
@@ -1610,7 +1614,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
             PingRequest request,
 
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+
+            CancellationToken cancellationToken,
 
             InferenceAuditContext? auditContext = null) =>
 
@@ -1620,7 +1626,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
             PingRequest request,
 
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
 
             InferenceAuditContext? auditContext = null)
 
@@ -1686,7 +1694,8 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
             if (Interlocked.Increment(ref _calls) >= expectedConcurrentCalls)
@@ -1719,7 +1728,8 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ArcanumInvocationContext invocationContext,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
             await Task.CompletedTask.ConfigureAwait(false);

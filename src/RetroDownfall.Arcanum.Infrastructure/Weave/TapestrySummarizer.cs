@@ -148,7 +148,7 @@ internal sealed class TapestrySummarizer(
         try
         {
 
-            result = await intelligence.ExecutePromptAsync(ping, cancellationToken).ConfigureAwait(false);
+            result = await intelligence.ExecutePromptAsync(ping, ArcanumInvocationContext.None, cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
