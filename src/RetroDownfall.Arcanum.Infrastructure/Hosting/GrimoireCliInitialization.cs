@@ -29,6 +29,11 @@ public sealed class GrimoireCliInitialization(
     /// they already do so safely through WAL journaling plus <c>busy_timeout</c> rather than through
     /// exclusive ownership. Refusing to start because a host exists would break the ordinary case to
     /// protect a case the concurrency model already covers.</para>
+    ///
+    /// <para>The first arm therefore also owns interrupted-restore recovery. Both phases run inside the
+    /// bootstrap under this lock, and a restore whose topology or authority cannot be proved throws out
+    /// of here rather than completing: a CLI that reported success would be a second surface publishing
+    /// readiness on a replacement nobody revalidated (§10.19.8).</para>
     /// </remarks>
     public async Task EnsureInitializedAsync(CancellationToken cancellationToken)
     {
