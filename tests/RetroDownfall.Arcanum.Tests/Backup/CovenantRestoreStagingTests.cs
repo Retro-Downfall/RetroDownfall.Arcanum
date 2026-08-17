@@ -229,12 +229,280 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
     }
 
-    private async Task<Harness> CreateHarnessAsync(bool covenant = true)
+    [Fact]
+    public async Task The_default_mode_refuses_an_archive_that_carries_protected_state()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true);
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Equal(
+            BackupRestoreProtectedStatePolicy.ProtectedStatePresentCode,
+            Assert.Single(result.Issues).Code);
+
+        // Before staging in the sense that matters: no owner was acquired, so admission was never
+        // closed and no authenticated journal names an operation for the next start to resume.
+        Assert.Equal(0, harness.Gate.ExclusiveAcquisitions);
+
+        Assert.Empty(harness.Gate.Dispositions);
+
+        Assert.Equal(0, harness.Markers.ReconcileCalls);
+
+        Assert.Empty(harness.StagingRoots());
+
+        // And the installation the operator still has is the one they started with.
+        Assert.Equal(1, await harness.CountAsync("artifact_sensitivity"));
+
+    }
+
+    [Fact]
+    public async Task A_destructive_protected_state_mode_refuses_without_its_own_confirmation()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true);
+
+        harness.Options = harness.Options with
+        {
+
+            ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
+
+            ProtectedStateConfirmed = false,
+
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(
+            BackupRestoreProtectedStatePolicy.ConfirmationRequiredCode,
+            result.Issues.Select(static issue => issue.Code));
+
+        Assert.Equal(0, harness.Gate.ExclusiveAcquisitions);
+
+        Assert.Empty(harness.StagingRoots());
+
+    }
+
+    [Fact]
+    public async Task A_protected_state_mode_refuses_a_restore_that_displaces_nothing()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true);
+
+        harness.Options = harness.Options with
+        {
+
+            ConflictMode = BackupRestoreConflictMode.NewProfileRoot,
+
+            DestinationRoot = Path.Combine(_root, "second-profile"),
+
+            ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
+
+            ProtectedStateConfirmed = true,
+
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(
+            BackupRestoreProtectedStatePolicy.ModeNotApplicableCode,
+            result.Issues.Select(static issue => issue.Code));
+
+    }
+
+    [Fact]
+    public async Task A_protected_state_mode_refuses_rather_than_pretending_the_gate_is_on()
+    {
+
+        Harness harness = await CreateHarnessAsync(covenant: false, seedProtectedState: true);
+
+        harness.Options = harness.Options with
+        {
+
+            ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
+
+            ProtectedStateConfirmed = true,
+
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(
+            BackupRestoreProtectedStatePolicy.CovenantRequiredCode,
+            result.Issues.Select(static issue => issue.Code));
+
+    }
+
+    [Fact]
+    public async Task The_default_still_completes_over_an_archive_that_carries_nothing_protected()
+    {
+
+        // The pre-Covenant contract: an archive with no Covenant rows and no labels restores exactly as
+        // it always did, under the default mode and with no protected-state decision to make.
+        Harness harness = await CreateHarnessAsync();
+
+        Assert.Equal(BackupRestoreStatus.Completed, (await harness.RestoreAsync()).Status);
+
+    }
+
+    [Fact]
+    public async Task A_clean_source_may_have_its_protected_state_preserved()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true);
+
+        harness.Options = harness.Options with
+        {
+
+            ProtectedStateMode = BackupProtectedStateMode.RestoreProtectedState,
+
+            ProtectedStateConfirmed = true,
+
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        Assert.Equal(1, await harness.CountAsync("artifact_sensitivity"));
+
+        Assert.Equal(1, await harness.CountAsync("covenant_key_epochs"));
+
+    }
+
+    [Fact]
+    public async Task A_source_tainted_archive_carrying_protected_state_fails_closed()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true, sourceTainted: true);
+
+        foreach (BackupProtectedStateMode mode in new[]
+                 {
+                     BackupProtectedStateMode.Reject,
+                     BackupProtectedStateMode.RestoreProtectedState,
+                 })
+        {
+
+            harness.Options = harness.Options with
+            {
+
+                ProtectedStateMode = mode,
+
+                ProtectedStateConfirmed = true,
+
+            };
+
+            BackupRestoreResult result = await harness.RestoreAsync();
+
+            Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+            Assert.Equal(
+                mode is BackupProtectedStateMode.Reject
+                    ? BackupRestoreProtectedStatePolicy.ProtectedStatePresentCode
+                    : BackupRestoreProtectedStatePolicy.SourceTaintedCode,
+                Assert.Single(result.Issues).Code);
+
+            Assert.Equal(0, harness.Gate.ExclusiveAcquisitions);
+
+            Assert.Empty(harness.StagingRoots());
+
+        }
+
+    }
+
+    [Fact]
+    public async Task A_separately_confirmed_purge_is_the_only_continuation_for_a_tainted_archive()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true, sourceTainted: true);
+
+        harness.Options = harness.Options with
+        {
+
+            ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
+
+            ProtectedStateConfirmed = true,
+
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        // Nothing protected survived into the installation this machine now runs.
+        Assert.Equal(0, await harness.CountAsync("artifact_sensitivity"));
+
+        Assert.Equal(0, await harness.CountAsync("covenant_key_epochs"));
+
+        Assert.Equal(0, await harness.CountAsync("covenant_search_documents"));
+
+        // And the taint came with it. Joining the source's authority state can only ever raise this
+        // machine's, so a purge is not a laundering path either: what it removes is the data, and what
+        // it keeps is the content-free record that the data existed on a machine that could not prove
+        // it was clean.
+        Assert.Equal(
+            3,
+            await harness.ScalarAsync(
+                "SELECT HostToolsStateCode FROM covenant_authority_state WHERE StateKey = 1;"));
+
+    }
+
+    [Fact]
+    public async Task The_plan_reports_the_mode_and_the_receipt_backed_possible_attempt_count()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true);
+
+        harness.Options = harness.Options with
+        {
+
+            ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
+
+            ProtectedStateConfirmed = true,
+
+        };
+
+        BackupRestorePlan plan = await harness.PlanAsync();
+
+        Assert.Equal(BackupProtectedStateMode.PurgeProtectedState, plan.ProtectedStateMode);
+
+        BackupRestoreDisclosureExposure exposure =
+            Assert.IsType<BackupRestoreDisclosureExposure>(plan.DestinationDisclosure);
+
+        Assert.True(exposure.EverOccurred);
+
+        Assert.Equal(9, exposure.PossibleAttempts);
+
+        // One joined bucket, so the total is a lower bound rather than an exact count.
+        Assert.Equal(CovenantDisclosureCountKind.LowerBound, exposure.CountKind);
+
+        // A rehearsal creates nothing, which is what lets a command write the disclosure before it
+        // prompts.
+        Assert.Empty(harness.StagingRoots());
+
+    }
+
+    private async Task<Harness> CreateHarnessAsync(
+        bool covenant = true,
+        bool seedProtectedState = false,
+        bool sourceTainted = false)
     {
 
         Harness harness = new(_installation, _archives, _credentials, covenant);
 
-        await harness.BuildAsync();
+        await harness.BuildAsync(seedProtectedState, sourceTainted);
 
         return harness;
 
@@ -267,7 +535,9 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         private string ArchivePath { get; set; } = string.Empty;
 
-        internal async Task BuildAsync()
+        internal async Task BuildAsync(
+            bool seedProtectedState = false,
+            bool sourceTainted = false)
         {
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(installation);
@@ -276,7 +546,7 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 Path.Combine(installation, "arcanum.json"),
                 """{ "Arcanum": { "Host": { "ListenAny": false } } }""");
 
-            await BuildDatabaseAsync();
+            await BuildDatabaseAsync(seedProtectedState, sourceTainted);
 
             BackupService backups = new(
                 Paths(),
@@ -298,9 +568,49 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             ArchivePath = created.ArchivePath!;
 
+            if (sourceTainted)
+            {
+
+                // The archive now carries the taint; the destination is put back to clean. That is the
+                // shape acceptance criterion four is about: a tainted source facing a clean destination.
+                await ExecuteOnInstallationAsync(
+                    "UPDATE covenant_authority_state SET HostToolsStateCode = 1, "
+                    + "TaintTimeMasterVersion = NULL, TaintFingerprint = NULL, TransitionId = NULL "
+                    + "WHERE StateKey = 1;");
+
+            }
+
         }
 
-        internal async Task<BackupRestoreResult> RestoreAsync()
+        internal async Task<BackupRestorePlan> PlanAsync() =>
+            await CreateService().PlanAsync(Request(), Passphrase.AsMemory(), CancellationToken.None);
+
+        /// <summary>Every restore staging root still sitting beside the live installation.</summary>
+        internal string[] StagingRoots()
+        {
+
+            string parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(installation))!;
+
+            return Directory.Exists(parent)
+                ? [.. Directory.EnumerateDirectories(parent, BackupRestoreJournal.StagingPrefix + "*")]
+                : [];
+
+        }
+
+        internal async Task<BackupRestoreResult> RestoreAsync() =>
+            await CreateService().RestoreAsync(Request(), Passphrase.AsMemory(), CancellationToken.None);
+
+        private BackupRestoreRequest Request() =>
+            new(
+                ArchivePath,
+                Options.ConflictMode,
+                Options.DestinationRoot,
+                Confirmed: true,
+                CreateSafetyBackup: false,
+                ProtectedStateMode: Options.ProtectedStateMode,
+                ProtectedStateConfirmed: Options.ProtectedStateConfirmed);
+
+        private BackupRestoreService CreateService()
         {
 
             BackupRestoreServiceOptions options = new()
@@ -340,7 +650,7 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             Markers.Published = Published;
 
-            BackupRestoreService restore = new(
+            return new BackupRestoreService(
                 Paths(),
                 Codec(),
                 new HarnessSecretStore(GrimoireSecret),
@@ -348,11 +658,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 TimeProvider.System,
                 GrimoireSchemaTestInstaller.Create(),
                 options);
-
-            return await restore.RestoreAsync(
-                new BackupRestoreRequest(ArchivePath, Confirmed: true, CreateSafetyBackup: false),
-                Passphrase.AsMemory(),
-                CancellationToken.None);
 
         }
 
@@ -418,11 +723,24 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         private static BackupArchiveCodec Codec() =>
             new(new BackupArchiveCodecOptions { KdfIterations = 10_000, ChunkSize = 64 * 1024 });
 
+        private async Task ExecuteOnInstallationAsync(string sql)
+        {
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+                Path.Combine(installation, "arcanum.db"),
+                GrimoireSecret,
+                readOnly: false,
+                CancellationToken.None);
+
+            await ExecuteAsync(connection, sql);
+
+        }
+
         /// <summary>
         /// Installs a real three-tier Grimoire and seeds the machine-specific state a restore has to
         /// reconcile: a registered Campaign root and an authority row with this installation's identity.
         /// </summary>
-        private async Task BuildDatabaseAsync()
+        private async Task BuildDatabaseAsync(bool seedProtectedState, bool sourceTainted)
         {
 
             string database = Path.Combine(installation, "arcanum.db");
@@ -476,6 +794,88 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                         zeroblob(32), '2026-01-01T00:00:00.0000000Z');
                 """);
 
+            if (!seedProtectedState)
+            {
+
+                return;
+
+            }
+
+            // One canonical row, one accelerator projection, and one sensitivity label: the three shapes
+            // of protected state the inventory counts separately.
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc)
+                VALUES ('project/goal', 2, '2026-01-01T00:00:00.0000000Z');
+                """);
+
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO covenant_search_documents (
+                    SearchRowId, EntryId, LaneCode, VersionId, ScopeCode, CampaignId, LifecycleCode,
+                    NormalizedKey, AuthoredContent, CompiledContent, DatasetGeneration,
+                    CanonicalSearchSequence)
+                SELECT 1, 'entry-1', 1, 'version-1', 1, NULL, 1, 'project/goal', 'authored',
+                       'compiled', DatasetGeneration, 1
+                FROM covenant_state;
+                """);
+
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO artifact_sensitivity (
+                    LabelId, ArtifactKindCode, ArtifactId, SensitivityCode, ProvenanceModeCode,
+                    ExactGenerationIds, SessionId, ArtifactRevision, ArtifactContentDigest,
+                    SensitivityDigest, ArtifactLabelDigest, CreatedAtUtc)
+                VALUES ('22222222-2222-4222-8222-222222222222', 4,
+                        '33333333-3333-4333-8333-333333333333', 1, 1, zeroblob(16), NULL, 1,
+                        zeroblob(32), zeroblob(32), zeroblob(32), '2026-01-01T00:00:00.0000000Z');
+                """);
+
+            // Receipt-backed and joined, which is what makes the plan's possible-attempt count a lower
+            // bound rather than an exact one.
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO external_disclosure_state (
+                    DestinationCode, RevocabilityCode, CountKindCode, EverOccurred, JoinedCount,
+                    MaxDisclosedAtUtcTicks, EvidenceBloom, UpdatedAtUtc)
+                VALUES (1, 2, 2, 1, 9, 50,
+                        x'0100000000000000000000000000000000000000000000000000000000000000',
+                        '2026-01-01T00:00:00.0000000Z');
+                """);
+
+            // A locally revocable bucket is deliberately present and deliberately not counted: the
+            // shared destructive-operation copy is about what local removal cannot revoke.
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO external_disclosure_state (
+                    DestinationCode, RevocabilityCode, CountKindCode, EverOccurred, JoinedCount,
+                    MaxDisclosedAtUtcTicks, EvidenceBloom, UpdatedAtUtc)
+                VALUES (2, 1, 1, 1, 4, 50,
+                        x'0200000000000000000000000000000000000000000000000000000000000000',
+                        '2026-01-01T00:00:00.0000000Z');
+                """);
+
+            if (sourceTainted)
+            {
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE covenant_authority_state
+                    SET HostToolsStateCode = 3,
+                        TaintTimeMasterVersion = 1,
+                        TaintFingerprint = zeroblob(32),
+                        TransitionId = 'CCCCCCCC-DDDD-4EEE-8FFF-111111111111'
+                    WHERE StateKey = 1;
+                    """);
+
+            }
+
         }
 
         private static async Task ExecuteAsync(SqliteConnection connection, string sql)
@@ -491,7 +891,12 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
     }
 
-    internal sealed record HarnessOptions(BackupRestorePhase? FailBeforePhase);
+    internal sealed record HarnessOptions(
+        BackupRestorePhase? FailBeforePhase,
+        BackupRestoreConflictMode ConflictMode = BackupRestoreConflictMode.ReplaceInstallation,
+        string? DestinationRoot = null,
+        BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
+        bool ProtectedStateConfirmed = false);
 
     private sealed class HarnessSecretReader(string grimoireSecret) : IBackupSecretSnapshotReader
     {

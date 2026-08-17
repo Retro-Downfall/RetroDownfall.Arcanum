@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Cli.Commands;
 
+using RetroDownfall.Arcanum.Core.Backup;
+
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
@@ -322,6 +324,11 @@ internal static partial class CliCommandTree
                         result.GetValue(skipSafetyBackup),
                         result.GetValue(passphraseEnvironment),
                         result.GetValue(passphraseFileDescriptor),
+                        // Issue #113 built and tested the protected-state enforcement and the
+                        // disclosure-then-prompt ordering the operator surface binds into; issue #115
+                        // owns the option itself. Until then this is the default the contract already
+                        // had, which refuses an archive carrying protected state rather than adopting it.
+                        BackupProtectedStateMode.Reject,
                         cancellationToken)
                     .ConfigureAwait(false));
 

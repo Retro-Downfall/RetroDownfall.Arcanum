@@ -2,11 +2,17 @@ using System.Globalization;
 
 using System.Text.Json.Serialization.Metadata;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Core.Backup;
+
+using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Covenant;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
@@ -16,7 +22,8 @@ internal sealed class BackupCommands(
     IBackupPassphraseReader passphraseReader,
     IConfirmationPrompt confirmationPrompt,
     IConsoleDispatcher dispatcher,
-    ICliInvocationContext invocationContext)
+    ICliInvocationContext invocationContext,
+    IOptions<ArcanumSettings> settings)
 {
 
     public async Task<int> Create(
@@ -204,6 +211,11 @@ internal sealed class BackupCommands(
 
     }
 
+    /// <param name="protectedStateMode">
+    /// What this restore may do with the protected state the archive carries. No registered option
+    /// binds it yet — issue #115 owns that surface, and the command tree passes the default — but the
+    /// disclosure-then-prompt ordering the option binds into lives here and is tested here (§10.19.10).
+    /// </param>
     public async Task<int> Restore(
         string archivePath,
         string? conflictMode,
@@ -215,6 +227,7 @@ internal sealed class BackupCommands(
         bool skipSafetyBackup,
         string? passphraseEnvironmentVariable,
         int? passphraseFileDescriptor,
+        BackupProtectedStateMode protectedStateMode,
         CancellationToken cancellationToken)
     {
 
@@ -263,7 +276,8 @@ internal sealed class BackupCommands(
             restoreMasterApiKey,
             dryRun,
             Confirmed: false,
-            CreateSafetyBackup: !skipSafetyBackup);
+            CreateSafetyBackup: !skipSafetyBackup,
+            ProtectedStateMode: protectedStateMode);
 
         if (dryRun)
         {
@@ -277,6 +291,38 @@ internal sealed class BackupCommands(
             return plan.Blockers.Length == 0
                 ? (int)CliExitCode.Success
                 : (int)CliExitCode.GenericError;
+
+        }
+
+        // Preserving or purging the archive's protected state is its own destructive answer, and the
+        // operator has to have read what local removal cannot revoke before they give it. This runs
+        // before the replacement prompt below and before any mutating call, so a refusal creates no
+        // staging root, no journal, and no exclusive owner (§10.19.10).
+        if (protectedStateMode is not BackupProtectedStateMode.Reject)
+        {
+
+            ProtectedStateAnswer answer = await ConfirmProtectedStateAsync(
+                request,
+                passphrase.Value,
+                cancellationToken).ConfigureAwait(false);
+
+            if (answer is ProtectedStateAnswer.Refused)
+            {
+
+                return (int)CliExitCode.GenericError;
+
+            }
+
+            if (answer is ProtectedStateAnswer.Declined)
+            {
+
+                dispatcher.WriteDiagnostic("Restore cancelled.");
+
+                return (int)CliExitCode.Success;
+
+            }
+
+            request = request with { ProtectedStateConfirmed = true };
 
         }
 
@@ -370,6 +416,104 @@ internal sealed class BackupCommands(
 
     }
 
+    /// <summary>What the operator did with the protected-state question, or why it was never asked.</summary>
+    private enum ProtectedStateAnswer : byte
+    {
+
+        /// <summary>The plan refused before anything was written or asked.</summary>
+        Refused = 1,
+
+        /// <summary>The operator read the disclosure and declined.</summary>
+        Declined = 2,
+
+        /// <summary>The operator read the disclosure and confirmed.</summary>
+        Confirmed = 3,
+
+    }
+
+    /// <summary>
+    /// Writes the nonrevocable-disclosure statement, the receipt-backed possible-attempt count, and every
+    /// resolved help target, then asks.
+    /// </summary>
+    /// <remarks>
+    /// The order is the contract, not the presentation. Disclosure, then the number, then where to go and
+    /// delete externally, then the question — anything written after the answer was given would be a
+    /// disclosure the operator did not have when they decided.
+    ///
+    /// <para>The count comes from a read-only plan, which creates no staging root, no journal, and no
+    /// exclusive owner. That is what lets the whole sequence happen before the destructive path is
+    /// entered at all rather than in the middle of it.</para>
+    /// </remarks>
+    private async Task<ProtectedStateAnswer> ConfirmProtectedStateAsync(
+        BackupRestoreRequest request,
+        ReadOnlyMemory<char> passphrase,
+        CancellationToken cancellationToken)
+    {
+
+        BackupRestorePlan plan = await restoreService
+            .PlanAsync(request, passphrase, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (plan.Blockers.Length > 0)
+        {
+
+            WriteIssues(plan.Blockers);
+
+            return ProtectedStateAnswer.Refused;
+
+        }
+
+        dispatcher.WritePayload(CovenantExternalRetentionDisclosure.DestructiveOperationText);
+
+        dispatcher.WritePayload(
+            DescribeExposure(plan.DestinationDisclosure ?? BackupRestoreDisclosureExposure.None));
+
+        foreach (CovenantRetentionHelpTarget target in
+                 CovenantExternalRetentionDisclosure.ResolveHelpTargets(settings.Value.Providers ?? []))
+        {
+
+            dispatcher.WritePayload(
+                target.Provider.Length == 0
+                    ? $"  Retention guidance: {target.Uri}"
+                    : $"  Retention guidance ({target.Provider}): {target.Uri}");
+
+        }
+
+        return await confirmationPrompt
+            .PromptForConfirmationAsync(
+                request.ProtectedStateMode is BackupProtectedStateMode.PurgeProtectedState
+                    ? "Securely remove the archive's whole Covenant family and every protected artifact "
+                        + "from staging before this restore replaces the installation?"
+                    : "Preserve the archive's Covenant data and sensitivity labels on this machine?",
+                cancellationToken)
+            .ConfigureAwait(false)
+            ? ProtectedStateAnswer.Confirmed
+            : ProtectedStateAnswer.Declined;
+
+    }
+
+    /// <summary>
+    /// States how many physical attempts could already have carried content out of this installation.
+    /// </summary>
+    /// <remarks>
+    /// The count kind is spelled out rather than shown as a bare number. A joined lower bound and an
+    /// exact count are different claims, and an operator deciding whether to purge is entitled to know
+    /// which one they are reading. A destination that has never disclosed anything says so, because
+    /// printing "0 attempts" reads as a measurement where the honest answer is that there is no evidence
+    /// of one.
+    /// </remarks>
+    private static string DescribeExposure(BackupRestoreDisclosureExposure exposure) =>
+        exposure.EverOccurred
+            ? "This installation's own receipts record "
+                + (exposure.CountKind is CovenantDisclosureCountKind.LowerBound
+                    ? "at least "
+                    : "exactly ")
+                + FormatCount(exposure.PossibleAttempts)
+                + (exposure.PossibleAttempts == 1 ? " physical attempt" : " physical attempts")
+                + " that could have carried protected content out of it. Nothing this restore does can "
+                + "revoke any of them."
+            : "This installation's own receipts record no nonrevocable disclosure leaving it.";
+
     private bool TryParseMappings(
         IReadOnlyList<string> values,
         out BackupPathMapping[] mappings)
@@ -432,6 +576,16 @@ internal sealed class BackupCommands(
         dispatcher.WritePayload(
             $"Confirmation required: {(plan.RequiresConfirmation ? "yes" : "no")}; "
             + $"safety backup planned: {(plan.SafetyBackupPlanned ? "yes" : "no")}");
+
+        dispatcher.WritePayload(
+            $"Protected state: {BackupCliCatalog.Format(plan.ProtectedStateMode)}");
+
+        if (plan.DestinationDisclosure is BackupRestoreDisclosureExposure exposure)
+        {
+
+            dispatcher.WritePayload("  " + DescribeExposure(exposure));
+
+        }
 
         foreach (BackupComponent component in plan.Components)
         {
@@ -974,6 +1128,25 @@ internal static class BackupCliCatalog
 
         };
 
+    /// <summary>
+    /// The wire spelling of each protected-state mode, which is also what the effect digest commits to.
+    /// </summary>
+    /// <remarks>
+    /// Present as a formatter before it is present as an option. The plan a rehearsal returns already
+    /// carries the mode, so it has to be renderable now; issue #115 adds the parsing half beside it.
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, BackupProtectedStateMode> ProtectedStateModes =
+        new Dictionary<string, BackupProtectedStateMode>(StringComparer.OrdinalIgnoreCase)
+        {
+
+            ["reject"] = BackupProtectedStateMode.Reject,
+
+            ["restore-protected-state"] = BackupProtectedStateMode.RestoreProtectedState,
+
+            ["purge-protected-state"] = BackupProtectedStateMode.PurgeProtectedState,
+
+        };
+
     private static readonly IReadOnlyDictionary<string, BackupPathMappingKind> MappingKinds =
         new Dictionary<string, BackupPathMappingKind>(StringComparer.OrdinalIgnoreCase)
         {
@@ -1009,6 +1182,9 @@ internal static class BackupCliCatalog
 
     public static string Format(BackupPathMappingKind kind) =>
         MappingKinds.FirstOrDefault(pair => pair.Value == kind).Key ?? kind.ToString();
+
+    public static string Format(BackupProtectedStateMode mode) =>
+        ProtectedStateModes.FirstOrDefault(pair => pair.Value == mode).Key ?? mode.ToString();
 
     public static string Format(BackupRestoreStatus status) =>
         status switch

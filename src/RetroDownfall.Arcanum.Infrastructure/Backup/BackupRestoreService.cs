@@ -209,6 +209,17 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         }
 
+        // The one question the plan deliberately leaves open, asked here on the mutating path only: a
+        // destructive protected-state choice needs its own confirmation, separate from the one that
+        // authorized displacing the installation (§10.19.10).
+        if (BackupRestoreProtectedStatePolicy.EvaluateRequest(request, ReconcilesProtectedState(request))
+            is { IsRefusal: true } unconfirmed)
+        {
+
+            return Rejected(operationId, plan, phases, [unconfirmed.Blocker!]);
+
+        }
+
         return await ExecuteAsync(
             request,
             recoveryPassphrase,
@@ -302,6 +313,18 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             request.PathMappings ?? []);
 
         blockers.AddRange(mapping.Issues);
+
+        // Applicability only. The confirmation arm belongs to the mutating path, because this plan is
+        // exactly what an operator surface reads in order to compose the confirmation it is about to ask
+        // for (§10.19.10).
+        if (BackupRestoreProtectedStatePolicy
+                .EvaluateRequestShape(request, ReconcilesProtectedState(request))
+            is { IsRefusal: true } shape)
+        {
+
+            blockers.Add(shape.Blocker!);
+
+        }
 
         BackupManifest? manifest = null;
 
@@ -497,6 +520,9 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         }
 
+        BackupRestoreDisclosureExposure? exposure =
+            await ReadDestinationDisclosureAsync(request, cancellationToken).ConfigureAwait(false);
+
         return new BackupRestorePlan(
             generatedAt,
             archivePath,
@@ -525,7 +551,39 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             && Directory.Exists(_paths.GrimoireDirectory),
             safetyBackupPlanned,
             [.. warnings.Distinct(StringComparer.Ordinal)],
-            [.. blockers]);
+            [.. blockers],
+            request.ProtectedStateMode,
+            exposure);
+
+    }
+
+    /// <summary>
+    /// Folds the destination's own nonrevocable disclosure receipts into the count a destructive
+    /// protected-state choice has to be preceded by.
+    /// </summary>
+    /// <remarks>
+    /// Read only for a restore that actually asks for a protected-state effect. It costs a second
+    /// read-only open of the destination — and therefore a key derivation — so paying it on every plan
+    /// would slow the default path for a number only a destructive choice is ever shown. A restore that
+    /// does not enter the Covenant arm has no such choice to make and reports nothing.
+    /// </remarks>
+    private async Task<BackupRestoreDisclosureExposure?> ReadDestinationDisclosureAsync(
+        BackupRestoreRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        if (request.ProtectedStateMode is BackupProtectedStateMode.Reject
+            || !ReconcilesProtectedState(request))
+        {
+
+            return null;
+
+        }
+
+        BackupCovenantRestoreDestinationState destination =
+            await ReadDestinationCovenantStateAsync(cancellationToken).ConfigureAwait(false);
+
+        return BackupRestoreProtectedStateInspector.Exposure(destination.DisclosureBuckets);
 
     }
 
@@ -635,6 +693,23 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
             }
 
+            // Before the staged generation is composed, and before any owner is acquired. The archive
+            // has to be readable to be inventoried at all, but a refusal here has closed no admission,
+            // published no authenticated journal, and laid down no staged tree — and the cleanup below
+            // removes the work directory it was read from (§10.19.10).
+            BackupRestoreProtectedStateDecision protectedState = await EvaluateProtectedStateAsync(
+                request,
+                extractRoot,
+                phases,
+                cancellationToken).ConfigureAwait(false);
+
+            if (protectedState.IsRefusal)
+            {
+
+                return Rejected(operationId, plan, phases, [protectedState.Blocker!]);
+
+            }
+
             BackupVerifyIssue[] placement = ComposeStagedTree(
                 extraction.Manifest,
                 extractRoot,
@@ -693,6 +768,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 liveRoot,
                 covenantTopology,
                 destination,
+                protectedState.Outcome is BackupRestoreProtectedStateOutcome.PurgeStaging,
                 cancellationToken).ConfigureAwait(false);
 
             if (staged.Issues.Length > 0)
@@ -1121,6 +1197,55 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     }
 
     /// <summary>
+    /// Inventories the extracted archive's protected state and applies the requested mode to it.
+    /// </summary>
+    /// <remarks>
+    /// Only a restore that runs the Covenant arm inventories anything. With the feature gate off there
+    /// is no staged Covenant tier to preserve or remove and the default authorizes no effect, so the
+    /// whole path collapses to <see cref="BackupRestoreProtectedStateInventory.None"/> and a restore is
+    /// byte-for-byte what it was before this slice. A new-profile restore is outside the arm for the same
+    /// reason it is outside §10.19.9: it displaces nothing, and the plan already warns that such a
+    /// generation has to be adopted through a replace-installation restore — which is where the
+    /// enforcement applies — before it is used.
+    /// </remarks>
+    private async Task<BackupRestoreProtectedStateDecision> EvaluateProtectedStateAsync(
+        BackupRestoreRequest request,
+        string extractRoot,
+        List<BackupRestorePhaseRecord> phases,
+        CancellationToken cancellationToken)
+    {
+
+        if (!ReconcilesProtectedState(request))
+        {
+
+            return BackupRestoreProtectedStatePolicy.EvaluateArchive(
+                request.ProtectedStateMode,
+                BackupRestoreProtectedStateInventory.None);
+
+        }
+
+        BackupRestoreProtectedStateInventory inventory = await BackupRestoreProtectedStateInspector
+            .InspectExtractedArchiveAsync(extractRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        BackupRestoreProtectedStateDecision decision = BackupRestoreProtectedStatePolicy.EvaluateArchive(
+            request.ProtectedStateMode,
+            inventory);
+
+        Record(
+            phases,
+            BackupRestorePhase.Stage,
+            $"The archive carries {inventory.CanonicalRows} Covenant canonical rows, "
+            + $"{inventory.AcceleratorRows} search projections, and {inventory.ProtectedArtifacts} "
+            + "sensitivity labels; its authority state is "
+            + (inventory.SourceAuthorityTainted ? "not provably clean" : "clean")
+            + $". Protected-state mode: {request.ProtectedStateMode}.");
+
+        return decision;
+
+    }
+
+    /// <summary>
     /// Rewinds a retained journal to <see cref="BackupRestorePhase.Commit"/> so the staging root is
     /// resolved from filesystem evidence at the next start.
     /// </summary>
@@ -1156,6 +1281,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         string liveRoot,
         BackupRestoreCovenantTopology covenantTopology,
         BackupCovenantRestoreDestinationState destination,
+        bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
 
@@ -1243,6 +1369,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 destination,
                 request,
                 covenantTopology,
+                purgeProtectedState,
                 cancellationToken).ConfigureAwait(false);
 
             if (reconciled.IsFailure)
@@ -1256,7 +1383,12 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 phases,
                 BackupRestorePhase.Migrate,
                 "Stripped the archive's managed-file authority, reissued this dataset's Covenant "
-                + "identities, and committed this restore's Campaign marker children.");
+                + "identities, and committed this restore's Campaign marker children."
+                + (purgeProtectedState
+                    ? " The whole Covenant family and every protected artifact were removed from "
+                        + "staging before replacement; the destination's own taint and disclosure "
+                        + "evidence were preserved."
+                    : string.Empty));
 
         }
 

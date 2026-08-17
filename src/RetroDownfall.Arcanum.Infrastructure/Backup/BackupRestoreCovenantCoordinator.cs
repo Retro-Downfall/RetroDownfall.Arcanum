@@ -330,6 +330,12 @@ internal sealed class BackupRestoreCovenantCoordinator
     /// re-enumerates the same same-owner rows, rebuilds the identical canonical receipt — including the
     /// proven-zero one — and publishes it before anything moves.
     /// </remarks>
+    /// <param name="purgeProtectedState">
+    /// Whether <see cref="BackupRestoreProtectedStatePolicy.EvaluateArchive"/> answered
+    /// <see cref="BackupRestoreProtectedStateOutcome.PurgeStaging"/> for this archive, decided before
+    /// the staged tree existed. Passed through rather than re-derived from the request, so there is
+    /// exactly one place that decides whether protected state is removed (§10.19.10).
+    /// </param>
     internal async Task<Result> ReconcileStagedAsync(
         BackupRestoreCovenantSession session,
         ArcanumMaintenanceLock heldInstallationLock,
@@ -338,6 +344,7 @@ internal sealed class BackupRestoreCovenantCoordinator
         BackupCovenantRestoreDestinationState destination,
         BackupRestoreRequest request,
         BackupRestoreCovenantTopology topology,
+        bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
 
@@ -361,6 +368,7 @@ internal sealed class BackupRestoreCovenantCoordinator
             staged,
             destination,
             inventory.Value,
+            purgeProtectedState,
             cancellationToken).ConfigureAwait(false);
 
         if (receipt.IsFailure)
@@ -594,6 +602,7 @@ internal sealed class BackupRestoreCovenantCoordinator
         SqliteConnection staged,
         BackupCovenantRestoreDestinationState destination,
         CampaignPathRestoreCleanupInventory inventory,
+        bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
 
@@ -638,6 +647,7 @@ internal sealed class BackupRestoreCovenantCoordinator
                 destination,
                 _initializer,
                 _timeProvider,
+                purgeProtectedState,
                 cancellationToken).ConfigureAwait(false);
 
         if (reconciled.IsFailure)

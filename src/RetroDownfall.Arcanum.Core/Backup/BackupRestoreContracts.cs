@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -197,6 +198,18 @@ public sealed record BackupPathMapping(
     string From,
     string To);
 
+/// <param name="Confirmed">Whether the operator confirmed displacing the current installation.</param>
+/// <param name="ProtectedStateConfirmed">
+/// Whether the operator separately confirmed the destructive protected-state choice.
+/// </param>
+/// <remarks>
+/// The two confirmations are distinct fields rather than one, because they answer two different
+/// questions and the second is not implied by the first. Replacing an installation and reinstating (or
+/// securely removing) a standing agreement between an operator and an agent are separate destructive
+/// acts, and a single flag would let an operator who answered the first be treated as having answered
+/// the second (§10.19.10). Neither reaches the restore effect digest: a confirmation authorizes no
+/// effect of its own, so including it would make a rehearsal and the real run produce different owners.
+/// </remarks>
 public sealed record BackupRestoreRequest(
     string ArchivePath,
     BackupRestoreConflictMode ConflictMode = BackupRestoreConflictMode.ReplaceInstallation,
@@ -208,7 +221,8 @@ public sealed record BackupRestoreRequest(
     bool Confirmed = false,
     bool CreateSafetyBackup = true,
     BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
-    BackupSessionCampaignMapping[]? CampaignMappings = null);
+    BackupSessionCampaignMapping[]? CampaignMappings = null,
+    bool ProtectedStateConfirmed = false);
 
 public sealed record BackupRestorePhaseRecord(
     BackupRestorePhase Phase,
@@ -219,6 +233,33 @@ public sealed record BackupRestoreMappingPlan(
     string From,
     string To,
     long MatchedTargets);
+
+/// <summary>
+/// How much has already left this installation irrevocably, as its own receipts record it.
+/// </summary>
+/// <remarks>
+/// Folded from the destination's nonrevocable <c>external_disclosure_state</c> buckets, which are
+/// seeded from physical-attempt receipts and joined forever. It exists so a destructive protected-state
+/// choice can be preceded by a true number rather than by a warning that only gestures at one: local
+/// removal cannot revoke a disclosure that already happened, and the honest way to say so is to say how
+/// many attempts could have carried content out (§10.18).
+///
+/// <para><see cref="CountKind"/> is carried rather than resolved away because the two semantics are not
+/// interchangeable. A joined bucket becomes a lower bound — two installations' counts cannot be added
+/// without double-counting the effects they share — and reporting a lower bound as exact would
+/// understate exposure in exactly the report an operator uses to decide.</para>
+/// </remarks>
+public sealed record BackupRestoreDisclosureExposure(
+    bool EverOccurred,
+    long PossibleAttempts,
+    CovenantDisclosureCountKind CountKind)
+{
+
+    /// <summary>What a destination with no readable disclosure evidence contributes.</summary>
+    public static BackupRestoreDisclosureExposure None { get; } =
+        new(false, 0, CovenantDisclosureCountKind.Exact);
+
+}
 
 /// <summary>
 /// Everything a restore learned before it was allowed to mutate anything. <c>--dry-run</c> returns
@@ -244,7 +285,9 @@ public sealed record BackupRestorePlan(
     bool RequiresConfirmation,
     bool SafetyBackupPlanned,
     string[] Warnings,
-    BackupVerifyIssue[] Blockers);
+    BackupVerifyIssue[] Blockers,
+    BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
+    BackupRestoreDisclosureExposure? DestinationDisclosure = null);
 
 /// <summary>Post-commit reconciliation counts. Nothing here is allowed to silently skip a file.</summary>
 public sealed record BackupRestoreReconciliation(

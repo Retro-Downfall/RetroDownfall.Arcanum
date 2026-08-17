@@ -391,6 +391,14 @@ These words describe separate operations:
 A restored database gets a fresh generation identity. That makes old work, old leases, and stale
 current pointers unable to masquerade as current after replacement.
 
+Restoring an archive that carries governed memory is not something that happens by default. Putting that
+memory back is a decision only the operator can make, so the restore refuses until they make it
+explicitly — and refuses to keep it at all if the machine the backup came from could not prove it had
+never been exposed to unsandboxed tools. From there the only way forward is to say, explicitly, that the
+memory should be destroyed, which happens in the staged copy before anything is replaced. Either answer
+is asked for on its own, after the operator has been told what local deletion cannot reach and how much
+has already left.
+
 ## 10. What happens when something goes wrong
 
 OATH fails closed when the missing fact is about authority rather than convenience.
