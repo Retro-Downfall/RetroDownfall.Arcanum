@@ -44,6 +44,136 @@ public static class ArcanumCredentialIdentity
     /// <summary>OS credential account used by the native Perplexity web-research provider.</summary>
     public const string PerplexityApiKeyAccount = "provider-perplexity-api-key";
 
+    /// <summary>
+    /// Prefix owning the pre-database installation identity of one profile root's restore journal.
+    /// </summary>
+    /// <remarks>
+    /// This trio is namespaced per profile root rather than fixed, because a restore's crash-recovery
+    /// evidence is read before any database opens and one machine may hold several profile roots. A
+    /// single shared account would let a journal, key, or anchor written under one root authenticate
+    /// against another — and the thing that journal authorizes is renaming an installation.
+    /// </remarks>
+    public const string BackupRestoreJournalInstallationAccountPrefix =
+        "backup-restore-journal-installation-";
+
+    /// <summary>Prefix owning the AES-256-GCM key that authenticates one profile's restore journal.</summary>
+    public const string BackupRestoreJournalKeyAccountPrefix = "backup-restore-journal-key-";
+
+    /// <summary>Prefix owning one profile's anti-rollback restore-journal anchor.</summary>
+    public const string BackupRestoreJournalAnchorAccountPrefix = "backup-restore-journal-anchor-";
+
+    /// <summary>
+    /// The exact length of the lowercase-hex profile-namespace digest every restore-journal account is
+    /// suffixed with.
+    /// </summary>
+    public const int ProfileNamespaceSuffixLength = 64;
+
+    /// <summary>
+    /// The installation-identity account for one profile namespace.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The suffix is not exactly <see cref="ProfileNamespaceSuffixLength"/> lowercase hex characters. A
+    /// malformed suffix must never produce an account name, because the name that would come out of it
+    /// is one this profile has no claim to.
+    /// </exception>
+    public static string BackupRestoreJournalInstallationAccount(string profileNamespaceDigestHex) =>
+        BackupRestoreJournalInstallationAccountPrefix
+        + RequireProfileNamespaceSuffix(profileNamespaceDigestHex);
+
+    /// <summary>The journal-key account for one profile namespace.</summary>
+    /// <exception cref="ArgumentException">The suffix is not a canonical profile-namespace digest.</exception>
+    public static string BackupRestoreJournalKeyAccount(string profileNamespaceDigestHex) =>
+        BackupRestoreJournalKeyAccountPrefix + RequireProfileNamespaceSuffix(profileNamespaceDigestHex);
+
+    /// <summary>The anchor account for one profile namespace.</summary>
+    /// <exception cref="ArgumentException">The suffix is not a canonical profile-namespace digest.</exception>
+    public static string BackupRestoreJournalAnchorAccount(string profileNamespaceDigestHex) =>
+        BackupRestoreJournalAnchorAccountPrefix + RequireProfileNamespaceSuffix(profileNamespaceDigestHex);
+
+    /// <summary>
+    /// True when <paramref name="account"/> is one of the three namespaced restore-journal accounts.
+    /// </summary>
+    /// <remarks>
+    /// Requires the complete namespaced form. A bare prefix, an unnamespaced alias, or a suffix that is
+    /// not canonical lowercase hex is not one of ours, and answering otherwise would let an inventory
+    /// pass treat an arbitrary account as a restore credential.
+    /// </remarks>
+    public static bool IsBackupRestoreJournalAccount(string? account)
+    {
+
+        if (account is null)
+        {
+
+            return false;
+
+        }
+
+        foreach (string prefix in (string[])
+                 [
+                     BackupRestoreJournalInstallationAccountPrefix,
+                     BackupRestoreJournalKeyAccountPrefix,
+                     BackupRestoreJournalAnchorAccountPrefix,
+                 ])
+        {
+
+            if (account.Length == prefix.Length + ProfileNamespaceSuffixLength
+                && account.StartsWith(prefix, StringComparison.Ordinal)
+                && IsCanonicalProfileNamespaceSuffix(account[prefix.Length..]))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
+
+    /// <summary>
+    /// True when <paramref name="suffix"/> is exactly 64 lowercase hex characters.
+    /// </summary>
+    /// <remarks>
+    /// Lowercase only, so one profile namespace has exactly one account name. Accepting both cases
+    /// would give every profile two accounts, and a write to one would be invisible to a read of the
+    /// other.
+    /// </remarks>
+    public static bool IsCanonicalProfileNamespaceSuffix(string? suffix)
+    {
+
+        if (suffix is null || suffix.Length != ProfileNamespaceSuffixLength)
+        {
+
+            return false;
+
+        }
+
+        foreach (char value in suffix)
+        {
+
+            if (value is not (>= '0' and <= '9') and not (>= 'a' and <= 'f'))
+            {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
+
+    }
+
+    private static string RequireProfileNamespaceSuffix(string profileNamespaceDigestHex) =>
+        IsCanonicalProfileNamespaceSuffix(profileNamespaceDigestHex)
+            ? profileNamespaceDigestHex
+            : throw new ArgumentException(
+                "A restore-journal credential account requires exactly "
+                + ProfileNamespaceSuffixLength
+                + " lowercase hex characters of profile-namespace digest.",
+                nameof(profileNamespaceDigestHex));
+
     /// <summary>Prefix owning every per-inference-provider credential account.</summary>
     public const string InferenceProviderAccountPrefix = "inference-provider-";
 

@@ -16,6 +16,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 [JsonSerializable(typeof(BackupOperationCheckpoint))]
 [JsonSerializable(typeof(BackupRestoreJournalRecord))]
 [JsonSerializable(typeof(BackupRestoreStagingIndexRecord))]
+
+// The authenticated V2 restore journal. Every nested type is registered explicitly rather than left to
+// the generator's transitive walk, so an added member whose type has no context entry is a build
+// failure here rather than a reflection fallback on a Native AOT host — and the one place that would
+// surface is a restart trying to authenticate a half-finished restore (§10.19.7).
+[JsonSerializable(typeof(BackupRestoreJournalPayloadV2))]
+[JsonSerializable(typeof(BackupRestoreJournalEnvelopeV2))]
+[JsonSerializable(typeof(BackupRestoreJournalAnchorV1))]
+[JsonSerializable(typeof(BackupRestoreDurableNodeIdentityV1))]
+[JsonSerializable(typeof(BackupRestoreMarkerCleanupCheckpointV1))]
 internal sealed partial class BackupJsonContext : JsonSerializerContext;
 
 internal sealed record BackupOperationCheckpoint(

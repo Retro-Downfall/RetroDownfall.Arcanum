@@ -1,6 +1,14 @@
+using System.Collections.Immutable;
+
 using System.Text.Json;
 
+using System.Text.Json.Serialization;
+
 using RetroDownfall.Arcanum.Core.Backup;
+
+using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -29,6 +37,243 @@ internal sealed record BackupRestoreJournalRecord(
     string ArchivePath,
     ulong StagingVolumeId,
     ulong StagingFileId);
+
+/// <summary>What kind of filesystem object one journalled topology slot names.</summary>
+/// <remarks>
+/// Closed and numbered because it is persisted inside an authenticated envelope and compared after a
+/// restart. A directory slot that could hold a regular file would let the recorded live root be a file
+/// the restore then renames a whole tree onto.
+/// </remarks>
+internal enum BackupRestoreNodeKind : byte
+{
+
+    Directory = 1,
+
+    RegularFile = 2,
+
+}
+
+/// <summary>Whether a journalled node existed when the phase was frozen.</summary>
+/// <remarks>
+/// Two states rather than a nullable identity, because "the root exists" and "the root is absent" have
+/// to be different recorded facts. A <c>NewProfileRoot</c> owner replayed over a root that meanwhile
+/// came into existence would otherwise still match (§10.19.2).
+/// </remarks>
+internal enum BackupRestoreNodePresence : byte
+{
+
+    Absent = 1,
+
+    Present = 2,
+
+}
+
+/// <summary>Whether a profile's restore anchor still governs a live operation.</summary>
+/// <remarks>
+/// <see cref="Closed"/> is not deletion. It is the anti-replay tombstone that keeps a terminal
+/// operation's envelope from being presented again, and it is replaced only by a different new
+/// operation after journal absence is proved.
+/// </remarks>
+internal enum BackupRestoreJournalAnchorState : byte
+{
+
+    Active = 1,
+
+    Closed = 2,
+
+}
+
+/// <summary>
+/// One filesystem node named the way physical recovery is allowed to reopen it.
+/// </summary>
+/// <remarks>
+/// The parent's physical identity is the authority; the canonical parent path and the child leaf are
+/// how the parent is found again, never why it is believed. Recovery reopens the recorded parent,
+/// verifies its identity, opens only the recorded child without following links, and compares the node
+/// identity before any rename or deletion — so a path that becomes a symlink between publication and
+/// recovery redirects nothing.
+///
+/// <para>A present node carries its exact same-handle physical identity and an absent one carries
+/// none, because a nullable identity standing in for both would make "I did not look" and "it was not
+/// there" the same durable claim. Only a present regular file may carry content.</para>
+/// </remarks>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record BackupRestoreDurableNodeIdentityV1(
+    string CanonicalParentPath,
+    CovenantDigest ParentPhysicalIdentityDigest,
+    string ChildLeaf,
+    BackupRestoreNodeKind NodeKind,
+    BackupRestoreNodePresence Presence,
+    CovenantDigest? NodePhysicalIdentityDigest,
+    CovenantDigest? ContentDigest);
+
+/// <summary>
+/// The exact Campaign-marker cleanup children one restore durably committed to its staged database.
+/// </summary>
+/// <remarks>
+/// Copied field for field from <c>CampaignPathRestoreCleanupPreparationReceipt</c>, with the receipt's
+/// single owner spelled as the three parts that survive a JSON round trip. Null means preparation has
+/// not run; nonnull-empty means a proven zero inventory carrying the frozen
+/// <c>CampaignPathRestoreCleanupIntentVector.EmptyDigest</c>. Collapsing those two into one state is
+/// exactly what a crash between staged commit and journal publication would exploit (§10.19.5).
+/// </remarks>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record BackupRestoreMarkerCleanupCheckpointV1(
+    byte Version,
+    Guid OwnerOperationId,
+    CovenantExclusiveOperation OwnerOperation,
+    CovenantDigest OwnerEffectDigest,
+    ImmutableArray<Guid> OrderedIntentIds,
+    ulong IntentCount,
+    CovenantDigest IntentVectorDigest)
+{
+
+    /// <summary>Compares the children element by element.</summary>
+    /// <remarks>
+    /// Spelled out because <see cref="ImmutableArray{T}"/> compares by underlying-array reference. Left
+    /// to the compiler, a checkpoint reconstructed from the journal after a restart would compare
+    /// unequal to the identical receipt preparation produced, and the one comparison that exists to
+    /// prove a retry rebuilt the same vector would fail against a vector that is in fact the same.
+    /// </remarks>
+    public bool Equals(BackupRestoreMarkerCleanupCheckpointV1? other) =>
+        other is not null
+        && Version == other.Version
+        && OwnerOperationId == other.OwnerOperationId
+        && OwnerOperation == other.OwnerOperation
+        && OwnerEffectDigest == other.OwnerEffectDigest
+        && IntentCount == other.IntentCount
+        && IntentVectorDigest == other.IntentVectorDigest
+        && !OrderedIntentIds.IsDefault
+        && !other.OrderedIntentIds.IsDefault
+        && OrderedIntentIds.AsSpan().SequenceEqual(other.OrderedIntentIds.AsSpan());
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+
+        HashCode hash = new();
+
+        hash.Add(Version);
+
+        hash.Add(OwnerOperationId);
+
+        hash.Add(OwnerOperation);
+
+        hash.Add(OwnerEffectDigest);
+
+        hash.Add(IntentCount);
+
+        hash.Add(IntentVectorDigest);
+
+        foreach (Guid intentId in OrderedIntentIds.IsDefault ? [] : OrderedIntentIds)
+        {
+
+            hash.Add(intentId);
+
+        }
+
+        return hash.ToHashCode();
+
+    }
+
+}
+
+/// <summary>
+/// Everything one restore knows about itself, encrypted inside the V2 envelope.
+/// </summary>
+/// <remarks>
+/// The exclusive recovery owner is stored as its three parts rather than as
+/// <see cref="CovenantExclusiveRecoveryOwner"/> itself. That struct validates in its constructor and
+/// throws, and source-generated JSON would have to construct it from hostile bytes before anything had
+/// authenticated them — so the journal serializes the parts and rebuilds the owner only after the
+/// envelope's tag has verified, exactly as recovery journals do for operation scopes.
+///
+/// <para>Carries no key, no authored content, and no marker payload: the recovery path decrypts this
+/// before it has proven anything about the tree it describes.</para>
+/// </remarks>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record BackupRestoreJournalPayloadV2(
+    Guid OwnerOperationId,
+    CovenantExclusiveOperation OwnerOperation,
+    CovenantDigest OwnerEffectDigest,
+    BackupRestoreConflictMode ConflictMode,
+    BackupRestorePhase Phase,
+    CovenantDigest RestoreRequestDigest,
+    BackupRestoreDurableNodeIdentityV1 LiveRoot,
+    BackupRestoreDurableNodeIdentityV1 StagedRoot,
+    BackupRestoreDurableNodeIdentityV1 DisplacedRoot,
+    BackupRestoreDurableNodeIdentityV1 ArchiveSource,
+    BackupRestoreDurableNodeIdentityV1? SafetyBackup,
+    BackupRestoreMarkerCleanupCheckpointV1? MarkerCleanup)
+{
+
+    /// <summary>
+    /// The complete exclusive owner, or a typed refusal when the recorded parts do not form one.
+    /// </summary>
+    internal Result<CovenantExclusiveRecoveryOwner> RecoveryOwner()
+    {
+
+        if (OwnerOperationId == Guid.Empty
+            || OwnerOperation is not CovenantExclusiveOperation.BackupRestore
+            || !OwnerEffectDigest.IsValid)
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.ForbiddenAuthority,
+                "This restore journal does not name a complete backup-restore recovery owner.");
+
+        }
+
+        return new CovenantExclusiveRecoveryOwner(
+            OwnerOperationId,
+            OwnerOperation,
+            OwnerEffectDigest);
+
+    }
+
+}
+
+/// <summary>
+/// The authenticated wrapper the restore journal file actually holds.
+/// </summary>
+/// <remarks>
+/// Every field here is additional authenticated data, so a reader that needs the revision or the
+/// operation before it decrypts still cannot be lied to about them. The nonce is twelve random bytes
+/// per envelope rather than a counter: the key is installation-stable and outlives any counter this
+/// process could keep, so a deterministic nonce would repeat across a crash under the same key.
+/// </remarks>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record BackupRestoreJournalEnvelopeV2(
+    byte Version,
+    CovenantDigest ProfileNamespaceDigest,
+    Guid InstallationId,
+    Guid OperationId,
+    ulong Revision,
+    CovenantDigest PreviousEnvelopeDigest,
+    string NonceBase64Url,
+    string CiphertextBase64Url,
+    string AuthenticationTagBase64Url);
+
+/// <summary>
+/// The OS-secret anti-rollback anchor for one profile's restore journal.
+/// </summary>
+/// <remarks>
+/// It lives in the OS credential store rather than beside the journal because a restore renames the
+/// tree the journal sits in. An attacker who can rewrite the staging directory can present any
+/// authentic earlier envelope; the anchor is the one piece of state that says which revision this
+/// installation actually reached, and it is advanced only under the caller-held installation lock
+/// through a checked read-compare-write-readback.
+/// </remarks>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record BackupRestoreJournalAnchorV1(
+    byte Version,
+    CovenantDigest ProfileNamespaceDigest,
+    Guid InstallationId,
+    Guid OperationId,
+    ulong Revision,
+    CovenantDigest EnvelopeDigest,
+    CovenantDigest JournalLocationDigest,
+    BackupRestoreJournalAnchorState State);
 
 internal static class BackupRestoreJournal
 {
