@@ -1318,6 +1318,16 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICovenantStore>(
             static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));
 
+        // Registered unconditionally, because the policy itself is what decides whether this
+        // installation has a Covenant arm at all. A conditional registration would make "the feature
+        // is off" and "this host never wired the policy" the same absence, and the two must not be:
+        // one is a decision the export routes can act on, the other is a gap (§10.19.11).
+        services.AddScoped<ICovenantExportPolicy>(
+            static sp => new CovenantExportPolicy(
+                sp.GetRequiredService<ICovenantAvailability>(),
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<ICovenantConnectionSource>()));
+
         // The turn-plan seam. Scoped because it reads through the scoped store and hands back a
         // lease the turn owns for its whole lifetime (§10.13).
         services.AddScoped<ICovenantContextProvider>(

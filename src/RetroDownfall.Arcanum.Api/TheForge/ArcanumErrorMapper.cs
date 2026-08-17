@@ -51,8 +51,12 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Covenant.InvalidCursor =>
                 StatusCodes.Status400BadRequest,
 
+            // 403 rather than 409: a tainted Session is not a state the caller can retry past. The
+            // installation will not export it in plaintext at all, and saying "conflict" would invite
+            // exactly the retry loop that has no successful ending.
             ErrorCodes.Covenant.ForbiddenAuthority
-                or ErrorCodes.Covenant.SensitiveEgressRequiresApproval =>
+                or ErrorCodes.Covenant.SensitiveEgressRequiresApproval
+                or ErrorCodes.Covenant.PlaintextExportRefused =>
                 StatusCodes.Status403Forbidden,
 
             ErrorCodes.Covenant.NotFound =>

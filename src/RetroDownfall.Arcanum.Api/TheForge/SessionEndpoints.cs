@@ -6,13 +6,16 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -1510,27 +1513,10 @@ internal static class SessionEndpoints
 
         apiGroup.MapGet(
             "/sessions/{id:guid}/export",
-            async (Guid id, SessionExportFormat format, ISessionRepository repo, HttpContext ctx) =>
-            {
-                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
-
-                Result<SessionExportResult> result = await repo
-                    .ExportAsync(id, format, ctx.RequestAborted)
-                    .ConfigureAwait(false);
-
-                if (result.IsFailure && result.Error.Code == ErrorCodes.Session.NotFound)
-                {
-                    return Results.Json(
-                        ApiResponse<SessionExportResult>.FromResult(result, traceId),
-                        ArcanumJsonContext.Default.ApiResponseSessionExportResult,
-                        statusCode: StatusCodes.Status404NotFound);
-                }
-
-                return result.IsSuccess
-                    ? Results.Ok(ApiResponse<SessionExportResult>.FromResult(result, traceId))
-                    : Results.BadRequest(ApiResponse<SessionExportResult>.FromResult(result, traceId));
-            })
-        .WithName("ExportSession");
+            async (Guid id, string? format, ISessionRepository repo, HttpContext ctx) =>
+                await ExportSessionAsync(id, format, repo, ctx).ConfigureAwait(false))
+        .WithName("ExportSession")
+        .RequireConditionalCovenantReadAuthority();
 
         apiGroup.MapPost(
             "/sessions/{id:guid}/fork",
@@ -1959,6 +1945,184 @@ internal static class SessionEndpoints
 
         return apiGroup;
     }
+
+    /// <summary>
+    /// Exports one Session as plaintext, or refuses before a single content byte.
+    /// </summary>
+    /// <remarks>
+    /// The order here is the whole contract. The conditional read lease is taken <em>before</em> the
+    /// export graph, the sensitivity decision is read under that same lease, and only a clean answer
+    /// reaches <see cref="ISessionRepository.ExportAsync"/> at all. A refusal that ran afterwards
+    /// would already have pulled the Covenant-derived transcript into the process it is refusing to
+    /// send it out of (§10.19.11).
+    ///
+    /// <para>The lease is then transferred to the response, which revalidates it before the first
+    /// byte and releases it after the last. A handler that disposed it on return would still be
+    /// serializing protected content while a reset was draining.</para>
+    /// </remarks>
+    private static async Task<IResult> ExportSessionAsync(
+        Guid id,
+        string? requestedFormat,
+        ISessionRepository repo,
+        HttpContext ctx)
+    {
+
+        string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+        if (!TryParseExportFormat(requestedFormat, out SessionExportFormat format))
+        {
+
+            return SessionExportResponse(
+                Result<SessionExportResult>.Failure(
+                    new Error(
+                        ErrorCodes.Session.InvalidFormat,
+                        "format must be 'json' or 'markdown'.")),
+                traceId);
+
+        }
+
+        ICovenantExportPolicy? policy = ctx.RequestServices.GetService<ICovenantExportPolicy>();
+
+        if (policy is null)
+        {
+
+            return SessionExportResponse(
+                await repo.ExportAsync(id, format, ctx.RequestAborted).ConfigureAwait(false),
+                traceId);
+
+        }
+
+        // A Session's labels may name any Campaign, or none, so the arm asks for an installation read.
+        Result<CovenantExportAdmission> admission = await policy
+            .AcquireConditionalReadAsync(scope: null, ctx.RequestAborted)
+            .ConfigureAwait(false);
+
+        if (admission.IsFailure)
+        {
+
+            return SessionExportResponse(
+                Result<SessionExportResult>.Failure(admission.Error),
+                traceId);
+
+        }
+
+        ICovenantSnapshotReadLease? owned = admission.Value.ReadLease;
+
+        if (owned is null)
+        {
+
+            return SessionExportResponse(
+                await repo.ExportAsync(id, format, ctx.RequestAborted).ConfigureAwait(false),
+                traceId);
+
+        }
+
+        try
+        {
+
+            Result<CovenantSessionExportSensitivity> sensitivity = await policy
+                .InspectSessionAsync(id, owned, ctx.RequestAborted)
+                .ConfigureAwait(false);
+
+            Result<SessionExportResult> result;
+
+            if (sensitivity.IsFailure)
+            {
+
+                result = Result<SessionExportResult>.Failure(sensitivity.Error);
+
+            }
+            else if (sensitivity.Value.IsRefused)
+            {
+
+                result = Result<SessionExportResult>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.PlaintextExportRefused,
+                        "This session carries Covenant-derived content, so it cannot be exported as plaintext."));
+
+            }
+            else
+            {
+
+                result = await repo.ExportAsync(id, format, ctx.RequestAborted).ConfigureAwait(false);
+
+            }
+
+            // Ownership moves to the result, which revalidates before the first byte and disposes in
+            // its own finally. Clearing the local is what keeps the guard below from double-releasing.
+            IResult response = new CovenantProtectedJsonResult<SessionExportResult>(
+                owned,
+                result,
+                ArcanumJsonContext.Default.ApiResponseSessionExportResult);
+
+            owned = null;
+
+            return response;
+
+        }
+        finally
+        {
+
+            if (owned is not null)
+            {
+
+                await owned.DisposeAsync().ConfigureAwait(false);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Parses the documented <c>format</c> vocabulary rather than the CLR enum spelling.
+    /// </summary>
+    /// <remarks>
+    /// Bound as a string on purpose. Minimal-API enum binding is case-sensitive, so a route typed as
+    /// <see cref="SessionExportFormat"/> accepted only <c>Json</c> and <c>Markdown</c> — while the
+    /// enum's own wire names, the published contract, and <c>arcanum session export</c> all say
+    /// <c>json</c> and <c>markdown</c>. Every request the shipped CLI sent was refused with an
+    /// untyped framework 400.
+    /// </remarks>
+    private static bool TryParseExportFormat(string? requested, out SessionExportFormat format)
+    {
+
+        format = SessionExportFormat.Json;
+
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+
+            return false;
+
+        }
+
+        if (string.Equals(requested, "json", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return true;
+
+        }
+
+        if (string.Equals(requested, "markdown", StringComparison.OrdinalIgnoreCase))
+        {
+
+            format = SessionExportFormat.Markdown;
+
+            return true;
+
+        }
+
+        return false;
+
+    }
+
+    private static IResult SessionExportResponse(Result<SessionExportResult> result, string traceId) =>
+        result.IsSuccess
+            ? Results.Ok(ApiResponse<SessionExportResult>.FromResult(result, traceId))
+            : Results.Json(
+                ApiResponse<SessionExportResult>.FromResult(result, traceId),
+                ArcanumJsonContext.Default.ApiResponseSessionExportResult,
+                statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
 
     private static IResult AttachmentFailure(
 

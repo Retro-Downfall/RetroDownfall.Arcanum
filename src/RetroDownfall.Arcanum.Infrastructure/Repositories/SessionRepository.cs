@@ -378,7 +378,7 @@ public sealed class SessionRepository(
                 "text/markdown")),
 
             _ => Result<SessionExportResult>.Failure(
-                new Error("Session.InvalidFormat", "The export format is not supported.")),
+                new Error(ErrorCodes.Session.InvalidFormat, "The export format is not supported.")),
         };
     }
 

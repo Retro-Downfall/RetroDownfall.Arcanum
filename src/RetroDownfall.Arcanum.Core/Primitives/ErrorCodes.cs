@@ -163,6 +163,17 @@ public static class ErrorCodes
 
         public const string InvalidStatus = "Session.InvalidStatus";
 
+        /// <summary>
+        /// The <c>format</c> of <c>GET /api/sessions/{id}/export</c> is missing or is not one of the
+        /// documented values.
+        /// </summary>
+        /// <remarks>
+        /// The wire vocabulary is the enum's own string names — <c>json</c> and <c>markdown</c> — and
+        /// they are matched without regard to case. A route that only accepted the CLR spelling
+        /// refused the exact value the CLI and the published contract both use.
+        /// </remarks>
+        public const string InvalidFormat = "Session.InvalidFormat";
+
         public const string Archived = "Session.Archived";
 
         public const string TooManyEntries = "Session.TooManyEntries";
@@ -942,6 +953,18 @@ public static class ErrorCodes
         /// happened (§10.14).
         /// </remarks>
         public const string SensitiveEgressRequiresApproval = "Covenant.SensitiveEgressRequiresApproval";
+
+        /// <summary>
+        /// A plaintext export would carry Covenant-derived content out of the installation, so it is
+        /// refused before a single content byte.
+        /// </summary>
+        /// <remarks>
+        /// Separate from <see cref="SensitiveEgressRequiresApproval"/> because no approval makes it
+        /// proceed. A tool call to a declared sink is a disclosure an operator may authorize and
+        /// Arcanum can then record against the turn that made it; a plaintext file is nonrevocable the
+        /// moment it exists, and there is no receipt that unmakes it (§10.19.11).
+        /// </remarks>
+        public const string PlaintextExportRefused = "Covenant.PlaintextExportRefused";
 
         /// <summary>
         /// A Covenant MCP tool was invoked by a turn that carries no staging capability.
