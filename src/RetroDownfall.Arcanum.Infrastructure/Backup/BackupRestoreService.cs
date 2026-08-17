@@ -2,7 +2,13 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Security;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -39,6 +45,12 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
     private readonly GrimoireSchemaInstaller _schemaInstaller;
 
+    /// <summary>
+    /// The Covenant arm of a full restore, or <see langword="null"/> on an installation that never
+    /// enabled the gate.
+    /// </summary>
+    private readonly BackupRestoreCovenantCoordinator? _covenant;
+
     internal BackupRestoreService(
         BackupStatePaths paths,
         BackupArchiveCodec codec,
@@ -64,7 +76,27 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         _options = options ?? new BackupRestoreServiceOptions();
 
+        _covenant = _options.RestoreStaging is { } staging
+            ? new BackupRestoreCovenantCoordinator(
+                staging,
+                CovenantSqliteConnectionInitializer.Instance,
+                _timeProvider)
+            : null;
+
     }
+
+    /// <summary>
+    /// Whether this restore reconciles protected state, or is the pre-Covenant path it has always been.
+    /// </summary>
+    /// <remarks>
+    /// Replacement only. A new-profile restore installs data beside the installation without displacing
+    /// it: there is no live root to close admission on, no destination authority to join into, and no
+    /// destination marker to clean up — and the plan already warns that such a generation has to be
+    /// adopted through a replace-installation restore before it is used.
+    /// </remarks>
+    private bool ReconcilesProtectedState(BackupRestoreRequest request) =>
+        _covenant is not null
+        && request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation;
 
     /// <summary>
     /// Picks the key material the staged snapshot's authority fingerprint is computed from.
@@ -183,6 +215,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             operationId,
             plan,
             phases,
+            maintenance,
             cancellationToken).ConfigureAwait(false);
 
     }
@@ -502,6 +535,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         Guid operationId,
         BackupRestorePlan plan,
         List<BackupRestorePhaseRecord> phases,
+        ArcanumMaintenanceLock? maintenance,
         CancellationToken cancellationToken)
     {
 
@@ -556,6 +590,20 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         string? safetyBackupPath = null;
 
+        // The Covenant arm's own state. `durablyDisplaced` is filesystem evidence rather than a
+        // success flag: it turns true the moment the two renames land and false again only when a
+        // reversal is verified, and it is the single input that decides whether an abort may reopen
+        // admission or must leave it closed for the next start.
+        BackupRestoreCovenantSession? covenant = null;
+
+        BackupRestoreCovenantTopology covenantTopology = new(
+            liveRoot,
+            stagedRoot,
+            displacedRoot,
+            plan.ArchivePath);
+
+        bool durablyDisplaced = false;
+
         BackupSecretRewrapper rewrapper = new(_secretStore);
 
         BackupSecretSnapshot priorSecrets = await rewrapper.CaptureAsync().ConfigureAwait(false);
@@ -604,12 +652,47 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 BackupRestorePhase.Stage,
                 $"Staged {extraction.Entries} entries beneath a protected root.");
 
+            BackupCovenantRestoreDestinationState destination =
+                BackupCovenantRestoreDestinationState.None;
+
+            if (ReconcilesProtectedState(request) && maintenance is not null)
+            {
+
+                destination = await ReadDestinationCovenantStateAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                Result<BackupRestoreCovenantSession> begun = await _covenant!.BeginAsync(
+                    maintenance,
+                    liveRoot,
+                    operationId,
+                    request,
+                    covenantTopology,
+                    ManifestDigest(extraction.Manifest),
+                    DestinationInstallationId(destination),
+                    cancellationToken).ConfigureAwait(false);
+
+                if (begun.IsFailure)
+                {
+
+                    return Rejected(operationId, plan, phases, [Issue(begun.Error)]);
+
+                }
+
+                covenant = begun.Value;
+
+            }
+
             StageResult staged = await PrepareStagedGenerationAsync(
                 request,
                 extractRoot,
                 stagedRoot,
                 plan,
                 phases,
+                covenant,
+                maintenance,
+                liveRoot,
+                covenantTopology,
+                destination,
                 cancellationToken).ConfigureAwait(false);
 
             if (staged.Issues.Length > 0)
@@ -695,12 +778,31 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
             journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Commit);
 
+            // The authenticated journal reaches Commit before the first rename, so a process death
+            // inside the two-rename window leaves evidence that names both roots by identity.
+            if (covenant is not null
+                && _covenant!.Advance(
+                        covenant,
+                        maintenance!,
+                        liveRoot,
+                        request,
+                        BackupRestorePhase.Commit,
+                        covenantTopology)
+                    is { IsFailure: true } advanced)
+            {
+
+                return Rejected(operationId, effectivePlan, phases, [Issue(advanced.Error)]);
+
+            }
+
             commit = Commit(
                 request.ConflictMode,
                 liveRoot,
                 effectivePlan.DestinationRoot,
                 stagedRoot,
                 displacedRoot);
+
+            durablyDisplaced = commit.Succeeded || commit.Reversal is { Restored: false };
 
             if (!commit.Succeeded)
             {
@@ -756,6 +858,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                     await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
 
                     commit = null;
+
+                    durablyDisplaced = !reversal.Restored;
 
                     if (!reversal.Restored)
                     {
@@ -824,6 +928,57 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 $"{reconciliation.Attachments} attachments, {reconciliation.UploadedFiles} uploaded files, "
                 + $"{reconciliation.BatchFiles} batches, {reconciliation.StaleAttachmentSources} stale sources.");
 
+            // Everything below is the single admission reopen. The journal reaches its post-swap shape
+            // first, then the marker children this restore committed into staging are proven in the
+            // database they are now part of, and only a committed aggregate spends the disposition.
+            if (covenant is not null)
+            {
+
+                Result published = _covenant!.Advance(
+                    covenant,
+                    maintenance!,
+                    liveRoot,
+                    request,
+                    BackupRestorePhase.Reconcile,
+                    covenantTopology);
+
+                Result reopened = published.IsFailure
+                    ? published
+                    : await _covenant
+                        .CompleteCommittedAsync(covenant, maintenance!, liveRoot, cancellationToken)
+                        .ConfigureAwait(false);
+
+                if (reopened.IsFailure)
+                {
+
+                    // The replacement is in place and healthy enough to have been reconciled, but
+                    // admission stays shut and the journal stays active, so the next start resumes
+                    // this same operation rather than restarting it.
+                    retainStagingForReconciliation = true;
+
+                    Record(
+                        phases,
+                        BackupRestorePhase.Reconcile,
+                        "The restored generation is committed, but Covenant admission stays closed "
+                        + "until an operator resolves this restore.");
+
+                    return new BackupRestoreResult(
+                        BackupRestoreStatus.ReconciliationRequired,
+                        effectivePlan.ArchivePath,
+                        operationId,
+                        request.ConflictMode,
+                        effectivePlan.DestinationRoot,
+                        safetyBackupPath,
+                        effectivePlan,
+                        extraction.Manifest,
+                        reconciliation,
+                        [.. phases],
+                        [Issue(reopened.Error)]);
+
+                }
+
+            }
+
             journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Cleanup);
 
             Record(phases, BackupRestorePhase.Cleanup, "Removed protected restore staging.");
@@ -853,6 +1008,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                 await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
+
+                durablyDisplaced = !reversal.Restored;
 
                 if (!reversal.Restored)
                 {
@@ -884,6 +1041,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                 await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
+
+                durablyDisplaced = !reversal.Restored;
 
                 if (!reversal.Restored)
                 {
@@ -928,6 +1087,23 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         }
         finally
         {
+
+            // One disposition per lease, and only where the filesystem proves nothing durable can have
+            // happened. Everything else disposes without one, which is exactly KeepClosed: the closure
+            // and the adoptable owner survive for the next start.
+            if (covenant is { Dispositioned: false } && maintenance is not null)
+            {
+
+                _ = await _covenant!
+                    .AbortAsync(
+                        covenant,
+                        maintenance,
+                        liveRoot,
+                        provenPreSwap: !durablyDisplaced,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
+            }
 
             if (!retainStagingForReconciliation)
             {
@@ -975,6 +1151,11 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         string stagedRoot,
         BackupRestorePlan plan,
         List<BackupRestorePhaseRecord> phases,
+        BackupRestoreCovenantSession? covenant,
+        ArcanumMaintenanceLock? maintenance,
+        string liveRoot,
+        BackupRestoreCovenantTopology covenantTopology,
+        BackupCovenantRestoreDestinationState destination,
         CancellationToken cancellationToken)
     {
 
@@ -1045,6 +1226,39 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             string.Equals(beforeSchema, afterSchema, StringComparison.Ordinal)
                 ? "The snapshot already matches this build's declarative schema."
                 : $"Converged {beforeSchema} to {afterSchema} through the authoritative schema installer.");
+
+        // Immediately after the three tiers converge and before any staged validation or destination
+        // opener exists. Sanitation strips the archive's managed-file authority, the reconciliation
+        // reissues this dataset's identities and joins the destination's evidence, and the marker
+        // children commit in the same staged transaction — all against a candidate that has never
+        // been published as live (§10.19.9).
+        if (covenant is not null)
+        {
+
+            Result reconciled = await _covenant!.ReconcileStagedAsync(
+                covenant,
+                maintenance!,
+                liveRoot,
+                connection,
+                destination,
+                request,
+                covenantTopology,
+                cancellationToken).ConfigureAwait(false);
+
+            if (reconciled.IsFailure)
+            {
+
+                return StageResult.Failed(Issue(reconciled.Error));
+
+            }
+
+            Record(
+                phases,
+                BackupRestorePhase.Migrate,
+                "Stripped the archive's managed-file authority, reissued this dataset's Covenant "
+                + "identities, and committed this restore's Campaign marker children.");
+
+        }
 
         _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.RemapPaths);
 
@@ -1803,6 +2017,98 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         }
 
     }
+
+    /// <summary>
+    /// Reads the destination's authority and disclosure evidence before anything is displaced.
+    /// </summary>
+    /// <remarks>
+    /// Values, not a retained handle. The staged reconciliation runs inside its own transaction on a
+    /// different database, and a live connection held open across it would be a second writer to an
+    /// installation this operation has already closed admission on. A destination that cannot be
+    /// opened contributes nothing, which the monotonic join treats as a clean lineage at epoch zero —
+    /// the archive's own taint and epoch both survive that.
+    /// </remarks>
+    private async Task<BackupCovenantRestoreDestinationState> ReadDestinationCovenantStateAsync(
+        CancellationToken cancellationToken)
+    {
+
+        if (!File.Exists(_paths.DatabasePath))
+        {
+
+            return BackupCovenantRestoreDestinationState.None;
+
+        }
+
+        try
+        {
+
+            SecretStoreReadResult secret = await _secretStore
+                .GetGrimoireEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false);
+
+            if (secret.Status != SecretStoreReadStatus.Ok || string.IsNullOrEmpty(secret.Value))
+            {
+
+                return BackupCovenantRestoreDestinationState.None;
+
+            }
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker
+                .OpenAsync(_paths.DatabasePath, secret.Value, readOnly: true, cancellationToken)
+                .ConfigureAwait(false);
+
+            return await BackupCovenantRestoreDestinationState
+                .ReadAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception exception) when (
+            exception is SqliteException
+                or InvalidDataException
+                or IOException
+                or UnauthorizedAccessException
+                or System.Security.Cryptography.CryptographicException)
+        {
+
+            return BackupCovenantRestoreDestinationState.None;
+
+        }
+
+    }
+
+    /// <summary>
+    /// The installation this restore's journal binds to, or empty when the destination names none.
+    /// </summary>
+    private static Guid DestinationInstallationId(BackupCovenantRestoreDestinationState destination) =>
+        destination.Authority is { } authority
+        && Guid.TryParse(authority.InstallationIdentity, out Guid installationId)
+            ? installationId
+            : Guid.Empty;
+
+    /// <summary>
+    /// A one-way commitment to the authenticated archive manifest this restore is reading.
+    /// </summary>
+    /// <remarks>
+    /// Over the source-generated encoding of the manifest the codec already authenticated, so the
+    /// digest is a property of the archive rather than of how this build happened to read it.
+    /// </remarks>
+    private static CovenantDigest ManifestDigest(BackupManifest manifest) =>
+        new(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+                    manifest,
+                    BackupJsonContext.Default.BackupManifest)));
+
+    /// <summary>
+    /// Reports a Covenant refusal in the vocabulary the restore result already speaks.
+    /// </summary>
+    /// <remarks>
+    /// The typed code is carried through rather than flattened to one restore code, because the
+    /// operator's next step differs sharply between "this archive cannot be adopted here" and "this
+    /// installation is already inside another exclusive operation".
+    /// </remarks>
+    private static BackupVerifyIssue Issue(Error error) =>
+        new(error.Code, error.Message);
 
     private static void Record(
         List<BackupRestorePhaseRecord> phases,

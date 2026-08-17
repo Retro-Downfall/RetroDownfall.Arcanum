@@ -33,6 +33,18 @@ internal sealed class BackupRestoreServiceOptions
     /// </remarks>
     internal CovenantSelectiveImportServices? SelectiveImport { get; init; }
 
+    /// <summary>
+    /// The staged protected-state reconciliation path, present only while the gate is on.
+    /// </summary>
+    /// <remarks>
+    /// Absent is the pre-Covenant full restore: no exclusive owner is acquired, no authenticated
+    /// journal is published, and the staged snapshot is adopted exactly as the archive carried it.
+    /// Present means a replace-installation restore closes admission under one owner, strips the
+    /// archive's managed-file authority, reissues this dataset's identities, commits its Campaign
+    /// marker children before the first displacement, and reopens admission exactly once (§10.19.9).
+    /// </remarks>
+    internal CovenantRestoreStagingServices? RestoreStaging { get; init; }
+
     /// <summary>Overrides the measured destination free space so capacity refusal can be exercised.</summary>
     internal long? AvailableBytesOverrideForTests { get; init; }
 
