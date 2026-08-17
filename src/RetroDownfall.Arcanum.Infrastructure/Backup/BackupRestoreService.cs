@@ -314,6 +314,38 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         blockers.AddRange(mapping.Issues);
 
+        bool covenantImportArmActive = _options.SelectiveImport is not null;
+
+        blockers.AddRange(
+            BackupRestoreCampaignMappingPolicy.EvaluateShape(request, covenantImportArmActive));
+
+        // Only a mapping that could still be honoured is worth a second read-only open of the live
+        // Grimoire. A destination this machine cannot read contributes nothing rather than reporting
+        // every mapped Campaign as absent: the import already refuses an unreadable destination with
+        // backup.restore_import_destination_unavailable, and a second refusal about the mappings would
+        // name the wrong cause (§10.19.12).
+        //
+        // The maintenance lock and the blockers so far both gate it, because this plan has already
+        // decided the restore cannot proceed and the read is neither free nor harmless: it derives the
+        // Grimoire key and opens the live database, which is exactly the touch the maintenance lock
+        // exists to keep away from a running host.
+        if (maintenanceAcquired
+            && blockers.Count == 0
+            && BackupRestoreCampaignMappingPolicy.RequiresDestinationCampaigns(
+                request,
+                covenantImportArmActive)
+            && await ReadDestinationCampaignIdsAsync(cancellationToken).ConfigureAwait(false)
+                is { } destinationCampaigns)
+        {
+
+            blockers.AddRange(
+                BackupRestoreCampaignMappingPolicy.EvaluateDestination(
+                    request,
+                    covenantImportArmActive,
+                    destinationCampaigns));
+
+        }
+
         // Applicability only. The confirmation arm belongs to the mutating path, because this plan is
         // exactly what an operator surface reads in order to compose the confirmation it is about to ask
         // for (§10.19.10).
@@ -2114,6 +2146,71 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         {
 
             return "unreadable";
+
+        }
+
+    }
+
+    /// <summary>
+    /// The Campaign identities this installation holds, or <see langword="null"/> when it cannot say.
+    /// </summary>
+    /// <remarks>
+    /// Three-valued on purpose. An empty set is the true statement "this machine has no Campaigns",
+    /// which refuses every mapping; <see langword="null"/> is "this machine could not be asked", which
+    /// must refuse none of them. Collapsing the two would turn a missing credential or an unopenable
+    /// database into a typed complaint about the operator's Campaign mapping — the one thing that is
+    /// certainly not wrong in that situation.
+    /// </remarks>
+    private async Task<IReadOnlyCollection<Guid>?> ReadDestinationCampaignIdsAsync(
+        CancellationToken cancellationToken)
+    {
+
+        if (!File.Exists(_paths.DatabasePath))
+        {
+
+            return null;
+
+        }
+
+        try
+        {
+
+            SecretStoreReadResult secret = await _secretStore
+                .GetGrimoireEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false);
+
+            if (secret.Status != SecretStoreReadStatus.Ok || string.IsNullOrEmpty(secret.Value))
+            {
+
+                return null;
+
+            }
+
+            await using SqliteConnection connection = await BackupRestoreDatabaseWorker
+                .OpenAsync(_paths.DatabasePath, secret.Value, readOnly: true, cancellationToken)
+                .ConfigureAwait(false);
+
+            return await BackupRestoreDatabaseWorker
+                .ReadCampaignIdsAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        // Wider than the sibling readers above, because opening the destination starts at the KDF
+        // sidecar: an unsupported version, malformed JSON, or an unusable salt are all "this machine
+        // could not be asked", and letting one escape would abort a rehearsal that the same command
+        // without --map-campaign completes — which reads as the mapping option having caused it.
+        catch (Exception exception) when (
+            exception is SqliteException
+                or InvalidDataException
+                or IOException
+                or UnauthorizedAccessException
+                or NotSupportedException
+                or FormatException
+                or System.Text.Json.JsonException
+                or System.Security.Cryptography.CryptographicException)
+        {
+
+            return null;
 
         }
 

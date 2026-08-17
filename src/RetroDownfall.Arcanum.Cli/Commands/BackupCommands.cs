@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 internal sealed class BackupCommands(
@@ -211,23 +213,31 @@ internal sealed class BackupCommands(
 
     }
 
-    /// <param name="protectedStateMode">
-    /// What this restore may do with the protected state the archive carries. No registered option
-    /// binds it yet — issue #115 owns that surface, and the command tree passes the default — but the
-    /// disclosure-then-prompt ordering the option binds into lives here and is tested here (§10.19.10).
+    /// <param name="campaignMappings">
+    /// Raw <c>--map-campaign</c> values, each an archived Campaign id, <c>=</c>, and the destination
+    /// Campaign id an imported Session bound to it should land in.
     /// </param>
+    /// <param name="protectedState">
+    /// The raw <c>--protected-state</c> value, or <see langword="null"/> when the option was omitted.
+    /// </param>
+    /// <remarks>
+    /// Both typed values are parsed before the passphrase is read, so a misspelled mode or a malformed
+    /// mapping costs the operator a message rather than a prompt — and refuses while there is no staging
+    /// root, no journal, and no exclusive owner to unwind (§10.19.12).
+    /// </remarks>
     public async Task<int> Restore(
         string archivePath,
         string? conflictMode,
         string? destinationRoot,
         Guid[] sessionIds,
         string[] mappings,
+        string[] campaignMappings,
+        string? protectedState,
         bool restoreMasterApiKey,
         bool dryRun,
         bool skipSafetyBackup,
         string? passphraseEnvironmentVariable,
         int? passphraseFileDescriptor,
-        BackupProtectedStateMode protectedStateMode,
         CancellationToken cancellationToken)
     {
 
@@ -253,6 +263,13 @@ internal sealed class BackupCommands(
 
         }
 
+        if (!TryParseProtectedState(protectedState, out BackupProtectedStateMode protectedStateMode))
+        {
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
         if (!TryParseMappings(mappings, out BackupPathMapping[] pathMappings))
         {
 
@@ -260,6 +277,17 @@ internal sealed class BackupCommands(
 
         }
 
+        if (!TryParseCampaignMappings(
+                campaignMappings,
+                out BackupSessionCampaignMapping[] sessionCampaignMappings))
+        {
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        // Every typed value is resolved above, so the operator is asked for a passphrase only once the
+        // command line is known to describe a restore this build can attempt (§10.19.12).
         using SensitiveBackupPassphrase passphrase = await ReadRequiredPassphraseAsync(
                 passphraseEnvironmentVariable,
                 passphraseFileDescriptor,
@@ -277,7 +305,8 @@ internal sealed class BackupCommands(
             dryRun,
             Confirmed: false,
             CreateSafetyBackup: !skipSafetyBackup,
-            ProtectedStateMode: protectedStateMode);
+            ProtectedStateMode: protectedStateMode,
+            CampaignMappings: sessionCampaignMappings);
 
         if (dryRun)
         {
@@ -513,6 +542,91 @@ internal sealed class BackupCommands(
                 + " that could have carried protected content out of it. Nothing this restore does can "
                 + "revoke any of them."
             : "This installation's own receipts record no nonrevocable disclosure leaving it.";
+
+    /// <summary>
+    /// Resolves the protected-state mode, treating an omitted option as the refusing default.
+    /// </summary>
+    /// <remarks>
+    /// Absent and empty are different answers. Omitting the option is every pre-existing caller asking
+    /// for the default that authorizes no effect; writing <c>--protected-state ""</c> is naming a mode,
+    /// and a mode this build does not have is refused rather than quietly read as the default — an
+    /// operator who typed a value meant a value.
+    /// </remarks>
+    private bool TryParseProtectedState(string? value, out BackupProtectedStateMode mode)
+    {
+
+        if (value is null)
+        {
+
+            mode = BackupProtectedStateMode.Reject;
+
+            return true;
+
+        }
+
+        if (BackupCliCatalog.TryParseProtectedStateMode(value, out mode))
+        {
+
+            return true;
+
+        }
+
+        dispatcher.WriteDiagnostic(
+            "--protected-state must name a supported mode: "
+            + BackupCliCatalog.ProtectedStateModeHelp + ".");
+
+        return false;
+
+    }
+
+    /// <summary>
+    /// Parses each <c>--map-campaign</c> value into one explicit archived-to-destination binding.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are required identities, and neither may be the nil UUID: the whole point of the
+    /// mapping is that nothing about the destination is inferred, and a nil identity on either side
+    /// would be an inference dressed as an instruction. Whether the destination Campaign exists is not
+    /// decided here — only the plan can see this machine's Campaigns — so a well-formed mapping to an
+    /// absent Campaign is a typed plan blocker rather than a parse failure.
+    /// </remarks>
+    private bool TryParseCampaignMappings(
+        IReadOnlyList<string> values,
+        out BackupSessionCampaignMapping[] mappings)
+    {
+
+        List<BackupSessionCampaignMapping> parsed = [];
+
+        foreach (string value in values)
+        {
+
+            string[] parts = value.Split('=');
+
+            if (parts.Length != 2
+                || !Guid.TryParse(parts[0], out Guid source)
+                || !Guid.TryParse(parts[1], out Guid destination)
+                || source == Guid.Empty
+                || destination == Guid.Empty)
+            {
+
+                dispatcher.WriteDiagnostic(
+                    "--map-campaign must use <source-campaign-id>=<destination-campaign-id>, naming two "
+                    + "Campaign ids; neither side may be the nil identity.");
+
+                mappings = [];
+
+                return false;
+
+            }
+
+            parsed.Add(new BackupSessionCampaignMapping(source, destination));
+
+        }
+
+        mappings = [.. parsed];
+
+        return true;
+
+    }
 
     private bool TryParseMappings(
         IReadOnlyList<string> values,
@@ -1132,8 +1246,9 @@ internal static class BackupCliCatalog
     /// The wire spelling of each protected-state mode, which is also what the effect digest commits to.
     /// </summary>
     /// <remarks>
-    /// Present as a formatter before it is present as an option. The plan a rehearsal returns already
-    /// carries the mode, so it has to be renderable now; issue #115 adds the parsing half beside it.
+    /// One table for both directions. What an operator types, what a plan renders, and what the effect
+    /// digest hashes are the same three strings, so a rehearsal and the real run cannot disagree about
+    /// which mode was asked for.
     /// </remarks>
     private static readonly IReadOnlyDictionary<string, BackupProtectedStateMode> ProtectedStateModes =
         new Dictionary<string, BackupProtectedStateMode>(StringComparer.OrdinalIgnoreCase)
@@ -1171,8 +1286,13 @@ internal static class BackupCliCatalog
 
     public static string MappingKindHelp => string.Join(", ", MappingKinds.Keys);
 
+    public static string ProtectedStateModeHelp => string.Join(", ", ProtectedStateModes.Keys);
+
     public static bool TryParseConflictMode(string value, out BackupRestoreConflictMode mode) =>
         ConflictModes.TryGetValue(value, out mode);
+
+    public static bool TryParseProtectedStateMode(string value, out BackupProtectedStateMode mode) =>
+        ProtectedStateModes.TryGetValue(value, out mode);
 
     public static bool TryParseMappingKind(string value, out BackupPathMappingKind kind) =>
         MappingKinds.TryGetValue(value, out kind);

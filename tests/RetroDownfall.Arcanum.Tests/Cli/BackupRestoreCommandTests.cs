@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -40,6 +42,8 @@ public sealed class BackupRestoreCommandTests
                      "--destination",
                      "--session-id",
                      "--map",
+                     "--map-campaign",
+                     "--protected-state",
                      "--restore-master-api-key",
                      "--dry-run",
                      "--no-safety-backup",
@@ -226,10 +230,120 @@ public sealed class BackupRestoreCommandTests
 
     }
 
+    [Fact]
+    public void Campaign_mappings_are_forwarded_unchanged_for_an_import()
+    {
+
+        FakeRestoreService restore = new();
+
+        ServiceCollection services = CreateServices(
+            restore,
+            new FakeBackupPassphraseReader("restore secret".ToCharArray()));
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "backup",
+            "restore",
+            "/tmp/sample.arcbackup",
+            "--conflict-mode",
+            "import-selected-sessions",
+            "--session-id",
+            "11111111-1111-1111-1111-111111111111",
+            "--map-campaign",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "--map-campaign",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc=dddddddd-dddd-dddd-dddd-dddddddddddd");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        BackupRestoreRequest request = Assert.IsType<BackupRestoreRequest>(restore.LastRestoreRequest);
+
+        // Repeatable, ordered as written, and neither deduplicated nor reordered on the way through:
+        // the request the service weighs is the request the operator typed.
+        Assert.Equal(
+            [
+                new BackupSessionCampaignMapping(
+                    Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")),
+                new BackupSessionCampaignMapping(
+                    Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+                    Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")),
+            ],
+            request.CampaignMappings ?? []);
+
+    }
+
+    [Theory]
+    [InlineData("reject", BackupProtectedStateMode.Reject)]
+    [InlineData("restore-protected-state", BackupProtectedStateMode.RestoreProtectedState)]
+    [InlineData("purge-protected-state", BackupProtectedStateMode.PurgeProtectedState)]
+    public void Each_protected_state_wire_value_reaches_the_request_unchanged(
+        string wireValue,
+        BackupProtectedStateMode expected)
+    {
+
+        FakeRestoreService restore = new();
+
+        ServiceCollection services = CreateServices(
+            restore,
+            new FakeBackupPassphraseReader("restore secret".ToCharArray()));
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "backup",
+            "restore",
+            "/tmp/sample.arcbackup",
+            "--protected-state",
+            wireValue);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        BackupRestoreRequest request = Assert.IsType<BackupRestoreRequest>(restore.LastRestoreRequest);
+
+        Assert.Equal(expected, request.ProtectedStateMode);
+
+        // The destructive answer is recorded only where one was actually asked for.
+        Assert.Equal(
+            expected is not BackupProtectedStateMode.Reject,
+            request.ProtectedStateConfirmed);
+
+    }
+
+    [Fact]
+    public void An_omitted_protected_state_option_still_refuses_the_archive_s_protected_state()
+    {
+
+        FakeRestoreService restore = new();
+
+        ServiceCollection services = CreateServices(
+            restore,
+            new FakeBackupPassphraseReader("restore secret".ToCharArray()));
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "backup",
+            "restore",
+            "/tmp/sample.arcbackup");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal(
+            BackupProtectedStateMode.Reject,
+            Assert.IsType<BackupRestoreRequest>(restore.LastRestoreRequest).ProtectedStateMode);
+
+    }
+
     [Theory]
     [InlineData("--conflict-mode", "not-a-mode")]
     [InlineData("--map", "not-a-kind=/a=/b")]
     [InlineData("--map", "workspace-root/only-two-parts")]
+    [InlineData("--protected-state", "purge")]
+    [InlineData("--protected-state", "")]
+    [InlineData("--protected-state", "restore-protected-state-please")]
+    [InlineData("--map-campaign", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")]
+    [InlineData("--map-campaign", "not-a-guid=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")]
+    [InlineData("--map-campaign", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa=not-a-guid")]
+    [InlineData("--map-campaign", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb=extra")]
     public void Unsupported_typed_values_are_configuration_errors(string option, string value)
     {
 
@@ -250,6 +364,52 @@ public sealed class BackupRestoreCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Null(restore.LastRestoreRequest);
+
+    }
+
+    [Theory]
+    [InlineData("--protected-state", "purge", "--protected-state")]
+    [InlineData("--protected-state", "restore", "--protected-state")]
+    [InlineData("--protected-state", "purge-protected-state ", "--protected-state")]
+    [InlineData("--map-campaign", "00000000-0000-0000-0000-000000000000=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "--map-campaign")]
+    [InlineData("--map-campaign", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa=00000000-0000-0000-0000-000000000000", "--map-campaign")]
+    [InlineData("--map-campaign", "", "--map-campaign")]
+    public void An_unsupported_typed_value_is_refused_before_any_staging_state_exists(
+        string option,
+        string value,
+        string expectedDiagnostic)
+    {
+
+        FakeRestoreService restore = new();
+
+        FakeBackupPassphraseReader passphrases = new("restore secret".ToCharArray());
+
+        ServiceCollection services = CreateServices(
+            restore,
+            passphrases,
+            new StubConfirmationPrompt(true));
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "backup",
+            "restore",
+            "/tmp/sample.arcbackup",
+            option,
+            value);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        // Not one staging root, journal, or exclusive owner: neither the mutating call nor the
+        // read-only plan behind the disclosure was ever made.
+        Assert.Null(restore.LastRestoreRequest);
+
+        Assert.Null(restore.LastPlanRequest);
+
+        // And the operator was never asked for a passphrase to make them — the reader itself is what
+        // proves that, since a service that was never called records no passphrase either way.
+        Assert.Equal(0, passphrases.Reads);
+
+        Assert.Contains(expectedDiagnostic, result.Error, StringComparison.Ordinal);
 
     }
 
@@ -425,12 +585,22 @@ public sealed class BackupRestoreCommandTests
     private sealed class FakeBackupPassphraseReader(char[]? value = null) : IBackupPassphraseReader
     {
 
+        /// <summary>How many times the command actually asked for a passphrase.</summary>
+        /// <remarks>
+        /// Counted here rather than inferred from the restore service, whose recorded passphrase is
+        /// null whenever it was simply never called — which says nothing about whether the operator
+        /// was prompted first.
+        /// </remarks>
+        public int Reads { get; private set; }
+
         public ValueTask<SensitiveBackupPassphrase?> ReadAsync(
             BackupPassphraseReadRequest request,
             CancellationToken cancellationToken)
         {
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            Reads++;
 
             return ValueTask.FromResult<SensitiveBackupPassphrase?>(
                 value is null

@@ -8,9 +8,9 @@
 
 **Design thesis:** a memory system is safe only when every retained claim, derivative, retrieval, provider call, mutation, and disclosure remains bound to its origin, authority, scope, sensitivity, revision history, and evidence of use.
 
-**Document status:** current as of **2026-08-17**, reconciled against the `long-term-memory` branch at `c83308d6`, the approved Covenant specification and Plans 01–05, and GitHub issues #73–#115.
+**Document status:** current as of **2026-08-17**, reconciled against the `long-term-memory` branch at `e55a586b`, the approved Covenant specification and Plans 01–05, and GitHub issues #73–#115.
 
-**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.19.12), and the specification and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
+**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.19.13), and the specification and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
 
 ---
 
@@ -63,21 +63,21 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#88** | Landed | Frozen operator request/response shapes with `Validate()` and bounded UTF-8 limits, the complete Covenant error vocabulary and HTTP status mapping, five service ports, `CovenantPublicContractInventory`, `CovenantProtectedJsonResult<T>` / `CovenantProtectedStreamResult`, two durable recovery checkpoints, caller-named durable operation identity. |
 | **#87** | Landed | `CovenantSensitiveArtifactPurgePolicy` (thirteen-kind table), `CovenantArtifactErasureAuthority`, `CovenantProtectedArtifactErasureKernel`, `CovenantManagedFileErasureKernel`, `CovenantLocalErasureStartupRecovery`, `CovenantSchemaRepairJournal` + startup recovery, `CovenantExclusiveDisposition`, and the `covenant-index-rebuild` / `covenant-family-reinitialize` operation kinds. |
 | **#89** | Landed | `Arcanum:Features:Covenant` (default off), the one legal `X-Arcanum-Context-Policy: none` wire value, the protected no-cache header tuple, durable Session turn claims, the shared Campaign path marker codec and retained-handle capabilities. |
-| **#90** | **Partial** | Two backup disclosure barriers under one retained installation read lease, `BackupRestoreEffectDigestCalculator`, destination-monotonic authority and disclosure joiners, the sealed managed-authority sanitizer, and two prerequisite ports. Split into #109–#115; six are green. |
+| **#90** | Landed | Two backup disclosure barriers under one retained installation read lease, `BackupRestoreEffectDigestCalculator`, destination-monotonic authority and disclosure joiners, the sealed managed-authority sanitizer, and two prerequisite ports. Split into #109–#115; all seven are green. Closing #90 itself still needs an approved implementation-plan amendment. |
 | **#109** | Landed | `ProfileNamespaceDigest`, three profile-namespaced credential accounts, `BackupRestoreJournalAuthenticator`, a single-take zeroizing key lease, and `BackupRestoreJournalAnchorStore`. |
 | **#110** | Landed | `PhysicalCampaignRootOpener.DeriveClaimedRootIdentityDigest` and the restart arm of `ICampaignPathMarkerLifecycle`. |
 | **#111** | Landed | `IBackupRestoreStartupRecovery` — pre-database physical topology recovery and pre-readiness authority recovery. |
 | **#112** | Landed | `BackupRestoreCovenantCoordinator`, staged three-tier convergence, `BackupCovenantRestoreReconciler`, fresh dataset generation, destination marker reconciliation before atomic replacement. |
 | **#113** | Landed | `BackupRestoreProtectedStatePolicy`, `BackupRestoreProtectedStateInspector`, `BackupRestoreProtectedStatePurger`, and the ordered destructive-disclosure prompt contract. |
 | **#114** | Landed | `ICovenantExportPolicy` and `CovenantExportAdmission`, the `Covenant.PlaintextExportRefused` refusal before any Session export byte, and the typed content-free Campaign export exclusion counts. |
+| **#115** | Landed | `--protected-state` and `--map-campaign` on `arcanum backup restore`, the pure-Core `BackupRestoreCampaignMappingPolicy`, plan-time validation of every mapping against this installation's own Campaigns, and an import refusal that names the archived Campaign. |
 
-Everything above is registered in both host compositions. As of this document there is still **no Covenant route mapped, no CLI command registered, no MCP capability minted by a live turn**, and `Arcanum:Features:Covenant` remains **off by default**. #114 is the one place a Covenant decision reaches an already-shipped route: the two plaintext export endpoints now declare a conditional Covenant read and refuse or report under it, and with the feature off they behave exactly as they did.
+Everything above is registered in both host compositions. As of this document there is still **no Covenant route mapped, no Covenant *command* registered, no MCP capability minted by a live turn**, and `Arcanum:Features:Covenant` remains **off by default**. Two places are where a Covenant decision reaches an already-shipped surface: #114's two plaintext export endpoints declare a conditional Covenant read and refuse or report under it, and #115's `--protected-state` and `--map-campaign` are options on the already-shipped `arcanum backup restore` rather than a new command. With the feature off all three behave exactly as they did.
 
 ### 2.2 What remains open
 
 | Issue | Size | Role |
 |---|---|---|
-| **#115** | M | `--protected-state` and `--map-campaign` options on `arcanum backup restore`. |
 | **#94** | XL | Covenant retention, reset, and full installation erasure. |
 | **#92** | XL | Performance, Native AOT, documentation, and release qualification — the #74 acceptance gate. |
 | **#102** | XL | Resumable raw-SQL feature-schema evolution and backfills. Shared prerequisite for #75–#78. |
@@ -98,7 +98,7 @@ Everything above is registered in both host compositions. As of this document th
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.19.12 own the Covenant slices.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.19.13 own the Covenant slices.
 3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation authority.
@@ -812,7 +812,7 @@ This prevents the feedback loop in which frequent retrieval is mistaken for corr
 
 ## 14. Operator and agent surfaces
 
-The approved target operator surface is typed, authenticated, body-based, and no-store where it may carry protected information. Issue #88 froze the shapes, ports, error vocabulary, and HTTP status mapping; issue #89 shipped the pre-binding authority boundary and the feature gate. **No Covenant route is mapped and no Covenant command is registered yet** — that is issue #89's remaining surface work plus #115.
+The approved target operator surface is typed, authenticated, body-based, and no-store where it may carry protected information. Issue #88 froze the shapes, ports, error vocabulary, and HTTP status mapping; issue #89 shipped the pre-binding authority boundary and the feature gate. **No Covenant route is mapped and no Covenant command is registered yet** — that is issue #89's remaining surface work. Issue #115 is the one operator-facing exception, and deliberately not a new command: `--protected-state` and `--map-campaign` are options on the already-shipped `arcanum backup restore`.
 
 ### 14.1 Inspection
 
@@ -855,7 +855,7 @@ Issue #101 adds a third, read-only tool: scoped agent recall across durable memo
 
 A physical backup that includes protected state is itself a protected read and encrypted external disclosure. `CovenantBackupDisclosureBoundary` commits a durable receipt **before the snapshot reads page one** and again **before the archive writes its first byte**, each retry counted as its own physical attempt, under one retained `CovenantInstallationReadLease` with no nested scoped lease. Full backups include canonical Covenant state, sensitivity labels, tainted artifacts, disclosure evidence, and required tier metadata.
 
-Plaintext export is the other kind of egress, and both halves are now closed. `GET /api/sessions/{id}/export` refuses the **entire** Session with `Covenant.PlaintextExportRefused` when any tainted Entry, tool artifact, summary, title, Saga, Lexicon, attachment-derived artifact, or projection exists, and it refuses **before the export graph is read**, so a refused transcript is never assembled. It refuses on either the Session's own `artifact_sensitivity` rows or its conservative `session_sensitivity_state` projection: purged taint still bars a plaintext export for the same reason it still bars a cached replay. There is no approval that overrides the refusal, because a plaintext file is nonrevocable the moment it exists. `POST /api/campaigns/{id}/export` carries no Covenant content, version, receipt, hash, provenance, or tainted artifact, and reports typed content-free `covenantEntryCount` and `taintedArtifactCount` exclusions rather than omitting them silently. Both routes hold one conditional Covenant read lease from before the export graph through the last response byte. The import half is closed the same way: `IProtectedArtifactTransferStore` refuses any Covenant-derived source outright and requires an explicit destination Campaign mapping.
+Plaintext export is the other kind of egress, and both halves are now closed. `GET /api/sessions/{id}/export` refuses the **entire** Session with `Covenant.PlaintextExportRefused` when any tainted Entry, tool artifact, summary, title, Saga, Lexicon, attachment-derived artifact, or projection exists, and it refuses **before the export graph is read**, so a refused transcript is never assembled. It refuses on either the Session's own `artifact_sensitivity` rows or its conservative `session_sensitivity_state` projection: purged taint still bars a plaintext export for the same reason it still bars a cached replay. There is no approval that overrides the refusal, because a plaintext file is nonrevocable the moment it exists. `POST /api/campaigns/{id}/export` carries no Covenant content, version, receipt, hash, provenance, or tainted artifact, and reports typed content-free `covenantEntryCount` and `taintedArtifactCount` exclusions rather than omitting them silently. Both routes hold one conditional Covenant read lease from before the export graph through the last response byte. The import half is closed the same way: `IProtectedArtifactTransferStore` refuses any Covenant-derived source outright and requires an explicit destination Campaign mapping, spelled `--map-campaign <source-campaign-id>=<destination-campaign-id>` on `arcanum backup restore` and validated against this installation's own Campaigns before anything is staged.
 
 ### 15.2 Restore
 
@@ -883,7 +883,9 @@ The exact receipt — including the frozen zero-child vector — publishes throu
 
 `IBackupRestoreStartupRecovery` runs two phases. `RecoverPhysicalTopologyBeforeDatabaseAsync` runs before the guarded directory is even created — creating it would occupy the name a pending rollback has to move the prior installation back into — opens no SQLCipher handle, and converges all four displacement crash points to exactly one live root by comparing durable volume-and-file identities a rename preserves. `RecoverAuthorityBeforeReadinessAsync` reconstructs the exact `BackupRestore` owner, calls `ResumeExclusiveAsync` and never the initial acquisition, and returns `RecoveredReady` only after a successful `CommitAndReopen`; otherwise the journal stays active and both host and CLI readiness stay closed.
 
-**Still owed.** `arcanum backup restore` has no `--protected-state` and no `--map-campaign` option; the command tree passes `Reject`. Until #115 lands, a purge or a preserving restore is reachable only from a caller that constructs the request itself, and a selective import of a Campaign-bound Session needs its mapping supplied programmatically. `BackupRestoreService` also still writes the plain V1 journal alongside the V2 envelope, deliberately: removing it would strand a restore interrupted by an older build. A **new-profile** restore stays outside the reconciliation arm entirely — it displaces nothing — which is a scope boundary rather than a gap.
+**The operator answers at the command line.** `arcanum backup restore --protected-state <mode>` takes the three wire values the effect digest commits to, and omitting it is the refusing default; an unrecognized value is refused before the passphrase is read, so a typo creates no staging root, no journal, and no exclusive owner. `--map-campaign <source-campaign-id>=<destination-campaign-id>` is repeatable, takes Campaign identities rather than names, and applies only to a selective import. The plan refuses an inapplicable mapping, a nil identity, one archived Campaign mapped to two destinations, and a destination Campaign this installation does not have — each by name, before anything is staged — while a destination it cannot *read* refuses nothing, because a missing credential is not evidence about the operator's mapping. With `Arcanum:Features:Covenant` off a selective import takes the plaintext path, which writes every `CampaignId` as `NULL`; a mapping is therefore refused with `backup.restore_campaign_mapping_covenant_required` rather than accepted and dropped, while an import naming no mapping behaves exactly as it always has.
+
+**Still owed.** `BackupRestorePlan` carries the protected-state mode and the typed path mappings but not the Campaign bindings, so a rehearsal reports a bad mapping as a typed blocker and a good one as silence. `BackupRestoreService` also still writes the plain V1 journal alongside the V2 envelope, deliberately: removing it would strand a restore interrupted by an older build. A **new-profile** restore stays outside the reconciliation arm entirely — it displaces nothing — which is a scope boundary rather than a gap.
 
 ### 15.3 Reset and family erasure
 
@@ -948,7 +950,7 @@ flowchart LR
 
 Phases 1 through 4 are complete or partial per §2.1. What remains for #74:
 
-- **#90 tail:** #115 (restore CLI options). #114 (export refusal) is green.
+- **#90 tail:** none. #109–#115 are all green; closing #90 itself needs an approved implementation-plan amendment.
 - **#94:** retention, reset, and full erasure.
 - **#92:** reproducible performance workload; fault-domain and adversarial suites; shipping-RID Native AOT corpus and runtime smoke tests; allocation, query-plan, and command-count gates; coverage, full-suite verification, independent review, and documentation synchronization.
 
@@ -1252,7 +1254,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` when that branch merges. This document and [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are the two that are deliberately kept identical on both branches.
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.19.12 **(branch)**:
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.19.13 **(branch)**:
   - §10.10 Core protocol foundation
   - §10.11 Canonical persistence and inspection search
   - §10.12 Invocation authority and Campaign binding
@@ -1262,7 +1264,7 @@ The following documents own or explain the detailed contracts summarized here. D
   - §10.16 Public and recovery contract freeze
   - §10.17 Maintenance and protected-erasure recovery
   - §10.18 Operator surfaces, configuration, and the pre-binding authority boundary
-  - §10.19.1–§10.19.12 Backup, restore, and protected transfer
+  - §10.19.1–§10.19.13 Backup, restore, and protected transfer
 - [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
 - `docs/superpowers/specs/2026-08-13-covenant-design.md`: approved target semantics, authority firewall, persistence, runtime, surfaces, lifecycle, and acceptance contract **(branch)**.

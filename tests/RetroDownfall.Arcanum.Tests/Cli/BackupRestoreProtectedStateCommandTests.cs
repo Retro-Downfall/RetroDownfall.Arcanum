@@ -26,10 +26,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// and where to go and delete externally <em>before</em> the prompt appears — output that arrived after
 /// the answer was given would satisfy a contains-check and none of the contract.
 ///
-/// <para>The command is driven directly rather than through the parser, because issue #113 deliberately
-/// does not register the operator-facing option: #115 owns that surface, and the only registered call
-/// site still passes the default mode. What is under test here is the ordering the option will bind
-/// into.</para>
+/// <para>Driven by the wire spelling <c>--protected-state</c> carries rather than by the enum, so the
+/// ordering is proved for the value an operator actually types (§10.19.12). The command is still
+/// invoked directly rather than through the parser, because what is under test is the sequence of
+/// writes, and one ordered log shared by the dispatcher and the prompt is the only way to see it.</para>
 /// </remarks>
 public sealed class BackupRestoreProtectedStateCommandTests
 {
@@ -42,7 +42,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         Harness harness = new(confirm: true);
 
-        int exit = await harness.RestoreAsync(BackupProtectedStateMode.PurgeProtectedState);
+        int exit = await harness.RestoreAsync("purge-protected-state");
 
         Assert.Equal((int)CliExitCode.Success, exit);
 
@@ -83,7 +83,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         Harness harness = new(confirm: true);
 
-        _ = await harness.RestoreAsync(BackupProtectedStateMode.PurgeProtectedState);
+        _ = await harness.RestoreAsync("purge-protected-state");
 
         // Not a paraphrase and not a substring of a longer sentence: one write, exactly the shared
         // constant. Four surfaces have to tell an operator the same true thing, and a local rewording is
@@ -100,7 +100,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         Harness harness = new(confirm: false);
 
-        int exit = await harness.RestoreAsync(BackupProtectedStateMode.PurgeProtectedState);
+        int exit = await harness.RestoreAsync("purge-protected-state");
 
         Assert.Equal((int)CliExitCode.Success, exit);
 
@@ -125,7 +125,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         Harness harness = new(confirm: true);
 
-        _ = await harness.RestoreAsync(BackupProtectedStateMode.RestoreProtectedState);
+        _ = await harness.RestoreAsync("restore-protected-state");
 
         BackupRestoreRequest request =
             Assert.IsType<BackupRestoreRequest>(harness.Restore.LastRestoreRequest);
@@ -148,7 +148,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         Harness harness = new(confirm: true);
 
-        _ = await harness.RestoreAsync(BackupProtectedStateMode.Reject);
+        _ = await harness.RestoreAsync("reject");
 
         Assert.DoesNotContain(
             CovenantExternalRetentionDisclosure.DestructiveOperationText,
@@ -182,7 +182,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         };
 
-        int exit = await harness.RestoreAsync(BackupProtectedStateMode.PurgeProtectedState);
+        int exit = await harness.RestoreAsync("purge-protected-state");
 
         Assert.Equal((int)CliExitCode.GenericError, exit);
 
@@ -216,7 +216,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         };
 
-        _ = await harness.RestoreAsync(BackupProtectedStateMode.PurgeProtectedState);
+        _ = await harness.RestoreAsync("purge-protected-state");
 
         Assert.Contains(
             harness.Events,
@@ -239,13 +239,66 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         };
 
-        _ = await harness.RestoreAsync(BackupProtectedStateMode.PurgeProtectedState);
+        _ = await harness.RestoreAsync("purge-protected-state");
 
         Assert.Contains(
             harness.Events,
             static line => line.Contains(
                 "no nonrevocable disclosure",
                 StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public async Task An_omitted_option_is_the_refusing_default_rather_than_a_missing_answer()
+    {
+
+        Harness harness = new(confirm: true);
+
+        _ = await harness.RestoreAsync(protectedState: null);
+
+        Assert.Equal(
+            BackupProtectedStateMode.Reject,
+            Assert.IsType<BackupRestoreRequest>(harness.Restore.LastRestoreRequest).ProtectedStateMode);
+
+        Assert.DoesNotContain(
+            CovenantExternalRetentionDisclosure.DestructiveOperationText,
+            harness.Events);
+
+    }
+
+    [Theory]
+    [InlineData("purge")]
+    [InlineData("restore-protected")]
+    [InlineData("")]
+    public async Task An_unsupported_value_is_refused_before_the_disclosure_the_plan_or_the_prompt(
+        string value)
+    {
+
+        Harness harness = new(confirm: true);
+
+        int exit = await harness.RestoreAsync(value);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, exit);
+
+        // Ahead of everything: no plan, no disclosure, no question, and no mutating call. A value the
+        // catalog does not know names no effect, so there is nothing yet for an operator to answer for.
+        Assert.Null(harness.Restore.LastPlanRequest);
+
+        Assert.Null(harness.Restore.LastRestoreRequest);
+
+        Assert.Equal(0, harness.Prompt.Calls);
+
+        Assert.DoesNotContain(
+            CovenantExternalRetentionDisclosure.DestructiveOperationText,
+            harness.Events);
+
+        // The reader itself, because a service that was never called records no passphrase either way.
+        Assert.Equal(0, harness.Passphrases.Reads);
+
+        Assert.Contains(
+            harness.Events,
+            static line => line.Contains("--protected-state", StringComparison.Ordinal));
 
     }
 
@@ -275,6 +328,8 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         internal FakeRestoreService Restore { get; } = new();
 
+        internal FixedPassphraseReader Passphrases { get; } = new();
+
         internal BackupVerifyIssue[] Blockers { get; init; } = [];
 
         internal BackupRestoreDisclosureExposure? Exposure { get; init; } =
@@ -282,7 +337,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         internal RecordingConfirmationPrompt Prompt => _prompt;
 
-        internal async Task<int> RestoreAsync(BackupProtectedStateMode mode)
+        internal async Task<int> RestoreAsync(string? protectedState)
         {
 
             Restore.Blockers = Blockers;
@@ -292,7 +347,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
             BackupCommands commands = new(
                 new ThrowingBackupService(),
                 Restore,
-                new FixedPassphraseReader(),
+                Passphrases,
                 _prompt,
                 new RecordingDispatcher(Events),
                 new FixedInvocationContext(),
@@ -330,12 +385,13 @@ public sealed class BackupRestoreProtectedStateCommandTests
                 destinationRoot: null,
                 sessionIds: [],
                 mappings: [],
+                campaignMappings: [],
+                protectedState,
                 restoreMasterApiKey: false,
                 dryRun: false,
                 skipSafetyBackup: true,
                 passphraseEnvironmentVariable: null,
                 passphraseFileDescriptor: null,
-                protectedStateMode: mode,
                 CancellationToken.None);
 
         }
@@ -400,11 +456,19 @@ public sealed class BackupRestoreProtectedStateCommandTests
     private sealed class FixedPassphraseReader : IBackupPassphraseReader
     {
 
+        internal int Reads { get; private set; }
+
         public ValueTask<SensitiveBackupPassphrase?> ReadAsync(
             BackupPassphraseReadRequest request,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult<SensitiveBackupPassphrase?>(
+            CancellationToken cancellationToken)
+        {
+
+            Reads++;
+
+            return ValueTask.FromResult<SensitiveBackupPassphrase?>(
                 new SensitiveBackupPassphrase("restore secret".ToCharArray()));
+
+        }
 
     }
 

@@ -6,7 +6,13 @@ using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -1142,6 +1148,260 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task A_Campaign_mapping_naming_a_Campaign_this_machine_does_not_have_is_a_plan_blocker()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("import-mapping.arcbackup");
+
+        Guid absent = Guid.Parse("77777777-7777-7777-7777-777777777777");
+
+        BackupRestorePlan plan = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                SelectiveImportEnabled())
+            .PlanAsync(
+                ImportWithMapping(archive, absent),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        BackupVerifyIssue blocker = Assert.Single(
+            plan.Blockers,
+            static issue => issue.Code == BackupRestoreCampaignMappingPolicy.DestinationMissingCode);
+
+        // Named, because "no such Campaign" without saying which one leaves an operator re-reading
+        // their own command line to work out which half of which mapping was wrong.
+        Assert.Contains(absent.ToString("D"), blocker.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task A_Campaign_mapping_naming_a_Campaign_this_machine_has_is_planned_without_a_blocker()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("import-mapping-ok.arcbackup");
+
+        // Named in the lowercase form a Guid renders by default, while the row was seeded in the
+        // uppercase "D"-format text EF actually writes. SQLite compares TEXT byte for byte, so a
+        // `WHERE "Id" = $id` probe would match nothing here and refuse a mapping that is correct.
+        Assert.NotEqual(
+            Fixture.LetteredCampaignId.ToString("D"),
+            Fixture.LetteredCampaignId.ToString("D").ToUpperInvariant());
+
+        BackupRestorePlan plan = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                SelectiveImportEnabled())
+            .PlanAsync(
+                ImportWithMapping(archive, Fixture.LetteredCampaignId),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.DoesNotContain(
+            plan.Blockers,
+            static issue =>
+                issue.Code == BackupRestoreCampaignMappingPolicy.DestinationMissingCode);
+
+    }
+
+    [Fact]
+    public async Task A_destination_this_machine_cannot_read_refuses_no_Campaign_mapping()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("import-mapping-unreadable.arcbackup");
+
+        // No Grimoire secret: the live installation cannot be opened, so it has nothing to say about
+        // its Campaigns. "Could not be asked" must not become "that Campaign does not exist here" —
+        // the import already names an unreadable destination for what it is.
+        BackupRestorePlan plan = await Restore(new RecordingSecretStore(), SelectiveImportEnabled())
+            .PlanAsync(
+                ImportWithMapping(archive, Guid.Parse("77777777-7777-7777-7777-777777777777")),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.DoesNotContain(
+            plan.Blockers,
+            static issue => issue.Code.StartsWith(
+                "backup.restore_campaign_mapping",
+                StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public async Task A_Campaign_mapping_on_a_restore_that_imports_nothing_is_refused_as_inapplicable()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("import-mapping-mode.arcbackup");
+
+        BackupRestorePlan plan = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                SelectiveImportEnabled())
+            .PlanAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.ReplaceInstallation,
+                    CampaignMappings:
+                    [
+                        new BackupSessionCampaignMapping(
+                            Guid.Parse("66666666-6666-6666-6666-666666666666"),
+                            Fixture.CampaignId),
+                    ]),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Contains(
+            plan.Blockers,
+            static issue =>
+                issue.Code == BackupRestoreCampaignMappingPolicy.NotApplicableCode);
+
+    }
+
+    [Fact]
+    public async Task A_Campaign_mapping_without_the_Covenant_import_arm_is_refused_rather_than_ignored()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("import-mapping-gate-off.arcbackup");
+
+        // No SelectiveImport services: this is the pre-Covenant import, which writes every Session's
+        // CampaignId as NULL. Accepting the mapping here would hand the operator the silently unbound
+        // Session the option exists to prevent.
+        BackupRestorePlan plan = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret })
+            .PlanAsync(
+                ImportWithMapping(archive, Fixture.CampaignId),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Contains(
+            plan.Blockers,
+            static issue =>
+                issue.Code == BackupRestoreCampaignMappingPolicy.CovenantRequiredCode);
+
+    }
+
+    [Fact]
+    public async Task A_selective_import_that_names_no_mapping_is_untouched_by_the_arm_being_absent()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("import-no-mapping.arcbackup");
+
+        BackupRestorePlan plan = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret })
+            .PlanAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.ImportSelectedSessions,
+                    SessionIds: [Fixture.SessionId]),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.DoesNotContain(
+            plan.Blockers,
+            static issue => issue.Code.StartsWith(
+                "backup.restore_campaign_mapping",
+                StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public async Task A_blocked_plan_never_opens_the_live_Grimoire_to_check_a_Campaign_mapping()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        _ = await fixture.CreateBackupAsync("import-mapping-blocked.arcbackup");
+
+        string missing = Path.Combine(_archives, "there-is-no-such-archive.arcbackup");
+
+        RecordingSecretStore withoutMapping = new() { GrimoireSecret = fixture.GrimoireSecret };
+
+        _ = await Restore(withoutMapping, SelectiveImportEnabled())
+            .PlanAsync(
+                new BackupRestoreRequest(
+                    missing,
+                    BackupRestoreConflictMode.ImportSelectedSessions,
+                    SessionIds: [Fixture.SessionId]),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        RecordingSecretStore withMapping = new() { GrimoireSecret = fixture.GrimoireSecret };
+
+        // Already blocked on a missing archive. Deriving the Grimoire key and opening the live
+        // database to answer a question this plan has already refused is exactly the touch the
+        // maintenance lock exists to keep away from a running host.
+        BackupRestorePlan plan = await Restore(withMapping, SelectiveImportEnabled())
+            .PlanAsync(
+                ImportWithMapping(missing, Fixture.CampaignId),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Contains(
+            plan.Blockers,
+            static issue => issue.Code == "backup.restore_archive_missing");
+
+        Assert.DoesNotContain(
+            plan.Blockers,
+            static issue => issue.Code.StartsWith(
+                "backup.restore_campaign_mapping",
+                StringComparison.Ordinal));
+
+        // Calibrated against the same blocked plan without a mapping rather than against a fixed
+        // number, so the assertion stays about the mapping read and not about how many other readers
+        // this plan happens to have.
+        Assert.Equal(withoutMapping.GrimoireSecretReads, withMapping.GrimoireSecretReads);
+
+    }
+
+    private static BackupRestoreServiceOptions SelectiveImportEnabled() =>
+        new()
+        {
+
+            // Only presence is read on the planning path — nothing here is invoked — but it is the one
+            // thing that decides whether a Campaign mapping can be honoured at all.
+            SelectiveImport = new CovenantSelectiveImportServices(
+                new CovenantRestoreStagingTests.RecordingExclusiveGate(),
+                new UnreachableTransferStore()),
+
+        };
+
+    private static BackupRestoreRequest ImportWithMapping(
+        string archivePath,
+        Guid destinationCampaignId) =>
+        new(
+            archivePath,
+            BackupRestoreConflictMode.ImportSelectedSessions,
+            SessionIds: [Fixture.SessionId],
+            CampaignMappings:
+            [
+                new BackupSessionCampaignMapping(
+                    Guid.Parse("66666666-6666-6666-6666-666666666666"),
+                    destinationCampaignId),
+            ]);
+
+    private sealed class UnreachableTransferStore : IProtectedArtifactTransferStore
+    {
+
+        public Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>>
+            CommitImportedSessionAsync(
+                ImportedSessionTransferRequest request,
+                ImportedSessionSourceLease sourceLease,
+                CovenantProtectedTransferLease transferLease,
+                ProtectedSessionImportDestination destination,
+                CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A restore plan commits no protected transfer.");
+
+    }
+
     private BackupRestoreService Restore(
         ISecretStore secretStore,
         BackupRestoreServiceOptions? options = null,
@@ -1242,6 +1502,22 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public static readonly Guid SessionId =
             Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        public static readonly Guid CampaignId =
+            Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        /// <summary>
+        /// A second Campaign whose identity actually has letters in it, stored the way EF stores one.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="CampaignId"/> is all digits, so its uppercase and lowercase renderings are the
+        /// same bytes and it can prove nothing about case. This row is seeded in the uppercase
+        /// "D"-format text EF's SQLite provider actually writes, while the mapping under test names it
+        /// in the lowercase form <see cref="Guid"/> renders by default — which is exactly the pair a
+        /// <c>WHERE "Id" = $id</c> probe would fail to match under SQLite's BINARY collation.
+        /// </remarks>
+        public static readonly Guid LetteredCampaignId =
+            Guid.Parse("abcdef12-3456-4789-abcd-ef1234567890");
 
         public string GrimoireSecret { get; } = Convert.ToBase64String(
             RandomNumberGenerator.GetBytes(32));
@@ -1352,6 +1628,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 VALUES ('22222222-2222-2222-2222-222222222222', 'Alpha', 'alpha',
                         'C:\Users\Old\campaigns\alpha', 0, NULL, '{}',
                         '{"allowedPaths":["C:\\Users\\Old\\src\\project"]}',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Campaigns"
+                    ("Id", "Name", "NameLower", "Path", "Type", "Description", "Settings",
+                     "SanctumConfigJson", "CreatedAt", "UpdatedAt")
+                VALUES ('ABCDEF12-3456-4789-ABCD-EF1234567890', 'Beta', 'beta',
+                        'C:\Users\Old\campaigns\beta', 0, NULL, '{}', '{}',
                         '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
                 INSERT INTO "WorkspaceContexts" ("Id", "RootPath", "SerializedSnapshot", "CreatedAt")
@@ -1483,8 +1766,17 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         }
 
-        public Task<string?> GetGrimoireEncryptionSecretAsync() =>
-            Task.FromResult(GrimoireSecret);
+        /// <summary>How many times a caller asked for the secret that opens the live Grimoire.</summary>
+        public int GrimoireSecretReads { get; private set; }
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync()
+        {
+
+            GrimoireSecretReads++;
+
+            return Task.FromResult(GrimoireSecret);
+
+        }
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {

@@ -6850,6 +6850,24 @@
               "values": []
             },
             {
+              "name": "--map-campaign",
+              "aliases": [],
+              "description": "Explicit Campaign binding as \u003Csource-campaign-id\u003E=\u003Cdestination-campaign-id\u003E. Repeat or provide several; --conflict-mode import-selected-sessions needs one for every Campaign-bound Session.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": true,
+              "values": []
+            },
+            {
+              "name": "--protected-state",
+              "aliases": [],
+              "description": "What this restore may do with the protected state the archive carries: reject, restore-protected-state, purge-protected-state. Default: reject.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            },
+            {
               "name": "--restore-master-api-key",
               "aliases": [],
               "description": "Adopt the archived master API key on this machine. Off by default.",
