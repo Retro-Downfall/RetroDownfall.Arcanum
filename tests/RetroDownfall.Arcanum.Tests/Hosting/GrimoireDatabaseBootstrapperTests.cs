@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -13,6 +14,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using SQLitePCL;
 
@@ -53,6 +55,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         ServiceCollection services = new();
 
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
+
+        // The OS-secret boundary the authenticated restore journal is anchored in. Without it the
+        // bootstrap cannot read an anchor at all, and the restore-recovery phases have nothing to
+        // authenticate against.
+        services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
 
         // The bootstrapper resolves the whole schema-installation graph out of this scope, so a
         // container that registers only readiness fails at install time rather than at compile time.
@@ -602,6 +609,113 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             StringComparison.OrdinalIgnoreCase);
 
         Assert.False(File.Exists(_dbPath));
+
+    }
+
+    /// <summary>
+    /// A canonical restore journal nothing commits to is evidence, and evidence is never absence.
+    /// </summary>
+    /// <remarks>
+    /// The bootstrap has to stop before it creates the live root, opens a database, or publishes
+    /// readiness: an unanchored journal beside the installation means either a restore this build
+    /// cannot account for or a file somebody planted, and neither is a tree to start against
+    /// (§10.19.8).
+    /// </remarks>
+    [Fact]
+    public async Task EnsureInitializedAsync_refuses_to_start_beside_a_restore_journal_it_cannot_authenticate()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        string live = Path.Combine(_tempDir, "live");
+
+        Directory.CreateDirectory(live);
+
+        string lookalike = Path.Combine(_tempDir, BackupRestoreJournal.CreateStagingName());
+
+        Directory.CreateDirectory(lookalike);
+
+        File.WriteAllText(
+            Path.Combine(lookalike, BackupRestoreJournalAnchorStore.JournalFileName),
+            "{}");
+
+        using ArcanumMaintenanceLock? held = ArcanumMaintenanceLock.TryAcquire(live);
+
+        Assert.NotNull(held);
+
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                _secretStore,
+                _passphraseSource,
+                _scopeFactory,
+                Path.Combine(live, "grimoire.db"),
+                live,
+                held,
+                CancellationToken.None));
+
+        Assert.False(File.Exists(Path.Combine(live, "grimoire.db")));
+
+        Assert.False(IsReady());
+
+    }
+
+    /// <summary>
+    /// The pre-Covenant sweep still runs, because <c>BackupRestoreService</c> still writes that journal.
+    /// </summary>
+    [Fact]
+    public async Task EnsureInitializedAsync_still_resolves_an_interrupted_pre_covenant_restore()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        string live = Path.Combine(_tempDir, "live");
+
+        Directory.CreateDirectory(live);
+
+        string stagingRoot = Path.Combine(_tempDir, BackupRestoreJournal.CreateStagingName());
+
+        OwnedTemporaryDirectory owned = OwnedTemporaryDirectory.Create(stagingRoot);
+
+        _ = BackupRestoreJournal.Write(
+            stagingRoot,
+            new BackupRestoreJournalRecord(
+                BackupRestoreJournal.CurrentVersion,
+                Guid.NewGuid(),
+                BackupRestoreConflictMode.ReplaceInstallation,
+                BackupRestorePhase.Stage,
+                live,
+                Path.Combine(stagingRoot, BackupRestoreJournal.StagedDirectoryName),
+                Path.Combine(stagingRoot, BackupRestoreJournal.DisplacedDirectoryName),
+                SafetyBackupPath: null,
+                Path.Combine(_tempDir, "source.arcbackup"),
+                owned.VolumeId,
+                owned.FileId));
+
+        using ArcanumMaintenanceLock? held = ArcanumMaintenanceLock.TryAcquire(live);
+
+        Assert.NotNull(held);
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            Path.Combine(live, "grimoire.db"),
+            live,
+            held,
+            CancellationToken.None);
+
+        Assert.False(Directory.Exists(stagingRoot));
+
+        Assert.True(IsReady());
+
+    }
+
+    private bool IsReady()
+    {
+
+        using IServiceScope scope = _scopeFactory.CreateScope();
+
+        return scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>().IsReady;
 
     }
 

@@ -9,7 +9,6 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using Serilog;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -91,12 +90,15 @@ public sealed class GrimoireDatabaseHostedService(
 
         }
 
-        ResolveInterruptedRestores();
-
         try
         {
             // The one lock this process owns, borrowed rather than re-acquired. Nesting a second
             // FileShare.None acquisition inside the startup the first one guards would deadlock.
+            //
+            // Interrupted-restore recovery runs inside this call rather than before it. Both phases
+            // need the guarded directory the bootstrap was given, and the authenticated one has to run
+            // before the live root is created — which is a decision only the bootstrapper is in a
+            // position to sequence (§10.19.8).
             await GrimoireDatabaseBootstrapper
                 .EnsureInitializedAsync(
                     secretStore,
@@ -148,30 +150,5 @@ public sealed class GrimoireDatabaseHostedService(
 
         readiness.MarkFailed(exception);
 
-    }
-
-    /// <summary>
-    /// Finishes or reverses a restore that a previous process death left mid-commit (issue #38).
-    /// This runs before the database is opened so the host never bootstraps against a half-swapped
-    /// tree; each resolution is logged so an operator can see what happened.
-    /// </summary>
-    private static void ResolveInterruptedRestores()
-    {
-        try
-        {
-            foreach (BackupRestoreRecoveryReport report in
-                     BackupRestoreRecovery.Resolve(ArcanumPaths.GrimoireDirectory))
-            {
-                Log.Warning(
-                    "Interrupted Arcanum restore resolved as {Outcome} at phase {Phase}: {Detail}",
-                    report.Outcome,
-                    report.Phase,
-                    report.Detail);
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "Interrupted-restore recovery could not run; continuing startup.");
-        }
     }
 }

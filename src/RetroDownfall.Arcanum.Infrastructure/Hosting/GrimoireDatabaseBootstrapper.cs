@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Secrets.Security;
 using Serilog;
 using System.Security.Cryptography;
 
@@ -157,6 +158,15 @@ public static class GrimoireDatabaseBootstrapper
     {
         SqliteNativeRuntime.Instance.Initialize();
 
+        // Before the guarded directory is even created. A restore that died between its two renames
+        // leaves no live root at all, and creating an empty one here would occupy the name the rollback
+        // has to move back into (§10.19.8).
+        await RecoverRestoreTopologyAsync(
+            scopeFactory,
+            heldInstallationLock,
+            grimoireDirectory,
+            cancellationToken).ConfigureAwait(false);
+
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(grimoireDirectory);
 
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
@@ -227,6 +237,15 @@ public static class GrimoireDatabaseBootstrapper
             apiKey,
             cancellationToken).ConfigureAwait(false);
 
+        // After host-tools classification and core convergence, and before every database-dependent
+        // recovery below it. An active restore journal means the authority this installation now runs
+        // under has not been revalidated, and none of those passes may open against it.
+        await RecoverRestoreAuthorityAsync(
+            scopeFactory,
+            heldInstallationLock,
+            grimoireDirectory,
+            cancellationToken).ConfigureAwait(false);
+
         await RecoverProtectedMaintenanceAsync(
             installConnection,
             scopeFactory,
@@ -250,6 +269,197 @@ public static class GrimoireDatabaseBootstrapper
 
             readiness.MarkReady();
         }
+    }
+
+    /// <summary>
+    /// Converges an interrupted restore's rename topology before any database is opened or classified.
+    /// </summary>
+    /// <remarks>
+    /// First, and deliberately before the guarded directory is created: a process killed between the
+    /// live-root and staged-root renames leaves no live root at all, and this is the only pass entitled
+    /// to decide which tree takes that name back.
+    ///
+    /// <para>Skipped without an installation lock, exactly as the protected-maintenance recovery below
+    /// is. A CLI running beside a live host does not own the installation, and a second process moving
+    /// installation roots would be two owners for one tree.</para>
+    ///
+    /// <para>The pre-Covenant sweep of §5.4.9 still runs, but only once the authenticated stack has
+    /// proved that no V2 evidence exists. <c>BackupRestoreService</c> still writes the plain journal, so
+    /// dropping that sweep would strand every restore interrupted by this build; running it while an
+    /// authenticated journal is active would let the weaker of the two paths decide.</para>
+    /// </remarks>
+    private static async Task RecoverRestoreTopologyAsync(
+        IServiceScopeFactory scopeFactory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        string grimoireDirectory,
+        CancellationToken cancellationToken)
+    {
+
+        if (heldInstallationLock is null)
+        {
+
+            return;
+
+        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        if (TryCreateRestoreRecovery(scope, grimoireDirectory, withAuthority: false) is not { } recovery)
+        {
+
+            ResolveInterruptedRestores(grimoireDirectory);
+
+            return;
+
+        }
+
+        Result<BackupRestorePhysicalRecoveryOutcome> topology = await recovery
+            .RecoverPhysicalTopologyBeforeDatabaseAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (topology.IsFailure || topology.Value is BackupRestorePhysicalRecoveryOutcome.KeptClosed)
+        {
+
+            Log.Fatal(
+                "An interrupted Arcanum restore could not be converged to a single installation root. "
+                + "Arcanum will not start against a tree it cannot identify. Resolve the restore, or "
+                + "restore again from a verified generation.");
+
+            throw new GrimoireDatabaseUnavailableException(
+                "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
+
+        }
+
+        if (topology.Value is BackupRestorePhysicalRecoveryOutcome.NoActiveJournal)
+        {
+
+            ResolveInterruptedRestores(grimoireDirectory);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Resumes an interrupted restore's exclusive authority before anything can publish readiness.
+    /// </summary>
+    /// <remarks>
+    /// A converged tree is not a finished restore. Until the exact owner has been resumed and its one
+    /// disposition has succeeded, the installation is running under authority nobody revalidated — so a
+    /// kept-closed outcome stops startup here rather than degrading, which is what keeps host and CLI
+    /// readiness off an unproven replacement (§10.19.8).
+    /// </remarks>
+    private static async Task RecoverRestoreAuthorityAsync(
+        IServiceScopeFactory scopeFactory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        string grimoireDirectory,
+        CancellationToken cancellationToken)
+    {
+
+        if (heldInstallationLock is null)
+        {
+
+            return;
+
+        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        if (TryCreateRestoreRecovery(scope, grimoireDirectory, withAuthority: true) is not { } recovery)
+        {
+
+            return;
+
+        }
+
+        Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
+            .RecoverAuthorityBeforeReadinessAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure || recovered.Value is BackupRestoreStartupRecoveryOutcome.KeptClosed)
+        {
+
+            Log.Fatal(
+                "An interrupted Arcanum restore's authority could not be revalidated, so Covenant "
+                + "admission stays closed and its journal remains active for the next start.");
+
+            throw new GrimoireDatabaseUnavailableException(
+                "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
+
+        }
+
+    }
+
+    /// <summary>
+    /// Builds the one recovery for this installation, or nothing when the OS-secret boundary is absent.
+    /// </summary>
+    /// <remarks>
+    /// The credential store is an optional resolution for the same reason the authority provider below
+    /// is: a narrow container that only installs schema is a legitimate caller. Its absence is never
+    /// treated as proven absence of restore evidence — there is simply no anchor to read, so this pass
+    /// cannot run at all and says so.
+    /// </remarks>
+    private static BackupRestoreRecovery? TryCreateRestoreRecovery(
+        AsyncServiceScope scope,
+        string grimoireDirectory,
+        bool withAuthority)
+    {
+
+        if (scope.ServiceProvider.GetService<IOsCredentialStore>() is not { } credentials)
+        {
+
+            Log.Warning(
+                "No OS credential boundary is composed in this container, so the authenticated restore "
+                + "journal cannot be read.");
+
+            return null;
+
+        }
+
+        return new BackupRestoreRecovery(
+            grimoireDirectory,
+            new BackupRestoreJournalAnchorStore(
+                credentials,
+                new BackupRestoreJournalKeyProvider(credentials),
+                new BackupRestoreJournalInstallationIdentityProvider(credentials)),
+            withAuthority ? scope.ServiceProvider.GetService<CovenantOperationGate>() : null,
+            withAuthority ? scope.ServiceProvider.GetService<ICampaignPathMarkerLifecycle>() : null);
+
+    }
+
+    /// <summary>
+    /// Finishes or reverses a restore that a previous process death left mid-commit (issue #38).
+    /// </summary>
+    /// <remarks>
+    /// The pre-Covenant path: a plain journal plus the filesystem's own evidence. It runs under the same
+    /// installation lock and before the database is opened, so the host never bootstraps against a
+    /// half-swapped tree, and each resolution is logged so an operator can see what happened.
+    /// </remarks>
+    private static void ResolveInterruptedRestores(string grimoireDirectory)
+    {
+
+        try
+        {
+
+            foreach (BackupRestoreRecoveryReport report in
+                     BackupRestoreRecovery.Resolve(grimoireDirectory))
+            {
+
+                Log.Warning(
+                    "Interrupted Arcanum restore resolved as {Outcome} at phase {Phase}: {Detail}",
+                    report.Outcome,
+                    report.Phase,
+                    report.Detail);
+
+            }
+
+        }
+        catch (Exception ex)
+        {
+
+            Log.Warning(ex, "Interrupted-restore recovery could not run; continuing startup.");
+
+        }
+
     }
 
     /// <summary>
