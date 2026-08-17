@@ -251,6 +251,26 @@ internal sealed partial class PhysicalCampaignRootOpener
     }
 
     /// <summary>
+    /// Derives the identity a claimed volume and file identifier pair would produce, opening nothing.
+    /// </summary>
+    /// <remarks>
+    /// The one derivation that starts from a claim rather than from a handle, and it exists for one
+    /// caller: post-restart marker reconciliation, which retains no root and has only the marker's own
+    /// self-binding tuple to prove the directory it reopened with. A marker records the volume and file
+    /// identifiers of the root it was written into, so a marker that was copied elsewhere derives an
+    /// identity its new home cannot produce — the copy contradicts where it now lives (§10.12).
+    ///
+    /// <para>It returns an expectation to compare against and never a capability. A method that opened
+    /// anything from a tuple would be a second way to mint root authority, this time out of bytes
+    /// whoever can write into a directory gets to choose, which is exactly the substitution the whole
+    /// identity protocol exists to refuse. <c>CampaignPathMarkerRootProofCallSiteTests</c> pins the
+    /// call sites, because a digest derived from a claim is indistinguishable from one taken through a
+    /// proven handle once it has been returned.</para>
+    /// </remarks>
+    internal CovenantDigest? DeriveClaimedRootIdentityDigest(ulong volumeId, ulong fileId) =>
+        DeriveIdentityDigest(new FileHandleIdentity(volumeId, fileId));
+
+    /// <summary>
     /// Derives one opaque identity digest, or reports that the installation key is unavailable.
     /// </summary>
     private CovenantDigest? DeriveIdentityDigest(FileHandleIdentity identity)

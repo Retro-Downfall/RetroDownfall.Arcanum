@@ -141,10 +141,11 @@ internal abstract record CampaignPathCleanupRootObservation
 /// a seed that round-tripped through JSON would be a filesystem authority a caller could mint from a
 /// document.
 ///
-/// <para><see cref="CanonicalDisplayPath"/> is recorded in the durable row for operator diagnostics
-/// only. Nothing in the protocol reopens it: every effect goes through the retained root authority the
-/// observation already holds, so a display path that becomes a symlink between preparation and
-/// reconciliation redirects nothing.</para>
+/// <para><see cref="CanonicalDisplayPath"/> grants nothing. While this process holds the observation's
+/// root authority every effect goes through it, so a display path that becomes a symlink between
+/// preparation and reconciliation redirects nothing. A restarted process has no such authority left and
+/// reopens the recorded path once, but adopts what it finds only after the marker living there derives
+/// that directory's exact identity — the name is where to look, never permission to act (§10.19.7).</para>
 /// </remarks>
 internal sealed record CampaignPathRestoreCleanupSeed(
     Guid CampaignId,

@@ -18,9 +18,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// <remarks>
 /// Preparation observes each marker through an already-opened root, commits a one-way digest of the
 /// exact bytes it saw, and retains that root. Reconciliation re-reads through the same retained root,
-/// proves the bytes still hash to the committed digest, and only then compare-deletes. Neither half
-/// ever resolves a display path: the single path resolution happened when the root was opened, so a
-/// display path that becomes a symlink in between redirects nothing (§10.12).
+/// proves the bytes still hash to the committed digest, and only then compare-deletes. Nothing in
+/// this file resolves a display path: the single path resolution happened when the root was opened,
+/// so a display path that becomes a symlink in between redirects nothing (§10.12).
+///
+/// <para>A process that retained nothing — a restart — has one more step, and it lives in
+/// <c>CampaignPathMarkerLifecycle.RestartRootProof.cs</c> so that this file stays incapable of the
+/// resolution rather than merely declining it. That arm reopens the recorded path once and believes
+/// the directory it found only after the marker inside it derives that directory's exact identity
+/// from the root tuple the marker binds itself to (§10.19.7).</para>
 ///
 /// <para>The marker bytes themselves are never stored. A cleanup that had to keep the payload in the
 /// journal would be storing a per-registration secret in order to delete a file, and the digest plus
@@ -30,6 +36,16 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
 {
 
     private readonly ICampaignPathMarkerCodec _codec;
+
+    /// <summary>
+    /// The sole producer of Campaign root identity, used only where no root was retained.
+    /// </summary>
+    /// <remarks>
+    /// Present for the restart arm in <c>CampaignPathMarkerLifecycle.RestartRootProof.cs</c> and
+    /// unreachable from this file, so the retained-root half of the protocol stays incapable of
+    /// resolving a display path a second time rather than merely uninterested in doing so.
+    /// </remarks>
+    private readonly PhysicalCampaignRootOpener _rootOpener;
 
     private readonly ICovenantConnectionSource _liveConnections;
 
@@ -49,12 +65,15 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
 
     internal CampaignPathMarkerLifecycle(
         ICampaignPathMarkerCodec codec,
+        PhysicalCampaignRootOpener rootOpener,
         ICovenantConnectionSource liveConnections,
         CovenantSqliteConnectionInitializer initializer,
         TimeProvider timeProvider)
     {
 
         _codec = codec ?? throw new ArgumentNullException(nameof(codec));
+
+        _rootOpener = rootOpener ?? throw new ArgumentNullException(nameof(rootOpener));
 
         _liveConnections = liveConnections ?? throw new ArgumentNullException(nameof(liveConnections));
 
@@ -565,13 +584,20 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
             || retained.OwnerOperationId != owner.OperationId)
         {
 
-            // The intent row records no root identity digest, so there is nothing to prove a reopened
-            // root against. Rather than resolve a display path and trust it, this keeps admission
-            // closed and reports the blocker: an unproven root is not authority to delete a file.
-            return new Error(
-                ErrorCodes.Covenant.ManualRecoveryRequired,
-                "This process did not open the Campaign root for this marker child, so its identity "
-                + "cannot be proven without an operator operation.");
+            // A restart lost every handle preparation opened. The intent row still records no root
+            // identity digest, so the proof comes from the marker instead: it binds itself to the
+            // volume and file identifiers of the root it was written into.
+            Result<RetainedRoot> reopened =
+                await ReopenAndProveRootAsync(owner, row, cancellationToken).ConfigureAwait(false);
+
+            if (reopened.IsFailure)
+            {
+
+                return reopened.Error;
+
+            }
+
+            retained = reopened.Value;
 
         }
 

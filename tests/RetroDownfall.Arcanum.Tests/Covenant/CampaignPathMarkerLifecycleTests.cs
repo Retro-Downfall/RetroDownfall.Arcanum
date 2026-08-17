@@ -59,11 +59,7 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             ],
             CancellationToken.None);
 
-        _lifecycle = new CampaignPathMarkerLifecycle(
-            _codec,
-            new FixedCovenantConnectionSource(_database.Connection),
-            CovenantSqliteConnectionInitializer.Instance,
-            TimeProvider.System);
+        _lifecycle = CreateLifecycle();
 
     }
 
@@ -493,6 +489,200 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
     }
 
+    [Fact]
+    public async Task A_restarted_process_proves_the_reopened_root_from_its_own_marker_and_deletes_it()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot root = await CreateMarkedRootAsync("restarted", 3);
+
+        CampaignPathRestoreCleanupPreparationReceipt receipt =
+            await PrepareAndCommitAsync(owner, [root.Seed]);
+
+        // The restart. This lifecycle prepared nothing, so it holds no root and has to reopen the
+        // recorded display path and prove it against the marker's own self-binding root tuple.
+        Result<CampaignPathMarkerGateCompletion> completed =
+            await ReconcileAsync(CreateLifecycle(), owner, receipt);
+
+        Assert.True(completed.IsSuccess, Describe(completed));
+
+        Assert.False(File.Exists(MarkerPath(root)));
+
+        Assert.True((await completed.Value.Finalizer.FinalizeAfterSuccessfulDispositionAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(1, await CountPhaseAsync(12));
+
+    }
+
+    [Fact]
+    public async Task A_restarted_marker_bound_to_another_directory_is_left_untouched()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot stranger = await CreateRootAsync("stranger-root", 2);
+
+        CampaignRoot root = await CreateRootAsync("copied-into", 3);
+
+        // Exactly what copying a marker produces: well formed, naming this Campaign and revision, and
+        // binding itself to the volume and file identifiers of a directory it no longer lives in.
+        await WriteMarkerAsync(
+            root,
+            root.Seed.CampaignId,
+            root.Seed.PriorPathRevision,
+            rootTuple: ReadRootTuple(stranger.Directory));
+
+        CampaignPathRestoreCleanupPreparationReceipt receipt =
+            await PrepareAndCommitAsync(owner, [root.Seed]);
+
+        Result<CampaignPathMarkerGateCompletion> completed =
+            await ReconcileAsync(CreateLifecycle(), owner, receipt);
+
+        Assert.True(completed.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
+
+        Assert.True(File.Exists(MarkerPath(root)));
+
+    }
+
+    [Fact]
+    public async Task A_restarted_marker_naming_a_different_campaign_keeps_admission_closed()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot root = await CreateMarkedRootAsync("restarted-stranger", 4);
+
+        CampaignPathRestoreCleanupPreparationReceipt receipt =
+            await PrepareAndCommitAsync(owner, [root.Seed]);
+
+        File.Delete(MarkerPath(root));
+
+        // Bound to this exact root, so the only thing wrong with it is whose claim it is.
+        await WriteMarkerAsync(root, Guid.NewGuid(), root.Seed.PriorPathRevision);
+
+        Result<CampaignPathMarkerGateCompletion> completed =
+            await ReconcileAsync(CreateLifecycle(), owner, receipt);
+
+        Assert.True(completed.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
+
+        Assert.True(File.Exists(MarkerPath(root)));
+
+    }
+
+    [Fact]
+    public async Task A_restarted_marker_replaced_under_the_same_identity_is_left_untouched()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot root = await CreateMarkedRootAsync("restarted-tampered", 5);
+
+        CampaignPathRestoreCleanupPreparationReceipt receipt =
+            await PrepareAndCommitAsync(owner, [root.Seed]);
+
+        File.Delete(MarkerPath(root));
+
+        // A marker that passes the reopened-root proof in every respect and is still not the file this
+        // restore committed evidence for. The byte-for-byte comparison is what separates the two.
+        await WriteMarkerAsync(
+            root,
+            root.Seed.CampaignId,
+            root.Seed.PriorPathRevision,
+            secretSeed: 0x99);
+
+        Result<CampaignPathMarkerGateCompletion> completed =
+            await ReconcileAsync(CreateLifecycle(), owner, receipt);
+
+        Assert.True(completed.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
+
+        Assert.True(File.Exists(MarkerPath(root)));
+
+    }
+
+    [Fact]
+    public async Task A_restarted_process_whose_marker_is_already_gone_keeps_admission_closed()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot root = await CreateMarkedRootAsync("restarted-absent", 6);
+
+        CampaignPathRestoreCleanupPreparationReceipt receipt =
+            await PrepareAndCommitAsync(owner, [root.Seed]);
+
+        // Absence is a completed delete only for the process that held the root. A restarted one has
+        // nothing left to prove the directory with, and adopting it would record a cleanup against a
+        // root nobody identified.
+        File.Delete(MarkerPath(root));
+
+        Result<CampaignPathMarkerGateCompletion> completed =
+            await ReconcileAsync(CreateLifecycle(), owner, receipt);
+
+        Assert.True(completed.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task A_restarted_process_whose_recorded_root_is_gone_keeps_admission_closed()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot root = await CreateMarkedRootAsync("restarted-vanished", 7);
+
+        CampaignPathRestoreCleanupPreparationReceipt receipt =
+            await PrepareAndCommitAsync(owner, [root.Seed]);
+
+        Directory.Move(root.Directory, root.Directory + "-elsewhere");
+
+        Result<CampaignPathMarkerGateCompletion> completed =
+            await ReconcileAsync(CreateLifecycle(), owner, receipt);
+
+        Assert.True(completed.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task The_in_process_path_never_reaches_an_impostor_at_the_recorded_display_path()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot root = await CreateMarkedRootAsync("in-place", 8);
+
+        CampaignPathRestoreCleanupPreparationReceipt receipt =
+            await PrepareAndCommitAsync(owner, [root.Seed]);
+
+        Directory.Move(root.Directory, root.Directory + "-moved");
+
+        // A different directory now answers to the recorded display path, carrying a marker that names
+        // the same Campaign and revision and binds itself correctly to its own tuple — everything the
+        // restart proof asks for. The retained capability never consults that name, so it neither
+        // deletes the impostor's marker nor adopts the impostor as this Campaign's root.
+        CampaignRoot impostor = await CreateRootAsync("in-place", 8);
+
+        await WriteMarkerAsync(impostor, root.Seed.CampaignId, root.Seed.PriorPathRevision);
+
+        Result<CampaignPathMarkerGateCompletion> completed =
+            await ReconcileAsync(_lifecycle, owner, receipt);
+
+        Assert.True(completed.IsFailure);
+
+        Assert.True(File.Exists(MarkerPath(impostor)));
+
+        Assert.True(File.Exists(
+            Path.Combine(root.Directory + "-moved", ".arcanum", "campaign-root.marker")));
+
+    }
+
     public async Task DisposeAsync()
     {
 
@@ -531,6 +721,22 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
     private static string MarkerPath(CampaignRoot root) =>
         Path.Combine(root.Directory, ".arcanum", "campaign-root.marker");
 
+    /// <summary>
+    /// One lifecycle over the same codec, opener, and database, retaining nothing.
+    /// </summary>
+    /// <remarks>
+    /// A second instance is what a restart looks like from here: the durable children survive, and
+    /// every opened root does not. Faking the loss by clearing a field would prove only that the field
+    /// can be cleared; a fresh instance reaches exactly the code a restarted process reaches.
+    /// </remarks>
+    private CampaignPathMarkerLifecycle CreateLifecycle() =>
+        new(
+            _codec,
+            _opener,
+            new FixedCovenantConnectionSource(_database.Connection),
+            CovenantSqliteConnectionInitializer.Instance,
+            TimeProvider.System);
+
     private async Task<CampaignPathRestoreCleanupPreparationReceipt> PrepareAndCommitAsync(
         CovenantExclusiveRecoveryOwner owner,
         ImmutableArray<CampaignPathRestoreCleanupSeed> seeds)
@@ -552,6 +758,18 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         return prepared.Value;
 
     }
+
+    private static async Task<Result<CampaignPathMarkerGateCompletion>> ReconcileAsync(
+        CampaignPathMarkerLifecycle lifecycle,
+        CovenantExclusiveRecoveryOwner owner,
+        CampaignPathRestoreCleanupPreparationReceipt receipt) =>
+        await lifecycle.ReconcileGateOwnedAsync(
+            new CampaignPathMarkerGateReconcileRequest(
+                owner,
+                receipt.OrderedIntentIds,
+                receipt.IntentVectorDigest),
+            new StubExclusiveLease(owner),
+            CancellationToken.None);
 
     private async Task<SqliteTransaction> BeginAsync() =>
         (SqliteTransaction)await _database.Connection.BeginTransactionAsync(
@@ -616,13 +834,14 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         CampaignRoot root,
         Guid campaignId,
         long revision,
-        byte secretSeed = 0x33)
+        byte secretSeed = 0x33,
+        (ulong VolumeId, ulong FileId)? rootTuple = null)
     {
 
         CampaignPathMarkerRootAuthority authority =
             ((CampaignPathCleanupRootObservation.Opened)root.Seed.Observation).RootAuthority;
 
-        (ulong volumeId, ulong fileId) = ReadRootTuple(root.Directory);
+        (ulong volumeId, ulong fileId) = rootTuple ?? ReadRootTuple(root.Directory);
 
         Result<byte[]> encoded = _codec.Encode(
             new CampaignPathMarkerContent(

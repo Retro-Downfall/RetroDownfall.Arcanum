@@ -94,7 +94,7 @@ internal sealed class BackupRestoreJournalKeyLease : IDisposable
 /// healthy first run, and the thing those envelopes govern is a half-swapped installation.
 ///
 /// <para>Stored as canonical unpadded base64url of exactly thirty-two bytes. Every other spelling is
-/// refused rather than repaired, so one key has exactly one stored form (§10.19.7).</para>
+/// refused rather than repaired, so one key has exactly one stored form (§10.19.6).</para>
 /// </remarks>
 internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credentials)
 {

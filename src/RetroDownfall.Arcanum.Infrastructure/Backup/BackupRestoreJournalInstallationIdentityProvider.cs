@@ -34,7 +34,7 @@ internal sealed record BackupRestoreJournalIdentityProbe(
 /// opens. Physical recovery reads it before the live database is even classified, binds it into the
 /// envelope and anchor, and the later core precheck compares it with the recovered row — so a journal,
 /// key, anchor, or staged root copied in from another installation fails before topology mutation
-/// rather than after it (§10.19.7).
+/// rather than after it (§10.19.6).
 ///
 /// <para>Ordinary restore, Covenant reset, family reinitialize, credential cleanup, and key rotation
 /// all preserve it. Only an attested full installation reset may remove it, and only after proving no

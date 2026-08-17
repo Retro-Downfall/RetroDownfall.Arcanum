@@ -64,7 +64,7 @@ internal sealed record BackupRestoreJournalRecoveryState(
 /// under a profile-namespaced account and is advanced only under the caller-held installation lock,
 /// through one read-compare-write-readback per revision. That leaves exactly one crash window — the
 /// envelope reached disk and the anchor did not — and recovery closes that window through the same
-/// checked write before any effect (§10.19.7).
+/// checked write before any effect (§10.19.6).
 ///
 /// <para>The lock is borrowed, never acquired: this type asserts the caller's identity through
 /// <see cref="ArcanumMaintenanceLock.AssertHeldFor(string)"/> and never calls <c>TryAcquire</c>,
