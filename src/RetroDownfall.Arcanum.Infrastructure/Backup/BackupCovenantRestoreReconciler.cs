@@ -85,7 +85,8 @@ internal sealed record BackupCovenantRestoreReconciliationReceipt(
     ulong UnresolvedCampaignPaths,
     ulong TerminalizedTurnClaims,
     int JoinedDisclosureBuckets,
-    CovenantHostToolsState HostToolsState);
+    CovenantHostToolsState HostToolsState,
+    BackupRestoreProtectedStatePurgeReceipt? ProtectedStatePurge = null);
 
 /// <summary>
 /// Converts a staged snapshot of somebody else's installation into one this machine may adopt.
@@ -130,12 +131,19 @@ internal static class BackupCovenantRestoreReconciler
     /// Reissues this generation's identities, joins the destination's authority and disclosure
     /// evidence into it, and retires everything the source machine left in flight.
     /// </summary>
+    /// <param name="purgeProtectedState">
+    /// Whether this restore is a <c>PurgeProtectedState</c> one. The decision itself belongs to
+    /// <see cref="BackupRestoreProtectedStatePolicy"/> and was already made — before the staged tree
+    /// existed and before any owner was acquired — so this phase is told the answer rather than asked to
+    /// derive it a second time from the request.
+    /// </param>
     internal static async Task<Result<BackupCovenantRestoreReconciliationReceipt>> ReconcileStagedAsync(
         SqliteConnection staged,
         SqliteTransaction transaction,
         BackupCovenantRestoreDestinationState destination,
         CovenantSqliteConnectionInitializer initializer,
         TimeProvider timeProvider,
+        bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
 
@@ -203,6 +211,34 @@ internal static class BackupCovenantRestoreReconciler
 
         }
 
+        // After both joins and before the reissue. The joins are what carry this machine's own taint and
+        // its nonrevocable disclosure counts into the generation it is about to adopt, and a purge that
+        // ran before them would have nothing to preserve; one that ran after the reissue would leave the
+        // fresh generation stamped onto rows that are about to be deleted anyway.
+        BackupRestoreProtectedStatePurgeReceipt? purged = null;
+
+        if (purgeProtectedState)
+        {
+
+            Result<BackupRestoreProtectedStatePurgeReceipt> purge =
+                await BackupRestoreProtectedStatePurger.PurgeStagedAsync(
+                    staged,
+                    transaction,
+                    initializer,
+                    timeProvider,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (purge.IsFailure)
+            {
+
+                return purge.Error;
+
+            }
+
+            purged = purge.Value;
+
+        }
+
         Result<CanonicalReissue> canonical = await ReissueCanonicalIdentitiesAsync(
             staged,
             transaction,
@@ -232,11 +268,17 @@ internal static class BackupCovenantRestoreReconciler
             canonical.Value.AcceleratorEpoch,
             canonical.Value.EnvelopeKeyEpoch,
             canonical.Value.ClearedOutboxRows,
-            labels.Value,
+            // The count the validation above observed, less whatever a purge then removed. Reporting the
+            // pre-purge count would be the one number an operator would read as evidence that a label
+            // survived a purge that had in fact removed it.
+            purged is null
+                ? labels.Value
+                : labels.Value - Math.Min(labels.Value, purged.RemovedLabels),
             unresolved,
             claims,
             disclosure.Value,
-            authority.Value);
+            authority.Value,
+            purged);
 
     }
 

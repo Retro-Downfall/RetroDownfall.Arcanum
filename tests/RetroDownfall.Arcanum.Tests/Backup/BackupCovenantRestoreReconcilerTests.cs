@@ -434,6 +434,7 @@ public sealed class BackupCovenantRestoreReconcilerTests : IAsyncLifetime
                     disclosure ?? []),
                 CovenantSqliteConnectionInitializer.Instance,
                 TimeProvider.System,
+                purgeProtectedState: false,
                 CancellationToken.None);
 
         if (receipt.IsFailure)

@@ -149,6 +149,14 @@ public sealed class CovenantArchitectureBoundaryTests
 
         Assert.Equal(
             [
+                // The one declared exception, and it is not a live writer. This file owns the list of
+                // Covenant family content tables for two staged-only callers: the pre-staging inventory,
+                // which counts them, and the protected-state purge of §10.19.10, which clears them out
+                // of a candidate that has never been published as live. The boundary exists to stop
+                // anything but the projection's owners from mutating it while the applied FTS tuple
+                // claims it is current — and a purge runs against a database whose applied tuple is
+                // null, before it becomes anybody's live installation.
+                "BackupRestoreProtectedStateInspector.cs",
                 "CovenantIndexRebuilder.cs",
                 "CovenantSearchIndex.cs",
                 "CovenantSearchOutboxWorker.cs",

@@ -1008,6 +1008,17 @@ silently omitting them.
 
 ### 15.2 Restore
 
+Restore never reinstates protected state by default. An archive carrying protected state requires an
+explicit, separately confirmed destructive mode, and the default refuses before staging. Preserving
+that state is permitted only from a source whose own authority state is clean; a source-tainted archive
+carrying protected state has exactly one supported continuation, a separately confirmed purge, which
+removes the whole protected family from staging before replacement while preserving content-free
+destination taint and disclosure evidence. Joining or relabelling source taint never promotes archived
+protected data into a clean destination. Every destructive protected-state choice is preceded by the
+shared nonrevocable-disclosure statement, the receipt-backed possible-attempt count with exact or
+lower-bound semantics, and the resolved external-deletion help targets; refusal creates no staging or
+recovery state.
+
 Restore never resumes source-installation authority. Staging:
 
 - converges core, canonical, and accelerator schemas;
