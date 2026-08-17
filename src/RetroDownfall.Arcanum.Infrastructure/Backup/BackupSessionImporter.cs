@@ -82,6 +82,30 @@ internal static class BackupSessionImporter
 
         }
 
+        // Coverage first, over the whole selection, before the destination is opened for writing at
+        // all. Each Session below commits under its own compound lease with no outer transaction and
+        // no compensating undo, so an unmapped third Session discovered inside the loop would leave
+        // the first two committed while the result reported the import refused — and the retry the
+        // refusal itself recommends would import those two again under fresh identities (§10.19.12).
+        await using (SqliteConnection preflight = await BackupRestoreDatabaseWorker
+            .OpenAsync(sourceDatabasePath, sourceGrimoireSecret, readOnly: true, cancellationToken)
+            .ConfigureAwait(false))
+        {
+
+            Result coverage = await BackupSessionImportPlanner
+                .ValidateCampaignCoverageAsync(preflight, sessionIds, campaignMappings, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (coverage.IsFailure)
+            {
+
+                return BackupSessionImportResult.Failed(
+                    new BackupVerifyIssue("backup.restore_import_refused", coverage.Error.Message));
+
+            }
+
+        }
+
         await using SqliteConnection destination = await BackupRestoreDatabaseWorker
             .OpenAsync(destinationDatabasePath, destinationGrimoireSecret, readOnly: false, cancellationToken)
             .ConfigureAwait(false);

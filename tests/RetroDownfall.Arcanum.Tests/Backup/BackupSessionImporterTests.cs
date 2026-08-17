@@ -2,7 +2,15 @@ using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Backup;
+
+using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -22,6 +30,8 @@ public sealed class BackupSessionImporterTests : IDisposable
 {
 
     private static readonly Guid SessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+    private static readonly Guid CampaignId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -125,7 +135,59 @@ public sealed class BackupSessionImporterTests : IDisposable
 
     }
 
-    private async Task<string> SeedSourceAsync()
+    [Fact]
+    public async Task A_Campaign_bound_Session_with_no_mapping_refuses_before_the_destination_is_opened()
+    {
+
+        string sourceSecret = await SeedSourceAsync(campaignBound: true);
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportProtectedAsync(
+            new CovenantSelectiveImportServices(
+                new CovenantRestoreStagingTests.RecordingExclusiveGate(),
+                new UnreachableTransferStore()),
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            // Deliberately a path with no database and no KDF sidecar. Opening it would throw rather
+            // than refuse, so reaching this refusal at all proves the coverage pass ran first — and
+            // therefore that nothing was committed into a live installation before it.
+            Path.Combine(_destinationRoot, "never-opened", "arcanum.db"),
+            [SessionId],
+            Path.Combine(_sourceRoot, "attachments"),
+            Path.Combine(_destinationRoot, "attachments"),
+            "destination secret",
+            sourceSecret,
+            [],
+            CancellationToken.None);
+
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
+
+        Assert.Equal("backup.restore_import_refused", issue.Code);
+
+        // The typed refusal survives the wrap: the operator is still told which archived Campaign is
+        // unaccounted for and which option answers it.
+        Assert.Contains(CampaignId.ToString("D"), issue.Message, StringComparison.Ordinal);
+
+        Assert.Contains("--map-campaign", issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, result.Sessions);
+
+    }
+
+    private sealed class UnreachableTransferStore : IProtectedArtifactTransferStore
+    {
+
+        public Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>>
+            CommitImportedSessionAsync(
+                ImportedSessionTransferRequest request,
+                ImportedSessionSourceLease sourceLease,
+                CovenantProtectedTransferLease transferLease,
+                ProtectedSessionImportDestination destination,
+                CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "A refused selection commits no protected transfer.");
+
+    }
+
+    private async Task<string> SeedSourceAsync(bool campaignBound = false)
     {
 
         string secret = await CreateDatabaseAsync(_sourceRoot);
@@ -148,9 +210,11 @@ public sealed class BackupSessionImporterTests : IDisposable
 
         await using SqliteCommand seed = connection.CreateCommand();
 
+        string campaignId = campaignBound ? $"'{CampaignId}'" : "NULL";
+
         seed.CommandText = $"""
             INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
-            VALUES ('{SessionId}', NULL, 'Archived session', 'active',
+            VALUES ('{SessionId}', {campaignId}, 'Archived session', 'active',
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
             INSERT INTO "SessionAttachments"

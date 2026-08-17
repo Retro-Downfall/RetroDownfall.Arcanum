@@ -24,6 +24,72 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 internal static class BackupSessionImportPlanner
 {
 
+    /// <summary>
+    /// Refuses the whole selection if any chosen Session is Campaign-bound with no mapping.
+    /// </summary>
+    /// <remarks>
+    /// Run once over the entire selection before the first commit, because the per-Session plan below
+    /// cannot refuse early enough to matter: each Session commits under its own compound lease, so a
+    /// selection whose third Session is unmapped would otherwise land the first two and then report the
+    /// whole import refused — and the operator's obvious retry, with the missing mapping added, would
+    /// import those two a second time under fresh destination identities.
+    ///
+    /// <para>Read-only, and over the same pinned snapshot the per-Session plans read, so a selection
+    /// that passes here fails no differently than one that was fully mapped to begin with.</para>
+    /// </remarks>
+    internal static async Task<Result> ValidateCampaignCoverageAsync(
+        SqliteConnection source,
+        IReadOnlyList<Guid> sessionIds,
+        IReadOnlyList<BackupSessionCampaignMapping> campaignMappings,
+        CancellationToken cancellationToken)
+    {
+
+        if (!await BackupRestoreDatabaseWorker
+                .TableExistsAsync(source, "Sessions", cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            // Left to the per-Session plan, which already names this and is the one place that decides
+            // whether the snapshot is readable at all.
+            return Result.Success();
+
+        }
+
+        foreach (Guid sessionId in sessionIds)
+        {
+
+            Guid? bound = await ReadSourceCampaignAsync(source, sessionId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (bound is { } campaignId
+                && !campaignMappings.Any(candidate => candidate.SourceCampaignId == campaignId))
+            {
+
+                return UnmappedCampaignBinding(sessionId, campaignId);
+
+            }
+
+        }
+
+        return Result.Success();
+
+    }
+
+    /// <summary>
+    /// The one refusal both the coverage pass and the per-Session plan report.
+    /// </summary>
+    /// <remarks>
+    /// Names the archived Campaign and the option that supplies it. A refusal naming only the Session
+    /// would leave the operator to work out which of the archive's Campaigns it was bound to before they
+    /// could write the mapping that fixes it.
+    /// </remarks>
+    private static Error UnmappedCampaignBinding(Guid sourceSessionId, Guid campaignId) =>
+        new(
+            ErrorCodes.Covenant.CampaignBindingConflict,
+            $"Session {sourceSessionId:D} is bound to archived Campaign {campaignId:D} and needs an "
+            + "explicit destination Campaign mapping before it can be imported. Re-run with "
+            + $"--map-campaign {campaignId:D}=<destination-campaign-id>.");
+
     internal static async Task<Result<ImportedSessionTransferRequest>> PlanAsync(
         ImportedSessionSourceLease sourceLease,
         Guid sourceSessionId,
@@ -71,10 +137,7 @@ internal static class BackupSessionImportPlanner
             if (mapping is null)
             {
 
-                return new Error(
-                    ErrorCodes.Covenant.CampaignBindingConflict,
-                    $"Session {sourceSessionId:D} is bound to an archived Campaign and needs an explicit "
-                    + "destination Campaign mapping before it can be imported.");
+                return UnmappedCampaignBinding(sourceSessionId, bound);
 
             }
 

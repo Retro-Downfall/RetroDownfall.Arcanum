@@ -6,8 +6,6 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Cli.Commands;
 
-using RetroDownfall.Arcanum.Core.Backup;
-
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
@@ -264,6 +262,25 @@ internal static partial class CliCommandTree
 
         };
 
+        Option<string[]> mapCampaign = new("--map-campaign")
+        {
+
+            AllowMultipleArgumentsPerToken = true,
+
+            Description = "Explicit Campaign binding as <source-campaign-id>=<destination-campaign-id>. "
+                + "Repeat or provide several; --conflict-mode import-selected-sessions needs one for "
+                + "every Campaign-bound Session.",
+
+        };
+
+        Option<string?> protectedState = new("--protected-state")
+        {
+
+            Description = "What this restore may do with the protected state the archive carries: "
+                + BackupCliCatalog.ProtectedStateModeHelp + ". Default: reject.",
+
+        };
+
         Option<bool> masterApiKey = new("--restore-master-api-key")
         {
 
@@ -299,6 +316,10 @@ internal static partial class CliCommandTree
 
         restore.Add(map);
 
+        restore.Add(mapCampaign);
+
+        restore.Add(protectedState);
+
         restore.Add(masterApiKey);
 
         restore.Add(dryRun);
@@ -319,16 +340,13 @@ internal static partial class CliCommandTree
                         result.GetValue(destination),
                         result.GetValue(sessions) ?? [],
                         result.GetValue(map) ?? [],
+                        result.GetValue(mapCampaign) ?? [],
+                        result.GetValue(protectedState),
                         result.GetValue(masterApiKey),
                         result.GetValue(dryRun),
                         result.GetValue(skipSafetyBackup),
                         result.GetValue(passphraseEnvironment),
                         result.GetValue(passphraseFileDescriptor),
-                        // Issue #113 built and tested the protected-state enforcement and the
-                        // disclosure-then-prompt ordering the operator surface binds into; issue #115
-                        // owns the option itself. Until then this is the default the contract already
-                        // had, which refuses an archive carrying protected state rather than adopting it.
-                        BackupProtectedStateMode.Reject,
                         cancellationToken)
                     .ConfigureAwait(false));
 

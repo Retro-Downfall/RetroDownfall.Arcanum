@@ -18,7 +18,6 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -560,6 +559,58 @@ internal static class BackupRestoreDatabaseWorker
         }
 
         return paths;
+
+    }
+
+    /// <summary>
+    /// Reads every Campaign identity this database holds, so a caller can check a mapping against what
+    /// actually exists rather than against what a request claims.
+    /// </summary>
+    /// <remarks>
+    /// Every row is read and parsed rather than the identities being probed one at a time. EF's SQLite
+    /// provider stores <c>Campaigns.Id</c> as uppercase "D"-format text and SQLite's default TEXT
+    /// collation is BINARY, so a <c>WHERE "Id" = $id</c> bound with the lowercase form a
+    /// <see cref="Guid"/> renders by default would silently match nothing and report every destination
+    /// Campaign as absent. <see cref="Guid.TryParse(string, out Guid)"/> is case-insensitive, so
+    /// comparing parsed identities cannot be wrong about case in either direction.
+    /// </remarks>
+    public static async Task<IReadOnlyCollection<Guid>> ReadCampaignIdsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        if (!await TableExistsAsync(connection, "Campaigns", cancellationToken).ConfigureAwait(false))
+        {
+
+            return [];
+
+        }
+
+        HashSet<Guid> identities = [];
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT "Id" FROM "Campaigns";
+            """;
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            if (!reader.IsDBNull(0) && Guid.TryParse(reader.GetString(0), out Guid identity))
+            {
+
+                _ = identities.Add(identity);
+
+            }
+
+        }
+
+        return identities;
 
     }
 
