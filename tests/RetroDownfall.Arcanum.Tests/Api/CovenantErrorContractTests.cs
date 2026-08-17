@@ -45,6 +45,7 @@ public sealed class CovenantErrorContractTests
             { ErrorCodes.Covenant.OperatorAuthorityUnavailable, "Covenant.OperatorAuthorityUnavailable" },
             { ErrorCodes.Covenant.SensitiveHistoryRequiresContext, "Covenant.SensitiveHistoryRequiresContext" },
             { ErrorCodes.Covenant.SensitiveEgressRequiresApproval, "Covenant.SensitiveEgressRequiresApproval" },
+            { ErrorCodes.Covenant.PlaintextExportRefused, "Covenant.PlaintextExportRefused" },
             { ErrorCodes.Covenant.MaintenanceFailed, "Covenant.MaintenanceFailed" },
             { ErrorCodes.Covenant.ManualArtifactErasureRequired, "Covenant.ManualArtifactErasureRequired" },
             { ErrorCodes.Covenant.ManualRecoveryRequired, "Covenant.ManualRecoveryRequired" },
@@ -74,6 +75,10 @@ public sealed class CovenantErrorContractTests
 
             { ErrorCodes.Covenant.ForbiddenAuthority, StatusCodes.Status403Forbidden },
             { ErrorCodes.Covenant.SensitiveEgressRequiresApproval, StatusCodes.Status403Forbidden },
+
+            // 403 rather than 409. A tainted Session is not a state a caller can retry past, and
+            // "conflict" would invite exactly the retry loop that has no successful ending.
+            { ErrorCodes.Covenant.PlaintextExportRefused, StatusCodes.Status403Forbidden },
 
             { ErrorCodes.Covenant.NotFound, StatusCodes.Status404NotFound },
 

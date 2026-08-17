@@ -3,9 +3,12 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -430,68 +433,10 @@ internal static class CampaignEndpoints
         apiGroup.MapPost(
             "/campaigns/{id:guid}/export",
             async (Guid id, ICampaignRepository repo, IPromptRepository promptRepo, ISpellRepository spellRepo, HttpContext ctx) =>
-            {
-                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
-
-                Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
-
-                if (campaign is null)
-                {
-                    return Results.Json(
-                        ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
-                            traceId),
-                        ArcanumJsonContext.Default.ApiResponseCampaignDto,
-                        statusCode: StatusCodes.Status404NotFound);
-                }
-
-                SpellSummary[] summaries = await spellRepo.ListAsync(campaign.Path, ctx.RequestAborted).ConfigureAwait(false);
-
-                var exportSpells = new List<CampaignExportSpellDto>();
-
-                foreach (SpellSummary summary in summaries)
-                {
-                    if (summary.Source == SpellSource.Builtin)
-                    {
-                        continue;
-                    }
-
-                    SpellExportDto? exported = await spellRepo
-                        .ExportAsync(summary.Name, campaign.Path, ctx.RequestAborted)
-                        .ConfigureAwait(false);
-
-                    if (exported is null)
-                    {
-                        continue;
-                    }
-
-                    string? spellJson = exported.Metadata is null
-                        ? null
-                        : JsonSerializer.Serialize(exported.Metadata, TheForgeJsonContext.Default.SkillMetadata);
-
-                    exportSpells.Add(new CampaignExportSpellDto(
-                        summary.Name,
-                        spellJson,
-                        exported.FullContent,
-                        exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList()));
-                }
-
-                ListPageResult<Prompt> promptPage = await promptRepo
-                    .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
-                    .ConfigureAwait(false);
-
-                PromptExportDto[] promptExports = promptPage.Items.Select(PromptMapping.ToExportDto).ToArray();
-
-                CampaignExportDto export = new(
-                    CampaignPathPolicy.ToDto(campaign),
-                    exportSpells,
-                    promptExports);
-
-                return Results.Ok(
-                    ApiResponse<CampaignExportDto>.FromResult(Result<CampaignExportDto>.Success(export), traceId));
-            })
+                await ExportCampaignAsync(id, repo, promptRepo, spellRepo, ctx).ConfigureAwait(false))
         .WithName("ExportCampaign")
-        .WithLargeRequestBody();
+        .WithLargeRequestBody()
+        .RequireConditionalCovenantReadAuthority();
 
         apiGroup.MapPost(
             "/campaigns/{id:guid}/import",
@@ -626,6 +571,217 @@ internal static class CampaignEndpoints
         .WithLargeRequestBody();
 
         return apiGroup;
+    }
+
+    /// <summary>
+    /// Exports one Campaign's spells, prompts, and settings, and reports what it left behind.
+    /// </summary>
+    /// <remarks>
+    /// The bundle has never carried Covenant memory and does not start now: this route composes the
+    /// same three sources it always did. What changes is that the omission is now stated. A Campaign
+    /// whose Covenant memory was simply left out looked, on the wire, exactly like a Campaign that
+    /// never had any — and an operator moving a Campaign to another machine had no way to tell those
+    /// two apart (§10.19.11).
+    ///
+    /// <para>The lease is taken before the inventory and before the Campaign lookup, and is retained
+    /// through serialization. Counting under one snapshot and serializing under none would report an
+    /// exclusion figure for a generation the bundle beside it does not belong to.</para>
+    /// </remarks>
+    private static async Task<IResult> ExportCampaignAsync(
+        Guid id,
+        ICampaignRepository repo,
+        IPromptRepository promptRepo,
+        ISpellRepository spellRepo,
+        HttpContext ctx)
+    {
+
+        string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+        ICovenantExportPolicy? policy = ctx.RequestServices.GetService<ICovenantExportPolicy>();
+
+        if (policy is null)
+        {
+
+            return await BuildCampaignExportAsync(
+                id,
+                exclusions: null,
+                repo,
+                promptRepo,
+                spellRepo,
+                ctx,
+                traceId).ConfigureAwait(false);
+
+        }
+
+        Result<CovenantExportAdmission> admission = await policy
+            .AcquireConditionalReadAsync(CovenantOperationScope.ForCampaign(id), ctx.RequestAborted)
+            .ConfigureAwait(false);
+
+        if (admission.IsFailure)
+        {
+
+            return Results.Json(
+                ApiResponse<CampaignExportDto>.FromResult(
+                    Result<CampaignExportDto>.Failure(admission.Error),
+                    traceId),
+                ArcanumJsonContext.Default.ApiResponseCampaignExportDto,
+                statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(admission.Error.Code));
+
+        }
+
+        ICovenantSnapshotReadLease? owned = admission.Value.ReadLease;
+
+        if (owned is null)
+        {
+
+            return await BuildCampaignExportAsync(
+                id,
+                exclusions: null,
+                repo,
+                promptRepo,
+                spellRepo,
+                ctx,
+                traceId).ConfigureAwait(false);
+
+        }
+
+        try
+        {
+
+            Result<CovenantCampaignExportExclusions> exclusions = await policy
+                .InventoryCampaignExclusionsAsync(id, owned, ctx.RequestAborted)
+                .ConfigureAwait(false);
+
+            Result<CampaignExportDto> result = exclusions.IsFailure
+                ? Result<CampaignExportDto>.Failure(exclusions.Error)
+                : await ComposeCampaignExportAsync(
+                    id,
+                    new CampaignExportExclusionsDto(
+                        exclusions.Value.CovenantEntryCount,
+                        exclusions.Value.TaintedArtifactCount),
+                    repo,
+                    promptRepo,
+                    spellRepo,
+                    ctx).ConfigureAwait(false);
+
+            IResult response = new CovenantProtectedJsonResult<CampaignExportDto>(
+                owned,
+                result,
+                ArcanumJsonContext.Default.ApiResponseCampaignExportDto);
+
+            owned = null;
+
+            return response;
+
+        }
+        finally
+        {
+
+            if (owned is not null)
+            {
+
+                await owned.DisposeAsync().ConfigureAwait(false);
+
+            }
+
+        }
+
+    }
+
+    private static async Task<IResult> BuildCampaignExportAsync(
+        Guid id,
+        CampaignExportExclusionsDto? exclusions,
+        ICampaignRepository repo,
+        IPromptRepository promptRepo,
+        ISpellRepository spellRepo,
+        HttpContext ctx,
+        string traceId)
+    {
+
+        Result<CampaignExportDto> result = await ComposeCampaignExportAsync(
+            id,
+            exclusions,
+            repo,
+            promptRepo,
+            spellRepo,
+            ctx).ConfigureAwait(false);
+
+        return result.IsSuccess
+            ? Results.Ok(ApiResponse<CampaignExportDto>.FromResult(result, traceId))
+            : Results.Json(
+                ApiResponse<CampaignExportDto>.FromResult(result, traceId),
+                ArcanumJsonContext.Default.ApiResponseCampaignExportDto,
+                statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+
+    }
+
+    /// <summary>
+    /// Composes the bundle itself: the Campaign's own settings, its non-builtin spells, and its
+    /// prompts. Deliberately the only place that reads any of them, so the protected and unprotected
+    /// arms cannot come to carry different content.
+    /// </summary>
+    private static async Task<Result<CampaignExportDto>> ComposeCampaignExportAsync(
+        Guid id,
+        CampaignExportExclusionsDto? exclusions,
+        ICampaignRepository repo,
+        IPromptRepository promptRepo,
+        ISpellRepository spellRepo,
+        HttpContext ctx)
+    {
+
+        Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+        if (campaign is null)
+        {
+
+            return Result<CampaignExportDto>.Failure(
+                new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
+
+        }
+
+        SpellSummary[] summaries = await spellRepo.ListAsync(campaign.Path, ctx.RequestAborted).ConfigureAwait(false);
+
+        var exportSpells = new List<CampaignExportSpellDto>();
+
+        foreach (SpellSummary summary in summaries)
+        {
+            if (summary.Source == SpellSource.Builtin)
+            {
+                continue;
+            }
+
+            SpellExportDto? exported = await spellRepo
+                .ExportAsync(summary.Name, campaign.Path, ctx.RequestAborted)
+                .ConfigureAwait(false);
+
+            if (exported is null)
+            {
+                continue;
+            }
+
+            string? spellJson = exported.Metadata is null
+                ? null
+                : JsonSerializer.Serialize(exported.Metadata, TheForgeJsonContext.Default.SkillMetadata);
+
+            exportSpells.Add(new CampaignExportSpellDto(
+                summary.Name,
+                spellJson,
+                exported.FullContent,
+                exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList()));
+        }
+
+        ListPageResult<Prompt> promptPage = await promptRepo
+            .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
+            .ConfigureAwait(false);
+
+        PromptExportDto[] promptExports = promptPage.Items.Select(PromptMapping.ToExportDto).ToArray();
+
+        return Result<CampaignExportDto>.Success(new CampaignExportDto(
+            CampaignPathPolicy.ToDto(campaign),
+            exportSpells,
+            promptExports,
+            exclusions));
+
     }
 
     private static IResult MapCampaignError(Error error, string traceId)

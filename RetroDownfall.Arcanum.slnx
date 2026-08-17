@@ -15,8 +15,11 @@
     <File Path="docs\Arcanum.DESIGN.md" />
     <File Path="docs\Arcanum.API.md" />
     <File Path="docs\Arcanum.Design.Human.md" />
+    <File Path="docs\Arcanum.Command.Reference.md" />
     <File Path="docs\Arcanum.DEBUGGING.Human.md" />
     <File Path="docs\Arcanum.CHAT-LOOP.md" />
+    <File Path="docs\Arcanum.OATH.md" />
+    <File Path="docs\ArcanumOATH.Human.md" />
     <File Path="docs\Compendium.README.md" />
   </Folder>
 
