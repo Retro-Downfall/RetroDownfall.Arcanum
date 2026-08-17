@@ -740,6 +740,11 @@ internal sealed class FakeCampaignPathMarkerLifecycle : ICampaignPathMarkerLifec
 
     internal Error? Failure { get; init; }
 
+    public Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Startup recovery never inventories destination roots.");
+
     public Task<Result<CampaignPathRestoreCleanupPreparationReceipt>> PrepareRestoreCleanupInStagedDatabaseAsync(
         CampaignPathRestoreCleanupPreparation preparation,
         Microsoft.Data.Sqlite.SqliteConnection stagedConnection,

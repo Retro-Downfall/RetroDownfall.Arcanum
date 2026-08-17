@@ -21,6 +21,23 @@ internal partial interface ICampaignPathMarkerLifecycle
 {
 
     /// <summary>
+    /// Opens every Campaign root this destination has registered, so a restore can see what it owes.
+    /// </summary>
+    /// <remarks>
+    /// The destination's own registry, never the archive's. A restored row describes a directory on
+    /// the machine the backup came from, and this inventory answers the opposite question: which roots
+    /// on <em>this</em> machine still carry a marker the replacement is about to invalidate.
+    ///
+    /// <para>A root that cannot be opened, or that answers with an identity the registry never indexed,
+    /// comes back as a blocked seed carrying evidence and no capability. Preparation refuses the whole
+    /// restore on one, because displacing the installation anyway would leave a marker claiming a
+    /// Campaign the restored installation does not own.</para>
+    /// </remarks>
+    Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Commits one restore-cleanup child per Campaign whose marker this restore must remove, inside
     /// the caller's staged core transaction.
     /// </summary>

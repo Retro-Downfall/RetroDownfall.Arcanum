@@ -435,6 +435,10 @@ public static class ServiceCollectionExtensions
                     // have always used.
                     SelectiveImport = ResolveSelectiveImport(serviceProvider),
 
+                    // Same rule for the full-restore arm: absent means this installation has never
+                    // held protected state, so there is nothing to reconcile and nothing to close.
+                    RestoreStaging = ResolveRestoreStaging(serviceProvider),
+
                 }));
 
         return services;
@@ -517,6 +521,60 @@ public static class ServiceCollectionExtensions
                 new ProtectedArtifactTransferStore(
                     CovenantSqliteConnectionInitializer.Instance,
                     serviceProvider.GetRequiredService<TimeProvider>()));
+
+    }
+
+    /// <summary>
+    /// Resolves the staged protected-state reconciliation path for a full restore.
+    /// </summary>
+    /// <remarks>
+    /// All five capabilities or none. A restore that held the gate but had no marker lifecycle would
+    /// close admission and then be unable to prove what it owed the Campaign roots it displaced, and a
+    /// restore that could publish an authenticated journal without an owner to put in it would name an
+    /// operation nothing holds. The anchor store and the identity provider are constructed here rather
+    /// than registered, for the same reason the startup recovery composes its own: the credential
+    /// accounts they own are namespaced to one profile root, and a container-wide singleton bound to
+    /// <c>ArcanumPaths</c> could not honour a bootstrap that was handed a different one.
+    /// </remarks>
+    private static CovenantRestoreStagingServices? ResolveRestoreStaging(IServiceProvider serviceProvider)
+    {
+
+        bool enabled = serviceProvider
+            .GetService<IOptionsMonitor<ArcanumSettings>>()?
+            .CurrentValue.Features.Covenant
+            ?? false;
+
+        if (!enabled)
+        {
+
+            return null;
+
+        }
+
+        ICovenantOperationGate? gate = serviceProvider.GetService<ICovenantOperationGate>();
+
+        ICampaignPathMarkerLifecycle? markers = serviceProvider.GetService<ICampaignPathMarkerLifecycle>();
+
+        IOsCredentialStore? credentials = serviceProvider.GetService<IOsCredentialStore>();
+
+        if (gate is null || markers is null || credentials is null)
+        {
+
+            return null;
+
+        }
+
+        BackupRestoreJournalInstallationIdentityProvider identities = new(credentials);
+
+        BackupRestoreJournalKeyProvider keys = new(credentials);
+
+        return new CovenantRestoreStagingServices(
+            gate,
+            markers,
+            new BackupRestoreJournalAnchorStore(credentials, keys, identities),
+            identities,
+            keys,
+            new BackupRestoreEffectDigestCalculator());
 
     }
 
