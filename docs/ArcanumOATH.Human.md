@@ -1,18 +1,12 @@
 # OATH: A Human Guide to Arcanum's Memory Architecture
 
-> **The short version:** OATH is Arcanum's promise that a memory cannot gain power merely because
-> it was copied, summarized, retrieved often, or stated confidently.
+> **The short version:** OATH is Arcanum's promise that a memory cannot gain power merely because it was copied, summarized, retrieved often, or stated confidently.
 >
-> OATH stands for **Origin-Bound, Authority-Conserving Transactional History**. Its central rule is:
-> **Memory cannot outrank its origin.**
+> OATH stands for **Origin-Bound, Authority-Conserving Transactional History**. Its central rule is: **Memory cannot outrank its origin.**
 >
-> This is the approachable guide. [`Arcanum.OATH.md`](Arcanum.OATH.md) provides the complete
-> technical explanation and source map. The broader shipped design remains authoritative in
-> [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md).
+> This is the approachable guide. [`Arcanum.OATH.md`](Arcanum.OATH.md) provides the complete technical explanation and source map. The broader shipped design remains authoritative in [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md).
 >
-> **Branch parity.** This guide and [`Arcanum.OATH.md`](Arcanum.OATH.md) are kept byte-identical on
-> `main` and `long-term-memory`. The implementation they describe still lives only on
-> `long-term-memory`; section 11 is the boundary.
+> **Branch parity.** This guide and [`Arcanum.OATH.md`](Arcanum.OATH.md) are kept byte-identical on `main` and `long-term-memory`. The implementation they describe still lives only on `long-term-memory`; section 11 is the boundary.
 
 ---
 
@@ -28,18 +22,11 @@ Consider these three sentences:
 
 The words may be identical, but their authority is not.
 
-OATH preserves that difference. Every durable memory travels with its papers: where it came from,
-who authorized it, where it may apply, which version is current, what sensitive information it
-contains, and what later artifacts were derived from it.
+OATH preserves that difference. Every durable memory travels with its papers: where it came from, who authorized it, where it may apply, which version is current, what sensitive information it contains, and what later artifacts were derived from it.
 
-A memory may become shorter, easier to find, or more useful. It may not quietly become more
-powerful.
+A memory may become shorter, easier to find, or more useful. It may not quietly become more powerful.
 
-OATH is not one database or one feature. It is the shared set of rules that governs Arcanum's memory
-systems. The **Covenant** is the subsystem that supplies the governed claim and authority foundation.
-The **Grimoire** stores encrypted records. The **Lexicon**, **Saga**, **Tapestry**, **Weave**, Session
-history, and future **Long Rest** each serve different memory roles. OATH controls what happens when
-information crosses between them.
+OATH is not one database or one feature. It is the shared set of rules that governs Arcanum's memory systems. The **Covenant** is the subsystem that supplies the governed claim and authority foundation. The **Grimoire** stores encrypted records. The **Lexicon**, **Saga**, **Tapestry**, **Weave**, Session history, and future **Long Rest** each serve different memory roles. OATH controls what happens when information crosses between them.
 
 ## 2. Why AI memory needs rules
 
@@ -72,24 +59,19 @@ Without stronger rules, familiar failures appear:
 
 OATH treats these as architecture problems, not prompt-writing problems.
 
-A **Campaign** is Arcanum's persistent authority scope for one body of work. It may reference a
-verified Workspace root, but a Campaign and a Workspace are not the same thing.
+A **Campaign** is Arcanum's persistent authority scope for one body of work. It may reference a verified Workspace root, but a Campaign and a Workspace are not the same thing.
 
 ## 3. Follow one memory through OATH
 
-Suppose an agent reads a versioned design note attached to a Session inside the **Northstar
-Campaign** and infers:
+Suppose an agent reads a versioned design note attached to a Session inside the **Northstar Campaign** and infers:
 
 > Billing data is stored in PostgreSQL.
 
-This example explains the target OATH integration. Most of the machinery below is built and tested,
-but none of it is reachable from a live turn yet, and the feature is off by default. Section 11
-explains that boundary.
+This example explains the target OATH integration. Most of the machinery below is built and tested, but none of it is reachable from a live turn yet, and the feature is off by default. Section 11 explains that boundary.
 
 ### 3.1 It begins as a source-bound proposal
 
-The agent did not receive permission to declare a universal fact. It may create a **Proposed**
-Campaign memory, but that proposal remains bound to:
+The agent did not receive permission to declare a universal fact. It may create a **Proposed** Campaign memory, but that proposal remains bound to:
 
 - the Northstar Campaign;
 - the source attachment and its exact version or materialized range;
@@ -98,26 +80,19 @@ Campaign memory, but that proposal remains bound to:
 - the content's sensitivity;
 - an immutable revision and content identity.
 
-The text itself cannot ask for Global scope, Confirmed status, tool access, or a weaker sensitivity
-label. Those properties come from platform policy and authenticated authority, not from model
-output.
+The text itself cannot ask for Global scope, Confirmed status, tool access, or a weaker sensitivity label. Those properties come from platform policy and authenticated authority, not from model output.
 
 ### 3.2 It publishes only with the answer that produced it
 
-During the model and tool loop, the proposal remains in temporary turn-local storage. It is not yet
-canonical memory.
+During the model and tool loop, the proposal remains in temporary turn-local storage. It is not yet canonical memory.
 
-If the assistant turn succeeds, Arcanum publishes the final assistant entry and its staged memory
-mutation together in one local transaction. If the turn fails, is cancelled, loses a race, or its
-branch is abandoned, neither side is published.
+If the assistant turn succeeds, Arcanum publishes the final assistant entry and its staged memory mutation together in one local transaction. If the turn fails, is cancelled, loses a race, or its branch is abandoned, neither side is published.
 
 This prevents a failed answer from leaving behind a successful-looking memory.
 
 ### 3.3 Seeing it again does not increase its authority
 
-On a later Northstar turn, Covenant can load the current scoped proposal directly. Its inspection
-index may also find it for an operator. Elsewhere in OATH, embeddings, the Lexicon, the Saga, and
-other discovery systems return candidates from their own stores.
+On a later Northstar turn, Covenant can load the current scoped proposal directly. Its inspection index may also find it for an operator. Elsewhere in OATH, embeddings, the Lexicon, the Saga, and other discovery systems return candidates from their own stores.
 
 Being loaded or discovered does not increase authority. OATH still checks:
 
@@ -132,46 +107,29 @@ Discovery answers "What might be relevant?" OATH answers "What is this candidate
 
 ### 3.4 It reaches the model as fenced data
 
-If the proposal is eligible and fits, it enters a clearly marked **DATA** section. It does not enter
-the operator-authorized **CONTEXT** section and cannot grant tool permission.
+If the proposal is eligible and fits, it enters a clearly marked **DATA** section. It does not enter the operator-authorized **CONTEXT** section and cannot grant tool permission.
 
-If context becomes tight, Proposed material is the first OATH tier removed. Arcanum does not keep an
-arbitrary middle selection. It admits a deterministic prefix so the same inputs produce the same
-decision.
+If context becomes tight, Proposed material is the first OATH tier removed. Arcanum does not keep an arbitrary middle selection. It admits a deterministic prefix so the same inputs produce the same decision.
 
 ### 3.5 An operator action creates a separate Confirmed claim
 
-Later, an authenticated operator may verify the architecture and independently set a matching
-Confirmed claim.
+Later, an authenticated operator may verify the architecture and independently set a matching Confirmed claim.
 
-OATH does not rewrite the old proposal to pretend it was always authoritative. The operator action
-creates a new immutable Confirmed version and receipt. The earlier proposal and its lineage remain
-part of history. A streamlined review-and-confirm curation workflow is planned later, but it must
-preserve this same separation.
+OATH does not rewrite the old proposal to pretend it was always authoritative. The operator action creates a new immutable Confirmed version and receipt. The earlier proposal and its lineage remain part of history. A streamlined review-and-confirm curation workflow is planned later, but it must preserve this same separation.
 
-Even then, **Confirmed does not mean objectively true**. It means operator-authorized for the stated
-scope and revision.
+Even then, **Confirmed does not mean objectively true**. It means operator-authorized for the stated scope and revision.
 
 ### 3.6 Summaries inherit the source's constraints
 
-Suppose the confirmed fact contributes to a Session summary or, in the future, a Campaign rollup.
-The shorter text does not become source-free. The derivative keeps lineage to every contributor and
-conservatively inherits their sensitivity. Tapestry is not a destination for protected
-Covenant-derived content.
+Suppose the confirmed fact contributes to a Session summary or, in the future, a Campaign rollup. The shorter text does not become source-free. The derivative keeps lineage to every contributor and conservatively inherits their sensitivity. Tapestry is not a destination for protected Covenant-derived content.
 
-If several sources contribute, the result cannot be more authoritative than its least-authorized
-source, cannot apply outside their permitted scope, and cannot use a sensitivity lower than the
-most sensitive contributor.
+If several sources contribute, the result cannot be more authoritative than its least-authorized source, cannot apply outside their permitted scope, and cannot use a sensitivity lower than the most sensitive contributor.
 
 ### 3.7 Correction, retirement, and erasure remain distinct
 
-If Northstar later moves billing to another database, correction creates another immutable version.
-Retirement adds a tombstone so the old claim stops participating in current turns without erasing
-the fact that it once existed.
+If Northstar later moves billing to another database, correction creates another immutable version. Retirement adds a tombstone so the old claim stops participating in current turns without erasing the fact that it once existed.
 
-Erasure is a separate operation. It follows the owned dependency chain through labels, summaries,
-indexes, embeddings, and managed files. It can remove Arcanum's local copies when identity checks
-succeed. It cannot recall bytes already sent to an external provider or recipient.
+Erasure is a separate operation. It follows the owned dependency chain through labels, summaries, indexes, embeddings, and managed files. It can remove Arcanum's local copies when identity checks succeed. It cannot recall bytes already sent to an external provider or recipient.
 
 ```mermaid
 flowchart LR
@@ -191,20 +149,15 @@ flowchart LR
 
 ### 4.1 Origin-Bound: every memory travels with its papers
 
-Origin is more than a source URL. Depending on the memory, it can include a Session, Campaign,
-attachment version, byte range, producing turn, model attempt, source revision, content digest, or
-transformation receipt.
+Origin is more than a source URL. Depending on the memory, it can include a Session, Campaign, attachment version, byte range, producing turn, model attempt, source revision, content digest, or transformation receipt.
 
-OATH keeps this evidence immutable. Deleting a source may make it unavailable, but it does not
-rewrite surviving history so that a derivative appears to have no source.
+OATH keeps this evidence immutable. Deleting a source may make it unavailable, but it does not rewrite surviving history so that a derivative appears to have no source.
 
-If origin evidence is missing or malformed, the safe result is refusal, quarantine, repair, or
-erasure. Arcanum does not guess.
+If origin evidence is missing or malformed, the safe result is refusal, quarantine, repair, or erasure. Arcanum does not guess.
 
 ### 4.2 Authority-Conserving: processing cannot promote information
 
-Summarization, extraction, translation, ranking, repetition, and model confidence do not create
-authority.
+Summarization, extraction, translation, ranking, repetition, and model confidence do not create authority.
 
 An ordinary transformation may narrow what a memory can do. It may not:
 
@@ -216,38 +169,27 @@ An ordinary transformation may narrow what a memory can do. It may not:
 - grant access to a tool;
 - make a retired revision active again.
 
-An authority increase is possible only through a new authenticated action, such as an operator
-confirmation. That action creates a new durable claim and receipt. It is not a hidden side effect of
-processing the old claim.
+An authority increase is possible only through a new authenticated action, such as an operator confirmation. That action creates a new durable claim and receipt. It is not a hidden side effect of processing the old claim.
 
 ### 4.3 Transactional: related local results appear together
 
-Within the Grimoire, OATH uses local transactions, immutable versions, guarded current pointers, and
-idempotency receipts. The key rule for an agent turn is simple:
+Within the Grimoire, OATH uses local transactions, immutable versions, guarded current pointers, and idempotency receipts. The key rule for an agent turn is simple:
 
 > The assistant result and its staged memory changes publish together, or neither publishes.
 
-This does not make the internet transactional. A provider call, tool process, filesystem rename, or
-message cannot be rolled back by SQLite.
+This does not make the internet transactional. A provider call, tool process, filesystem rename, or message cannot be rolled back by SQLite.
 
-For those effects, OATH records authorization before disclosure, freezes exact effect identities,
-uses idempotent operations where possible, and writes recovery journals around irreversible
-boundaries. Transactional therefore means atomic local publication plus evidence-backed recovery,
-not a magical distributed transaction.
+For those effects, OATH records authorization before disclosure, freezes exact effect identities, uses idempotent operations where possible, and writes recovery journals around irreversible boundaries. Transactional therefore means atomic local publication plus evidence-backed recovery, not a magical distributed transaction.
 
 ### 4.4 History: correction adds a revision
 
 OATH treats current state as a view over history, not as one mutable truth slot.
 
-Claims have immutable versions. Retirements are tombstones. Dataset generations make a reset or
-restore a hard boundary. Receipts distinguish a replay from a different request. Derived artifacts
-bind the source revisions from which they were produced.
+Claims have immutable versions. Retirements are tombstones. Dataset generations make a reset or restore a hard boundary. Receipts distinguish a replay from a different request. Derived artifacts bind the source revisions from which they were produced.
 
-This avoids a dangerous pattern in which a record changes while retaining the same identity, making
-old work appear current. It also lets an operator see how a memory changed and why.
+This avoids a dangerous pattern in which a record changes while retaining the same identity, making old work appear current. It also lets an operator see how a memory changed and why.
 
-OATH is ready to grow into full bitemporal memory, where transaction time and real-world valid time
-are separate. That full valid-time model is roadmap work, not a claim about today's implementation.
+OATH is ready to grow into full bitemporal memory, where transaction time and real-world valid time are separate. That full valid-time model is roadmap work, not a claim about today's implementation.
 
 ## 5. Confirmed and Proposed are deliberately different
 
@@ -264,9 +206,7 @@ The Covenant has two independent authority lanes.
 | What happens under context pressure? | It is not selectively evicted; after optional material is exhausted, failure is safer than silent omission | It is the first OATH material removed, using deterministic prefix admission |
 | Is it guaranteed true? | No | No |
 
-Keeping the lanes independent matters. An agent can propose a correction without erasing or
-silently replacing an operator's current instruction. An operator can inspect both and create a new
-Confirmed revision if appropriate.
+Keeping the lanes independent matters. An agent can propose a correction without erasing or silently replacing an operator's current instruction. An operator can inspect both and create a new Confirmed revision if appropriate.
 
 ## 6. The five decisions OATH keeps separate
 
@@ -278,50 +218,33 @@ A single memory can receive five different answers:
 4. **Admission:** Does it fit in this exact provider request?
 5. **Authority:** What is it allowed to mean?
 
-For example, the Northstar proposal may be retained and easy to discover, yet ineligible in another
-Campaign. It may be eligible in Northstar but excluded from one small-context provider attempt. If
-admitted, it still remains Proposed data.
+For example, the Northstar proposal may be retained and easy to discover, yet ineligible in another Campaign. It may be eligible in Northstar but excluded from one small-context provider attempt. If admitted, it still remains Proposed data.
 
 This separation prevents ranking scores from becoming security decisions.
 
 ### 6.1 One stable plan per logical turn
 
-At the start of an eligible top-level turn, Arcanum reads one bounded Covenant snapshot and builds
-one stable Covenant plan. Retries, tool continuations, fallbacks, and compression steps reuse that
-logical plan. Session history and other memory systems remain separately governed inputs rather
-than part of one cross-store snapshot.
+At the start of an eligible top-level turn, Arcanum reads one bounded Covenant snapshot and builds one stable Covenant plan. Retries, tool continuations, fallbacks, and compression steps reuse that logical plan. Session history and other memory systems remain separately governed inputs rather than part of one cross-store snapshot.
 
-Each actual model call measures its concrete model, prompt, tools, and context budget. Arcanum
-freezes the exact request and records what fit. A call that will send protected material also gets
-the required disclosure evidence; an unprotected call does no disclosure work.
+Each actual model call measures its concrete model, prompt, tools, and context budget. Arcanum freezes the exact request and records what fit. A call that will send protected material also gets the required disclosure evidence; an unprotected call does no disclosure work.
 
 This means a retry cannot silently pick up a memory that changed halfway through the turn.
 
 ### 6.2 Clean disabled calls remain clean and cheap
 
-When Covenant injection is disabled and the Session has no protected Covenant history, the ordinary
-history path does no optional Covenant work. It produces no Covenant prompt bytes and no Covenant
-tools, and the resulting prompt is byte-for-byte what it was before any of this existed. That is a
-tested guarantee rather than an intention.
+When Covenant injection is disabled and the Session has no protected Covenant history, the ordinary history path does no optional Covenant work. It produces no Covenant prompt bytes and no Covenant tools, and the resulting prompt is byte-for-byte what it was before any of this existed. That is a tested guarantee rather than an intention.
 
-Disabling future injection does not erase history. If a Session already contains protected
-Covenant-derived material, its reads and derivatives remain protected even while the feature is
-disabled.
+Disabling future injection does not erase history. If a Session already contains protected Covenant-derived material, its reads and derivatives remain protected even while the feature is disabled.
 
 ### 6.3 Protected disclosure is acknowledged before sending
 
-Before protected material leaves Arcanum for a provider, external MCP server, process, network
-destination, message sink, or another content-bearing external effect, the system durably
-acknowledges the disclosure identity. Some effects also require an attended **Ward**, which is
-Arcanum's explicit operator approval boundary for sensitive or dangerous work.
+Before protected material leaves Arcanum for a provider, external MCP server, process, network destination, message sink, or another content-bearing external effect, the system durably acknowledges the disclosure identity. Some effects also require an attended **Ward**, which is Arcanum's explicit operator approval boundary for sensitive or dangerous work.
 
-The receipt does not make disclosure reversible. It makes the decision visible, ordered, and
-recoverable.
+The receipt does not make disclosure reversible. It makes the decision visible, ordered, and recoverable.
 
 ## 7. How Arcanum's memory systems fit together
 
-OATH does not replace Arcanum's existing memory systems or force them into one table. Each system
-has a different job.
+OATH does not replace Arcanum's existing memory systems or force them into one table. Each system has a different job.
 
 | System | Plain-language role | OATH boundary |
 |---|---|---|
@@ -356,8 +279,7 @@ The useful shorthand is:
 
 Sensitivity is attached to information flow, not just to the table where bytes first appeared.
 
-If protected Session history contributes to a summary, title, fact, embedding, file, notification,
-or log projection, the result must either:
+If protected Session history contributes to a summary, title, fact, embedding, file, notification, or log projection, the result must either:
 
 - carry the combined sensitivity and lineage;
 - use a deliberately content-free projection;
@@ -365,21 +287,15 @@ or log projection, the result must either:
 - leave through the required attended Ward and acknowledged disclosure when policy permits; or
 - be refused.
 
-The model is not allowed to label its own output as less sensitive than its inputs. Multiple inputs
-combine conservatively.
+The model is not allowed to label its own output as less sensitive than its inputs. Multiple inputs combine conservatively.
 
 ### 8.1 Local and external effects are different
 
-Arcanum deletes database records through transactional ownership, revision, and dependency checks.
-For a managed file, it also proves that the file is still the physical object it created. A file
-identity or content mismatch becomes a manual blocker rather than permission to delete an unknown
-replacement.
+Arcanum deletes database records through transactional ownership, revision, and dependency checks. For a managed file, it also proves that the file is still the physical object it created. A file identity or content mismatch becomes a manual blocker rather than permission to delete an unknown replacement.
 
-An external disclosure is different. Provider logs, recipient messages, unmanaged filesystem
-copies, caches, and backups may outlive Arcanum's local record.
+An external disclosure is different. Provider logs, recipient messages, unmanaged filesystem copies, caches, and backups may outlive Arcanum's local record.
 
-OATH records those effects as nonrevocable. A reset may remove local protected material, but it must
-not claim that a provider or recipient forgot it.
+OATH records those effects as nonrevocable. A reset may remove local protected material, but it must not claim that a provider or recipient forgot it.
 
 ## 9. Correct, retire, reset, and erase mean different things
 
@@ -394,41 +310,28 @@ These words describe separate operations:
 | **Reset** | Removes a governed local memory family and its owned local derivatives | Does not revoke past external disclosure |
 | **Erase** | Traverses a specific owned dependency closure and proves local deletion outcomes | Does not delete bytes whose current identity cannot be proven |
 
-A restored database gets a fresh generation identity. That makes old work, old leases, and stale
-current pointers unable to masquerade as current after replacement.
+A restored database gets a fresh generation identity. That makes old work, old leases, and stale current pointers unable to masquerade as current after replacement.
 
-Restoring an archive that carries governed memory is not something that happens by default. Putting that
-memory back is a decision only the operator can make, so the restore refuses until they make it
-explicitly — and refuses to keep it at all if the machine the backup came from could not prove it had
-never been exposed to unsandboxed tools. From there the only way forward is to say, explicitly, that the
-memory should be destroyed, which happens in the staged copy before anything is replaced. Either answer
-is asked for on its own, after the operator has been told what local deletion cannot reach and how much
-has already left.
+Restoring an archive that carries governed memory is not something that happens by default. Putting that memory back is a decision only the operator can make, so the restore refuses until they make it explicitly — and refuses to keep it at all if the machine the backup came from could not prove it had never been exposed to unsandboxed tools. From there the only way forward is to say, explicitly, that the memory should be destroyed, which happens in the staged copy before anything is replaced. Either answer is asked for on its own, after the operator has been told what local deletion cannot reach and how much has already left.
 
 ## 10. What happens when something goes wrong
 
 OATH fails closed when the missing fact is about authority rather than convenience.
 
 - Missing or malformed origin evidence leads to refusal, quarantine, repair, or erasure.
-- A broken full-text or vector index may reduce discovery quality, but it cannot become a substitute
-  canonical source.
-- If required Confirmed context cannot fit after evictable material is exhausted, the call fails
-  rather than quietly omitting operator-authorized context.
+- A broken full-text or vector index may reduce discovery quality, but it cannot become a substitute canonical source.
+- If required Confirmed context cannot fit after evictable material is exhausted, the call fails rather than quietly omitting operator-authorized context.
 - A stale generation cannot disclose protected bytes or commit a late result.
 - A failed or abandoned agent branch publishes no staged proposal.
-- Uncertain external dispatch preserves disclosure evidence and uses a new physical attempt identity
-  for any retry.
-- Destructive work closes the affected scope, waits for existing work to finish, and keeps it closed
-  until the journaled operation completes or recovery safely resumes that exact operation.
+- Uncertain external dispatch preserves disclosure evidence and uses a new physical attempt identity for any retry.
+- Destructive work closes the affected scope, waits for existing work to finish, and keeps it closed until the journaled operation completes or recovery safely resumes that exact operation.
 - A file identity or hash mismatch leaves the bytes untouched and reports a manual blocker.
 
 These rules favor an explicit unavailable state over a plausible but unauthorized result.
 
 ### 10.1 Recovery cannot invent authority
 
-Before crossing a dangerous boundary, an operation records who owns it, what exact effect it intends,
-which scope it affects, and how far it has safely progressed. On restart, recovery may resume only
-that recorded operation.
+Before crossing a dangerous boundary, an operation records who owns it, what exact effect it intends, which scope it affects, and how far it has safely progressed. On restart, recovery may resume only that recorded operation.
 
 The operation eventually chooses one outcome:
 
@@ -442,8 +345,7 @@ This prevents a restart from treating half-finished work as permission for a dif
 
 **Status as of 2026-08-17**, on the `long-term-memory` branch.
 
-OATH describes a combination of built foundations and approved target architecture. It is not yet
-reachable end to end, and **the feature is off by default**.
+OATH describes a combination of built foundations and approved target architecture. It is not yet reachable end to end, and **the feature is off by default**.
 
 | Stage | Human summary |
 |---|---|
@@ -452,14 +354,9 @@ reachable end to end, and **the feature is off by default**.
 | **Not yet reachable** | Nothing above is wired to a route, a command, or a live turn. The plumbing exists and is tested; the taps are not connected, and no configuration key turns it on for real work yet. |
 | **Later evolution** | Campaign-scoped retrieval, a genuine Campaign rollup so a new session resumes warm, the Long Rest consolidation sweep, operator curation across every store, counterfactual usefulness evaluation, scoped agent recall, cacheable context, typed operational defaults, least-authority subagent capsules, and full bitemporal dependency-aware claims. |
 
-One practical caveat worth knowing: the shipping build targets `osx-arm64`, `win-x64`, and
-`win-arm64`. Only the macOS native asset is verified today; the two Windows assets are absent, and
-those builds intentionally fail rather than quietly falling back to a system library.
+One practical caveat worth knowing: the shipping build targets `osx-arm64`, `win-x64`, and `win-arm64`. Only the macOS native asset is verified today; the two Windows assets are absent, and those builds intentionally fail rather than quietly falling back to a system library.
 
-The formal [OATH architecture](Arcanum.OATH.md) carries the precise per-issue status and dependency
-map. The important practical distinction is this: the rules described here are the approved
-architecture, and most of the machinery now exists, but nothing in the current executable turns it
-on.
+The formal [OATH architecture](Arcanum.OATH.md) carries the precise per-issue status and dependency map. The important practical distinction is this: the rules described here are the approved architecture, and most of the machinery now exists, but nothing in the current executable turns it on.
 
 ## 12. What OATH does not claim
 
@@ -468,25 +365,16 @@ Clear boundaries make the architecture more useful.
 OATH is not:
 
 - **A truth oracle.** Confirmed means operator-authorized, not objectively correct.
-- **Automatic promotion.** A model cannot make a proposal authoritative through confidence,
-  repetition, summarization, or retrieval frequency.
-- **One universal memory database.** Arcanum keeps distinct stores and projections with distinct
-  roles.
-- **A blockchain.** Digests and receipts provide local canonical identity and evidence, not public
-  consensus.
-- **A distributed transaction.** Local publication can be atomic; provider and filesystem effects
-  require receipts and recovery.
-- **Remote erasure.** Arcanum cannot reliably delete provider logs, recipient copies, caches, or
-  unmanaged backups.
-- **Full bitemporal reasoning today.** Immutable history and generations exist as foundations; full
-  valid-time semantics remain planned.
-- **Ambient subagent access.** Subagents, daemons, batches, and unattended work receive no protected
-  memory by default. Future delegation must use explicit least-authority capsules.
-- **Perfect operating-system isolation.** Same-user native code and explicitly trusted external
-  tools remain part of the installation's trust boundary.
+- **Automatic promotion.** A model cannot make a proposal authoritative through confidence, repetition, summarization, or retrieval frequency.
+- **One universal memory database.** Arcanum keeps distinct stores and projections with distinct roles.
+- **A blockchain.** Digests and receipts provide local canonical identity and evidence, not public consensus.
+- **A distributed transaction.** Local publication can be atomic; provider and filesystem effects require receipts and recovery.
+- **Remote erasure.** Arcanum cannot reliably delete provider logs, recipient copies, caches, or unmanaged backups.
+- **Full bitemporal reasoning today.** Immutable history and generations exist as foundations; full valid-time semantics remain planned.
+- **Ambient subagent access.** Subagents, daemons, batches, and unattended work receive no protected memory by default. Future delegation must use explicit least-authority capsules.
+- **Perfect operating-system isolation.** Same-user native code and explicitly trusted external tools remain part of the installation's trust boundary.
 
-OATH does permit authority to become narrower. It also permits an authenticated operator to create
-a new, more authoritative claim. It forbids hidden amplification by the memory pipeline itself.
+OATH does permit authority to become narrower. It also permits an authenticated operator to create a new, more authoritative claim. It forbids hidden amplification by the memory pipeline itself.
 
 ## 13. Plain-language glossary
 
@@ -511,16 +399,11 @@ a new, more authoritative claim. It forbids hidden amplification by the memory p
 
 ## 14. Where to go next
 
-- Read [`Arcanum.OATH.md`](Arcanum.OATH.md) for the complete technical architecture, invariants,
-  implementation layers, recovery contracts, verification model, and source map.
-- Read [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for the authoritative shipped architecture and
-  persistence design.
-- Read [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for a wider plain-language tour of the
-  entire Arcanum system.
-- Read [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md) for the detailed shared model and tool loop that
-  OATH's runtime rules extend.
+- Read [`Arcanum.OATH.md`](Arcanum.OATH.md) for the complete technical architecture, invariants, implementation layers, recovery contracts, verification model, and source map.
+- Read [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for the authoritative shipped architecture and persistence design.
+- Read [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for a wider plain-language tour of the entire Arcanum system.
+- Read [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md) for the detailed shared model and tool loop that OATH's runtime rules extend.
 
 The idea to carry forward is simple:
 
-> Every memory travels with its papers. Search may make it easier to find. A model may make it
-> shorter or more useful. Only authenticated authority can make a new claim more powerful.
+> Every memory travels with its papers. Search may make it easier to find. A model may make it shorter or more useful. Only authenticated authority can make a new claim more powerful.
