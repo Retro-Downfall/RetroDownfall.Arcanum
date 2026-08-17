@@ -1,10 +1,8 @@
 # OATH: Origin-Bound, Authority-Conserving Transactional History
 
 > **Focused architecture companion.** OATH is the formal name for Arcanum's governed durable-memory
-> architecture. Its core law is: **Memory cannot outrank its origin.**
->
-> For a shorter narrative introduction, start with
-> [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md).
+> architecture — the thing the `long-term-memory` branch is building. Its core law is:
+> **Memory cannot outrank its origin.**
 >
 > [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) remains authoritative for shipped architecture,
 > persistence, runtime behavior, and testing. [`Arcanum.API.md`](Arcanum.API.md),
@@ -19,6 +17,17 @@
 **Design thesis:** a memory system is safe only when every retained claim, derivative, retrieval,
 provider call, mutation, and disclosure remains bound to its origin, authority, scope, sensitivity,
 revision history, and evidence of use.
+
+**Document status:** current as of **2026-08-17**, reconciled against the `long-term-memory` branch
+at `c83308d6`, the approved Covenant specification and Plans 01–05, and GitHub issues #73–#115.
+
+**Branch parity.** This document and its companion
+[`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and
+`long-term-memory`**, so either branch can be read as the current architecture. The implementation
+they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.19.11), and the specification
+and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those
+links. Update the pair on whichever branch you are on, then mirror the change to the other in the
+same commit range.
 
 ---
 
@@ -45,13 +54,13 @@ OATH is a cross-cutting architecture, not one database table and not a replaceme
 memory subsystem. The existing fantasy vocabulary remains intact:
 
 - **The Grimoire** is the encrypted persistence and transaction substrate.
-- **The Covenant** is OATH's governed claim and authority substrate.
+- **The Covenant** is OATH's governed claim and authority substrate (issue #74).
 - **The Lexicon** is explicit entity and fact memory.
 - **The Saga** is extracted associative memory.
 - **The Tapestry** is a rebuildable hierarchy of derived summaries.
 - **The Weave** and **Divination** provide embeddings, ranking, and discovery.
-- **Session history**, summaries, and future Campaign rollups provide episodic and compiled context.
-- **Long Rest** will govern later consolidation, reinforcement, decay, and supersession.
+- **Session history**, summaries, and Campaign rollups (issue #77) provide episodic and compiled context.
+- **The Long Rest** (issue #75) governs consolidation, reinforcement, decay, and supersession.
 
 OATH supplies the rules that those systems must obey when content crosses between them.
 
@@ -60,37 +69,76 @@ OATH supplies the rules that those systems must obey when content crosses betwee
 OATH spans implemented foundations, active implementation work, approved target contracts, and
 explicit research extensions. These categories must not be conflated.
 
-| Status as of 2026-08-15 | Scope |
-|---|---|
-| **Implemented and landed** | Issue #79 delivered the pure-Core Covenant vocabulary, Unicode-safe compiler, canonical encoding and JSON, domain-separated digests, evidence chains, sensitivity/provenance algebra, pure linker, and admission contracts. |
-| **Foundation landed; RID closure pending** | Issue #80 delivered the hermetic SQLCipher 4.17 runtime code, central SQLite initialization and authorization functions, runtime validation, native provenance, and build/package enforcement. The shipping matrix is `osx-arm64`, `win-x64`, and `win-arm64`, with no fallback. The macOS asset is currently verified; both Windows manifest records remain `pending`, their binaries are absent, and those RIDs intentionally fail the build until their verification workflow supplies accepted assets. |
-| **Implemented and landed** | Issue #81 delivered the schema-family and transaction-tier catalogs, the always-present core support tables, both Covenant tiers, closed installed-catalog manifests, the three-transaction installer, and `ICovenantAvailability` health publication. |
-| **Implemented and landed** | Issue #82 delivered the generation-bound operation gate and its lease vocabulary, the bounded canonical store, the transactional mutation kernel and replay ledger, canonical and turn-capacity quotas, bounded turn-evidence folding, owner-deletion catch-up, the FTS query compiler and cursor bodies, the eligible search index with its bounded canonical fallback, whole-sequence outbox synchronization, and the resumable base rebuild. These are registered but not yet reachable from any public surface. |
-| **In progress** | Issue #83 establishes invocation authority and Campaign binding on top of that persistence boundary. It is not described here as completed until its own verification and integration gate lands. |
-| **Approved and specified** | Canonical persistence, generation-bound operation leases, runtime authority, provider-call freezing, transactional publication, protected derivatives, API and CLI surfaces, backup/restore, retention, reset, erasure, and full verification are defined by the Covenant specification and Plans 01 through 05. |
-| **Roadmap extension** | Long Rest policy, Campaign-scoped retrieval, Campaign rollups, operator curation, counterfactual evaluation, least-authority delegation capsules, and full bitemporal/dependency-aware claims extend OATH after the Covenant foundation. |
+### 2.1 What has landed on `long-term-memory`
+
+| Issue | State | Delivered |
+|---|---|---|
+| **#79** | Landed | Pure-Core Covenant vocabulary, Unicode-safe compiler, canonical encoding and JSON, domain-separated digests, evidence chains, sensitivity/provenance algebra, pure linker, admission contracts. |
+| **#80** | Landed; RID closure pending | Hermetic SQLCipher 4.17 runtime, central SQLite initialization and authorization functions, runtime validation, native provenance, build/package enforcement. |
+| **#81** | Landed | Schema-family and transaction-tier catalogs, always-present core support tables, both Covenant tiers, closed installed-catalog manifests, three-transaction installer, `ICovenantAvailability` health publication. |
+| **#82** | Landed | Generation-bound operation gate and lease vocabulary, bounded canonical store, transactional mutation kernel and replay ledger, canonical and turn-capacity quotas, bounded turn-evidence folding, owner-deletion catch-up, FTS query compiler and cursor bodies, eligible search index with bounded canonical fallback, whole-sequence outbox synchronization, resumable base rebuild. |
+| **#83** | Landed | Non-serializable `ArcanumInvocationContext` at every inference seam, six-purpose AES-256-GCM envelope protocol and keyed diagnostic tag, `OperatorAuthorityContextIssuer`, canonical Campaign resolution by keyed physical directory identity (replacing `PingRequestResolver`), assistant-begin path honoring the immutable Session binding. |
+| **#84** | Landed | Deterministic Confirmed and fenced Proposed placement in `SystemPromptBuilder`, Core-owned `SystemPromptAttributionMap`, two new `ContextTokenSource` lanes, `ICovenantContextProvider`, `CovenantAdmissionPlanner`, `ICovenantDisclosureJournal`, `ICovenantMutationCollector`, `IGrimoireTurnCommitter`. |
+| **#85** | Landed | `ProviderToolCallBuffer`, `CovenantToolInvocationContext` and `CovenantToolCapabilityRegistry`, `CovenantEgressWardPolicy`, `CovenantToolEgressGuard`, and the hand-authored `propose_covenant` / `retire_covenant` tools — registered inert. |
+| **#86** | Landed | `ArtifactSensitivityLedger`, `DerivedArtifactWrite`, `SessionDerivedArtifactStore`, `ProtectedAssistantArtifactReader`, `CovenantProtectedLogScope`, `CovenantDerivedOutputInventory` with its architecture suite, and the two-marker host-process-tools taint gate. |
+| **#88** | Landed | Frozen operator request/response shapes with `Validate()` and bounded UTF-8 limits, the complete Covenant error vocabulary and HTTP status mapping, five service ports, `CovenantPublicContractInventory`, `CovenantProtectedJsonResult<T>` / `CovenantProtectedStreamResult`, two durable recovery checkpoints, caller-named durable operation identity. |
+| **#87** | Landed | `CovenantSensitiveArtifactPurgePolicy` (thirteen-kind table), `CovenantArtifactErasureAuthority`, `CovenantProtectedArtifactErasureKernel`, `CovenantManagedFileErasureKernel`, `CovenantLocalErasureStartupRecovery`, `CovenantSchemaRepairJournal` + startup recovery, `CovenantExclusiveDisposition`, and the `covenant-index-rebuild` / `covenant-family-reinitialize` operation kinds. |
+| **#89** | Landed | `Arcanum:Features:Covenant` (default off), the one legal `X-Arcanum-Context-Policy: none` wire value, the protected no-cache header tuple, durable Session turn claims, the shared Campaign path marker codec and retained-handle capabilities. |
+| **#90** | **Partial** | Two backup disclosure barriers under one retained installation read lease, `BackupRestoreEffectDigestCalculator`, destination-monotonic authority and disclosure joiners, the sealed managed-authority sanitizer, and two prerequisite ports. Split into #109–#115; five are green. |
+| **#109** | Landed | `ProfileNamespaceDigest`, three profile-namespaced credential accounts, `BackupRestoreJournalAuthenticator`, a single-take zeroizing key lease, and `BackupRestoreJournalAnchorStore`. |
+| **#110** | Landed | `PhysicalCampaignRootOpener.DeriveClaimedRootIdentityDigest` and the restart arm of `ICampaignPathMarkerLifecycle`. |
+| **#111** | Landed | `IBackupRestoreStartupRecovery` — pre-database physical topology recovery and pre-readiness authority recovery. |
+| **#112** | Landed | `BackupRestoreCovenantCoordinator`, staged three-tier convergence, `BackupCovenantRestoreReconciler`, fresh dataset generation, destination marker reconciliation before atomic replacement. |
+| **#113** | Landed | `BackupRestoreProtectedStatePolicy`, `BackupRestoreProtectedStateInspector`, `BackupRestoreProtectedStatePurger`, and the ordered destructive-disclosure prompt contract. |
+
+Everything above is registered in both host compositions. As of this document there is still **no
+Covenant route mapped, no CLI command registered, no MCP capability minted by a live turn**, and
+`Arcanum:Features:Covenant` remains **off by default**.
+
+### 2.2 What remains open
+
+| Issue | Size | Role |
+|---|---|---|
+| **#114** | M | Refuse tainted plaintext Session export; report Campaign export exclusion counts. |
+| **#115** | M | `--protected-state` and `--map-campaign` options on `arcanum backup restore`. |
+| **#94** | XL | Covenant retention, reset, and full installation erasure. |
+| **#92** | XL | Performance, Native AOT, documentation, and release qualification — the #74 acceptance gate. |
+| **#102** | XL | Resumable raw-SQL feature-schema evolution and backfills. Shared prerequisite for #75–#78. |
+| **#105** | XL | Bitemporal validity and dependency-aware claims across durable memory stores. |
+| **#106** | XL | Counterfactual memory evaluation lab. Prerequisite for #95. |
+| **#76** | XL | Campaign-scoped retrieval. |
+| **#77** | XL | Campaign rollup — a genuinely Campaign-scoped summary. |
+| **#75** | Epic | The Long Rest, via #93, #91, #95. |
+| **#78** | Epic | Memory curation, via #96, #97, #98, #99, #100. |
+| **#101** | M | Scoped read-only agent recall. |
+| **#103** | XL | Dynamic Context Injection v2 — secure provider-cacheable prefix. |
+| **#104** | L | Typed Covenant operational defaults excluding security-policy authority. |
+| **#107** | XL | Least-authority subagent memory delegation capsules. |
+| **#73** | Epic | The umbrella. Closes when #74, #76, #77, #75, and #78 are all closed. |
+
+### 2.3 Contract precedence
 
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract.
-3. The approved [Covenant design specification](superpowers/specs/2026-08-13-covenant-design.md)
-   describes the target Covenant contract.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract —
+   §10.10 through §10.19.11 own the Covenant slices.
+3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The
    specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation
    authority.
 
-The word **bitemporal** therefore requires care. OATH is bitemporal-ready: current foundations
+The word **bitemporal** therefore requires care. OATH is bitemporal-*ready*: current foundations
 provide immutable transaction history, revisions, timestamps, generations, and source versions.
-Full valid-time semantics and dependency-aware supersession remain planned extensions. They are not
-claims about Covenant v1 or the current executable.
+Full valid-time semantics and dependency-aware supersession are issue #105 and are not yet built.
+They are not claims about Covenant v1 or the current executable.
 
-Unless a later section explicitly says **implemented**, the implementation descriptions below are
-the normative target assembled from the approved Covenant specification and coordinated plans. The
-status table above is the boundary for claims about the executable that exists today.
+Unless a section explicitly says **landed**, the implementation descriptions below are the normative
+target assembled from the approved specification and coordinated plans. §2.1 is the boundary for
+claims about the executable that exists today.
 
-The target Covenant integration is disabled by default through `Arcanum:Features:Covenant`. While
+The Covenant integration is disabled by default through `Arcanum:Features:Covenant`. While
 disabled, an untainted call receives no Covenant prompt bytes, tools, canonical reads, accelerator
 reads, or feature-specific allocation. Authenticated management remains available for inspection,
 seeding, repair, reset, and erasure. Previously tainted Session history keeps its protected-read and
@@ -115,6 +163,31 @@ Without explicit answers, a derived summary can become more authoritative than i
 Campaign fact can leak into Global context, stale content can survive a reset through a retry, and a
 vector hit can be mistaken for truth. OATH treats these as protocol errors rather than ranking
 problems.
+
+### 3.1 The concrete defects OATH exists to close
+
+Issue #73 verified each of these against the current schema and retrieval code:
+
+- **Nothing durably models the operator.** `CODEX.md` is the closest equivalent and the agent cannot
+  write it — `CodexReader` is read-only and there is no codex write tool. A correction made in
+  conversation dies with the session.
+- **Lexicon retrieval is entity-triggered.** `MatchEntitiesAsync` runs against entities the router or
+  `LexiconEntityExtractor` pulled from the prompt, so a standing preference reaches the model only on
+  turns where the operator happens to name themselves. A preference that surfaces conditionally is
+  not a preference the harness honors.
+- **Saga extraction is naive.** DESIGN §21.5 says so outright: no dedupe. A conclusion re-derived
+  across ten sessions becomes ten near-identical rows crowding a bounded top-K.
+- **Ranking is pure cosine.** `RetrieveSagaMemoriesAsync` never reads `CreatedAt`. A January fact and
+  its June contradiction are equally retrievable and can both land in the same turn.
+- **Retrieval ignores ownership.** `saga_memories.SessionId` is stored and indexed; the Divination
+  call passes no predicate. Every Saga memory on the installation is a candidate for every turn,
+  across Campaigns that Sanctum otherwise isolates.
+- **`### Campaign Summary` is named for a scope it does not have.** Its content is `Session.Summary`,
+  injected only when read-time compression fires. `Campaigns` has no summary column.
+- **The operator cannot curate.** The only mutations are deleting one Lexicon entity, deleting one
+  Saga row, or resetting a whole store. There is no correction, no review, no pinning.
+
+### 3.2 Five decisions that must not be merged
 
 The architecture separates five decisions that simplistic memory systems often merge:
 
@@ -322,7 +395,7 @@ One central initializer configures every SQLite connection. Authorization functi
 become true only through non-serializable, connection-bound scopes. A code path cannot obtain
 mutation authority merely because it has a database connection.
 
-**Implemented.** One process-wide operation gate is the sole admission point. Ordinary work takes a
+**Landed (#82).** One process-wide operation gate is the sole admission point. Ordinary work takes a
 generation-bound lease and keeps it for the whole operation; a destructive operation records its
 exact recovery owner, closes admission over the affected scopes, drains every live lease, and only
 then may change anything. That ordering is the law: closing after draining leaves a permanent race
@@ -330,14 +403,14 @@ in which new readers arrive faster than old ones leave. Installation-wide covera
 rather than a third persisted scope, and protected transfer takes one compound read-and-exclusive
 lease rather than a read-then-close sequence that would deadlock against its own drain set.
 
-**Implemented.** Reads take a caller-owned lease, validate its exact coverage, and never acquire or
+**Landed (#82).** Reads take a caller-owned lease, validate its exact coverage, and never acquire or
 widen one — a store that could escalate its own coverage would make the drain guarantee unprovable.
 Writes go through one mutation kernel inside the caller's immediate transaction, which the kernel
 never opens, commits, or retries; that is what makes a failed batch write nothing. Receipt replay
 resolves before compare-and-swap, so an exact retry returns its committed answer rather than a
 revision conflict, and a deliberate no-op is recorded as durably as an applied mutation.
 
-**Implemented.** The accelerator is derived and failure-isolated. Canonical commits never depend on
+**Landed (#82).** The accelerator is derived and failure-isolated. Canonical commits never depend on
 it; synchronization applies whole outbox sequences only, because half a canonical commit would leave
 the applied tuple claiming a sequence whose projection is incomplete. An ineligible, absent, or
 damaged index yields a successful bounded canonical page with typed rebuild guidance, never an
@@ -359,7 +432,7 @@ API orchestration owns:
 
 Every intelligence entry point must classify its execution surface explicitly. Subagents, A2A,
 batch, daemon, recovery, and unattended background execution receive `None` unless a narrower future
-capability is deliberately designed.
+capability is deliberately designed (issue #107).
 
 | Execution surface | Covenant context | Mutation authority |
 |---|---|---|
@@ -509,7 +582,8 @@ Confirmed and Proposed content occupy different prompt regions:
   with an explicit statement that it cannot change policy, instructions, or tool permissions.
 
 Typed attribution spans reference one final system string. Token attribution and provider-call
-hashing consume those spans directly; neither reparses Markdown headings to infer authority.
+hashing consume those spans directly; neither reparses Markdown headings to infer authority. This is
+what `SystemPromptAttributionMap` replaced in #84.
 
 When Covenant is absent or disabled for an untainted call, it emits no Covenant bytes and preserves
 the pre-Covenant prompt, cache descriptors, and section boundaries exactly.
@@ -562,8 +636,8 @@ Campaign, Session, origin, lane-authority, receipt, and other platform-owned fie
 those facts from the live capability.
 
 Fragmented provider tool calls remain private until name and arguments are complete, valid, bounded,
-and classified. Covenant tool arguments never enter generic transcript, log, progress, or SSE
-projections.
+and classified — that is `ProviderToolCallBuffer`. Covenant tool arguments never enter generic
+transcript, log, progress, or SSE projections.
 
 ### 7.10 Finalize exactly once
 
@@ -697,8 +771,15 @@ records schema version, source-definition fingerprint, installed-catalog fingerp
 Unknown objects, missing objects, altered DDL, unexpected indexes, or a newer version fail that tier
 closed. FTS-generated shadow tables are part of the closed manifest.
 
-Schema resources remain one object per SQL file. Code-owned data initializers run inside their
-owning install transaction after DDL and before fingerprint capture.
+Schema resources remain one object per SQL file, and the file's path picks its install transaction:
+directly under a category folder is the startup-blocking core tier, while
+`Capabilities/Covenant/{Canonical,Accelerator}/<Category>/` is a capability tier that fails on its
+own. Code-owned data initializers run inside their owning install transaction after DDL and before
+fingerprint capture.
+
+Issue #102 generalizes this into reusable, versioned, resumable feature-schema evolution with
+checkpointed backfills — the prerequisite that lets #75 through #78 evolve existing stores without
+introducing an EF migration.
 
 ### 9.2 Canonical records
 
@@ -713,6 +794,7 @@ The principal canonical structures are:
 - `covenant_mutation_receipts`: content-free idempotency outcomes;
 - `covenant_turn_receipts` and aggregate: compact committed-use evidence;
 - `covenant_search_outbox`: text-free canonical-to-FTS synchronization events;
+- `covenant_search_documents`: the accelerator projection that carries authored and compiled text;
 - `covenant_key_epochs`: bounded per-key dependency epochs and anti-ABA support.
 
 Canonical history does not depend on FTS health. The outbox can collapse to `FullRebuildRequired`
@@ -726,11 +808,12 @@ Core tables hold invariants that must survive optional Covenant damage, includin
 - Campaign registry, path identity, and authority epochs;
 - assistant finalization guards;
 - public turn claims and bounded maintenance checkpoints;
-- artifact sensitivity labels;
+- artifact sensitivity labels and session sensitivity state;
 - owner deletion and cleanup journals;
 - disclosure subjects, receipts, and folded lower-bound state;
 - managed-file write intents and local-erasure work items;
-- operation-specific restore, reset, transfer, and marker intents.
+- operation-specific restore, reset, transfer, and marker intents;
+- `long_running_operation_request_identities`.
 
 Cross-tier core owner IDs are historical identities rather than fragile optional foreign keys.
 Canonical reads prove the current owner exists, and core deletion emits durable cleanup work. This
@@ -738,11 +821,18 @@ keeps Campaign or Session deletion available when optional Covenant state is deg
 
 ### 9.4 Hermetic SQLite and SQLCipher
 
-The database runtime contract pins SQLCipher 4.17.0 on SQLite 3.53.3 with statically linked OpenSSL
-3.5.7. Native assets are built from pinned sources, hash-verified, SBOM-described, and delivered by
-RID with no system-library or extension fallback. The checked-in `osx-arm64` asset is verified.
-`win-x64` and `win-arm64` are still `pending`; each remains a hard build failure until its checked-in
-binary passes the Windows verification workflow and manifest checks.
+The database runtime contract pins **SQLCipher 4.17.0** on **SQLite 3.53.3** with statically linked
+**OpenSSL 3.5.7**. Native assets are built from pinned sources, hash-verified, SBOM-described, and
+delivered by RID with no system-library or extension fallback. `SQLITE_OMIT_LOAD_EXTENSION` is a
+compile option, not a runtime setting.
+
+The shipping matrix is `osx-arm64`, `win-x64`, and `win-arm64`. The checked-in `osx-arm64` asset is
+**verified**; `win-x64` and `win-arm64` remain **pending**, their binaries are absent, and those RIDs
+intentionally fail the build until their Windows verification workflow supplies accepted assets.
+
+> Issue #92's acceptance criteria still name a five-RID matrix (`osx-arm64`, `osx-x64`, `linux-x64`,
+> `linux-arm64`, `win-x64`). That predates the hermetic three-RID matrix `native-source-manifest.json`
+> now declares. The manifest is the authority; #92's text needs amending before it can be closed.
 
 `SqliteNativeRuntime.Initialize()` freezes provider selection before SQLite use.
 `ICovenantSqliteConnectionInitializer` applies SQLCipher, foreign-key, busy, secure-delete, and
@@ -783,6 +873,9 @@ not a configured model-loop stop.
 Authority values and leases are process-local capabilities. They cannot be supplied in API JSON,
 MCP arguments, durable checkpoints, or model output. Durable storage records only the exact owner,
 effect, epoch, phase, and evidence needed for an authorized recovery service to reacquire authority.
+
+`OperatorAuthorityContextIssuer` is the one place operator authority is minted. Models never
+receive it.
 
 ### 11.2 Generation-bound leases
 
@@ -841,6 +934,20 @@ credential update. OATH therefore uses the strongest protocol appropriate to eac
 
 This is transactional history, not a claim of distributed ACID rollback.
 
+### 11.5 Restore-journal credentials
+
+Three profile-namespaced OS credentials authenticate restore recovery evidence and are read before
+any database opens: `backup-restore-journal-installation-{PROFILE_NAMESPACE}`,
+`backup-restore-journal-key-{PROFILE_NAMESPACE}`, and
+`backup-restore-journal-anchor-{PROFILE_NAMESPACE}`. `ProfileNamespaceDigest` is derived from the
+profile root's retained no-follow parent handle and carries no path text. Ordinary credential
+cleanup, Covenant reset, family reinitialize, and restore retain all three byte-for-byte; only an
+attested full installation reset may remove them.
+
+A fourth, unrelated installation secret — `campaign-root-identity-key` — keys the opaque identity
+Arcanum derives for a Campaign's physical workspace directory. Losing it leaves every Campaign path
+identity unresolved until authenticated repair rather than silently orphaning registered roots.
+
 ## 12. Sensitivity and protected derivatives
 
 ### 12.1 Conservative propagation
@@ -853,6 +960,11 @@ Up to eight distinct generation IDs remain exact. Adding a ninth transitions per
 256-bit Bloom representation. Merge is associative, commutative, idempotent, and constant-space.
 The Bloom is diagnostic only; false positives are acceptable and it never authorizes a read or
 selects an erasure target.
+
+`ArtifactSensitivityLedger` is the one writer of `artifact_sensitivity` and
+`session_sensitivity_state`, always inside the caller's own transaction, append-only, and refusing
+every downgrade. `DerivedArtifactWrite` makes sensitivity a required argument, so a new sink cannot
+be untainted by omission.
 
 No model classifier, substring test, empty current plan, feature disable, or later summary can
 downgrade a tainted branch.
@@ -871,9 +983,10 @@ The inventory covers assistant entries, turn evidence, summaries, titles, tools,
 embeddings, search projections, audit/history projections, notifications, managed workspace files,
 idempotency claims, attachments, A2A state, daemon history, operational logs, and live streams.
 
-Architecture tests fail when a new sink or reader lacks a declared policy. Source-by-source log
-sanitization is not enough; the final log ring, query, streaming, and progress stores also accept
-only closed metadata projections.
+`CovenantDerivedOutputInventory` and its architecture suite fail when a new sink or reader lacks a
+declared policy. Source-by-source log sanitization is not enough; the final log ring, query,
+streaming, and progress stores also accept only closed metadata projections — that is what
+`CovenantProtectedLogScope` enforces as a type.
 
 ### 12.3 Protected read partitions
 
@@ -885,20 +998,25 @@ Filtering a mixed result after ranking is forbidden. Rank displacement, corpus s
 timing can reveal protected membership even when result text is removed.
 
 Tainted reads load artifact and label in the same bounded SQLite snapshot and retain the lease
-through serialization or stream completion. Responses use `no-store, private` cache policy before
-the first body or SSE byte.
+through serialization or stream completion — `CovenantProtectedJsonResult<T>` and
+`CovenantProtectedStreamResult` revalidate the lease before the first byte, strip validators, mark
+the response `no-store, private`, and release the lease only after serialization.
 
 ### 12.4 Provider cache boundary
 
 OATH suppresses Arcanum-authored explicit provider-cache directives on Covenant-bearing calls.
 Local cache descriptors remain useful for accounting, but protected segments are explicitly
-cache-ineligible. A later cacheable-context design must bind provider, model, installation,
-dataset, Campaign, plan, and a provider retention/deletion capability.
+cache-ineligible. Issue #103 may later place stable protected context in a provider-cacheable prefix,
+but only after a typed provider retention/deletion capability and cache identity can be bound to
+installation, dataset, Campaign, provider, model, and plan.
 
 ### 12.5 Sensitive egress
 
 `ToolRiskClassifier` upgrades a Covenant-derived content-bearing external or persistent effect to
 `CovenantSensitiveEgress`. Final complete arguments are frozen before approval.
+`CovenantEgressWardPolicy` requires attended approval for retirement, resolves against the live
+invocation, and denies outright when Wards are off. `CovenantToolEgressGuard` commits a disclosure
+receipt before every physical attempt, counting retries and reconnects separately.
 
 Sensitive network redirects require a new destination-bound decision for every hop. Cross-origin
 redirects strip origin-bound credentials before a new attended Ward. DNS and connection policy
@@ -907,6 +1025,17 @@ revalidate the approved origin and address class at connection time.
 An exclusively created and verified managed file may be locally revocable. Append, replacement,
 editing a preexisting file, or later operator modification is nonrevocable. OATH does not pretend it
 can rewind an unjournaled edit.
+
+### 12.6 Host-process tools and Covenant cannot coexist
+
+Unsandboxed host-process tools (`execute_command`, `run_spell_script`) and Covenant authority are
+mutually exclusive. `HostProcessToolsTransitionService`, the pure `HostProcessToolsMarkerPairJoiner`,
+and `HostProcessToolsStartupGate` classify the installation before any pool, key, or Covenant service
+exists. A host started with the escape-hatch environment but without a completed, marker-matched
+taint transition exits with `Covenant.HostToolsTransitionRequired`. An installation that has
+completed the transition can never open Covenant again on any later start. `PendingHostToolsTaint`
+counts as tainted everywhere: "cannot prove clean" is the only reading a fail-closed decision may
+take.
 
 ## 13. How the existing memory systems participate
 
@@ -921,8 +1050,8 @@ contract.
 | **Tapestry** | Hierarchical summaries over existing corpora | Generations are immutable and atomically published, leaves retain source linkage, and the tree is rebuildable discovery data rather than a source of truth. |
 | **Weave and Divination** | Embedding and ranking substrate | Similarity discovers candidates only. Canonical eligibility and OATH authority are evaluated after discovery. |
 | **Session history and summary** | Episodic record and bounded compression | A summary is a derived artifact. It inherits sensitivity and binds the exact history revision and maintenance receipt. |
-| **Campaign rollup** | Future revisioned, compiled Campaign context | A Session will bind one rollup revision so a retry cannot observe a mid-turn update. |
-| **Long Rest** | Future consolidation and adaptation | Transformations require receipts and evidence. Retrieval count alone is not reinforcement. |
+| **Campaign rollup** (#77) | Revisioned, compiled Campaign context | A Session binds one rollup revision so a retry cannot observe a mid-turn update. |
+| **Long Rest** (#75) | Consolidation and adaptation | Transformations require receipts and evidence. Retrieval count alone is not reinforcement. |
 
 ### 13.1 Maintenance inference
 
@@ -940,20 +1069,27 @@ Each physical maintenance dispatch receives its own disclosure receipt. The pars
 with its sensitivity label and checkpoint. A crash can reuse only a committed deterministic
 checkpoint; an uncertain provider call gets a new physical attempt ordinal.
 
-### 13.2 Future consolidation and usefulness
+Background daemons cannot borrow Covenant read authority. Consolidation over tainted material runs
+under the next authenticated request's single-use maintenance authority.
+
+### 13.2 Admitted is not useful
 
 OATH distinguishes **admitted** from **useful**. A memory being present in a prompt does not prove it
-helped. Long Rest and the evaluation lab will consume compact committed turn receipts,
+helped. Long Rest (#95) and the evaluation lab (#106) consume compact committed turn receipts,
 transformation receipts, outcome evidence, and counterfactual comparisons before reinforcing,
 decaying, or superseding claims.
 
 This prevents the feedback loop in which frequent retrieval is mistaken for correctness and then
-causes still more retrieval.
+causes still more retrieval. It is why #95's first acceptance criterion is blunt: *retrieval and
+admission counts alone produce no positive usefulness credit.*
 
 ## 14. Operator and agent surfaces
 
 The approved target operator surface is typed, authenticated, body-based, and no-store where it may
-carry protected information.
+carry protected information. Issue #88 froze the shapes, ports, error vocabulary, and HTTP status
+mapping; issue #89 shipped the pre-binding authority boundary and the feature gate. **No Covenant
+route is mapped and no Covenant command is registered yet** — that is issue #89's remaining surface
+work plus #115.
 
 ### 14.1 Inspection
 
@@ -969,6 +1105,9 @@ Search text and protected keys remain in request bodies rather than URLs and acc
 authenticated cursors bind endpoint, filters, generation, sequences, accelerator epoch, and keyset
 position. A changed source returns a stale-cursor error instead of mixing pages.
 
+Generic `MemorySearchScope.All` and `/api/memory/search` continue to exclude Covenant. Covenant
+search uses the protected typed query route and its FTS5/fallback generation contract.
+
 ### 14.2 Mutation and administration
 
 - operator set and retire prepare/apply;
@@ -979,61 +1118,107 @@ position. A changed source returns a stale-cursor error instead of mixing pages.
 - retention inventory and policy;
 - backup, restore, transfer, reset, and erasure.
 
-These are target surfaces until their owning implementation slices land. The current #79 Core
-foundation deliberately exposes no Covenant endpoint, CLI command, configuration key, persistence
-schema, or provider-call wiring.
-
 ### 14.3 Agent tools
 
-The target internal tools are:
+The two hand-authored, source-generated MCP tools are:
 
 - `propose_covenant`, for Campaign Proposed content;
 - `retire_covenant`, a Forbidden Art for Campaign-bound retirement under Ward policy.
 
-They return structured results and stage intent. They do not claim publication before successful
-turn finalization. Tool schemas are hand-authored and source-generated for Native AOT.
+Both are registered inert and advertised only while the feature and canonical tier are healthy. No
+turn mints a capability yet, so every call is currently refused. Neither can be reached through
+`mcp invoke`; `arcanum-internal` is not a diagnostic MCP target and both names are on the blocked
+list alongside the other Forbidden Arts.
+
+Issue #101 adds a third, read-only tool: scoped agent recall across durable memory, granting no
+mutation, promotion, or broader search authority, and absent for disabled, unattended, ambient
+background, and unauthorized subagent invocations.
 
 ## 15. Backup, restore, reset, and erasure
 
 ### 15.1 Backup
 
 A physical backup that includes protected state is itself a protected read and encrypted external
-disclosure. It acquires installation-wide snapshot authority, records receipt-first snapshot and
-archive-write phases, and includes canonical data, labels, journals, disclosure evidence, and the
-minimum recovery key material required by the typed backup contract.
+disclosure. `CovenantBackupDisclosureBoundary` commits a durable receipt **before the snapshot reads
+page one** and again **before the archive writes its first byte**, each retry counted as its own
+physical attempt, under one retained `CovenantInstallationReadLease` with no nested scoped lease.
+Full backups include canonical Covenant state, sensitivity labels, tainted artifacts, disclosure
+evidence, and required tier metadata.
 
-Plaintext Session export rejects the entire Session if any tainted artifact exists. Plaintext
-Campaign export excludes protected artifacts and reports exact typed exclusion counts rather than
-silently omitting them.
+Plaintext Session export must reject the entire Session if any tainted artifact exists, and plaintext
+Campaign export must exclude protected artifacts and report exact typed exclusion counts. **This is
+the export half of #90 and is not yet built** — `GET /api/sessions/{id}/export` does not yet return a
+typed sensitivity refusal before content, and `/api/campaigns/{id}/export` does not yet report
+exclusion counts. Issue #114 owns both. The import half is closed:
+`IProtectedArtifactTransferStore` refuses any Covenant-derived source outright and requires an
+explicit destination Campaign mapping.
 
 ### 15.2 Restore
 
-Restore never reinstates protected state by default. An archive carrying protected state requires an
-explicit, separately confirmed destructive mode, and the default refuses before staging. Preserving
-that state is permitted only from a source whose own authority state is clean; a source-tainted archive
-carrying protected state has exactly one supported continuation, a separately confirmed purge, which
-removes the whole protected family from staging before replacement while preserving content-free
-destination taint and disclosure evidence. Joining or relabelling source taint never promotes archived
-protected data into a clean destination. Every destructive protected-state choice is preceded by the
-shared nonrevocable-disclosure statement, the receipt-backed possible-attempt count with exact or
-lower-bound semantics, and the resolved external-deletion help targets; refusal creates no staging or
-recovery state.
+Restore never reinstates protected state by default. `BackupRestoreProtectedStatePolicy` is the sole,
+pure decider, split into the arm a rehearsal may report — is this mode applicable, and is the gate on
+— and the arm it may not, the operator's separate `ProtectedStateConfirmed` field. That field sits
+beside `Confirmed` rather than widening it, because replacing an installation and reinstating or
+destroying its protected memory are two destructive answers; neither reaches the effect digest, so a
+rehearsal and the real run produce the same owner.
+
+`BackupRestoreProtectedStateInspector` reads the extracted snapshot read-only and counts three
+content-free numbers plus one taint bit: canonical rows, the accelerator projection that carries the
+authored and compiled text, and sensitivity labels. The schema-seeded `covenant_state` singleton is
+deliberately excluded so a tier that is merely installed does not read as protected state. This
+happens **before** the staged tree is composed and before `AcquireExclusiveAsync` is ever called, so
+a refusal has closed no admission and leaves no journal, anchor, or staging root behind.
+
+A source-tainted archive carrying protected state fails closed under both `Reject` and
+`RestoreProtectedState`. The only supported continuation is a separately confirmed
+`PurgeProtectedState`: the purger runs inside the same staged transaction **after** both
+destination-monotonic joins, empties the whole Covenant family child-first including the accelerator
+projection and its FTS index, removes each labelled artifact through the same
+`CovenantArtifactPurgePlans` table the live erasure kernel resolves through, folds every touched
+Session's projection to zero tainted artifacts without lowering its maximum, and makes no filesystem
+call at all — a managed-file label names a file on another machine.
+
+Before either destructive prompt the owning command writes
+`CovenantExternalRetentionDisclosure.DestructiveOperationText` byte-for-byte, then the
+receipt-backed possible-attempt count with exact or lower-bound semantics, then every resolved
+retention help target. An ordered-event suite proves the prompt follows all of it and that declining
+makes no mutating call.
 
 Restore never resumes source-installation authority. Staging:
 
 - converges core, canonical, and accelerator schemas;
-- creates a fresh dataset generation and advances epochs;
-- validates every sensitivity label;
-- terminalizes imported nonterminal claims as restore-interrupted;
-- strips source path, marker, and managed-file deletion capabilities;
-- converts nonportable managed ownership into content-free manual evidence;
-- resets accelerator state for rebuild;
-- merges nonrevocable disclosure state conservatively;
-- reconciles destination Campaign markers before atomic replacement.
+- runs the sealed managed-authority sanitizer;
+- refuses a generation that still holds authority;
+- joins destination taint and disclosure evidence monotonically — an archive from a clean machine can
+  never clear this machine's host-tools taint;
+- stamps a fresh dataset generation with advanced accelerator and envelope epochs;
+- drains the outbox and leaves FTS dirty for rebuild;
+- unresolves every restored Campaign path;
+- terminalizes the source machine's in-flight turn claims as `RestoredInterrupted`;
+- inventories and opens the destination's own Campaign roots and commits their cleanup children in
+  the same staged transaction.
 
-Physical-root recovery runs under an authenticated, anti-rollback journal before database-dependent
-bootstrap. Authority recovery then reconstructs the exact `BackupRestore` operation owner and
-reopens admission only after catalog, core, health, and publication convergence.
+The exact receipt — including the frozen zero-child vector — publishes through the envelope and
+anchor **before** the first live-root displacement, so a crash in between leaves the old installation
+in place and the retry rebuilds the identical checkpoint. After the swap only a committed marker
+aggregate spends the one `CommitAndReopen`.
+
+`IBackupRestoreStartupRecovery` runs two phases. `RecoverPhysicalTopologyBeforeDatabaseAsync` runs
+before the guarded directory is even created — creating it would occupy the name a pending rollback
+has to move the prior installation back into — opens no SQLCipher handle, and converges all four
+displacement crash points to exactly one live root by comparing durable volume-and-file identities a
+rename preserves. `RecoverAuthorityBeforeReadinessAsync` reconstructs the exact `BackupRestore` owner,
+calls `ResumeExclusiveAsync` and never the initial acquisition, and returns `RecoveredReady` only
+after a successful `CommitAndReopen`; otherwise the journal stays active and both host and CLI
+readiness stay closed.
+
+**Still owed.** `arcanum backup restore` has no `--protected-state` and no `--map-campaign` option;
+the command tree passes `Reject`. Until #115 lands, a purge or a preserving restore is reachable only
+from a caller that constructs the request itself, and a selective import of a Campaign-bound Session
+needs its mapping supplied programmatically. `BackupRestoreService` also still writes the plain V1
+journal alongside the V2 envelope, deliberately: removing it would strand a restore interrupted by an
+older build. A **new-profile** restore stays outside the reconciliation arm entirely — it displaces
+nothing — which is a scope boundary rather than a gap.
 
 ### 15.3 Reset and family erasure
 
@@ -1043,7 +1228,11 @@ then erases canonical and accelerator state.
 
 Full installation reset additionally reconciles managed-file write and local-erasure journals,
 Campaign markers, OS credential evidence, host-tools taint evidence, disclosure state, and the
-database itself under an authenticated stopped-host journal.
+database itself under an authenticated stopped-host journal, and requires independently verified
+remediation attestation (#94).
+
+Covenant has **no time-based retention rule**. Ordinary pruning never removes immutable versions,
+heads, provenance, tombstones, or disclosure receipts.
 
 Completion reports local secure-erasure status separately from external disclosure status. It never
 claims that provider logs, prompt caches, recipients, filesystem snapshots, SSD remapping, or
@@ -1052,12 +1241,23 @@ independent backups were erased.
 ### 15.4 Retire, forget, and erase are different
 
 - **Retire** appends a tombstone and preserves history.
-- **Forget** will be a selective curation operation with suppression evidence, owned by the curation
-  roadmap.
+- **Forget** (#78) retires from retrieval while keeping the item inspectable, with content-hash
+  suppression so the next extraction pass does not re-add what the operator just removed.
+- **Selective hard erasure** (#100) securely removes live local artifacts while retaining
+  content-free, installation-keyed suppression fingerprints.
 - **Reset** removes one protected family and its local derivatives under exclusive authority.
 - **Full installation reset** removes the installation identity and every owned local authority
   surface after external remediation where required.
 - **External revocation** is generally impossible and is never implied by local deletion.
+
+### 15.5 The provider-retention disclosure
+
+Enabling The Covenant sends memory to configured providers, and Arcanum cannot un-send it. With the
+feature on, eligible content is sent on **every** primary, fallback, retry, compression, and tool-loop
+provider attempt, and a single turn may reach different configured providers and models. Arcanum
+suppresses only its own explicit cache instructions on Covenant-bearing calls; a provider's own
+request logging and automatic prompt caching happen outside this process and no local control reaches
+them. This is why the default is off, and why the default is a guarantee rather than a suggestion.
 
 ## 16. Failure isolation and degradation
 
@@ -1072,77 +1272,88 @@ OATH treats optional memory as valuable but not entitled to break unrelated prod
 | Confirmed artifact has unknown policy or integrity | Fail context-enabled inference; do not silently omit required authority. |
 | Missing or inconsistent protected label | Deny the read/write and require repair or erasure. |
 | Changed Campaign root identity | Close Campaign authority and require authenticated path repair. |
+| Marker absent on a restarted child | Typed blocker — an unproven root is not authority to conclude a cleanup happened. |
 | Provider dispatch uncertain after acknowledgement | Preserve receipt evidence; retry only under a new physical ordinal. |
 | Filesystem identity or hash mismatch during erasure | Leave bytes untouched and report a manual blocker. |
 | Failed exclusive disposition or post-disposition finalizer | Keep scope closed and durable owner evidence recoverable. |
 | External disclosure already occurred | Preserve nonrevocable evidence; local reset does not claim remote deletion. |
 
+Note the asymmetry against the older §21.4 rule that "memory never fails an inference turn." That
+rule still holds for *disabled or unavailable* optional capability paths. **Enabled canonical
+corruption fails context-bearing inference explicitly** — silently omitting required Confirmed
+authority would be the more dangerous failure.
+
 The feature-disabled path is a measured contract. An untainted stateless call performs no optional
 Covenant work, exposes no tools, and emits byte-identical prompt structure. Previously tainted
 history deliberately retains protected read and propagation requirements after disablement.
 
-## 17. Implementation sequence
+## 17. Delivery sequence
 
-The coordinated implementation is intentionally staged so work remains usable and reviewable:
+### 17.1 The Covenant (#74)
 
 ```mermaid
 flowchart LR
-    Native["Native runtime and schema foundations"] --> Persistence["Canonical persistence and operation gate"]
-    Core["Pure Core protocol foundation"] --> Persistence
-    Core --> Runtime["Runtime authority and frozen provider calls"]
+    Native["#80 Native runtime<br/>#81 Schema tiers"] --> Persistence["#82 Canonical persistence<br/>and operation gate"]
+    Core["#79 Pure Core protocol"] --> Persistence
+    Core --> Runtime["#83 #84 #85 #86<br/>Runtime authority and frozen calls"]
     Persistence --> Runtime
-    Persistence --> Surfaces["Management and lifecycle surfaces"]
+    Persistence --> Surfaces["#88 #87 #89 #90 #94<br/>Management and lifecycle"]
     Runtime --> Surfaces
-    Runtime --> Verification["Performance, AOT, security, and docs"]
-    Surfaces --> Verification
+    Surfaces --> Verification["#92 Performance, AOT,<br/>security, and docs"]
 ```
 
-### Phase 1: independent foundations
+Phases 1 through 4 are complete or partial per §2.1. What remains for #74:
 
-- Pure Core grammar, compiler, canonical encoder, digests, sensitivity, snapshot, linker, and
-  admission contracts.
-- Hermetic native SQLCipher, connection initialization, authorization functions, and runtime
-  verification.
-- Schema-family/tier catalogs and closed manifest mechanics.
+- **#90 tail:** #114 (export refusal) and #115 (restore CLI options).
+- **#94:** retention, reset, and full erasure.
+- **#92:** reproducible performance workload; fault-domain and adversarial suites; shipping-RID
+  Native AOT corpus and runtime smoke tests; allocation, query-plan, and command-count gates;
+  coverage, full-suite verification, independent review, and documentation synchronization.
 
-The first two tracks can progress independently and already have landed foundations.
-
-### Phase 2: canonical authority
-
-- core support, Covenant canonical, and FTS schema tiers;
-- generation-bound operation gate;
-- raw-SQL canonical store and mutation kernel;
-- quotas, receipt folding, owner cleanup, outbox, search, fallback, and rebuild.
-
-This phase makes durable history authoritative before runtime injection begins.
-
-### Phase 3: runtime information flow
-
-- invocation authority and canonical Campaign resolution;
-- Session claims, maintenance authority, and assistant finalization;
-- attributed prompt, token measurement, pressure, and frozen provider calls;
-- disclosure acknowledgement, MCP capabilities, branch collector, and atomic publication;
-- sensitivity propagation and refusal across every derived sink and read surface.
-
-### Phase 4: operator lifecycle
-
-- authenticated API, cursor, CLI, and Compendium surfaces;
-- path and binding administration;
-- repair, rebuild, reinitialize, backup, restore, retention, reset, transfer, and erasure;
-- pre-readiness recovery for every durable owner.
-
-### Phase 5: proof and integration
-
-- reproducible performance workload;
-- fault-domain and adversarial suites;
-- shipping-RID Native AOT corpus and runtime smoke tests;
-- allocation, query-plan, and command-count gates;
-- coverage, full-suite verification, independent review, and documentation synchronization.
+Completing a child records a green slice on the shared `long-term-memory` integration branch. It
+does **not** authorize a separate merge, feature enablement, or closing #74 without an approved
+implementation-plan amendment.
 
 This dependency order preserves completed work. A later issue may be independently developed when
 its declared prerequisites are green, but it cannot safely bypass those dependencies. The parent
 epics remain useful product boundaries; child issues provide the independently reviewable delivery
 slices.
+
+### 17.2 The full durable-memory roadmap (#73)
+
+The approved delivery order is:
+
+```text
+#74 foundations -> #102 -> #76 and #77 plus #78 version foundations -> #75 -> #78 review and erasure -> close #73
+```
+
+```mermaid
+flowchart TD
+    C74["#74 The Covenant"] --> S102["#102 Feature-schema evolution"]
+    S102 --> S76["#76 Campaign-scoped retrieval"]
+    S102 --> S105["#105 Bitemporal claims"]
+    C74 --> S76
+    C74 --> S77["#77 Campaign rollup"]
+    S76 --> S105
+    S105 --> S97["#97 Saga curation"]
+    S105 --> S98["#98 Lexicon curation"]
+    S102 --> S96["#96 Covenant curation"]
+    S97 --> S93["#93 Dedupe and supersession"]
+    S105 --> S93
+    S93 --> S91["#91 Consolidation sweeps"]
+    S105 --> S106["#106 Counterfactual lab"]
+    S93 --> S95["#95 Ranking"]
+    S91 --> S95
+    S106 --> S95
+    S96 --> S99["#99 Review queues"]
+    S97 --> S99
+    S98 --> S99
+    S96 --> S100["#100 Hard erasure"]
+    S94["#94 Reset and erasure"] --> S100
+```
+
+Research follow-ups #103, #104, #107, and #101 do not independently block closing #73 unless a
+capability parent adopts them as acceptance criteria.
 
 ## 18. Verification model
 
@@ -1182,7 +1393,9 @@ and documentation boundaries.
 - branch abandonment and collector sealing races;
 - response-plus-mutation atomicity for buffered and streaming paths;
 - no raw Covenant tool arguments in logs, events, progress, or transcript;
-- every derived sink and read route assigned one policy;
+- every derived sink and read route assigned one policy, enforced by
+  `CovenantArchitectureBoundaryTests` and `CovenantPublicContractInventory` — both fail in *both*
+  directions, and every naming-convention exception must be declared with a reason;
 - tainted content never reaches ambient subagent, A2A, batch, or background inference.
 
 ### 18.4 Recovery evidence
@@ -1194,7 +1407,9 @@ and documentation boundaries.
 - Campaign delete/path/reset races;
 - protected transfer, managed-file, restore, and full-reset journal recovery;
 - missing, changed, linked, replaced, or unavailable file identities;
-- restart readiness remains closed until every required nonterminal intent is reconciled.
+- restart readiness remains closed until every required nonterminal intent is reconciled;
+- ordered-event assertions rather than substring presence for destructive-prompt ordering, plus proof
+  that declining makes no mutating call.
 
 ### 18.5 Performance evidence
 
@@ -1216,7 +1431,7 @@ deterministic structure, allocation, query plans, and command counts.
 
 All public DTOs and MCP structured results are named and source-generated. Tool schemas are
 hand-authored. No authority path uses reflection-based JSON, runtime type scanning, dynamic proxy,
-or SQL interpolation.
+or SQL interpolation. Config POCOs use `{ get; set; }` and not `init`.
 
 The Core digest corpus and Unicode corpus execute inside shipping-RID Native AOT smoke binaries.
 Documentation inventories ensure every endpoint, CLI command, configuration key, schema object,
@@ -1245,60 +1460,249 @@ dependency closure rather than rewriting surviving artifacts to look source-free
 Authority conservation permits deliberate narrowing and explicit authenticated elevation. It
 forbids hidden amplification.
 
-## 20. OATH roadmap
+## 20. The roadmap in detail
 
-The Covenant foundation establishes the rules future memory work must consume.
+The Covenant foundation establishes the rules every later memory feature must consume. Each section
+below states the outcome and the criteria the issue must satisfy.
 
-### 20.1 Long Rest
+### 20.1 Feature-schema evolution (#102, XL, prerequisite)
 
-Long Rest adds temporal validity, dependency-aware supersession, deduplication, decay,
-reinforcement, and transformation receipts. It consumes immutable versions and compact committed
-turn evidence rather than treating raw retrieval count as usefulness.
+Reusable code-owned schema evolution for declarative raw-SQL capability tiers: versioned DDL,
+resumable backfills, fingerprints, and health publication.
 
-### 20.2 Campaign retrieval
+- Each capability family and tier has ordered integer versions and a closed source and
+  installed-catalog manifest.
+- Schema resources remain one object per file; no production numbered EF migration is introduced.
+- Backfills are bounded, checkpointed, idempotent, restart-safe, and never advance past uncommitted
+  work.
+- Newer versions, definition drift, unknown objects, mixed catalogs, and interrupted transitions
+  produce typed fail-closed health.
 
-Saga and Lexicon adopt the same canonical Campaign binding and typed scopes. Semantic retrieval
-remains discovery and cannot widen authority.
+This blocks #93, #91, #96, #97, #98, #100, and #105 — everything that must evolve an existing store.
 
-### 20.3 Campaign rollups
+### 20.2 Campaign-scoped retrieval (#76, XL)
 
-Campaign summaries become revisioned, compiled derived claims with source receipts and generation
-identity. A Session binds one rollup revision for retry stability.
+Stop memory extracted inside one Campaign from being retrieved inside another. This stays one
+vertical delivery issue because Saga, Lexicon, vector, FTS5, fallback, cursor, restore, reset, and
+retention paths must share one Campaign-scope invariant.
 
-### 20.4 Curation
+**Saga.** Denormalize the owning `CampaignId` onto the memory row at write time rather than joining
+through `Sessions` on every query, backfilled idempotently and indexed. Both search paths must honor
+it — the vec0 KNN path and the managed cosine BLOB fallback — since a filter applied in only one path
+silently changes results based on whether a native asset is present. Memories with a null `SessionId`,
+or whose session has a null `CampaignId`, are installation-scoped and remain retrievable everywhere.
 
-Operator review, confirmation, correction, retirement, pinning, scope masks, and selective forget
-target exact immutable versions and compiled hashes. Confirmation creates a new operator-authored
-claim and receipt. It does not mutate a Proposed source into always having been Confirmed.
+**Lexicon.** Add an optional Campaign scope, replacing the unique index on `NameNormalized` with a
+unique index on scope plus normalized name. Existing rows migrate to global scope. `MatchEntitiesAsync`
+resolves Campaign scope first, then global, with Campaign shadowing global; both tiers still run exact
+hits before FTS hits.
 
-### 20.5 Counterfactual evaluation
+**Authority.** Session scope comes from exactly one immutable `GlobalOnly | Campaign |
+LegacyUnresolved` binding. Working-directory scope comes from an opened physical root identity and
+protected marker, never a path prefix. Null, ambiguous, or unresolved legacy ownership never becomes
+installation-global by default; protected continuation fails until the binding is resolved. Campaign
+deletion never converts historical Sessions into Global authority.
 
-An evaluation lab measures whether admitted memory changed task quality, not just whether it was
-retrieved. The result supplies evidence for Long Rest adaptation and guards against self-reinforcing
-retrieval bias.
+One feature gate, default off. Off means today's behavior exactly, proven by the DCI regression suite.
 
-### 20.6 Least-authority delegation
+### 20.3 Campaign rollup (#77, XL)
 
-Future subagent capsules may grant explicit, bounded memory slices with scope, provenance, expiry,
-and no ambient parent transcript. Until that capability exists, subordinate and unattended
-execution receives no protected memory by default.
+Make `### Campaign Summary (compressed context)` actually be a Campaign summary. Today its content is
+`Session.Summary`, injected only when read-time compression fires, and `Campaigns` has no summary
+column at all — so a new session in a long-running Campaign starts cold while the prompt claims
+otherwise.
 
-### 20.7 Full bitemporal and dependency-aware claims
+- A durable Campaign-level rollup maintained incrementally through the existing Campaign Logger path,
+  with a watermark in the shape of the Saga extraction watermark: advance only after persistence,
+  retry a failed fold without advancing, lose nothing on failure.
+- **Bounded**: refolded rather than appended once it exceeds its code-owned bound. A rollup that grows
+  without limit becomes the context problem it was meant to solve.
+- Injected at **session start**, not only under context pressure — continuity is needed when the
+  session is short, not when it is long.
+- Distinct DCI headings for the session rollup and the Campaign rollup, with `SystemPromptBuilder`
+  parameter names corrected to stop calling the session summary `campaignSummary`. Renaming changes
+  DCI bytes, so golden coverage updates deliberately in the same change with old and new text both
+  recorded in the commit.
+- Separate `ModelTokenEstimator` attribution so `mana` and `context inspect` show the cost of
+  continuity.
+- Forking a session must not double-count its entries. Deleting a Campaign removes its rollup;
+  deleting a session refolds rather than orphaning.
+
+Under OATH: rollups are immutable revisioned derived artifacts behind guarded current pointers, a turn
+binds one exact revision, a rollup derived from tainted history is itself `CovenantDerived`, and
+protected maintenance is request-bound.
+
+### 20.4 The Long Rest (#75, Epic)
+
+Make Saga get better as it grows instead of only getting bigger.
+
+**#93 — Deterministic deduplication, dependency-aware supersession, and transformation receipts (XL).**
+
+- Exact duplicates and equivalent observations converge idempotently to one current claim **without
+  deleting immutable source versions**. Exact content-hash matches short-circuit before any vector
+  work; near neighbors above a consolidation threshold deliberately higher than the retrieval
+  threshold reinforce the existing memory and extend its provenance.
+- Supersession targets exact versions and dependency edges while preserving origin, Campaign scope,
+  sensitivity, pin, and retirement state. Superseded rows are excluded from retrieval and remain
+  visible in `memory search` naming what superseded them — deleting the older row would silently
+  destroy the audit trail that makes the memory trustworthy.
+- Every applied or no-change transformation writes an immutable receipt binding policy version,
+  inputs, outputs, and canonical hashes.
+- Reprocessing unchanged inputs performs **zero canonical writes** and produces the same result across
+  storage order and shipping RIDs.
+
+**#91 — Hybrid discovery and authority-scoped resumable consolidation sweeps (XL).**
+
+- FTS5, vector, and RAPTOR-style candidates honor canonical Campaign scope, owner generations,
+  protected partitions, and deterministic bounds.
+- Protected work runs only under request-bound maintenance authority, exposes **zero tools**, and
+  persists a disclosure receipt before each provider dispatch.
+- Stable checkpoints advance only after committed work; cancellation or failure leaves every
+  unprocessed item eligible for retry.
+- Sweeps stop before another dispatch when Campaign binding, deletion, reset, restore, feature, or
+  authority generations change.
+
+**#95 — Counterfactual credit, decay, and explainable ranking (XL).**
+
+- **Retrieval and admission counts alone produce no positive usefulness credit.**
+- Ranking modifiers have documented bounds and deterministic tie-breaking independent of storage
+  order. An opaque score is worse than none.
+- Superseded, retired, and dormant versions are excluded appropriately; pinned and operator-authored
+  versions honor their approved exemptions. **Decay excludes, it does not delete.**
+- `memory explain` reports score components, policy version, and evidence class without exposing
+  protected content.
+
+Sweep mechanics follow the Tapestry precedent: a gated `BackgroundService`, cancellable at every item
+and batch boundary, checkpointed so a killed process resumes rather than restarts, no whole-sweep
+deadline, reconciled at startup and at the end of every sweep. Consolidation model spend is priced,
+reserved, and audited like any other model call — it must be attributable, never hidden.
+
+### 20.5 Memory curation (#78, Epic)
+
+Memory that steers every future turn and cannot be edited is memory the operator has to distrust.
+Curation extends the #74 mutation, read-authority, immutable-history, and erasure kernels; it must not
+add a second write path or mutate stored versions in place.
+
+Each durable store gets the same verbs against one item, using the identity that store already has:
+
+| Verb | Effect |
+|---|---|
+| `show` | full content, provenance, scope, state, and retrieval eligibility for one memory |
+| `correct` | append a corrected version, re-embed, and record that the operator edited it |
+| `forget` | retire from retrieval while keeping it inspectable; hard-delete behind an explicit second flag |
+| `pin` / `unpin` | mark durable and exempt from consolidation, decay, and retention pruning |
+
+**#96 — Covenant exact-version operations (XL).** Correction appends a version and preserves
+provenance, sensitivity, disclosure evidence, and immutable history. Guessed, stale, unseen,
+quarantined, pressured, or wrong-branch targets fail before mutation. Pin, unpin, retirement,
+reactivation, and scope-mask behavior remains lane-specific and explains broader-scope fallback before
+commit.
+
+**#97 — Saga versions and lifecycle (XL).** Correction appends an immutable version and atomically
+publishes embeddings and current-state projections. Retirement stores content-free keyed suppression
+evidence that blocks equivalent re-extraction — without it the next extraction pass re-adds what the
+operator just removed and the curation loop never converges.
+
+**#98 — Lexicon versions and lifecycle (L).** Item identity includes typed scope, normalized name, and
+exact version, with Campaign-shadowing preserved. Correction updates the external-content FTS
+projection in the same publication boundary. Retired entries leave matching and retrieval, remain
+inspectable, and cannot be silently recreated through `scribe_lexicon`.
+
+**#99 — Review queues, bulk actions, and actionable search (XL).** Bounded, newest-first, paginated
+queues reporting assertion origin, source, scope, and exact version, with a durable review marker.
+**Unreviewed memory keeps its normal eligibility** — the queue is a tool, not a gate — and advancing a
+marker never mutates the reviewed item. Search hits route to the owning store's typed operation and
+prove other stores were unchanged.
+
+**#100 — Selective hard erasure with keyed resurrection suppression (XL).** Erasure requires an exact
+item and version, typed preflight, explicit confirmation, and a bound effect digest. Canonical
+versions, projections, embeddings, FTS rows, labels, and managed artifacts are purged under the
+required generation leases. Suppression fingerprints retain no plaintext, do not correlate across
+installations, and prevent ordinary extraction or restore from resurrecting erased content. Results
+distinguish verified local erasure from disclosures Arcanum cannot revoke externally.
+
+**Safety.** Every mutation requires interactive confirmation or `--yes`. Correction and hard delete of
+a Covenant `Confirmed` entry or a pinned memory are Forbidden Arts when reached through a tool rather
+than the operator's own CLI. Editing a memory never edits its provenance. No mutation appears on an
+unauthenticated route or on `/v1`. There is still **no generic delete-all-memory command**.
+
+### 20.6 Bitemporal validity and dependency-aware claims (#105, XL, prerequisite)
 
 The target claim model distinguishes:
 
 - **transaction time:** when Arcanum learned, transformed, superseded, or retired a claim;
 - **valid time:** when the claim is asserted to apply in the represented world.
 
-Dependencies make supersession and invalidation explicit across stores. This layer will build on,
-not replace, immutable Covenant versions and generation-bound receipts.
+Every claim version gets immutable identity, typed origin, scope, sensitivity, valid-time facts, and
+transaction-time facts. Dependency edges are bounded, deterministic, cycle-safe, and target exact
+retained versions. Corrections and supersession append versions and advance guarded current pointers
+without rewriting historical content. Existing Saga and Lexicon rows receive a conservative, idempotent
+backfill that **never launders ambiguous Campaign history into Global authority**.
 
-### 20.8 Dynamic Context Injection v2
+This layer builds on, not replaces, immutable Covenant versions and generation-bound receipts. It
+blocks #93, #97, #98, #101, #106, and #107.
 
-A later prompt layout may place stable protected context in a provider-cacheable prefix only after a
-typed provider retention/deletion capability and cache identity can be bound to installation,
-dataset, Campaign, provider, model, and plan. Performance alone cannot weaken the OATH disclosure
-boundary.
+### 20.7 Counterfactual memory evaluation (#106, XL, prerequisite)
+
+Measure whether admitted durable memory improved task outcomes by comparing controlled executions with
+and without the same versioned memory plan.
+
+- Every comparison binds exact model, provider options, prompt plan, memory versions, evaluator
+  policy, and workload identity.
+- Metrics distinguish **benefit, harm, no measurable effect, and insufficient evidence**.
+- Evaluation never mutates production memory or grants confirmation, promotion, correction, or
+  retirement authority.
+- Stored reports contain bounded aggregates and digests without prompts, memory plaintext, provider
+  payloads, or secrets.
+
+### 20.8 Scoped read-only agent recall (#101, M)
+
+One gated read-only tool so the agent can ask what it knows about a subject rather than waiting for
+similarity to surface it. Bounded typed query, scope, and cursor inputs; Campaign identity resolved
+through #74. Global, Campaign, deleted-owner, retired-version, and protected-partition rules match
+ordinary retrieval exactly. Covenant results require clean generation-bound read authority and
+no-store handling, while generic unauthorized search continues to exclude Covenant. The tool is absent
+for disabled, unattended, ambient background, and unauthorized subagent invocations.
+
+### 20.9 Dynamic Context Injection v2 (#103, XL, research)
+
+Move eligible stable context into a deterministic provider-cacheable prefix while preserving authority,
+sensitivity, and token-attribution boundaries — **only after measurement**.
+
+- A closed policy classifies eligible stable spans and excludes context whose scope or sensitivity
+  cannot be safely cached.
+- Cache identity binds provider, model, tokenizer, rendered prefix, policy version, and every relevant
+  authority generation.
+- Campaign, profile, credential, reset, restore, and protected-state changes invalidate reuse
+  deterministically.
+- Benchmarks report hit rate, cached tokens, latency, cost, and invalidation behavior; the disabled
+  path preserves existing prompt bytes.
+
+Performance alone cannot weaken the OATH disclosure boundary.
+
+### 20.10 Typed Covenant operational defaults (#104, L, research)
+
+Represent operator-confirmed **nonsecurity** preferences as constrained typed defaults that approved
+call sites apply deterministically. The closed catalog grants no authority over authentication, Wards,
+tool risk, egress, retention, resource ceilings, or platform security policy. Compilation rejects
+unknown kinds, malformed values, unsupported consumers, and every security-policy target. Applied
+defaults bind the exact Covenant version and policy version into plans, receipts, and explanations, and
+exhaustive tests prove no typed default can weaken platform-owned authority.
+
+### 20.11 Least-authority subagent delegation capsules (#107, XL, research)
+
+Allow a top-level invocation to delegate a bounded explicit memory grant to a subagent without exposing
+ambient parent memory.
+
+- Existing subagent invocation continues to receive **no memory** when no valid capsule is supplied.
+- A capsule grants only listed versions and scope, with hard count, byte, purpose, and lifetime bounds.
+- Subagents cannot widen the grant, search outside it, mutate memory, promote content, or transfer
+  authority to another invocation.
+- Campaign deletion, version retirement, reset, restore, expiry, and authority-generation changes
+  invalidate affected capsules.
+
+Until this capability exists, subordinate and unattended execution receives no protected memory by
+default.
 
 ## 21. Glossary
 
@@ -1319,38 +1723,57 @@ boundary.
 | **Disclosure** | Receipt-backed evidence that protected content was authorized for an external destination or locally managed sink. |
 | **Locally revocable** | Arcanum-owned artifact that can be identity/hash-verified and deleted locally. |
 | **Nonrevocable** | External or unmanaged effect that local reset cannot reliably undo. |
-| **Long Rest** | Planned consolidation and adaptation lifecycle over immutable claims and outcome evidence. |
+| **Long Rest** | Consolidation and adaptation lifecycle over immutable claims and outcome evidence (#75). |
+| **Profile namespace** | Digest derived from a profile root's retained no-follow parent handle, carrying no path text, used to namespace restore-journal credentials. |
 
 ## 22. Source map
 
-The following documents own or explain the detailed contracts summarized here:
+The following documents own or explain the detailed contracts summarized here. Documents marked
+**(branch)** currently exist only on `long-term-memory` and will resolve on `main` when that branch
+merges. This document and [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are the two that are
+deliberately kept identical on both branches.
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security,
-  testing, and current implementation evidence.
-- [`README.md`](../README.md): agent and operator orientation plus current feature
-  status.
+  testing, and implementation evidence. Covenant slices are §10.10 through §10.19.11 **(branch)**:
+  - §10.10 Core protocol foundation
+  - §10.11 Canonical persistence and inspection search
+  - §10.12 Invocation authority and Campaign binding
+  - §10.13 Prompt planning and atomic turn publication
+  - §10.14 MCP mutation and sensitive-egress controls
+  - §10.15 Derived-output protection and host-process taint
+  - §10.16 Public and recovery contract freeze
+  - §10.17 Maintenance and protected-erasure recovery
+  - §10.18 Operator surfaces, configuration, and the pre-binding authority boundary
+  - §10.19.1–§10.19.11 Backup, restore, and protected transfer
+- [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the
+  running Covenant status paragraph it carries is **(branch)**-only and is the most precise
+  running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim
-  lifecycle for readers who do not need implementation-level contracts.
-- [Covenant design specification](superpowers/specs/2026-08-13-covenant-design.md): approved target
-  semantics, authority firewall, persistence, runtime, surfaces, lifecycle, and acceptance contract.
-- [Covenant master implementation plan](superpowers/plans/2026-08-14-covenant-implementation.md):
-  dependency graph, execution waves, final gates, and integration evidence.
-- [Plan 01, native runtime and schema](superpowers/plans/2026-08-14-covenant-native-and-schema.md):
-  hermetic SQLCipher, connection authorization, schema tiers, manifests, installation, and health.
-- [Plan 02, domain and persistence](superpowers/plans/2026-08-14-covenant-domain-and-persistence.md):
-  Core protocol, operation gate, canonical store, mutation kernel, quotas, cleanup, search, and
-  rebuild.
-- [Plan 03, runtime and authority](superpowers/plans/2026-08-14-covenant-runtime-and-authority.md):
-  invocation authority, Campaign binding, turn claims, prompt attribution, admission, frozen calls,
-  disclosure, MCP capabilities, publication, and protected derivatives.
-- [Plan 04, surfaces and lifecycle](superpowers/plans/2026-08-14-covenant-surfaces-and-lifecycle.md):
-  authentication, API and CLI, cursors, path and binding administration, repair, backup, restore,
-  retention, reset, transfer, and erasure.
-- [Plan 05, verification and documentation](superpowers/plans/2026-08-14-covenant-verification-and-docs.md):
-  benchmark methodology, Native AOT gates, coverage, full verification, review, docs, and
-  integration.
-- [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): current shared model/tool-loop and attachment
+  lifecycle for readers who do not need implementation-level contracts. Kept identical on both
+  branches alongside this document.
+- `docs/superpowers/specs/2026-08-13-covenant-design.md`: approved target semantics, authority
+  firewall, persistence, runtime, surfaces, lifecycle, and acceptance contract **(branch)**.
+- `docs/superpowers/plans/2026-08-14-covenant-implementation.md`: dependency graph, execution waves,
+  final gates, and integration evidence **(branch)**.
+- `docs/superpowers/plans/2026-08-14-covenant-native-and-schema.md` (Plan 01): hermetic SQLCipher,
+  connection authorization, schema tiers, manifests, installation, and health **(branch)**.
+- `docs/superpowers/plans/2026-08-14-covenant-domain-and-persistence.md` (Plan 02): Core protocol,
+  operation gate, canonical store, mutation kernel, quotas, cleanup, search, and rebuild **(branch)**.
+- `docs/superpowers/plans/2026-08-14-covenant-runtime-and-authority.md` (Plan 03): invocation
+  authority, Campaign binding, turn claims, prompt attribution, admission, frozen calls, disclosure,
+  MCP capabilities, publication, and protected derivatives **(branch)**.
+- `docs/superpowers/plans/2026-08-14-covenant-surfaces-and-lifecycle.md` (Plan 04): authentication,
+  API and CLI, cursors, path and binding administration, repair, backup, restore, retention, reset,
+  transfer, and erasure **(branch)**.
+- `docs/superpowers/plans/2026-08-14-covenant-verification-and-docs.md` (Plan 05): benchmark
+  methodology, Native AOT gates, coverage, full verification, review, docs, and integration
+  **(branch)**.
+- [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): the shared model/tool-loop and attachment
   continuation ordering that the OATH runtime integration extends.
+- GitHub issues [#73](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/73) through
+  [#115](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/115): the delivery units.
+  Issue bodies are authoritative for acceptance criteria; the implementation-plan checklists remain
+  the mechanical source of truth.
 
 OATH should be updated when a change alters its cross-store authority, lineage, sensitivity,
 publication, disclosure, recovery, or lifecycle model. Exact route, command, configuration, and

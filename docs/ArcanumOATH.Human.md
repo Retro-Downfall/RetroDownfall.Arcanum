@@ -9,6 +9,10 @@
 > This is the approachable guide. [`Arcanum.OATH.md`](Arcanum.OATH.md) provides the complete
 > technical explanation and source map. The broader shipped design remains authoritative in
 > [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md).
+>
+> **Branch parity.** This guide and [`Arcanum.OATH.md`](Arcanum.OATH.md) are kept byte-identical on
+> `main` and `long-term-memory`. The implementation they describe still lives only on
+> `long-term-memory`; section 11 is the boundary.
 
 ---
 
@@ -78,9 +82,9 @@ Campaign** and infers:
 
 > Billing data is stored in PostgreSQL.
 
-This example explains the target OATH integration. Some foundations are already implemented, while
-the complete persistence, runtime, and lifecycle wiring remains staged work. Section 11 explains
-that boundary.
+This example explains the target OATH integration. Most of the machinery below is built and tested,
+but none of it is reachable from a live turn yet, and the feature is off by default. Section 11
+explains that boundary.
 
 ### 3.1 It begins as a source-bound proposal
 
@@ -296,7 +300,9 @@ This means a retry cannot silently pick up a memory that changed halfway through
 ### 6.2 Clean disabled calls remain clean and cheap
 
 When Covenant injection is disabled and the Session has no protected Covenant history, the ordinary
-history path does no optional Covenant work. It should produce no Covenant prompt bytes or tools.
+history path does no optional Covenant work. It produces no Covenant prompt bytes and no Covenant
+tools, and the resulting prompt is byte-for-byte what it was before any of this existed. That is a
+tested guarantee rather than an intention.
 
 Disabling future injection does not erase history. If a Session already contains protected
 Covenant-derived material, its reads and derivatives remain protected even while the feature is
@@ -434,21 +440,26 @@ This prevents a restart from treating half-finished work as permission for a dif
 
 ## 11. What exists now and what comes next
 
-**Status as of 2026-08-15.**
+**Status as of 2026-08-17**, on the `long-term-memory` branch.
 
-OATH describes a combination of shipped foundations and approved target architecture. It is not yet
-fully implemented end to end.
+OATH describes a combination of built foundations and approved target architecture. It is not yet
+reachable end to end, and **the feature is off by default**.
 
 | Stage | Human summary |
 |---|---|
-| **Implemented foundations** | The pure Core Covenant language, normalization, canonical encoding, evidence and sensitivity rules, linking, and admission contracts have landed. The central hermetic SQLCipher runtime and connection-initialization foundation has also landed. The `osx-arm64` asset is verified; `win-x64` and `win-arm64` assets remain pending, and those builds intentionally fail until verified assets land. |
-| **Active work** | Database catalogs are being built to declare which schema objects belong to each safety and failure-isolation tier. |
-| **Approved target integration** | Canonical persistence, operation leases, runtime authority, frozen provider calls, atomic publication, protected derivatives, management surfaces, backup, restore, reset, erasure, and full verification are specified and divided into dependency-ordered delivery issues. |
-| **Research and later evolution** | Long Rest, Campaign-wide retrieval and rollups, operator curation, counterfactual usefulness evaluation, least-authority subagent capsules, and full bitemporal dependency-aware claims come later. |
+| **Built** | The pure Core Covenant language, normalization, canonical encoding, evidence and sensitivity rules, linking, and admission contracts. The hermetic SQLCipher runtime and connection-authorization foundation. The three-tier database catalogs and their health publication. Canonical storage, the operation gate that closes and drains work before anything destructive, the single mutation kernel, and the degradable search accelerator. Invocation authority and canonical Campaign binding. Prompt placement, token attribution, admission, disclosure-before-dispatch, and one-transaction publication. The two agent tools and their single-use capability protocol. Derived-output labelling and the host-process-tools taint gate. The frozen public and recovery contracts. Maintenance and protected-erasure recovery. The feature gate and the pre-binding authority boundary. Disclosure-aware backup, and a restore that authenticates its own crash-recovery evidence, recovers topology and authority before readiness, reconciles protected state in staging, and refuses to reinstate someone else's memory without an explicit, separately confirmed answer. |
+| **In flight** | Two small slices finish the backup and transfer story: refusing plaintext export of a Session that carries protected material, and giving the operator command-line options for the restore choices the contract already models. Then retention, reset, and full installation erasure. Then the release qualification gate: performance, Native AOT, coverage, security review, and documentation. |
+| **Not yet reachable** | Nothing above is wired to a route, a command, or a live turn. The plumbing exists and is tested; the taps are not connected, and no configuration key turns it on for real work yet. |
+| **Later evolution** | Campaign-scoped retrieval, a genuine Campaign rollup so a new session resumes warm, the Long Rest consolidation sweep, operator curation across every store, counterfactual usefulness evaluation, scoped agent recall, cacheable context, typed operational defaults, least-authority subagent capsules, and full bitemporal dependency-aware claims. |
 
-The formal [OATH architecture](Arcanum.OATH.md) carries the precise status and dependency map. The
-important practical distinction is this: the rules described here are the approved architecture,
-but not every rule is active in the current executable yet.
+One practical caveat worth knowing: the shipping build targets `osx-arm64`, `win-x64`, and
+`win-arm64`. Only the macOS native asset is verified today; the two Windows assets are absent, and
+those builds intentionally fail rather than quietly falling back to a system library.
+
+The formal [OATH architecture](Arcanum.OATH.md) carries the precise per-issue status and dependency
+map. The important practical distinction is this: the rules described here are the approved
+architecture, and most of the machinery now exists, but nothing in the current executable turns it
+on.
 
 ## 12. What OATH does not claim
 
