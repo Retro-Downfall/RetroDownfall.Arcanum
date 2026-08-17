@@ -1,6 +1,4 @@
-using System.Text;
-
-using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
@@ -13,7 +11,7 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// rather than of a visibility modifier. These are inventory assertions over production source rather
 /// than behavior tests, because the failure they prevent is a new call site, not a wrong result — a
 /// second taker would be a second place that decides how long the key lives, and a hand-spelled
-/// account name would be one that skipped the profile-namespace validation entirely (§10.19.7).
+/// account name would be one that skipped the profile-namespace validation entirely (§10.19.6).
 /// </remarks>
 public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 {
@@ -30,11 +28,11 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 
         List<string> offenders =
         [
-            .. ProductionSources()
+            .. ProductionSourceInventory.Sources()
                 .Where(static source =>
-                    !source.RelativePath.EndsWith(AuthenticatorFileName, StringComparison.Ordinal)
-                    && !source.RelativePath.EndsWith(KeyProviderFileName, StringComparison.Ordinal)
-                    && source.Text.Contains("TryTakeKey", StringComparison.Ordinal))
+                    !source.Is(AuthenticatorFileName)
+                    && !source.Is(KeyProviderFileName)
+                    && source.Names("TryTakeKey"))
                 .Select(static source => source.RelativePath),
         ];
 
@@ -53,12 +51,10 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 
         List<string> offenders =
         [
-            .. ProductionSources()
+            .. ProductionSourceInventory.Sources()
                 .Where(static source =>
-                    !source.RelativePath.EndsWith(KeyProviderFileName, StringComparison.Ordinal)
-                    && source.Text.Contains(
-                        "BackupRestoreJournalKeyLease.Mint",
-                        StringComparison.Ordinal))
+                    !source.Is(KeyProviderFileName)
+                    && source.Names("BackupRestoreJournalKeyLease.Mint"))
                 .Select(static source => source.RelativePath),
         ];
 
@@ -76,10 +72,10 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 
         List<string> offenders =
         [
-            .. ProductionSources()
+            .. ProductionSourceInventory.Sources()
                 .Where(static source =>
-                    !source.RelativePath.EndsWith(CredentialIdentityFileName, StringComparison.Ordinal)
-                    && source.Text.Contains("\"backup-restore-journal-", StringComparison.Ordinal))
+                    !source.Is(CredentialIdentityFileName)
+                    && source.Names("\"backup-restore-journal-"))
                 .Select(static source => source.RelativePath),
         ];
 
@@ -139,15 +135,15 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 
         List<string> offenders =
         [
-            .. ProductionSources()
+            .. ProductionSourceInventory.Sources()
                 .Where(source =>
-                    !backends.Any(name => source.RelativePath.EndsWith(name, StringComparison.Ordinal))
-                    && !deciders.Any(name => source.RelativePath.EndsWith(name, StringComparison.Ordinal))
-                    && (source.Text.Contains(".Delete(ArcanumCredentialIdentity.Service", StringComparison.Ordinal)
-                        || source.Text.Contains("credentials.Delete(", StringComparison.Ordinal)
-                        || source.Text.Contains("credentialStore.Delete(", StringComparison.Ordinal)
-                        || source.Text.Contains("_credentials.Delete(", StringComparison.Ordinal)
-                        || source.Text.Contains("_osStore.Delete(", StringComparison.Ordinal)))
+                    !backends.Any(name => source.Is(name))
+                    && !deciders.Any(name => source.Is(name))
+                    && (source.Names(".Delete(ArcanumCredentialIdentity.Service")
+                        || source.Names("credentials.Delete(")
+                        || source.Names("credentialStore.Delete(")
+                        || source.Names("_credentials.Delete(")
+                        || source.Names("_osStore.Delete(")))
                 .Select(static source => source.RelativePath),
         ];
 
@@ -162,12 +158,10 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         // the catalog" into "unreachable by every deletion path".
         List<string> naming =
         [
-            .. ProductionSources()
+            .. ProductionSourceInventory.Sources()
                 .Where(source =>
-                    deciders.Any(name => source.RelativePath.EndsWith(name, StringComparison.Ordinal))
-                    && source.Text.Contains(
-                        "ArcanumCredentialIdentity.BackupRestoreJournal",
-                        StringComparison.Ordinal))
+                    deciders.Any(name => source.Is(name))
+                    && source.Names("ArcanumCredentialIdentity.BackupRestoreJournal"))
                 .Select(static source => source.RelativePath),
         ];
 
@@ -177,97 +171,6 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
             + "Ordinary cleanup, Covenant reset, family reinitialize, and restore must all retain the "
             + "three byte-for-byte: "
             + string.Join(", ", naming));
-
-    }
-
-    private static IReadOnlyList<(string RelativePath, string Text)> ProductionSources()
-    {
-
-        string root = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), "src");
-
-        List<(string, string)> sources = [];
-
-        foreach (string file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
-        {
-
-            // Generated intermediates are build output, not authored production code.
-            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-                || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            {
-
-                continue;
-
-            }
-
-            sources.Add((
-                Path.GetRelativePath(NativeSqlCipherTestPaths.RepositoryRoot(), file),
-                WithoutComments(File.ReadAllText(file))));
-
-        }
-
-        Assert.NotEmpty(sources);
-
-        return sources;
-
-    }
-
-    /// <summary>
-    /// Removes comments so the inventory matches on code alone.
-    /// </summary>
-    /// <remarks>
-    /// Without this, documenting why a construct is restricted trips the very guard that restricts it —
-    /// which would push the explanation out of the code and leave the next reader with a rule and no
-    /// reason. Line-oriented on purpose: it drops whole comment lines and block-comment bodies, and
-    /// deliberately does not attempt to parse trailing comments out of lines that also contain code,
-    /// because under-stripping only risks a false positive that a human will read, never a miss.
-    /// </remarks>
-    private static string WithoutComments(string text)
-    {
-
-        StringBuilder stripped = new(text.Length);
-
-        bool inBlockComment = false;
-
-        foreach (string line in text.Split('\n'))
-        {
-
-            string trimmed = line.TrimStart();
-
-            if (inBlockComment)
-            {
-
-                if (trimmed.Contains("*/", StringComparison.Ordinal))
-                {
-
-                    inBlockComment = false;
-
-                }
-
-                continue;
-
-            }
-
-            if (trimmed.StartsWith("/*", StringComparison.Ordinal))
-            {
-
-                inBlockComment = !trimmed.Contains("*/", StringComparison.Ordinal);
-
-                continue;
-
-            }
-
-            if (trimmed.StartsWith("//", StringComparison.Ordinal))
-            {
-
-                continue;
-
-            }
-
-            _ = stripped.Append(line).Append('\n');
-
-        }
-
-        return stripped.ToString();
 
     }
 

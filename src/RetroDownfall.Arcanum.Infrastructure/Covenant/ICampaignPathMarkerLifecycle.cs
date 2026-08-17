@@ -52,14 +52,18 @@ internal partial interface ICampaignPathMarkerLifecycle
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Retains one opened root for a child this process prepared, so reconciliation never has to
-    /// resolve a display path a second time.
+    /// Releases every root this operation is holding for its marker children, however each was
+    /// obtained.
     /// </summary>
     /// <remarks>
     /// Present on the contract because the retention is part of the protocol, not an implementation
     /// detail: the one path resolution happens while the root is opened, and every later phase names
-    /// a bounded leaf at most. A reconciliation that had to reopen by path could be redirected by a
-    /// display path that became a symlink in between.
+    /// a bounded leaf at most. A reconciliation that reopened by path on the strength of the name
+    /// alone could be redirected by a display path that became a symlink in between.
+    ///
+    /// <para>A restarted process has no retained root and reopens the recorded path once, under the
+    /// proof of §10.19.7 rather than on the name's own authority. What it opens is retained here too,
+    /// so one release covers both arms and a caller never has to know which one ran.</para>
     /// </remarks>
     ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId);
 

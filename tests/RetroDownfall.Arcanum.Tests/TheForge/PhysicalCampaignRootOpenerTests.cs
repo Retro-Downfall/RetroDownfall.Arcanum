@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
 
 namespace RetroDownfall.Arcanum.Tests.TheForge;
@@ -187,6 +188,80 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
 
         Assert.Null(unkeyed.IdentifyExact(_root));
         Assert.Empty(unkeyed.EnumerateAncestorIdentities(_root));
+
+    }
+
+    [Fact]
+    public void A_claimed_root_tuple_derives_the_identity_of_the_directory_it_names()
+    {
+
+        (ulong volumeId, ulong fileId) = Tuple(_root);
+
+        // The property post-restart marker reconciliation rests on: a marker records the volume and
+        // file identifiers of the root it was written into, and that claim has to reproduce exactly
+        // the identity the reopened directory reports for itself.
+        Assert.Equal(
+            _opener.IdentifyExact(_root),
+            _opener.DeriveClaimedRootIdentityDigest(volumeId, fileId));
+
+    }
+
+    [Fact]
+    public void A_claimed_tuple_naming_another_directory_derives_a_different_identity()
+    {
+
+        string other = Directory.CreateDirectory(Path.Combine(_root, "other")).FullName;
+
+        (ulong volumeId, ulong fileId) = Tuple(other);
+
+        Assert.NotEqual(
+            _opener.IdentifyExact(_root),
+            _opener.DeriveClaimedRootIdentityDigest(volumeId, fileId));
+
+    }
+
+    [Fact]
+    public void A_different_installation_key_derives_a_different_identity_for_the_same_claim()
+    {
+
+        byte[] other = Convert.FromHexString(
+            "202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F");
+
+        PhysicalCampaignRootOpener stranger = new(new StubKeySource(other));
+
+        (ulong volumeId, ulong fileId) = Tuple(_root);
+
+        Assert.NotEqual(
+            _opener.DeriveClaimedRootIdentityDigest(volumeId, fileId),
+            stranger.DeriveClaimedRootIdentityDigest(volumeId, fileId));
+
+    }
+
+    [Fact]
+    public void An_unavailable_identity_key_derives_no_claimed_identity()
+    {
+
+        PhysicalCampaignRootOpener unkeyed = new(new StubKeySource(null));
+
+        (ulong volumeId, ulong fileId) = Tuple(_root);
+
+        // Fails closed in the same direction as every other derivation: no key means no expectation to
+        // compare against, never an expectation an unkeyed caller could satisfy.
+        Assert.Null(unkeyed.DeriveClaimedRootIdentityDigest(volumeId, fileId));
+
+    }
+
+    /// <summary>
+    /// The volume and file identifiers the operating system reports for one directory.
+    /// </summary>
+    private static (ulong VolumeId, ulong FileId) Tuple(string directory)
+    {
+
+        Assert.True(FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+            directory,
+            out FileHandleMetadata metadata));
+
+        return (metadata.Identity.VolumeId, metadata.Identity.FileId);
 
     }
 

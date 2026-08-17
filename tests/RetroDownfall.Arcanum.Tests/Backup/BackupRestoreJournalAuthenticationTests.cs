@@ -30,7 +30,7 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// replayed from another profile, rolled back to an earlier revision, or adopted by an operation that
 /// did not create it would be authority to destroy a tree, so each of those has to be a typed refusal
 /// rather than an absence — absence means "nothing to recover" and is the one answer that must never
-/// be reachable by tampering (§10.19.7).
+/// be reachable by tampering (§10.19.6).
 /// </remarks>
 public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 {

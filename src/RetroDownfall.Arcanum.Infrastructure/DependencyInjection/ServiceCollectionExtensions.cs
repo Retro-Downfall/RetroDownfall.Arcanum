@@ -1208,6 +1208,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICampaignPathMarkerLifecycle>(
             static sp => new CampaignPathMarkerLifecycle(
                 sp.GetRequiredService<ICampaignPathMarkerCodec>(),
+                sp.GetRequiredService<PhysicalCampaignRootOpener>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 CovenantSqliteConnectionInitializer.Instance,
                 sp.GetRequiredService<TimeProvider>()));

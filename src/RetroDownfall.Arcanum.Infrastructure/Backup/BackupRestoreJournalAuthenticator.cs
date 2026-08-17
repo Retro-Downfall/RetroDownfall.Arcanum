@@ -48,7 +48,7 @@ internal sealed record BackupRestoreProfileNamespace(
 /// decryption — version, profile namespace, installation, operation, revision, previous digest — is
 /// additional authenticated data, and the payload itself is bounded, source-generated, and strict
 /// about unknown members. A decoder that tolerated one unknown field would let a newer producer attach
-/// a meaning this build silently drops while still holding a valid tag (§10.19.7).
+/// a meaning this build silently drops while still holding a valid tag (§10.19.6).
 ///
 /// <para>Every cryptographic failure collapses to one typed refusal. A decoder that distinguished
 /// "wrong key" from "tampered tag" would be an oracle, and neither answer changes what recovery is

@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 // The authenticated V2 restore journal. Every nested type is registered explicitly rather than left to
 // the generator's transitive walk, so an added member whose type has no context entry is a build
 // failure here rather than a reflection fallback on a Native AOT host — and the one place that would
-// surface is a restart trying to authenticate a half-finished restore (§10.19.7).
+// surface is a restart trying to authenticate a half-finished restore (§10.19.6).
 [JsonSerializable(typeof(BackupRestoreJournalPayloadV2))]
 [JsonSerializable(typeof(BackupRestoreJournalEnvelopeV2))]
 [JsonSerializable(typeof(BackupRestoreJournalAnchorV1))]
