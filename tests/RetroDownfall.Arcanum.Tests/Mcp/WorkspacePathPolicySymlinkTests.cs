@@ -162,13 +162,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.Equal(Path.GetFullPath(file), resolved);
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_ExistingFileSymlinkOutsideRoot_Rejects()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -192,13 +191,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_ExistingFileSymlinkInsideRoot_Allows()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string innerFile = Path.Combine(_root, "inner.txt");
 
@@ -215,13 +213,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.Equal(Path.GetFullPath(innerFile), resolved);
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_ExistingDirectorySymlinkOutsideRoot_Rejects()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -258,13 +255,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.False(allowed);
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_ExistingDirectorySymlinkInsideRoot_ResolvesTarget()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string inner = Path.Combine(_root, "inner-dir");
 
@@ -281,13 +277,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.True(allowed);
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_CandidateIsExistingDirectorySymlink_ResolvesLeafTarget()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string inner = Path.Combine(_root, "inner-target-dir");
 
@@ -304,13 +299,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.Equal(Path.GetFullPath(inner), resolved);
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_RejectsWriteThroughSymlinkedParent()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -343,13 +337,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.True(allowed);
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_IntermediateDirectorySymlink_UpdatesWalkTarget()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realDir = Path.Combine(_root, "real-dir");
 
@@ -370,13 +363,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.Equal(Path.GetFullPath(targetFile), resolved);
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_CandidateFileSymlinkInsideRoot_ResolvesFinalTarget()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realFile = Path.Combine(_root, "real.txt");
 
@@ -451,13 +443,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_IntermediateFileSymlink_ResolvesInsideRoot()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realFile = Path.Combine(_root, "real.txt");
 
@@ -577,13 +568,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_RealDirectorySymlink_UsesNativeResolver()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
@@ -739,13 +729,12 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_PathThroughIntermediateFileSymlink_Allows()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realFile = Path.Combine(_root, "real.txt");
 

@@ -241,16 +241,13 @@ public sealed class BackupDatabaseSnapshotterTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Source_path_replacement_is_rejected_without_publishing_a_snapshot()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "This asserts POSIX behaviour that Windows does not model.");
 
         string sourcePath = Path.Combine(_root, "source-authority.db");
 
@@ -314,16 +311,13 @@ public sealed class BackupDatabaseSnapshotterTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Temporary_path_replacement_is_preserved_when_snapshot_creation_fails()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "This asserts POSIX behaviour that Windows does not model.");
 
         string sourcePath = Path.Combine(_root, "temporary-source.db");
 

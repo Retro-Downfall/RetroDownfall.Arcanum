@@ -23,6 +23,39 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
             GrimoireFixture.SqlCipherUnavailableReason);
     }
 
+    /// <summary>
+    /// The template used to live at a single machine-global path, so two test processes sharing one
+    /// temp directory — two developers, a CI agent running two jobs, or a filtered run alongside a
+    /// full one — deleted and rebuilt each other's template mid-copy. That produced "file being used
+    /// by another process" and missing <c>.db.kdf</c> failures across ~158 unrelated suites, none of
+    /// which had anything to do with either change. The template directory must therefore be private
+    /// to this process.
+    /// </summary>
+    [Fact]
+    public void Template_directory_is_private_to_this_test_process()
+    {
+
+        string shared = Path.Combine(Path.GetTempPath(), "arcanum-tests", "grimoire-template");
+
+        Assert.NotEqual(shared, GrimoireFixture.TemplateDirectory);
+
+        Assert.Contains(
+            global::System.Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Path.GetFileName(GrimoireFixture.TemplateDirectory),
+            StringComparison.Ordinal);
+
+        Assert.StartsWith(
+            Path.Combine(Path.GetTempPath(), "arcanum-tests"),
+            GrimoireFixture.TemplateDirectory,
+            StringComparison.Ordinal);
+
+        Assert.StartsWith(
+            GrimoireFixture.TemplateDirectory + Path.DirectorySeparatorChar,
+            GrimoireFixture.TemplatePath,
+            StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public void Probe_reports_unavailable_when_its_temp_directory_cannot_be_created()
     {

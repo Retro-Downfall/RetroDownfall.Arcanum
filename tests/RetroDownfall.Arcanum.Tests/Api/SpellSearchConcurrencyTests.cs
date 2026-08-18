@@ -39,16 +39,22 @@ public sealed class SpellSearchConcurrencyTests
         foreach (HttpResponseMessage response in responses)
         {
 
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
             string json = await response.Content.ReadAsStringAsync();
+
+            // Carry the body into every failure message. This test failed intermittently during full
+            // runs and passed under a filter, and a bare status/IsSuccess assertion said nothing about
+            // why — the envelope's own error code and message are the only thing that distinguishes a
+            // genuine DbContext conflict from an unrelated infrastructure fault.
+            Assert.True(
+                response.StatusCode == HttpStatusCode.OK,
+                $"Expected 200 OK, got {(int)response.StatusCode} {response.StatusCode}: {json}");
 
             ApiResponse<SpellSummary[]>? body =
                 JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSpellSummaryArray);
 
             Assert.NotNull(body);
 
-            Assert.True(body!.IsSuccess);
+            Assert.True(body!.IsSuccess, $"Search failed: {body.Error?.Code} {body.Error?.Message}");
 
             Assert.NotNull(body.Data);
 

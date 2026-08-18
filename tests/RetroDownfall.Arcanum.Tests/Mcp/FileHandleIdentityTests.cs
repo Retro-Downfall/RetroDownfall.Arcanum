@@ -207,16 +207,13 @@ public sealed class FileHandleIdentityTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryGetPathMetadata_hard_link_reports_multiple_links()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows(),
+            "Unsupported operating system.");
 
         string alias = _tempFile + ".alias";
 

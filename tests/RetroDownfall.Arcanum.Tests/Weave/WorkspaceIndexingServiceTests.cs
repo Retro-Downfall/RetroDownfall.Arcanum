@@ -61,16 +61,13 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     /// re-reaching every real file through <c>docs/latest/docs/latest/…</c> at every depth, re-embedding
     /// it under alias paths until the accumulated path finally trips PATH_MAX.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Candidate_walk_terminates_on_an_in_workspace_directory_symlink_cycle()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         _workspace.WriteFile("docs/note.md", "the only real candidate");
 

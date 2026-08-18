@@ -28,20 +28,34 @@ public sealed class GrimoireFixture : IDisposable
     public const string TestGrimoireSecret = "test-grimoire-encryption-secret";
 
     /// <summary>
-    /// Directory holding the shared, cached template database.
+    /// Root under which every test process keeps its own template directory.
     /// </summary>
-    public static string TemplateDirectory { get; } =
-        Path.Combine(Path.GetTempPath(), "arcanum-tests", "grimoire-template");
+    private static string TemplateRoot { get; } =
+        Path.Combine(Path.GetTempPath(), "arcanum-tests");
 
     /// <summary>
-    /// Path of the shared template database. Tests that reason about template remediation must read
+    /// Directory holding this process's cached template database.
+    /// </summary>
+    /// <remarks>
+    /// Private to the process, not shared machine-wide. The template lifecycle deletes and rebuilds
+    /// files in place (fingerprint mismatch, and <c>Concurrent_template_rebuild_and_copies_produce_complete_databases</c>
+    /// deletes the fingerprint outright), so a single machine-global directory let any two test
+    /// processes sharing a temp directory destroy each other's template mid-copy — one run of that
+    /// produced ~158 "file being used by another process" and missing-<c>.db.kdf</c> failures spread
+    /// across suites unrelated to either change. The caching benefit that matters is within a run:
+    /// every collection fixture in this process still shares one built template.
+    /// </remarks>
+    public static string TemplateDirectory { get; } = Path.Combine(
+        TemplateRoot,
+        "grimoire-template-" + global::System.Environment.ProcessId + "-" + Guid.NewGuid().ToString("N"));
+
+    /// <summary>
+    /// Path of this process's template database. Tests that reason about template remediation must read
     /// it from here rather than repeating the file name — <c>GrimoireFixtureConcurrencyTests</c> once
     /// hard-coded <c>v1</c> and silently stopped observing the fixture when the name moved to v2.
     /// </summary>
     /// <remarks>
     /// v2: the template is keyed from the dedicated Grimoire secret rather than the master API key.
-    /// A distinct file name keeps a concurrently running older test process from thrashing the cached
-    /// template it can no longer open.
     /// </remarks>
     public static string TemplatePath { get; } =
         Path.Combine(TemplateDirectory, "template-remediation-v2.db");
@@ -63,22 +77,106 @@ public sealed class GrimoireFixture : IDisposable
     static GrimoireFixture()
     {
 
-        // Use a deterministic salt for the shared template so that a template created by
-        // a previous test process is still openable by a new process. The KDF sidecar tests
-        // exercise random salt generation separately.
+        // Use a deterministic salt for the template so every fixture instance in this process derives
+        // the same passphrase without repeating the KDF. The KDF sidecar tests exercise random salt
+        // generation separately.
         _saltStatic = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
         _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
             TestGrimoireSecret,
             _saltStatic);
 
-        string probePath = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"probe-{Guid.NewGuid():N}.db");
+        SweepAbandonedTemplateDirectories();
+
+        AppDomain.CurrentDomain.ProcessExit += static (_, _) => DeleteTemplateDirectory();
+
+        string probePath = Path.Combine(TemplateRoot, $"probe-{Guid.NewGuid():N}.db");
 
         (bool available, string reason) = ProbeSqlCipher(probePath, _passphraseStatic);
 
         SqlCipherAvailable = available;
 
         SqlCipherUnavailableReason = reason;
+
+    }
+
+    /// <summary>
+    /// Removes this process's template directory on the way out. Per-process directories would
+    /// otherwise accumulate one tree per run under the temp directory.
+    /// </summary>
+    private static void DeleteTemplateDirectory()
+    {
+
+        try
+        {
+
+            if (Directory.Exists(TemplateDirectory))
+            {
+
+                Directory.Delete(TemplateDirectory, recursive: true);
+
+            }
+
+        }
+        catch
+        {
+
+            // Best-effort: a crashed run's directory is collected by the sweep below instead.
+
+        }
+
+    }
+
+    /// <summary>
+    /// Best-effort collection of template directories left behind by test processes that were killed
+    /// before their <see cref="AppDomain.ProcessExit"/> handler ran. Only directories older than the
+    /// grace period are touched, so a concurrently running process never loses its live template.
+    /// </summary>
+    private static void SweepAbandonedTemplateDirectories()
+    {
+
+        try
+        {
+
+            if (!Directory.Exists(TemplateRoot))
+            {
+
+                return;
+
+            }
+
+            DateTime cutoff = DateTime.UtcNow - TimeSpan.FromHours(12);
+
+            foreach (string directory in Directory.EnumerateDirectories(TemplateRoot, "grimoire-template-*"))
+            {
+
+                try
+                {
+
+                    if (Directory.GetLastWriteTimeUtc(directory) < cutoff)
+                    {
+
+                        Directory.Delete(directory, recursive: true);
+
+                    }
+
+                }
+                catch
+                {
+
+                    // Another process may own it, or it may have vanished between enumeration and delete.
+
+                }
+
+            }
+
+        }
+        catch
+        {
+
+            // The sweep is an optimisation; never let it fail the static initializer.
+
+        }
 
     }
 
@@ -212,9 +310,14 @@ public sealed class GrimoireFixture : IDisposable
 
     private static readonly object BuildLock = new();
 
+    /// <summary>
+    /// Serialises template build and copy. The name carries this process's template directory token so
+    /// two concurrent test processes never queue behind one another on a machine-global name — each
+    /// owns a private template and has nothing to serialise against the other.
+    /// </summary>
     private static readonly Mutex CrossProcessTemplateLock = new(
         initiallyOwned: false,
-        name: "RetroDownfall.Arcanum.Tests.GrimoireTemplate.v1");
+        name: $"RetroDownfall.Arcanum.Tests.GrimoireTemplate.{Path.GetFileName(TemplateDirectory)}");
 
     private static IDisposable AcquireCrossProcessTemplateLock()
     {
@@ -246,7 +349,7 @@ public sealed class GrimoireFixture : IDisposable
     public string CopyDatabase()
     {
 
-        string copyPath = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"grimoire-{Guid.NewGuid():N}.db");
+        string copyPath = Path.Combine(TemplateRoot, $"grimoire-{Guid.NewGuid():N}.db");
 
         string copySidecarPath = copyPath + ".kdf";
 

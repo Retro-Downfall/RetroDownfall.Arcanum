@@ -195,13 +195,12 @@ public sealed class AttachmentSourceResolverTests : IDisposable
         Assert.True(missing.VerifiedBytes.IsEmpty);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ResolveCurrentAsync_detects_symlink_target_swap_after_open()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "This asserts POSIX behaviour that Windows does not model.");
 
         string first = Path.Combine(_workspace, "first.txt");
         string second = Path.Combine(_workspace, "second.txt");

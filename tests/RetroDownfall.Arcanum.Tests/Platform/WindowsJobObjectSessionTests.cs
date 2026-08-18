@@ -154,16 +154,13 @@ public sealed class WindowsJobObjectSessionTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ProcessResourceLimiter_Apply_uses_injected_windows_api_when_on_windows()
     {
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only behaviour.");
 
         FakeWindowsJobObjectApi api = new();
 

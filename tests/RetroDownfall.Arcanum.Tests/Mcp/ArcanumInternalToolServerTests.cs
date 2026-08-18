@@ -3175,16 +3175,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ToolsCall_read_file_chunk_rejects_symlink_to_outside_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outsidePath = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}.txt");
 

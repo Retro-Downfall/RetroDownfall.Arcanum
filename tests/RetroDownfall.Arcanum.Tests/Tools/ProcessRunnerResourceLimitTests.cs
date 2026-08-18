@@ -10,14 +10,21 @@ namespace RetroDownfall.Arcanum.Tests.Tools;
 
 /// <summary>
 /// Integration coverage for OS-enforced resource limits on <c>run_spell_script</c>. The CPU/memory
-/// exceed tests are skipped by default (see remarks) but document the expected behavior and can be
-/// run manually on macOS/Linux.
+/// exceed tests are opt-in (see remarks) on macOS and Linux.
 /// </summary>
 /// <remarks>
 /// Deliberately spawns processes that spin the CPU or grow unbounded memory to trigger a kernel-level
 /// kill (SIGXCPU/SIGKILL). Running these unconditionally in CI risks destabilizing the shared test
 /// runner process (e.g. if the enclosing cgroup/rlimit setup differs from what the assertion expects),
-/// so they are marked <see cref="FactAttribute.Skip"/> and intended for manual verification.
+/// so they are gated on <c>ARCANUM_TEST_RESOURCE_LIMIT_ENFORCEMENT=true</c> and belong on a disposable
+/// runner, mirroring the <c>ARCANUM_TEST_OS_CREDENTIAL_STORE</c> opt-in for the real credential store.
+/// <para>
+/// They were previously <c>[Fact(Skip = "…")]</c> — the only two unconditional skips in a suite that
+/// otherwise uses <c>Skip.IfNot</c> in 893 places. An unconditional skip cannot be turned on without
+/// editing source, so "run manually on macOS/Linux" was not a thing anyone could actually do from a
+/// command line, and these are the only tests that prove a runaway child is genuinely killed rather
+/// than that a <c>ulimit</c> string was assembled.
+/// </para>
 /// </remarks>
 [Collection("ProcessEnvironment")]
 public sealed class ProcessRunnerResourceLimitTests : IDisposable
@@ -31,6 +38,23 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         _scriptsRoot = Path.Combine(Path.GetTempPath(), "arcanum-resourcelimit-" + Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(_scriptsRoot);
+
+    }
+
+    /// <summary>
+    /// Opt-in gate for the two tests that spawn a process the kernel must kill.
+    /// </summary>
+    private static void SkipUnlessEnforcementOptIn()
+    {
+
+        Skip.IfNot(
+            string.Equals(
+                global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_RESOURCE_LIMIT_ENFORCEMENT"),
+                "true",
+                StringComparison.OrdinalIgnoreCase),
+            "Set ARCANUM_TEST_RESOURCE_LIMIT_ENFORCEMENT=true to run the tests that spawn a runaway "
+            + "child and wait for the kernel to kill it. Off by default: they load the machine and "
+            + "depend on the enclosing rlimit/cgroup setup.");
 
     }
 
@@ -71,15 +95,24 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
 
         Assert.NotNull(result);
 
-        Assert.Contains("--- exit code ---", result, StringComparison.Ordinal);
+        // The header alone is emitted for ANY completed outcome, whatever the exit code, so asserting
+        // it proved only that a process ran — not that the ulimit prelude the real
+        // ProcessResourceLimiter wraps around the script is well-formed enough for the target to exec.
+        // A broken prelude (a dropped `* 1024L` in the -v clause, a mangled `exec "$@"`) left the shell
+        // exiting non-zero with nothing on stdout, and this test still passed. Assert the effect.
+        Assert.Contains("--- exit code ---\n0", result, StringComparison.Ordinal);
+
+        Assert.Contains("ok", result, StringComparison.Ordinal);
 
         Assert.Empty(guard.RecordedBreaches);
 
     }
 
-    [Fact(Skip = "Requires OS-level resource enforcement — run manually on macOS/Linux")]
+    [SkippableFact]
     public async Task Process_exceeding_cpu_limit_is_terminated_and_breached()
     {
+        SkipUnlessEnforcementOptIn();
+
         using HostProcessToolsEscapeHatchScope _ = new();
 
         string script = await WriteScriptAsync("spin.sh", "#!/bin/sh\nwhile true; do :; done\n");
@@ -104,9 +137,11 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
 
     }
 
-    [Fact(Skip = "Requires OS-level resource enforcement — run manually on macOS/Linux")]
+    [SkippableFact]
     public async Task Process_exceeding_memory_limit_is_terminated_and_breached()
     {
+        SkipUnlessEnforcementOptIn();
+
         using HostProcessToolsEscapeHatchScope _ = new();
 
         string script = await WriteScriptAsync(

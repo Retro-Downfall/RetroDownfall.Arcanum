@@ -151,14 +151,13 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_RejectsWriteThroughSymlinkedParent()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -183,14 +182,13 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_AllowsSymlinkInsideWorkspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string inner = _workspace.CreateSubdir("inner");
 

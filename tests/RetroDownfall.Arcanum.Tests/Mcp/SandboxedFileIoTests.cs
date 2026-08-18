@@ -53,16 +53,13 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryOpenForRead_rejects_symlink_to_outside_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string linkPath = Path.Combine(_workspace.Root, "escape-link.txt");
 
@@ -235,16 +232,13 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_existing_hard_link()
     {
 
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Unsupported operating system.");
 
         string target = Path.Combine(_workspace.Root, "linked-write.txt");
 
@@ -622,16 +616,13 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryGetPathIdentity_MatchesHandleIdentity_OnUnix()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string target = Path.Combine(_workspace.Root, "identity.txt");
 
