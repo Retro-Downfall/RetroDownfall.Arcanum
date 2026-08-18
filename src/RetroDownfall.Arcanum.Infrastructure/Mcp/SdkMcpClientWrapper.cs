@@ -30,6 +30,17 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
     private readonly long _toolOutputCapBytes;
 
+    /// <summary>
+    /// How many consecutive <c>tools/list</c> pages may contribute no accounted tool metadata before
+    /// the walk is abandoned. The cumulative <c>maxToolsTotalBytes</c> budget is the physical bound
+    /// on the catalog, but it only advances for tools that are actually accepted, so a server that
+    /// answers every page with an empty <c>tools</c> array (or with tools whose names are blank, which
+    /// are skipped before any byte is charged) plus a brand new cursor satisfies neither that budget
+    /// nor the cursor-cycle guard. This bounds no-progress paging without capping the page count of a
+    /// server that is genuinely handing back a catalog.
+    /// </summary>
+    private const int MaxConsecutiveNoProgressToolPages = 64;
+
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
     private readonly CancellationTokenSource _completionCts =
@@ -179,6 +190,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
         long totalBytes = 0L;
 
+        int consecutiveNoProgressPages = 0;
+
         while (true)
         {
             if (cursor is not null && !seenCursors.Add(cursor))
@@ -195,6 +208,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             // finishes: deferring it to the end would let a server that keeps handing back fresh
             // cursors accumulate an unbounded catalog before the cap that is supposed to bound the
             // allocation is ever consulted.
+            long pageBytes = 0L;
+
             foreach (Tool tool in pageResult.Tools)
             {
                 if (string.IsNullOrWhiteSpace(tool.Name))
@@ -218,7 +233,17 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
                 totalBytes += toolBytes;
 
+                pageBytes += toolBytes;
+
                 bridgeTools.Add(new McpBridgeTool(tool.Name, description, inputSchema, this, _toolOutputCapBytes));
+            }
+
+            consecutiveNoProgressPages = pageBytes > 0L ? 0 : consecutiveNoProgressPages + 1;
+
+            if (consecutiveNoProgressPages > MaxConsecutiveNoProgressToolPages)
+            {
+                throw new InvalidDataException(
+                    $"The MCP server returned {MaxConsecutiveNoProgressToolPages} consecutive tools/list pages carrying no tool metadata while still advancing the cursor; pagination cannot make progress.");
             }
 
             cursor = pageResult.NextCursor;

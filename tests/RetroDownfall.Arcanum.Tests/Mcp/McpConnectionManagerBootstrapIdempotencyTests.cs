@@ -361,6 +361,84 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     }
 
     [Fact]
+    public async Task Explicit_reload_serves_a_live_tool_surface_while_the_retired_generation_drains()
+    {
+
+        await using TempWorkspace workspace = new();
+        await workspace.InitializeAsync();
+        workspace.WriteFile("draining-reload.txt", "before\n");
+        workspace.WriteFile("draining-probe.txt", "probe-content\n");
+
+        AIFunction applyPatch = await GetToolAsync(
+            workspace.Root,
+            ToolRiskClassifier.ApplyPatchToolName);
+        BlockingCommittedReceiptSink sink = new();
+        ApplyPatchInvocationContext context = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new ToolInvocationIdentity(
+                Guid.NewGuid().ToString("N"),
+                "draining-reload-call",
+                ToolRoundOrdinal: 0,
+                CallOrdinal: 0,
+                ToolRiskClassifier.ApplyPatchToolName),
+            "{\"patch\":\"draining-reload\"}",
+            "test-model",
+            DateTimeOffset.UtcNow,
+            sink);
+
+        using IDisposable scope =
+            ApplyPatchInvocationAmbient.Begin(context);
+        Task<object?> invocation = applyPatch.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["patch"] =
+                        "--- a/draining-reload.txt\n"
+                        + "+++ b/draining-reload.txt\n"
+                        + "@@ -1 +1 @@\n"
+                        + "-before\n"
+                        + "+after\n",
+                    ["dryRun"] = false,
+                }),
+            CancellationToken.None).AsTask();
+
+        await sink.HandoffStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+        Task reload = _manager.ReloadAsync(
+            workspace.Root);
+        await Task.Delay(50);
+
+        Assert.False(reload.IsCompleted);
+
+        // The retired generation is still draining, so every turn that rebuilds its surface in this
+        // window must be handed a fresh partition. Reload therefore has to publish the cleared state
+        // before it waits on the drain, not after it.
+        AIFunction readFileChunk = await GetToolAsync(
+            workspace.Root,
+            "read_file_chunk").WaitAsync(TimeSpan.FromSeconds(10));
+        object? readResult = await readFileChunk.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["relativePath"] = "draining-probe.txt",
+                    ["startLine"] = 1,
+                    ["endLine"] = 1,
+                }),
+            CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Contains(
+            "probe-content",
+            readResult?.ToString() ?? string.Empty,
+            StringComparison.Ordinal);
+
+        sink.ReleaseHandoff();
+        _ = await invocation.WaitAsync(TimeSpan.FromSeconds(5));
+        await reload.WaitAsync(TimeSpan.FromSeconds(5));
+
+    }
+
+    [Fact]
     public async Task Dispose_stops_registry_client_that_was_never_attached_to_a_partition()
     {
 

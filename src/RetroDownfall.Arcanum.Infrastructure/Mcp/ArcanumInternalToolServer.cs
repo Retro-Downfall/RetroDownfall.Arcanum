@@ -581,6 +581,14 @@ internal sealed partial class ArcanumInternalToolServer
 
     }
 
+    /// <summary>
+    /// The delimiter appended to every response before it is handed to the channel. It is part of the
+    /// element every inbound reader receives and measures, so the outbound guard has to budget for it.
+    /// </summary>
+    private const string ResponseLineDelimiter = "\n";
+
+    private const int ResponseLineDelimiterUtf8Bytes = 1;
+
     private async Task WriteResponseAsync(JsonRpcResponse response, CancellationToken cancellationToken)
     {
 
@@ -593,7 +601,7 @@ internal sealed partial class ArcanumInternalToolServer
         try
         {
 
-            await _toClient.WriteAsync(wire + "\n", cancellationToken).ConfigureAwait(false);
+            await _toClient.WriteAsync(wire + ResponseLineDelimiter, cancellationToken).ConfigureAwait(false);
 
         }
         finally
@@ -613,12 +621,14 @@ internal sealed partial class ArcanumInternalToolServer
     /// default encoder expands <c>&lt;</c>, <c>&amp;</c>, <c>"</c> and friends six-fold, so a result
     /// that legitimately cleared that cap can still overflow here. Substituting rather than throwing
     /// keeps <see cref="HandleLineSafelyAsync"/>'s own error writer — which routes through this same
-    /// method — from faulting.
+    /// method — from faulting. The budget covers the payload plus its delimiter, because that whole
+    /// element is what the reader measures: budgeting only the payload leaves a one-byte window in
+    /// which the writer admits a frame the reader then discards.
     /// </summary>
     private string BoundOutboundResponseLine(JsonRpcResponse response, string wire)
     {
 
-        if (!McpSecurityLimits.ExceedsMaxLineUtf8Bytes(wire, _maxJsonRpcLineBytes))
+        if (!ExceedsOutboundFrameBudget(wire))
         {
 
             return wire;
@@ -648,7 +658,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         string replacement = JsonSerializer.Serialize(oversized, _json.JsonRpcResponse);
 
-        if (!McpSecurityLimits.ExceedsMaxLineUtf8Bytes(replacement, _maxJsonRpcLineBytes))
+        if (!ExceedsOutboundFrameBudget(replacement))
         {
 
             return replacement;
@@ -665,6 +675,9 @@ internal sealed partial class ArcanumInternalToolServer
         return JsonSerializer.Serialize(idless, _json.JsonRpcResponse);
 
     }
+
+    private bool ExceedsOutboundFrameBudget(string wire) =>
+        (long)Encoding.UTF8.GetByteCount(wire) + ResponseLineDelimiterUtf8Bytes > _maxJsonRpcLineBytes;
 
     private static bool TryExtractJsonRpcRequestId(string line, out JsonElement requestId)
     {
@@ -1099,16 +1112,11 @@ internal sealed partial class ArcanumInternalToolServer
         // first call's cancellation registration and break notifications/cancelled correlation).
         if (!_inFlightToolCalls.TryAdd(requestKey, toolScope))
         {
-            ApplyPatchInvocationBinding.UnbindRequest(
-                _ambientConnectionKey,
-                requestKey);
-            PersistedToolInvocationBinding.UnbindRequest(
-                _ambientConnectionKey,
-                requestKey);
-            ApprenticeToolInvocationBinding.UnbindRequest(
-                _ambientConnectionKey,
-                requestKey);
-
+            // The rejection touches no shared state. Every binding store is keyed by
+            // (connectionKey, requestId) alone, so anything unbound here is exactly what the call
+            // that won the id is still going to resolve — it does not read its bindings until after
+            // dispatch, and TryResolve does not consume them. The winner unbinds all four stores in
+            // its own finally.
             return new JsonRpcResponse
             {
                 Id = rpcId,

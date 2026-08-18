@@ -140,6 +140,54 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         Assert.InRange(server.PagesServed, 1, 8);
     }
 
+    [Fact]
+    public async Task GetToolsAsync_stops_paging_once_a_server_keeps_handing_back_pages_that_carry_no_tools()
+    {
+        PagingToolsListServer server = new(descriptionBytes: 2000, maxPages: 5000, toolsPerPage: 0);
+
+        using CancellationTokenSource serverLifetime = new();
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(
+            server,
+            maxToolsTotalBytes: 8192,
+            serverLifetime.Token);
+
+        // An empty page advances no byte budget and presents a brand new cursor, so neither the
+        // metadata cap nor the cursor-cycle guard can ever end the walk.
+        _ = await Assert.ThrowsAsync<InvalidDataException>(
+            () => client.GetToolsAsync().WaitAsync(TimeSpan.FromSeconds(60)));
+
+        await serverLifetime.CancelAsync();
+
+        Assert.InRange(server.PagesServed, 1, 256);
+    }
+
+    [Fact]
+    public async Task GetToolsAsync_stops_paging_once_a_server_keeps_handing_back_pages_of_unnamed_tools()
+    {
+        PagingToolsListServer server = new(
+            descriptionBytes: 2000,
+            maxPages: 5000,
+            toolsPerPage: 1,
+            blankToolNames: true);
+
+        using CancellationTokenSource serverLifetime = new();
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(
+            server,
+            maxToolsTotalBytes: 8192,
+            serverLifetime.Token);
+
+        // A page whose tools are all skipped for a blank name is byte-for-byte as free as an empty
+        // page, so the same unbounded walk applies.
+        _ = await Assert.ThrowsAsync<InvalidDataException>(
+            () => client.GetToolsAsync().WaitAsync(TimeSpan.FromSeconds(60)));
+
+        await serverLifetime.CancelAsync();
+
+        Assert.InRange(server.PagesServed, 1, 256);
+    }
+
     private async Task<SdkMcpClientWrapper> CreatePagingClientAsync(
         PagingToolsListServer server,
         int maxToolsTotalBytes,
@@ -176,8 +224,14 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     /// <summary>
     /// A minimal JSON-RPC peer that answers every <c>tools/list</c> with one fresh page and a brand new
     /// cursor, so the cursor-cycle guard never fires and only a byte budget can end the walk.
+    /// <paramref name="toolsPerPage"/> of zero (or <paramref name="blankToolNames"/>) serves pages that
+    /// carry no accountable tool metadata at all, which is the shape no budget can terminate.
     /// </summary>
-    private sealed class PagingToolsListServer(int descriptionBytes, int maxPages)
+    private sealed class PagingToolsListServer(
+        int descriptionBytes,
+        int maxPages,
+        int toolsPerPage = 1,
+        bool blankToolNames = false)
     {
         private readonly string _description = new('d', descriptionBytes);
 
@@ -232,11 +286,21 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
 
                 string nextCursor = page >= maxPages ? string.Empty : $",\"nextCursor\":\"p{page}\"";
 
+                string[] tools = new string[toolsPerPage];
+
+                for (int index = 0; index < toolsPerPage; index++)
+                {
+                    string name = blankToolNames ? string.Empty : $"paged_tool_{page}_{index}";
+
+                    tools[index] =
+                        "{\"name\":\"" + name
+                        + "\",\"description\":\"" + _description
+                        + "\",\"inputSchema\":{\"type\":\"object\"}}";
+                }
+
                 await toClient.WriteAsync(
                     "{\"jsonrpc\":\"2.0\",\"id\":" + id
-                    + ",\"result\":{\"tools\":[{\"name\":\"paged_tool_" + page
-                    + "\",\"description\":\"" + _description
-                    + "\",\"inputSchema\":{\"type\":\"object\"}}]" + nextCursor + "}}\n",
+                    + ",\"result\":{\"tools\":[" + string.Join(',', tools) + "]" + nextCursor + "}}\n",
                     cancellationToken);
             }
         }
