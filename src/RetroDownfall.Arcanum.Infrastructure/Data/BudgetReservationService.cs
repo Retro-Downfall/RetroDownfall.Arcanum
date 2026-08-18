@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -46,73 +47,54 @@ internal sealed class BudgetReservationService(
             BudgetReservation reservation = await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    SqliteConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    await ExecuteNonQueryAsync(connection, "BEGIN IMMEDIATE;", cancellationToken).ConfigureAwait(false);
+                    // BeginTransaction(deferred: false) is BEGIN IMMEDIATE with a disposal-time rollback, so an
+                    // already-cancelled token can never strand an open write transaction on the scoped connection.
+                    await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
-                    try
+                    decimal committed = await SumCommittedAsync(connection, transaction, request.BudgetPeriod, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    decimal outstanding = await SumOutstandingAsync(connection, transaction, request.BudgetPeriod, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (committed + outstanding + request.ReservedUsd > dailyLimit)
                     {
-                        decimal committed = await SumCommittedAsync(connection, transaction: null, request.BudgetPeriod, cancellationToken)
-                            .ConfigureAwait(false);
-
-                        decimal outstanding = await SumOutstandingAsync(connection, transaction: null, request.BudgetPeriod, cancellationToken)
-                            .ConfigureAwait(false);
-
-                        if (committed + outstanding + request.ReservedUsd > dailyLimit)
-                        {
-                            await ExecuteNonQueryAsync(connection, "ROLLBACK;", cancellationToken).ConfigureAwait(false);
-
-                            throw new BudgetExceededException(dailyLimit, committed + outstanding);
-                        }
-
-                        await using DbCommand cmd = connection.CreateCommand();
-                        cmd.CommandText =
-                            """
-                            INSERT INTO "BudgetReservations"
-                                ("Id", "RunId", "BudgetPeriod", "ReservedUsd", "ReconciledUsd", "Status", "ExpiresAt", "CreatedAt", "UpdatedAt")
-                            VALUES
-                                (@id, @runId, @period, @reserved, 0, @status, @expires, @created, @updated)
-                            """;
-
-                        AddParameter(cmd, "@id", id.ToString("N"));
-                        AddParameter(cmd, "@runId", request.RunId.ToString("N"));
-                        AddParameter(cmd, "@period", request.BudgetPeriod);
-                        AddParameter(cmd, "@reserved", request.ReservedUsd);
-                        AddParameter(cmd, "@status", (int)BudgetReservationStatus.Reserved);
-                        AddParameter(cmd, "@expires", request.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
-                        AddParameter(cmd, "@created", createdAt.ToString("o", CultureInfo.InvariantCulture));
-                        AddParameter(cmd, "@updated", createdAt.ToString("o", CultureInfo.InvariantCulture));
-
-                        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                        await ExecuteNonQueryAsync(connection, "COMMIT;", cancellationToken).ConfigureAwait(false);
-
-                        return new BudgetReservation(
-                            id,
-                            request.RunId,
-                            request.BudgetPeriod,
-                            request.ReservedUsd,
-                            0m,
-                            BudgetReservationStatus.Reserved,
-                            request.ExpiresAt,
-                            createdAt);
+                        throw new BudgetExceededException(dailyLimit, committed + outstanding);
                     }
-                    catch (BudgetExceededException)
-                    {
-                        throw;
-                    }
-                    catch
-                    {
-                        try
-                        {
-                            await ExecuteNonQueryAsync(connection, "ROLLBACK;", cancellationToken).ConfigureAwait(false);
-                        }
-                        catch
-                        {
-                            // ignored — connection may already be rolled back
-                        }
 
-                        throw;
-                    }
+                    await using DbCommand cmd = connection.CreateCommand();
+                    cmd.Transaction = transaction;
+                    cmd.CommandText =
+                        """
+                        INSERT INTO "BudgetReservations"
+                            ("Id", "RunId", "BudgetPeriod", "ReservedUsd", "ReconciledUsd", "Status", "ExpiresAt", "CreatedAt", "UpdatedAt")
+                        VALUES
+                            (@id, @runId, @period, @reserved, 0, @status, @expires, @created, @updated)
+                        """;
+
+                    AddParameter(cmd, "@id", id.ToString("N"));
+                    AddParameter(cmd, "@runId", request.RunId.ToString("N"));
+                    AddParameter(cmd, "@period", request.BudgetPeriod);
+                    AddParameter(cmd, "@reserved", request.ReservedUsd);
+                    AddParameter(cmd, "@status", (int)BudgetReservationStatus.Reserved);
+                    AddParameter(cmd, "@expires", request.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(cmd, "@created", createdAt.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(cmd, "@updated", createdAt.ToString("o", CultureInfo.InvariantCulture));
+
+                    _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                    return new BudgetReservation(
+                        id,
+                        request.RunId,
+                        request.BudgetPeriod,
+                        request.ReservedUsd,
+                        0m,
+                        BudgetReservationStatus.Reserved,
+                        request.ExpiresAt,
+                        createdAt);
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -145,96 +127,80 @@ internal sealed class BudgetReservationService(
             await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-                    await ExecuteNonQueryAsync(connection, "BEGIN IMMEDIATE;", cancellationToken).ConfigureAwait(false);
+                    SqliteConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    try
+                    // BeginTransaction(deferred: false) is BEGIN IMMEDIATE with a disposal-time rollback, so an
+                    // already-cancelled token can never strand an open write transaction on the scoped connection.
+                    await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+                    decimal currentReserved = 0m;
+                    string budgetPeriod = string.Empty;
+                    BudgetReservationStatus status = BudgetReservationStatus.Released;
+                    bool reservationFound;
+                    await using (DbCommand read = connection.CreateCommand())
                     {
-                        decimal currentReserved = 0m;
-                        string budgetPeriod = string.Empty;
-                        BudgetReservationStatus status = BudgetReservationStatus.Released;
-                        bool reservationFound;
-                        await using (DbCommand read = connection.CreateCommand())
-                        {
-                            read.CommandText =
-                                """
-                                SELECT "ReservedUsd", "BudgetPeriod", "Status"
-                                FROM "BudgetReservations"
-                                WHERE "Id" = @id
-                                """;
-                            AddParameter(read, "@id", reservationId.ToString("N"));
-                            await using DbDataReader reader = await read
-                                .ExecuteReaderAsync(cancellationToken)
-                                .ConfigureAwait(false);
-                            reservationFound = await reader
-                                .ReadAsync(cancellationToken)
-                                .ConfigureAwait(false);
-                            if (reservationFound)
-                            {
-                                currentReserved = Convert.ToDecimal(reader.GetValue(0), CultureInfo.InvariantCulture);
-                                budgetPeriod = reader.GetString(1);
-                                status = (BudgetReservationStatus)reader.GetInt32(2);
-                            }
-                        }
-
-                        if (!reservationFound
-                            || status != BudgetReservationStatus.Reserved
-                            || requested <= currentReserved)
-                        {
-                            await ExecuteNonQueryAsync(connection, "COMMIT;", cancellationToken).ConfigureAwait(false);
-                            return;
-                        }
-
-                        decimal committed = await SumCommittedAsync(
-                                connection,
-                                transaction: null,
-                                budgetPeriod,
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                        decimal outstanding = await SumOutstandingAsync(
-                                connection,
-                                transaction: null,
-                                budgetPeriod,
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                        decimal projected = committed + outstanding - currentReserved + requested;
-                        if (projected > dailyLimit)
-                        {
-                            await ExecuteNonQueryAsync(connection, "ROLLBACK;", cancellationToken).ConfigureAwait(false);
-                            throw new BudgetExceededException(dailyLimit, committed + outstanding);
-                        }
-
-                        await using DbCommand update = connection.CreateCommand();
-                        update.CommandText =
+                        read.Transaction = transaction;
+                        read.CommandText =
                             """
-                            UPDATE "BudgetReservations"
-                            SET "ReservedUsd" = @reserved, "UpdatedAt" = @updated
-                            WHERE "Id" = @id AND "Status" = @status
+                            SELECT "ReservedUsd", "BudgetPeriod", "Status"
+                            FROM "BudgetReservations"
+                            WHERE "Id" = @id
                             """;
-                        AddParameter(update, "@id", reservationId.ToString("N"));
-                        AddParameter(update, "@reserved", requested);
-                        AddParameter(update, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
-                        AddParameter(update, "@status", (int)BudgetReservationStatus.Reserved);
-                        _ = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                        await ExecuteNonQueryAsync(connection, "COMMIT;", cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (BudgetExceededException)
-                    {
-                        throw;
-                    }
-                    catch
-                    {
-                        try
+                        AddParameter(read, "@id", reservationId.ToString("N"));
+                        await using DbDataReader reader = await read
+                            .ExecuteReaderAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        reservationFound = await reader
+                            .ReadAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        if (reservationFound)
                         {
-                            await ExecuteNonQueryAsync(connection, "ROLLBACK;", cancellationToken).ConfigureAwait(false);
+                            currentReserved = Convert.ToDecimal(reader.GetValue(0), CultureInfo.InvariantCulture);
+                            budgetPeriod = reader.GetString(1);
+                            status = (BudgetReservationStatus)reader.GetInt32(2);
                         }
-                        catch
-                        {
-                            // ignored — connection may already be rolled back
-                        }
+                    }
 
-                        throw;
+                    if (!reservationFound
+                        || status != BudgetReservationStatus.Reserved
+                        || requested <= currentReserved)
+                    {
+                        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                        return;
                     }
+
+                    decimal committed = await SumCommittedAsync(
+                            connection,
+                            transaction,
+                            budgetPeriod,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    decimal outstanding = await SumOutstandingAsync(
+                            connection,
+                            transaction,
+                            budgetPeriod,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    decimal projected = committed + outstanding - currentReserved + requested;
+                    if (projected > dailyLimit)
+                    {
+                        throw new BudgetExceededException(dailyLimit, committed + outstanding);
+                    }
+
+                    await using DbCommand update = connection.CreateCommand();
+                    update.Transaction = transaction;
+                    update.CommandText =
+                        """
+                        UPDATE "BudgetReservations"
+                        SET "ReservedUsd" = @reserved, "UpdatedAt" = @updated
+                        WHERE "Id" = @id AND "Status" = @status
+                        """;
+                    AddParameter(update, "@id", reservationId.ToString("N"));
+                    AddParameter(update, "@reserved", requested);
+                    AddParameter(update, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(update, "@status", (int)BudgetReservationStatus.Reserved);
+                    _ = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -475,14 +441,7 @@ internal sealed class BudgetReservationService(
         return Convert.ToDecimal(scalar, CultureInfo.InvariantCulture);
     }
 
-    private static async Task ExecuteNonQueryAsync(DbConnection connection, string sql, CancellationToken cancellationToken)
-    {
-        await using DbCommand cmd = connection.CreateCommand();
-        cmd.CommandText = sql;
-        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
+    private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
         DbConnection connection = db.Database.GetDbConnection();
 
@@ -491,7 +450,7 @@ internal sealed class BudgetReservationService(
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        return connection;
+        return (SqliteConnection)connection;
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)

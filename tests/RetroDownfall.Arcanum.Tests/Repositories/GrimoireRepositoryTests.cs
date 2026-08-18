@@ -972,6 +972,70 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     }
 
+    // A hundred maximum-size entry bodies concatenated into one string is hundreds of megabytes of
+    // transient allocation that the caller's output cap then rejects wholesale. The repository has
+    // to stop building at the cap rather than build first and be refused afterwards.
+    [SkippableFact]
+    public async Task SearchArchivesAsync_stops_building_at_the_tool_output_cap()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "zephyrine seed",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        string body = string.Concat(Enumerable.Repeat("zephyrine ", 20_000));
+
+        for (int index = 0; index < 10; index++)
+        {
+
+            _ = _db!.Entries.Add(
+                new Entry
+                {
+
+                    Id = Guid.NewGuid(),
+
+                    SessionId = sessionId,
+
+                    Role = MessageRole.Assistant,
+
+                    Content = body,
+
+                    ModelUsed = "test-model",
+
+                    CreatedAt = DateTimeOffset.UtcNow.AddSeconds(index),
+
+                    Sequence = 100 + index,
+
+                    IsPinned = false,
+
+                });
+
+        }
+
+        _ = await _db!.SaveChangesAsync(CancellationToken.None);
+
+        string result = await repository.SearchArchivesAsync(
+            "zephyrine",
+            maxResults: 100,
+            CancellationToken.None);
+
+        long cap = ArcanumSettingClamps.ToolOutputCapBytes(
+            new ArcanumSettings().ResolveIntelligence().ToolOutputCapBytes);
+
+        Assert.Contains("[TRUNCATED:", result, StringComparison.Ordinal);
+
+        Assert.True(
+            result.Length <= cap + 4096,
+            $"Archive search returned {result.Length} characters against a {cap}-byte cap.");
+
+    }
+
     [SkippableFact]
     public async Task DeleteEntryAsync_removes_existing_entry()
     {

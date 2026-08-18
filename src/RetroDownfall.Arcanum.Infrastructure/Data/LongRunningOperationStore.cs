@@ -748,6 +748,14 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
 
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
+                // A handle EF never opened gets no interceptor, so policy has to be applied here.
+                // Without it the heartbeat writes at SQLite defaults — secure_delete off, no
+                // busy_timeout, no cipher_version verification, and none of the authorization
+                // functions the schema's guard triggers resolve at prepare time.
+                await SqliteConnectionPragmas
+                    .ApplyAsync(connection, cancellationToken)
+                    .ConfigureAwait(false);
+
                 await using SqliteCommand command = connection.CreateCommand();
 
                 command.CommandText =

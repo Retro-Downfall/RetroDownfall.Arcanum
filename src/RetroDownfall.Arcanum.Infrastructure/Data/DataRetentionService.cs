@@ -573,7 +573,7 @@ internal sealed partial class DataRetentionService(
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.Conflict,
-                    "Another data-retention operation is already active."));
+                    await DescribeRetentionConflictAsync(cancellationToken).ConfigureAwait(false)));
 
         }
 
@@ -782,6 +782,26 @@ internal sealed partial class DataRetentionService(
         }
         catch (OperationCanceledException)
         {
+
+            // Deliberately non-terminal: a cancelled apply may be partly applied, so the durable row
+            // has to stay recoverable. But it must surrender its lease — leaving a five-minute lease
+            // on a row nobody is working keeps every retention command blocked for the whole window
+            // with an "already active" error naming no owner. ReconciliationRequired carrying the
+            // retention recovery code releases the lease and is exactly what FindExpiredAsync adopts
+            // on its next pass.
+            LongRunningOperation cancelled = await operations.GetAsync(
+                operation.Id,
+                CancellationToken.None).ConfigureAwait(false)
+                ?? lease.Operation;
+
+            _ = await operations.TryTransitionAsync(
+                operation.Id,
+                cancelled.Revision,
+                ownerId,
+                LongRunningOperationState.ReconciliationRequired,
+                timeProvider.GetUtcNow(),
+                ErrorCodes.Data.ReconciliationFailed,
+                CancellationToken.None).ConfigureAwait(false);
 
             throw;
 
@@ -1540,22 +1560,20 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
-        foreach (Guid entryId in snapshot.EntryIds)
-        {
+        string[] normalizedEntryIds =
+            [.. snapshot.EntryIds.Select(static entryId => entryId.ToString("N"))];
 
-            reconciled &= await CountTableAsync(
-                "entry_embeddings",
-                "lower(replace(EntryId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", entryId.ToString("N"))).ConfigureAwait(false) == 0;
+        reconciled &= await CountIdSetAsync(
+            "entry_embeddings",
+            "lower(replace(EntryId, '-', ''))",
+            normalizedEntryIds,
+            cancellationToken).ConfigureAwait(false) == 0;
 
-            reconciled &= await CountTableAsync(
-                "entry_embeddings_vec",
-                "lower(replace(EntryId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", entryId.ToString("N"))).ConfigureAwait(false) == 0;
-
-        }
+        reconciled &= await CountIdSetAsync(
+            "entry_embeddings_vec",
+            "lower(replace(EntryId, '-', ''))",
+            normalizedEntryIds,
+            cancellationToken).ConfigureAwait(false) == 0;
 
         foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
         {
@@ -1566,24 +1584,22 @@ internal sealed partial class DataRetentionService(
                 cancellationToken,
                 ("@id", attachment.Id.ToString("N"))).ConfigureAwait(false) == 0;
 
-            foreach (string chunkId in attachment.ChunkIds)
-            {
-
-                reconciled &= await CountTableAsync(
-                    "session_attachment_embeddings",
-                    "ChunkId = @id",
-                    cancellationToken,
-                    ("@id", chunkId)).ConfigureAwait(false) == 0;
-
-                reconciled &= await CountTableAsync(
-                    "session_attachment_embeddings_vec",
-                    "ChunkId = @id",
-                    cancellationToken,
-                    ("@id", chunkId)).ConfigureAwait(false) == 0;
-
-            }
-
         }
+
+        string[] snapshotChunkIds =
+            [.. snapshot.Attachments.SelectMany(static attachment => attachment.ChunkIds)];
+
+        reconciled &= await CountIdSetAsync(
+            "session_attachment_embeddings",
+            "ChunkId",
+            snapshotChunkIds,
+            cancellationToken).ConfigureAwait(false) == 0;
+
+        reconciled &= await CountIdSetAsync(
+            "session_attachment_embeddings_vec",
+            "ChunkId",
+            snapshotChunkIds,
+            cancellationToken).ConfigureAwait(false) == 0;
 
         return new DataRetentionApplyResult(
             operationId,
@@ -1817,22 +1833,17 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) == 0;
 
-        foreach (string chunkId in snapshot.ChunkIds)
-        {
+        reconciled &= await CountIdSetAsync(
+            "session_attachment_embeddings",
+            "ChunkId",
+            snapshot.ChunkIds,
+            cancellationToken).ConfigureAwait(false) == 0;
 
-            reconciled &= await CountTableAsync(
-                "session_attachment_embeddings",
-                "ChunkId = @id",
-                cancellationToken,
-                ("@id", chunkId)).ConfigureAwait(false) == 0;
-
-            reconciled &= await CountTableAsync(
-                "session_attachment_embeddings_vec",
-                "ChunkId = @id",
-                cancellationToken,
-                ("@id", chunkId)).ConfigureAwait(false) == 0;
-
-        }
+        reconciled &= await CountIdSetAsync(
+            "session_attachment_embeddings_vec",
+            "ChunkId",
+            snapshot.ChunkIds,
+            cancellationToken).ConfigureAwait(false) == 0;
 
         return new DataRetentionApplyResult(
             operationId,
@@ -3514,29 +3525,45 @@ internal sealed partial class DataRetentionService(
 
         long deleted = 0;
 
-        foreach (Guid entryId in entryIds)
+        if (entryIds.Length == 0)
         {
 
-            if (await TableExistsAsync(
-                    "entry_embeddings_vec",
-                    cancellationToken).ConfigureAwait(false))
+            return deleted;
+
+        }
+
+        // Batched, and the sqlite_master probe is hoisted: this runs inside the open mutation
+        // transaction, so a statement per entry holds the write lock for the whole sweep.
+        bool vectorTableExists = await TableExistsAsync(
+            "entry_embeddings_vec",
+            cancellationToken).ConfigureAwait(false);
+
+        string[] normalizedEntryIds =
+            [.. entryIds.Select(static entryId => entryId.ToString("N"))];
+
+        foreach (IdSetBatch batch in BuildIdSetBatches(
+            "lower(replace(EntryId, '-', ''))",
+            normalizedEntryIds))
+        {
+
+            if (vectorTableExists)
             {
 
                 deleted += await ExecuteAsync(
                     connection,
                     transaction,
-                    "DELETE FROM entry_embeddings_vec WHERE lower(replace(EntryId, '-', '')) = @id",
+                    $"DELETE FROM entry_embeddings_vec WHERE {batch.Predicate}",
                     cancellationToken,
-                    ("@id", entryId.ToString("N"))).ConfigureAwait(false);
+                    batch.Parameters).ConfigureAwait(false);
 
             }
 
             deleted += await ExecuteAsync(
                 connection,
                 transaction,
-                "DELETE FROM entry_embeddings WHERE lower(replace(EntryId, '-', '')) = @id",
+                $"DELETE FROM entry_embeddings WHERE {batch.Predicate}",
                 cancellationToken,
-                ("@id", entryId.ToString("N"))).ConfigureAwait(false);
+                batch.Parameters).ConfigureAwait(false);
 
         }
 
@@ -4268,6 +4295,152 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// Names the operation that currently owns the retention single-flight.
+    /// </summary>
+    /// <remarks>
+    /// A bare "already active" gives the operator nothing to act on — the blocker can be a row an
+    /// interrupted command left behind, and until it is named there is no way to tell that apart
+    /// from a sweep genuinely in flight.
+    /// </remarks>
+    private async Task<string> DescribeRetentionConflictAsync(CancellationToken cancellationToken)
+    {
+
+        const string bare = "Another data-retention operation is already active.";
+
+        string[] retentionKinds =
+        [
+            LongRunningOperationKinds.DataRetentionPrune,
+
+            LongRunningOperationKinds.DataRetentionMutation,
+
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+        ];
+
+        try
+        {
+
+            foreach (string kind in retentionKinds)
+            {
+
+                IReadOnlyList<LongRunningOperation> active = await operations.ListAsync(
+                    new LongRunningOperationQuery(Kind: kind),
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (LongRunningOperation blocker in active)
+                {
+
+                    if (blocker.State is not (LongRunningOperationState.Pending
+                        or LongRunningOperationState.Running
+                        or LongRunningOperationState.Waiting
+                        or LongRunningOperationState.Cancelling
+                        or LongRunningOperationState.ReconciliationRequired))
+                    {
+
+                        continue;
+
+                    }
+
+                    return "Another data-retention operation is already active: "
+                        + $"{blocker.Kind} {blocker.Id:D} is {blocker.State}.";
+
+                }
+
+            }
+
+        }
+        catch (Exception ex) when (ex is SqliteException or InvalidOperationException)
+        {
+
+            logger.LogDebug(
+                ex,
+                "Could not read the data-retention operation blocking this request.");
+
+        }
+
+        return bare;
+
+    }
+
+    /// <summary>
+    /// Counts rows of <paramref name="table"/> whose <paramref name="keyExpression"/> falls inside an
+    /// explicit id set, in batches rather than one statement per id.
+    /// </summary>
+    /// <remarks>
+    /// The id set stays explicit on purpose. Post-commit reconciliation runs after the parent rows
+    /// are already deleted and committed, so a count joined back through the parent would be
+    /// unconditionally zero and would turn orphan/resurrection detection into a no-op.
+    /// </remarks>
+    private async Task<long> CountIdSetAsync(
+        string table,
+        string keyExpression,
+        IReadOnlyList<string> ids,
+        CancellationToken cancellationToken)
+    {
+
+        long total = 0;
+
+        foreach (IdSetBatch batch in BuildIdSetBatches(keyExpression, ids))
+        {
+
+            total += await CountTableAsync(
+                table,
+                batch.Predicate,
+                cancellationToken,
+                batch.Parameters).ConfigureAwait(false);
+
+        }
+
+        return total;
+
+    }
+
+    /// <summary>
+    /// Splits an id set into bounded <c>IN (...)</c> predicates so no statement exceeds SQLite's
+    /// host-parameter limit.
+    /// </summary>
+    private static IEnumerable<IdSetBatch> BuildIdSetBatches(
+        string keyExpression,
+        IReadOnlyList<string> ids)
+    {
+
+        const int batchSize = 500;
+
+        for (int start = 0; start < ids.Count; start += batchSize)
+        {
+
+            int length = Math.Min(batchSize, ids.Count - start);
+
+            (string Name, object Value)[] parameters = new (string Name, object Value)[length];
+
+            StringBuilder placeholders = new();
+
+            for (int index = 0; index < length; index++)
+            {
+
+                string name = "@id" + index.ToString(CultureInfo.InvariantCulture);
+
+                parameters[index] = (name, ids[start + index]);
+
+                if (index > 0)
+                {
+
+                    _ = placeholders.Append(", ");
+
+                }
+
+                _ = placeholders.Append(name);
+
+            }
+
+            yield return new IdSetBatch(
+                $"{keyExpression} IN ({placeholders})",
+                parameters);
+
+        }
 
     }
 
@@ -5840,6 +6013,10 @@ internal sealed partial class DataRetentionService(
         long AttachmentEmbeddingCount,
         long AttachmentVectorEmbeddingCount,
         long AttachmentIndexStateCount);
+
+    private readonly record struct IdSetBatch(
+        string Predicate,
+        (string Name, object Value)[] Parameters);
 
     private sealed record AttachmentPlanSnapshot(
         Guid Id,

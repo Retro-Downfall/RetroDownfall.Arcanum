@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -709,6 +710,12 @@ internal sealed class SessionEntryPersistence
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
+        // EF never opened this handle, so its pragma interceptor cannot fire; policy has to be
+        // applied here or the readback runs at raw SQLite defaults with no cipher verification.
+        await CovenantSqliteConnectionInitializer.Instance
+            .InitializeAsync(connection, CovenantSqliteConnectionMode.ReadOnly, cancellationToken)
+            .ConfigureAwait(false);
+
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -829,6 +836,12 @@ internal sealed class SessionEntryPersistence
         await using SqliteConnection connection = new(connectionString);
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        // EF never opened this handle, so its pragma interceptor cannot fire; policy has to be
+        // applied here or the readback runs at raw SQLite defaults with no cipher verification.
+        await CovenantSqliteConnectionInitializer.Instance
+            .InitializeAsync(connection, CovenantSqliteConnectionMode.ReadOnly, cancellationToken)
+            .ConfigureAwait(false);
 
         await using SqliteCommand command = connection.CreateCommand();
 
