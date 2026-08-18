@@ -123,12 +123,12 @@ public sealed class CampaignCommandTests
 
         Assert.Contains(
             "campaign create",
-            result.Output,
+            result.Error,
             StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains(
             "server path",
-            result.Output,
+            result.Error,
             StringComparison.OrdinalIgnoreCase);
 
     }
@@ -251,6 +251,80 @@ public sealed class CampaignCommandTests
             Directory.Delete(output, recursive: true);
 
         }
+
+    }
+
+    /// <summary>
+    /// Every direct command answers <c>--json</c> with exactly one JSON document on stdout. These two
+    /// listings rendered a Spectre table in every mode, so an automation caller received a box-drawn
+    /// grid where its parser expected a document — and, with the table laid out at the redirected
+    /// 80-column default, one that had also been wrapped.
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_under_json_emits_one_document_rather_than_a_table()
+    {
+
+        SessionSummaryDto session = new(
+            SampleId,
+            SampleId,
+            "Session title",
+            "active",
+            3,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([session], null, false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        SessionSummaryDto[]? emitted = JsonSerializer.Deserialize(
+            result.Output,
+            ArcanumJsonContext.Default.SessionSummaryDtoArray);
+
+        Assert.NotNull(emitted);
+
+        Assert.Equal(session.Id, Assert.Single(emitted).Id);
+
+    }
+
+    [Fact]
+    public void Campaign_prompts_under_json_emits_one_document_rather_than_a_table()
+    {
+
+        PromptSummaryDto prompt = new(
+            SampleId,
+            SampleId,
+            "prompt-name",
+            "1.0.0",
+            null,
+            ["tag"],
+            DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<PromptSummaryDto>>(
+                new ListPageResult<PromptSummaryDto>([prompt], false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "prompts", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        PromptSummaryDto[]? emitted = JsonSerializer.Deserialize(
+            result.Output,
+            ArcanumJsonContext.Default.PromptSummaryDtoArray);
+
+        Assert.NotNull(emitted);
+
+        Assert.Equal(prompt.Name, Assert.Single(emitted).Name);
 
     }
 

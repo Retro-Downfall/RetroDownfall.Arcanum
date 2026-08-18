@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using Xunit;
@@ -88,16 +89,153 @@ public class ComparisonWorkbenchViewModelTests
 
     }
 
-    private static ComparisonWorkbenchViewModel Create(IComparisonWorkbenchDataSource dataSource) =>
+    [Fact]
+    public async Task Run_CancelDuringPricingFetch_ResetsBusyAndReportsCancellation()
+    {
+
+        FakeComparisonDataSource dataSource = new() { StallPricing = true };
+
+        ComparisonWorkbenchViewModel vm = Create(dataSource);
+
+        vm.SharedInput = "x";
+
+        Task run = vm.RunCommand.ExecuteAsync(null)!;
+
+        await Task.Delay(50);
+
+        vm.CancelCommand.Execute(null);
+
+        await run;
+
+        Assert.False(vm.IsBusy);
+
+        Assert.Equal("Comparison cancelled.", vm.StatusText);
+
+        vm.Dispose();
+
+    }
+
+    [Fact]
+    public async Task ExportCsv_WhenTheWriteFails_ReportsInsteadOfThrowing()
+    {
+
+        FakeWhispersService whispers = new();
+
+        ComparisonWorkbenchViewModel vm = Create(
+            new FakeComparisonDataSource(),
+            new UnwritablePathFileDialogService(),
+            whispers);
+
+        await vm.ExportCsvCommand.ExecuteAsync(null);
+
+        Assert.NotNull(vm.LastError);
+
+        Assert.NotEqual("Comparison exported (CSV).", vm.StatusText);
+
+        Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Error);
+
+        vm.Dispose();
+
+    }
+
+    [Fact]
+    public async Task ExportMarkdown_WhenTheWriteFails_ReportsInsteadOfThrowing()
+    {
+
+        FakeWhispersService whispers = new();
+
+        ComparisonWorkbenchViewModel vm = Create(
+            new FakeComparisonDataSource(),
+            new UnwritablePathFileDialogService(),
+            whispers);
+
+        await vm.ExportMarkdownCommand.ExecuteAsync(null);
+
+        Assert.NotNull(vm.LastError);
+
+        Assert.NotEqual("Comparison exported (Markdown).", vm.StatusText);
+
+        Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Error);
+
+        vm.Dispose();
+
+    }
+
+    [Fact]
+    public async Task ExportJson_WhenTheWriteFails_ReportsInsteadOfThrowing()
+    {
+
+        FakeComparisonDataSource dataSource = new()
+        {
+            Events =
+            [
+                new IntelligenceEvent(IntelligenceEventType.Result, "done", FinishReason: "stop"),
+            ],
+        };
+
+        FakeWhispersService whispers = new();
+
+        ComparisonWorkbenchViewModel vm = Create(
+            dataSource,
+            new UnwritablePathFileDialogService(),
+            whispers);
+
+        vm.SharedInput = "ping";
+
+        await vm.RunCommand.ExecuteAsync(null);
+
+        await vm.ExportJsonCommand.ExecuteAsync(null);
+
+        Assert.NotNull(vm.LastError);
+
+        Assert.NotEqual("Comparison exported (JSON).", vm.StatusText);
+
+        Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Error);
+
+        vm.Dispose();
+
+    }
+
+    private static ComparisonWorkbenchViewModel Create(
+        IComparisonWorkbenchDataSource dataSource,
+        IArtifactFileDialogService? fileDialog = null,
+        FakeWhispersService? whispers = null) =>
         new(
             dataSource,
             new InMemoryComparisonRunStore(),
             new FoundryFloorViewModel(new NullLogService()),
-            new FakeWhispersService(),
+            whispers ?? new FakeWhispersService(),
             new NullConfirmationDialogService(),
-            new NullArtifactFileDialogService(),
+            fileDialog ?? new NullArtifactFileDialogService(),
             new NavigationService(),
             new InMemoryInferenceTraceStore());
+
+    /// <summary>
+    /// Hands back a path under a directory that does not exist, so the write throws the way a
+    /// full volume, a read-only share, or an unmounted drive would.
+    /// </summary>
+    private sealed class UnwritablePathFileDialogService : IArtifactFileDialogService
+    {
+
+        private static string UnwritablePath(string suggestedFileName) =>
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "no-such-directory", suggestedFileName);
+
+        public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(UnwritablePath(suggestedFileName));
+
+        public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickSaveCsvPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(UnwritablePath(suggestedFileName));
+
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(UnwritablePath(suggestedFileName));
+
+    }
 
     private sealed class FakeComparisonDataSource : IComparisonWorkbenchDataSource
     {
@@ -107,6 +245,8 @@ public class ComparisonWorkbenchViewModelTests
         public PricingSettings? Pricing { get; init; }
 
         public bool Stall { get; init; }
+
+        public bool StallPricing { get; init; }
 
         public async IAsyncEnumerable<IntelligenceEvent> RunFreePromptAsync(
             string prompt,
@@ -151,8 +291,19 @@ public class ComparisonWorkbenchViewModelTests
             CancellationToken cancellationToken) =>
             RunFreePromptAsync(request.Prompt, request.Model, request.Temperature, request.TopP, request.MaxOutputTokens, cancellationToken);
 
-        public Task<PricingSettings?> GetPricingAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(Pricing);
+        public async Task<PricingSettings?> GetPricingAsync(CancellationToken cancellationToken)
+        {
+
+            if (StallPricing)
+            {
+
+                await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+
+            }
+
+            return Pricing;
+
+        }
 
     }
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.Services.Terminal;
@@ -10,6 +11,13 @@ namespace RetroDownfall.TheForge.Ux.Services.Terminal;
 public sealed class TerminalCommandRunner : ITerminalCommandRunner
 {
     internal const int MaxOutputLineChars = 64 * 1024;
+
+    /// <summary>
+    /// How long the stdout/stderr readers are given to reach EOF after the shell has exited. Redirected
+    /// pipes stay open while any descendant still holds the inherited write end, so an unbounded wait
+    /// wedges The Hearth forever whenever a command leaves a background child behind.
+    /// </summary>
+    internal static readonly TimeSpan ReaderDrainTimeout = TimeSpan.FromSeconds(2);
 
     private readonly ITerminalShellResolver _shellResolver;
 
@@ -36,24 +44,7 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
         TerminalShellSpec shell = _shellResolver.Resolve();
 
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = shell.FileName,
-            WorkingDirectory = workingDirectory,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-
-        foreach (string arg in shell.ArgumentPrefix)
-        {
-
-            startInfo.ArgumentList.Add(arg);
-
-        }
-
-        startInfo.ArgumentList.Add(command);
+        ProcessStartInfo startInfo = BuildStartInfo(shell, command, workingDirectory);
 
         Process process;
 
@@ -78,14 +69,18 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
         using (process)
         {
 
+            StreamReader stdoutReader = process.StandardOutput;
+
+            StreamReader stderrReader = process.StandardError;
+
             Task stdoutTask = ReadLinesAsync(
-                process.StandardOutput,
+                stdoutReader,
                 TerminalOutputKind.StandardOutput,
                 progress,
                 CancellationToken.None);
 
             Task stderrTask = ReadLinesAsync(
-                process.StandardError,
+                stderrReader,
                 TerminalOutputKind.StandardError,
                 progress,
                 CancellationToken.None);
@@ -120,7 +115,7 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
             }
 
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            await DrainReadersAsync(stdoutReader, stderrReader, stdoutTask, stderrTask).ConfigureAwait(false);
 
             if (cancelled || cancellationToken.IsCancellationRequested)
             {
@@ -130,6 +125,127 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
             }
 
             return TerminalCommandResult.Completed(process.ExitCode);
+
+        }
+
+    }
+
+    internal static ProcessStartInfo BuildStartInfo(
+        TerminalShellSpec shell,
+        string command,
+        string workingDirectory)
+    {
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = shell.FileName,
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+
+        // cmd.exe does not parse its command line by MSVCRT rules, but ArgumentList always builds one that
+        // way — an interior double quote becomes \" and, because the line then holds more than two quote
+        // characters, cmd falls back to stripping only the outermost pair and runs the backslashes
+        // verbatim. `/S /C "<command>"` makes that strip unconditional and correct, so the operator's
+        // command reaches the shell exactly as typed. Arguments and ArgumentList are mutually exclusive.
+        if (IsCommandPromptShell(shell.FileName))
+        {
+
+            startInfo.Arguments = BuildCommandPromptArguments(shell.ArgumentPrefix, command);
+
+            return startInfo;
+
+        }
+
+        foreach (string arg in shell.ArgumentPrefix)
+        {
+
+            startInfo.ArgumentList.Add(arg);
+
+        }
+
+        startInfo.ArgumentList.Add(command);
+
+        return startInfo;
+
+    }
+
+    private static bool IsCommandPromptShell(string fileName) =>
+        string.Equals(
+            Path.GetFileNameWithoutExtension(fileName),
+            "cmd",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static string BuildCommandPromptArguments(IReadOnlyList<string> argumentPrefix, string command)
+    {
+
+        StringBuilder builder = new();
+
+        foreach (string arg in argumentPrefix)
+        {
+
+            if (string.Equals(arg, "/C", StringComparison.OrdinalIgnoreCase))
+            {
+
+                builder.Append("/S ");
+
+            }
+
+            builder.Append(arg).Append(' ');
+
+        }
+
+        builder.Append('"').Append(command).Append('"');
+
+        return builder.ToString();
+
+    }
+
+    /// <summary>
+    /// Waits a bounded window for both readers to finish, then closes our read ends so any pending read
+    /// on a pipe an orphaned grandchild still holds unwinds instead of blocking forever. The reader tasks
+    /// swallow the resulting <see cref="ObjectDisposedException"/>/<see cref="IOException"/> and are abandoned.
+    /// </summary>
+    private static async Task DrainReadersAsync(
+        StreamReader stdoutReader,
+        StreamReader stderrReader,
+        Task stdoutTask,
+        Task stderrTask)
+    {
+
+        try
+        {
+
+            await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(ReaderDrainTimeout).ConfigureAwait(false);
+
+        }
+        catch (TimeoutException)
+        {
+
+            CloseQuietly(stdoutReader);
+
+            CloseQuietly(stderrReader);
+
+        }
+
+    }
+
+    private static void CloseQuietly(StreamReader reader)
+    {
+
+        try
+        {
+
+            reader.Close();
+
+        }
+        catch (Exception)
+        {
+
+            // Best-effort: the stream may already be torn down.
 
         }
 

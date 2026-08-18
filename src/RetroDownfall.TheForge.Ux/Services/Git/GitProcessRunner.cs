@@ -158,7 +158,7 @@ public sealed class GitProcessRunner : IGitProcessRunner
 
     }
 
-    private static async Task<(string Text, bool Truncated)> ReadBoundedAsync(
+    internal static async Task<(string Text, bool Truncated)> ReadBoundedAsync(
         StreamReader reader,
         int maxChars,
         CancellationToken cancellationToken)
@@ -239,13 +239,39 @@ public sealed class GitProcessRunner : IGitProcessRunner
         if (truncated)
         {
 
-            builder.Append(Environment.NewLine);
-
-            builder.Append("[output truncated by The Forge]");
+            TrimTrailingPartialLine(builder);
 
         }
 
         return (builder.ToString(), truncated);
+
+    }
+
+    /// <summary>
+    /// Drops everything after the last newline. The cap is a character offset, so it can land mid-line —
+    /// and a half path is still a syntactically valid porcelain row that The Ledger would then offer to
+    /// diff or stage. Truncation is reported through <c>GitProcessResult.StdoutTruncated</c>/
+    /// <c>StderrTruncated</c>; a human-readable notice must never be spliced into the captured output,
+    /// because callers parse it as machine-readable git output.
+    /// </summary>
+    private static void TrimTrailingPartialLine(StringBuilder builder)
+    {
+
+        for (int i = builder.Length - 1; i >= 0; i--)
+        {
+
+            if (builder[i] == '\n')
+            {
+
+                builder.Length = i + 1;
+
+                return;
+
+            }
+
+        }
+
+        builder.Length = 0;
 
     }
 

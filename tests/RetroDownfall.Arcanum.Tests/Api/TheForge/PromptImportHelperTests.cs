@@ -122,6 +122,132 @@ public sealed class PromptImportHelperTests
 
     }
 
+    [Fact]
+    public async Task ImportAsync_NullPayload_ReturnsFailureWithoutTouchingRepository()
+    {
+
+        FakePromptRepository repository = new();
+        using CancellationTokenSource cancellation = new();
+
+        // System.Text.Json does not enforce constructor-parameter nullability, so `{}` on
+        // POST /api/prompts/import binds PromptImportRequest(Payload: null).
+        Result<PromptSummaryDto> result = await PromptImportHelper.ImportAsync(
+            repository,
+            new PromptImportRequest(null!, CampaignId: null),
+            cancellation.Token);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Prompt.InvalidRequest, result.Error.Code);
+        Assert.Null(repository.Added);
+        Assert.Null(repository.LookupName);
+
+    }
+
+    [Theory]
+    [InlineData(null, "1.0.0", ErrorCodes.Prompt.InvalidName)]
+    [InlineData("   ", "1.0.0", ErrorCodes.Prompt.InvalidName)]
+    [InlineData("Named", null, ErrorCodes.Prompt.InvalidVersion)]
+    [InlineData("Named", "  ", ErrorCodes.Prompt.InvalidVersion)]
+    public async Task ImportAsync_MissingIdentity_ReturnsTypedFailureWithoutTouchingRepository(
+        string? name,
+        string? version,
+        string expectedCode)
+    {
+
+        FakePromptRepository repository = new();
+        using CancellationTokenSource cancellation = new();
+        PromptExportDto payload = new(
+            Name: name!,
+            Version: version!,
+            Description: null,
+            Tags: [],
+            Template: "body",
+            ParameterSchema: null,
+            DefaultParameters: null,
+            Model: null,
+            Provider: null,
+            Temperature: null,
+            TopP: null,
+            MaxOutputTokens: null,
+            CampaignId: null);
+
+        Result<PromptSummaryDto> result = await PromptImportHelper.ImportAsync(
+            repository,
+            new PromptImportRequest(payload, CampaignId: null),
+            cancellation.Token);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(expectedCode, result.Error.Code);
+        Assert.Null(repository.Added);
+        Assert.Null(repository.LookupName);
+
+    }
+
+    [Fact]
+    public async Task ImportAsync_NullTemplate_ReturnsFailureWithoutPersisting()
+    {
+
+        FakePromptRepository repository = new();
+        using CancellationTokenSource cancellation = new();
+        PromptExportDto payload = new(
+            Name: "Named",
+            Version: "1.0.0",
+            Description: null,
+            Tags: [],
+            Template: null!,
+            ParameterSchema: null,
+            DefaultParameters: null,
+            Model: null,
+            Provider: null,
+            Temperature: null,
+            TopP: null,
+            MaxOutputTokens: null,
+            CampaignId: null);
+
+        Result<PromptSummaryDto> result = await PromptImportHelper.ImportAsync(
+            repository,
+            new PromptImportRequest(payload, CampaignId: null),
+            cancellation.Token);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Prompt.InvalidRequest, result.Error.Code);
+        Assert.Null(repository.Added);
+
+    }
+
+    [Fact]
+    public async Task ImportAsync_NullTags_PersistsAnEmptyTagArrayRatherThanTheLiteralNull()
+    {
+
+        FakePromptRepository repository = new();
+        using CancellationTokenSource cancellation = new();
+        PromptExportDto payload = new(
+            Name: "Named",
+            Version: "1.0.0",
+            Description: null,
+            Tags: null!,
+            Template: "body",
+            ParameterSchema: null,
+            DefaultParameters: null,
+            Model: null,
+            Provider: null,
+            Temperature: null,
+            TopP: null,
+            MaxOutputTokens: null,
+            CampaignId: null);
+
+        Result<PromptSummaryDto> result = await PromptImportHelper.ImportAsync(
+            repository,
+            new PromptImportRequest(payload, CampaignId: null),
+            cancellation.Token);
+
+        Assert.True(result.IsSuccess);
+
+        Prompt added = Assert.IsType<Prompt>(repository.Added);
+        Assert.Equal("[]", added.Tags);
+
+    }
+
     private sealed class FakePromptRepository : IPromptRepository
     {
 

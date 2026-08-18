@@ -65,14 +65,13 @@ public sealed class CodexReaderTests : IAsyncLifetime
     /// link target's bytes verbatim: FileInfo.Length stats through the link and File.ReadAllTextAsync
     /// follows it. The read must fail closed on symlinks the way every other workspace read does.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public async Task ReadCodexFileAsync_returns_null_for_a_symlinked_codex()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outsideDir = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}");
 

@@ -1,7 +1,9 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Api.OpenAi;
 
@@ -193,6 +195,46 @@ public sealed class OpenAiChatCompletionMapperTests
         Assert.Contains("line two", flat, StringComparison.Ordinal);
 
         Assert.Equal(3, parts!.Count);
+    }
+
+    [Fact]
+    public void ResolveContent_InlineDataUriImage_ElidesPayloadFromFlattenedTextButKeepsItOnThePart()
+    {
+        string dataUri = "data:image/png;base64," + new string('A', 4096);
+
+        OpenAiMessageContent content = OpenAiMessageContent.FromParts(
+        [
+            new OpenAiContentPart("image_url", ImageUrl: new OpenAiImageUrl(dataUri, "auto")),
+        ]);
+
+        (string flat, IReadOnlyList<CoreContentPart>? parts) = OpenAiChatCompletionMapper.ResolveContent(content);
+
+        Assert.Equal("[image: data:image/png;base64,<elided>]", flat);
+
+        Assert.Equal(dataUri, parts![0].ImageUrl);
+    }
+
+    [Fact]
+    public void ToPingRequest_InlineDataUriImage_StaysWithinTheStatelessEntryByteBudget()
+    {
+        // 933 KB of base64 is ~700 KB decoded — comfortably inside Scrying:MaxImageBytes (1 MiB).
+        string dataUri = "data:image/png;base64," + new string('A', 933_000);
+
+        OpenAiChatRequest request = new(
+            Model: "vision",
+            Messages:
+            [
+                new OpenAiChatMessage("user", OpenAiMessageContent.FromParts(
+                [
+                    new OpenAiContentPart("image_url", ImageUrl: new OpenAiImageUrl(dataUri, "high")),
+                ])),
+            ]);
+
+        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(request);
+
+        Result result = PingRequestBoundsValidator.Validate(ping, new ArcanumSettings());
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : string.Empty);
     }
 
     [Fact]

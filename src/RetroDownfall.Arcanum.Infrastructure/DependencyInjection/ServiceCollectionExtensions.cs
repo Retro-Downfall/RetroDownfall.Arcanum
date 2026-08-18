@@ -952,6 +952,10 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient(
                 A2AClientService.OutboundHttpClientName,
                 static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            // A peer's agent-card URL can carry a token in a path segment, and default
+            // IHttpClientFactory logging writes that URI at Information. Only A2AClientService's
+            // own host-only diagnostics are permitted for this named client.
+            .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () =>
                 OutboundUrlGuard.CreateUntrustedEgressHandler(A2AClientService.OutboundConnectTimeout));
         services.AddSingleton<IA2AClientService, A2AClientService>();
@@ -1022,9 +1026,12 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient(
             ArcanumBrowseWebConstants.HttpClientName,
+            // Infinite by design, not by omission: HttpClient.Timeout bounds the whole request and
+            // would cut a slow but still-progressing download, so ArcanumBrowseWebTool imposes an
+            // IDLE deadline of its own (WebBrowsingIdleTimeoutSeconds) around the read instead.
             static client => client.Timeout = Timeout.InfiniteTimeSpan)
-            // Legacy embedder fallback only. URLs may contain credentials in
-            // path/query data, so suppress IHttpClientFactory URI logging.
+            // Browsed URLs may carry credentials in path/query data, so suppress
+            // IHttpClientFactory's URI logging; the tool logs the host only.
             .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
 
@@ -1046,6 +1053,10 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient(
             McpConnectionManager.McpHttpClientName,
             static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            // Hosted MCP endpoints commonly embed their bearer token in a path segment, which
+            // .NET's URI redaction does not strip. Default IHttpClientFactory logging would copy
+            // that token into the rolling log and the ring buffer behind GET /api/logs.
+            .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(sp =>
             {
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
@@ -1122,6 +1133,9 @@ public static class ServiceCollectionExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })
+            // Provider base URLs are operator-supplied and may carry credentials in path/query
+            // data, so suppress IHttpClientFactory URI logging here too.
+            .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () =>
             {
                 SocketsHttpHandler handler = OutboundUrlGuard.CreateProviderEgressHandler();

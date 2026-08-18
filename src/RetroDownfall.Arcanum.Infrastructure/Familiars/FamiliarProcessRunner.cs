@@ -54,19 +54,23 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         Task errorPump = DrainStandardErrorAsync(process, standardError, deadline.Token);
 
+        // Started rather than awaited, for the same reason stderr is pumped: until this returns the
+        // child's stdout is unread, and a folded system prompt is orders of magnitude larger than
+        // any OS pipe buffer. A CLI that emits a frame before it drains its prompt would fill its
+        // own pipe, stop reading, and leave both sides waiting for the other until the deadline.
+        Task standardInputWrite = WriteStandardInputOrTimeoutAsync(
+            process,
+            request,
+            standardError,
+            deadline.Token,
+            cancellationToken);
+
         FamiliarStdoutLineReader reader = new(
             process.StandardOutput,
             FamiliarProcessLimits.MaxLineCharacters);
 
         try
         {
-
-            await WriteStandardInputOrTimeoutAsync(
-                process,
-                request,
-                standardError,
-                deadline.Token,
-                cancellationToken).ConfigureAwait(false);
 
             while (true)
             {
@@ -116,6 +120,10 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
             }
 
+            // Awaited before the exit code is read so a prompt the deadline cut short is reported as
+            // this turn's timeout rather than as whatever the half-fed child happened to exit with.
+            await standardInputWrite.ConfigureAwait(false);
+
             try
             {
 
@@ -148,6 +156,8 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             // what it needs — leaves a CLI with nowhere to write. Reaping here means no Familiar can
             // outlive the turn that asked for it, whether the stream ended, faulted, or was dropped.
             KillQuietly(process);
+
+            await AwaitStandardInputWriteAsync(standardInputWrite).ConfigureAwait(false);
 
         }
 
@@ -202,7 +212,9 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         Task errorPump = DrainStandardErrorAsync(process, standardError, deadline.Token);
 
-        await WriteStandardInputAsync(process, request.StandardInput, deadline.Token).ConfigureAwait(false);
+        // Overlapped with the drain below for the same reason as the streaming path: the probe sends
+        // no stdin today, but any future caller that does would otherwise inherit the same wedge.
+        Task standardInputWrite = WriteStandardInputAsync(process, request.StandardInput, deadline.Token);
 
         StringBuilder standardOutput = new();
 
@@ -229,6 +241,14 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
 
+            await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
+
+            return new FamiliarProcessOutput(
+                process.ExitCode == 0 ? FamiliarProcessFailure.None : FamiliarProcessFailure.NonZeroExit,
+                process.ExitCode,
+                standardOutput.ToString(),
+                ReadTail(standardError));
+
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -240,14 +260,18 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 ReadTail(standardError));
 
         }
+        finally
+        {
 
-        await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
+            // In the finally rather than on each exit, exactly as the streaming path does it. The two
+            // returns above are not the only ways out: a caller that cancels its own token fails the
+            // `when` filter, so the read loop's OperationCanceledException propagates instead — and the
+            // prompt write, whose pipe the teardown registration has just killed the process under,
+            // would be left to surface later as an unobserved faulted task rather than as this turn's
+            // outcome. Cheap on the ordinary path, where the write has long since completed.
+            await AwaitStandardInputWriteAsync(standardInputWrite).ConfigureAwait(false);
 
-        return new FamiliarProcessOutput(
-            process.ExitCode == 0 ? FamiliarProcessFailure.None : FamiliarProcessFailure.NonZeroExit,
-            process.ExitCode,
-            standardOutput.ToString(),
-            ReadTail(standardError));
+        }
 
     }
 
@@ -541,6 +565,27 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+        }
+
+    }
+
+    /// <summary>
+    /// Observes the prompt write on every exit path, including the one where the consumer abandons
+    /// the stream and the teardown above breaks the pipe under it. Left unobserved, its view of that
+    /// same teardown would surface later as an unobserved faulted task instead of as this turn's
+    /// outcome — which the read loop has already decided by the time this runs.
+    /// </summary>
+    private static async Task AwaitStandardInputWriteAsync(Task standardInputWrite)
+    {
+
+        try
+        {
+
+            await standardInputWrite.ConfigureAwait(false);
+
+        }
+        catch (Exception ex) when (ex is FamiliarProcessException or OperationCanceledException or IOException or ObjectDisposedException)
         {
         }
 

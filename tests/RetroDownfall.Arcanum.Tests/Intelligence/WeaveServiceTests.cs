@@ -446,6 +446,149 @@ public sealed class WeaveServiceTests
 
     }
 
+    /// <summary>
+    /// The two clamps are independent — <c>EmbeddingsChunkSizeChars</c> admits 128..8,192 and
+    /// <c>EmbeddingsChunkOverlapChars</c> admits 0..1,024 — so an overlap at or above the resolved chunk
+    /// size is individually legal. Unbounded, the sliding window then advances a single character per
+    /// iteration and a document emits one near-duplicate chunk per character.
+    /// </summary>
+    [Theory]
+    [InlineData(128, 128)]
+    [InlineData(128, 1_024)]
+    [InlineData(1_000, 1_024)]
+    [InlineData(8_192, 8_192)]
+    public void ResolveChunkStep_OverlapAtOrAboveChunkSize_AdvancesByHalfAWindow(
+        int chunkSizeChars,
+        int chunkOverlapChars)
+    {
+
+        int step = WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars);
+
+        Assert.Equal(chunkSizeChars - (chunkSizeChars / 2), step);
+
+    }
+
+    /// <summary>
+    /// The bounded step is what keeps the emitted chunk count within a constant factor of the minimum;
+    /// a one-character step turns a 200 KB source into ~200,000 retained chunks and the batched
+    /// embedding spend that goes with them.
+    /// </summary>
+    [Fact]
+    public void ResolveChunkStep_OverlapAtOrAboveChunkSize_KeepsTheEmittedChunkCountBounded()
+    {
+
+        const int chunkSizeChars = 128;
+
+        const int documentChars = 200_000;
+
+        int step = WeaveService.ResolveChunkStep(chunkSizeChars, 1_024);
+
+        int emitted = ((documentChars - 1) / step) + 1;
+
+        int minimum = ((documentChars - 1) / chunkSizeChars) + 1;
+
+        Assert.True(emitted <= minimum * 2, $"{emitted} chunks emitted for a {minimum}-chunk document.");
+
+    }
+
+    /// <summary>
+    /// The relative bound is half the window rather than <c>chunkSizeChars - 1</c>, and the difference
+    /// is not cosmetic: the two clamps admit an overlap one character below the window, so a
+    /// <c>size - 1</c> bound would leave a 1,000/999 configuration at a one-character step — the same
+    /// one-chunk-per-character blow-up as the overlap-at-or-above-size case, reached by a configuration
+    /// that never trips it. Only a bound proportional to the window keeps the emitted count bounded
+    /// across every legal pair.
+    /// </summary>
+    [Theory]
+    [InlineData(1_000, 999)]
+    [InlineData(1_000, 600)]
+    [InlineData(128, 127)]
+    [InlineData(256, 200)]
+    public void ResolveChunkStep_OverlapBelowChunkSizeButAboveHalf_IsBoundedToHalfAWindow(
+        int chunkSizeChars,
+        int chunkOverlapChars)
+    {
+
+        const int documentChars = 200_000;
+
+        int step = WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars);
+
+        Assert.Equal(chunkSizeChars - (chunkSizeChars / 2), step);
+
+        int emitted = ((documentChars - 1) / step) + 1;
+
+        int minimum = ((documentChars - 1) / chunkSizeChars) + 1;
+
+        Assert.True(emitted <= minimum * 2, $"{emitted} chunks emitted for a {minimum}-chunk document.");
+
+    }
+
+    /// <summary>
+    /// An overlap the window can actually carry is honoured exactly — the relative bound must not
+    /// silently shrink an ordinary configuration.
+    /// </summary>
+    [Theory]
+    [InlineData(1_000, 100, 900)]
+    [InlineData(128, 0, 128)]
+    [InlineData(8_192, 1_024, 7_168)]
+    [InlineData(2_048, 1_024, 1_024)]
+    public void ResolveChunkStep_OverlapWithinHalfTheChunkSize_IsHonouredExactly(
+        int chunkSizeChars,
+        int chunkOverlapChars,
+        int expectedStep)
+    {
+
+        Assert.Equal(expectedStep, WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars));
+
+    }
+
+    /// <summary>
+    /// The bound can only move a chunk boundary for a size/overlap pair that some configuration can
+    /// actually produce, and the chunk pair is code-owned rather than operator-owned:
+    /// <c>EmbeddingIntegrationSettings</c> — the whole of <c>Arcanum:Integrations:Embeddings</c> — carries
+    /// no chunk keys, <c>ArcanumSettings</c> has no embeddings section of its own, and
+    /// <c>ResolveEmbeddings</c> rebuilds both values from <see cref="ArcanumRuntimeDefaults.Embeddings"/>
+    /// on every call regardless of what the operator set. The only reachable pair is the shipped
+    /// 1,000/100, whose step the bound leaves at 900 — the same step the unbounded subtraction produced.
+    /// </summary>
+    [Fact]
+    public void ResolveChunkStep_ForTheOnlyReachableConfiguration_MatchesTheUnboundedStep()
+    {
+
+        // Everything an operator can say about embeddings, said at once.
+        EmbeddingSettings resolved = new ArcanumSettings
+        {
+            Features = new FeatureSettings
+            {
+                Embeddings = true,
+                CodebaseRetrieval = true,
+                Tapestry = true,
+            },
+            Integrations = new IntegrationSettings
+            {
+                Embeddings = new EmbeddingIntegrationSettings
+                {
+                    Provider = "local",
+                    Model = "nomic-embed-text",
+                    Dimensions = 1_536,
+                },
+            },
+        }.ResolveEmbeddings();
+
+        Assert.Equal(ArcanumRuntimeDefaults.Embeddings.ChunkSizeChars, resolved.ChunkSizeChars);
+
+        Assert.Equal(ArcanumRuntimeDefaults.Embeddings.ChunkOverlapChars, resolved.ChunkOverlapChars);
+
+        int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(resolved.ChunkSizeChars);
+
+        int chunkOverlapChars = ArcanumSettingClamps.EmbeddingsChunkOverlapChars(resolved.ChunkOverlapChars);
+
+        Assert.Equal(
+            chunkSizeChars - chunkOverlapChars,
+            WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars));
+
+    }
+
     private static ArcanumSettings EnabledSettings() =>
         new()
         {

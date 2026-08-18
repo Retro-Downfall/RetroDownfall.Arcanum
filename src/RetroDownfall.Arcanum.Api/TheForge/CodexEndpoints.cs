@@ -24,7 +24,7 @@ internal static class CodexEndpoints
     /// codex path is contained against its own root before either touches the file.
     /// </summary>
     private static readonly Error CodexPathNotContained = new(
-        "Codex.PathNotContained",
+        ErrorCodes.Codex.PathNotContained,
         "The CODEX.md path resolves outside its campaign or Grimoire directory.");
 
     public static RouteGroupBuilder MapCodexEndpoints(this RouteGroupBuilder apiGroup)

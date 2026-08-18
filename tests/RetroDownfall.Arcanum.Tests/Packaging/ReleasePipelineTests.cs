@@ -644,4 +644,89 @@ public sealed class ReleasePipelineTests
 
     }
 
+    /// <summary>
+    /// A <c>uses:</c> reference to a tag is a mutable ref: whoever controls the upstream repository
+    /// decides what code it resolves to on the next run (the tj-actions/changed-files class of
+    /// attack). In a workflow that decodes the Developer ID Application private key into a keychain
+    /// and holds <c>contents: write</c>, that is a signing key an upstream compromise can walk off
+    /// with — and a key that signs anything Gatekeeper then trusts on every operator's machine. A
+    /// commit SHA is immutable, so the reference means one specific tree forever.
+    /// </summary>
+    /// <remarks>
+    /// Every workflow, not only the ones that read <c>secrets.</c>. A holder of no secret still
+    /// checks out this repository's source and runs a third-party binary over it on a runner that
+    /// reaches the network, so an upstream compromise gets arbitrary code execution against the
+    /// tree the release is cut from — and the workflow one commit later may be the one that gains
+    /// a secret. The single-maintainer third-party action is the reference the tj-actions threat
+    /// model applies to literally, and it lives in the workflow that builds the native runtime.
+    /// </remarks>
+    [Fact]
+    public void Workflows_pin_every_third_party_action_to_a_commit()
+    {
+
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles())
+        {
+
+            string[] lines = File.ReadAllLines(workflow);
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+
+                string trimmed = lines[i].Trim();
+
+                if (!trimmed.StartsWith("uses:", StringComparison.Ordinal))
+                {
+
+                    continue;
+
+                }
+
+                string reference = trimmed["uses:".Length..].Trim();
+
+                // A local action is this repository's own reviewed code, not an upstream ref.
+                if (reference.StartsWith("./", StringComparison.Ordinal))
+                {
+
+                    continue;
+
+                }
+
+                int at = reference.LastIndexOf('@');
+
+                if (at >= 0 && IsCommitSha(reference[(at + 1)..]))
+                {
+
+                    continue;
+
+                }
+
+                offenders.Add($"{Path.GetFileName(workflow)}:{i + 1}: {reference}");
+
+            }
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A workflow runs an action from a mutable tag, so upstream decides what code executes "
+            + "against this repository's source on the next run. Pin the full 40-character commit "
+            + "SHA and keep the version in a trailing comment:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+
+    }
+
+    private static bool IsCommitSha(string reference)
+    {
+
+        string candidate = reference.Split('#')[0].Trim();
+
+        return candidate.Length == 40
+            && candidate.All(static character =>
+                character is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
+
+    }
+
 }

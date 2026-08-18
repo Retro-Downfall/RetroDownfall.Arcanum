@@ -1040,13 +1040,31 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 .ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
 
+            // LIMIT bounds the row count but not the row sizes, and the caller's tool-output cap only
+            // rejects the finished string — so building past the cap allocates hundreds of megabytes
+            // purely to have them thrown away. The budget is enforced while building instead, and a
+            // row past it is counted without its Content ever being materialized.
+            int budget = (int)Math.Min(
+                ArcanumSettingClamps.ToolOutputCapBytes(
+                    _arcOptions.Value.ResolveIntelligence().ToolOutputCapBytes),
+                int.MaxValue / 2);
+
             StringBuilder sb = new();
 
             bool any = false;
 
+            int omitted = 0;
+
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 any = true;
+
+                if (sb.Length >= budget)
+                {
+                    omitted++;
+
+                    continue;
+                }
 
                 MessageRole role = (MessageRole)reader.GetInt32(0);
 
@@ -1056,12 +1074,30 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                     reader.GetString(2),
                     CultureInfo.InvariantCulture);
 
+                int room = budget - sb.Length;
+
+                bool clipped = content.Length > room;
+
                 _ = sb.Append('[')
                     .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
                     .Append("] ")
                     .Append(role)
                     .Append(": ")
-                    .AppendLine(content);
+                    .Append(clipped ? ClipToBudget(content, room) : content);
+
+                if (clipped)
+                {
+                    _ = sb.Append(" ... [TRUNCATED: this archived entry is larger than the remaining archive-search budget.]");
+                }
+
+                _ = sb.AppendLine();
+            }
+
+            if (omitted > 0)
+            {
+                _ = sb.Append("... [TRUNCATED: ")
+                    .Append(omitted.ToString(CultureInfo.InvariantCulture))
+                    .AppendLine(" further matches were not read; narrow 'query' with more specific keywords to reach them.]");
             }
 
             return any ? sb.ToString().TrimEnd() : "No matching archives found.";
@@ -1072,6 +1108,19 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
             return "Archive search could not run for that input. Try simpler keywords (letters, numbers, spaces).";
         }
+    }
+
+    /// <summary>Clips to the remaining budget without splitting a surrogate pair.</summary>
+    private static string ClipToBudget(string content, int room)
+    {
+        int length = Math.Clamp(room, 0, content.Length);
+
+        if (length > 0 && char.IsHighSurrogate(content[length - 1]))
+        {
+            length--;
+        }
+
+        return content[..length];
     }
 
     public async Task<List<Guid>> GetSessionsNeedingSummarizationAsync(

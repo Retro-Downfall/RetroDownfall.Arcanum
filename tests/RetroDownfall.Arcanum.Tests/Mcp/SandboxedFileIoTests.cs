@@ -53,16 +53,13 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryOpenForRead_rejects_symlink_to_outside_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string linkPath = Path.Combine(_workspace.Root, "escape-link.txt");
 
@@ -235,16 +232,89 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// An overwrite carries the destination's UTF-8 BOM across, as the other write paths do.
+    /// </summary>
+    /// <remarks>
+    /// <c>SecureFileReader.ReadUtf8TextAsync</c> strips the preamble before handing the model any
+    /// text, so a read_file/write_file round-trip through MCP used to silently strip the BOM from
+    /// every file that had one — an unrequested re-encoding the model never asked for.
+    /// <c>PhysicalFileSystemWriter</c> and <c>WorkspaceTextFile</c> both preserve it; this was the
+    /// last write path that did not.
+    /// </remarks>
     [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_preserves_an_existing_utf8_bom()
+    {
+
+        string target = Path.Combine(_workspace.Root, "bom.txt");
+
+        byte[] preamble = [0xEF, 0xBB, 0xBF];
+
+        await File.WriteAllBytesAsync(target, [.. preamble, .. "original"u8.ToArray()]);
+
+        (bool success, _) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            target,
+            "replacement",
+            CancellationToken.None);
+
+        Assert.True(success);
+
+        byte[] expected = [.. preamble, .. "replacement"u8.ToArray()];
+
+        Assert.Equal(expected, await File.ReadAllBytesAsync(target));
+
+    }
+
+    /// <summary>
+    /// A destination without a BOM never gains one, and a caller who supplies the preamble himself
+    /// does not get it twice.
+    /// </summary>
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_never_introduces_or_doubles_a_preamble()
+    {
+
+        string plain = Path.Combine(_workspace.Root, "plain.txt");
+
+        await File.WriteAllBytesAsync(plain, "original"u8.ToArray());
+
+        (bool plainWritten, _) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            plain,
+            "replacement",
+            CancellationToken.None);
+
+        Assert.True(plainWritten);
+
+        Assert.Equal("replacement"u8.ToArray(), await File.ReadAllBytesAsync(plain));
+
+        byte[] preamble = [0xEF, 0xBB, 0xBF];
+
+        string bommed = Path.Combine(_workspace.Root, "double.txt");
+
+        await File.WriteAllBytesAsync(bommed, [.. preamble, .. "original"u8.ToArray()]);
+
+        (bool bommedWritten, _) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            bommed,
+            "\uFEFFreplacement",
+            CancellationToken.None);
+
+        Assert.True(bommedWritten);
+
+        byte[] expected = [.. preamble, .. "replacement"u8.ToArray()];
+
+        Assert.Equal(expected, await File.ReadAllBytesAsync(bommed));
+
+    }
+
+    [SkippableFact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_existing_hard_link()
     {
 
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Unsupported operating system.");
 
         string target = Path.Combine(_workspace.Root, "linked-write.txt");
 
@@ -622,16 +692,13 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryGetPathIdentity_MatchesHandleIdentity_OnUnix()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string target = Path.Combine(_workspace.Root, "identity.txt");
 

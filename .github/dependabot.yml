@@ -1,0 +1,11 @@
+version: 2
+
+# Actions are pinned to commit SHAs so an upstream tag repoint cannot change what runs beside the
+# Developer ID signing key. A pinned SHA never picks up an upstream security fix on its own, so the
+# pin is only half the arrangement: this is the other half, turning every bump into a reviewed PR.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

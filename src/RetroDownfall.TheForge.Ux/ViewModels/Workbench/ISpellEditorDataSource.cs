@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 
@@ -36,7 +37,7 @@ public interface ISpellEditorDataSource
 
     Task<DataSourceResult<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken);
 
-    Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken);
+    Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<string>> ListSpellNamesAsync(string? workspace, CancellationToken cancellationToken);
 

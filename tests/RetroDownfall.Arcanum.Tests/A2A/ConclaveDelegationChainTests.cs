@@ -160,4 +160,69 @@ public sealed class ConclaveDelegationChainTests
 
     }
 
+    [Fact]
+    public void Read_DoesNotMaterializeMoreHopsThanTheParseCeilingAllows()
+    {
+
+        // A hop is one opaque node id, and the chain is persisted onto the Apprentice checkpoint and
+        // re-emitted onto every onward Sending. Under the 10 MiB inbound body ceiling a peer can supply
+        // hundreds of thousands of them, so what the parse refuses is the materialization, not the
+        // delegation depth: no legitimate chain — one real Arcanum instance per hop — comes near this.
+        string[] flood = [.. Enumerable.Range(0, (ConclaveDelegationChain.MaxParsedHops * 2) + 7).Select(static index => $"node-{index}")];
+
+        Assert.Equal(
+            ConclaveDelegationChain.MaxParsedHops,
+            ConclaveDelegationChain.Read(MetadataFor(flood)).Length);
+
+    }
+
+    [Fact]
+    public void Read_SkipsAnEntryNoNodeIdCouldBe()
+    {
+
+        string oversized = new('a', ConclaveDelegationChain.MaxHopLength + 1);
+
+        Assert.Equal(
+            ["node-a", "node-b"],
+            ConclaveDelegationChain.Read(MetadataFor(["node-a", oversized, "node-b"])));
+
+    }
+
+    [Fact]
+    public void Read_StillProvesTheLoopWhenThisNodeSitsBeyondTheParseCeiling()
+    {
+
+        // Truncation must never turn a refusal into an accepted cycle: the whole point of the chain is
+        // that a Sending which has already passed through this instance is refused, and a hostile peer
+        // that pads the chain past the ceiling would otherwise buy itself exactly that.
+        string[] padded =
+        [
+            .. Enumerable.Range(0, ConclaveDelegationChain.MaxParsedHops + 50).Select(static index => $"node-{index}"),
+            ConclaveDelegationChain.NodeId,
+        ];
+
+        string[] read = ConclaveDelegationChain.Read(MetadataFor(padded));
+
+        Assert.True(read.Length <= ConclaveDelegationChain.MaxParsedHops + 1);
+
+        Assert.True(ConclaveDelegationChain.ContainsSelf(read));
+
+    }
+
+    private static Dictionary<string, JsonElement> MetadataFor(string[] chain)
+    {
+
+        Message message = new()
+        {
+            Role = Role.User,
+            MessageId = "m1",
+            Parts = [Part.FromText("goal")],
+        };
+
+        ConclaveDelegationChain.Write(message, chain);
+
+        return new Dictionary<string, JsonElement>(message.Metadata!);
+
+    }
+
 }

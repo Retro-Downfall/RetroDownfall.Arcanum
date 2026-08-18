@@ -236,6 +236,124 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Empty(grimoire.DiscardedAssistantEntryIds);
     }
 
+    /// <summary>
+    /// Deferring the turn to the next candidate assumes a next candidate actually reaches inference.
+    /// The per-candidate reasoning gate runs at the top of the loop and returns outright, so a
+    /// heterogeneous candidate list can defer on A and then never run B — leaving the seeded Session
+    /// and its empty assistant <c>Entry</c> in flight with nothing left to resolve them.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_resolves_a_deferred_turn_when_no_later_candidate_runs()
+    {
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        providerA.Models = [ReasoningModelEntry()];
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        ScriptingChatClient chatA = new();
+
+        chatA.EnqueueException(new HttpRequestException("connection refused during buffered inference"));
+
+        RecordingChatClientFactory factory = new();
+
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        FakeGrimoireRepository grimoire = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            tracker,
+            withHealthTracker: true,
+            grimoire,
+            providerA,
+            providerB);
+
+        PingRequest request = BaseRequest() with
+        {
+
+            Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
+
+        };
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            request,
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        // Candidate B never reached provider I/O — it failed its own capability gate first.
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, result.Error.Code);
+
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+
+        _ = Assert.Single(grimoire.BeginCalls);
+
+        // Nobody else can resolve the handle candidate A deferred, so the run itself must.
+        _ = Assert.Single(grimoire.DiscardedAssistantEntryIds);
+
+    }
+
+    /// <summary>
+    /// Streaming mirrors the buffered leak: the fallback loop's reasoning gate <c>yield break</c>s
+    /// before the next candidate reaches inference, so the deferred handle has to be resolved by the
+    /// run rather than by a candidate that never arrives.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_resolves_a_deferred_turn_when_no_later_candidate_runs()
+    {
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        providerA.Models = [ReasoningModelEntry()];
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        ScriptingChatClient chatA = new();
+
+        chatA.EnqueueStreamException(new HttpRequestException("connection refused"));
+
+        RecordingChatClientFactory factory = new();
+
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        FakeGrimoireRepository grimoire = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            tracker,
+            withHealthTracker: true,
+            grimoire,
+            providerA,
+            providerB);
+
+        PingRequest request = BaseRequest() with
+        {
+
+            Reasoning = new ReasoningRequestOptions(Effort: ReasoningEffortLevel.High),
+
+        };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+        IntelligenceEvent error = Assert.Single(events, static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, error.Data);
+
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+
+        _ = Assert.Single(grimoire.BeginCalls);
+
+        _ = Assert.Single(grimoire.DiscardedAssistantEntryIds);
+
+    }
+
     [Fact]
     public async Task ExecutePromptAsync_LeaseBuildFailure_NonConnectivity_DoesNotMarkProviderUnhealthy_OrRetry()
     {

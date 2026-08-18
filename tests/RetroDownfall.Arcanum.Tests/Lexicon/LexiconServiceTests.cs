@@ -1,3 +1,8 @@
+using System.Collections;
+using System.Data;
+using System.Data.Common;
+using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -250,6 +255,54 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// <c>DELETE /api/memory/lexicon/{name}</c> hands the handler <c>context.RequestAborted</c>, so an
+    /// aborted request cancels the token while <c>BEGIN IMMEDIATE</c> already holds the RESERVED write
+    /// lock. Issuing the <c>ROLLBACK</c> on that same token means <c>ExecuteNonQueryAsync</c> returns a
+    /// cancelled task before any SQL is sent, so the deterministic release the code exists to perform
+    /// never happens and the transaction is stranded on the pooled context's shared connection.
+    /// </summary>
+    [SkippableFact]
+    public async Task DeleteByNameAsync_RollsBackWhenTheCallerCancelsMidTransaction()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _service!.UpsertAsync("Abandoned", "Project", ["Written before the abort."], CancellationToken.None);
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        using CancellationTokenSource cts = new();
+
+        bool armed = true;
+
+        // SQLite's trace hook fires while BEGIN IMMEDIATE is executing — after DbCommand has already
+        // checked the token — so the write lock is genuinely taken and only the statements after it
+        // observe the cancellation. That is exactly the aborted-request window.
+        strdelegate_trace trace = (object _, string statement) =>
+        {
+
+            if (armed && statement.Contains("BEGIN IMMEDIATE", StringComparison.Ordinal))
+            {
+
+                armed = false;
+
+                cts.Cancel();
+
+            }
+
+        };
+
+        raw.sqlite3_trace(connection.Handle, trace, null);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _service.DeleteByNameAsync("abandoned", cts.Token));
+
+        // sqlite3_get_autocommit returns 0 while an explicit transaction is open.
+        Assert.NotEqual(0, raw.sqlite3_get_autocommit(connection.Handle));
+
+    }
+
     [SkippableFact]
     public async Task MatchEntitiesAsync_ExactNameHitsSurfaceBeforeFtsHits()
     {
@@ -456,6 +509,77 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// Provenance is written only when a call carries an attachment, and facts are append-only, so an
+    /// upsert that leaves the provenance rows exactly as they already are has nothing to write. The
+    /// write path deleted every row for the entry and re-inserted the survivors one freshly-prepared
+    /// statement at a time regardless — inside the <c>BEGIN IMMEDIATE</c> critical section, on every
+    /// single upsert. The Unseen Servant rewrites its <c>daemon_state</c> entry on every waking cycle
+    /// and that entry is never deletable, so the churn has no bound.
+    /// </summary>
+    [SkippableFact]
+    public async Task UpsertAsync_DoesNotRewriteProvenanceWhenNothingAboutItChanged()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        AttachmentMemoryProvenance provenance = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "notes.md",
+            1,
+            "content-hash",
+            DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+            "WorkspaceFile",
+            AttachmentSourceAvailability.Available);
+
+        Result<LexiconEntryDto> seeded = await _service!.UpsertAsync(
+            "Aetherium",
+            "Project",
+            ["Ships on Tuesday."],
+            provenance,
+            CancellationToken.None);
+
+        Assert.True(seeded.IsSuccess);
+
+        List<string> statements = CaptureStatements();
+
+        // Same entity, same fact, same attachment: the stored rows already say exactly this.
+        Result<LexiconEntryDto> repeated = await _service.UpsertAsync(
+            "Aetherium",
+            "Project",
+            ["Ships on Tuesday."],
+            provenance,
+            CancellationToken.None);
+
+        Assert.True(repeated.IsSuccess);
+
+        // And an append with no attachment at all — the daemon's shape — leaves provenance untouched.
+        Result<LexiconEntryDto> appended = await _service.UpsertAsync(
+            "Aetherium",
+            "Project",
+            ["Also ships on Wednesday."],
+            CancellationToken.None);
+
+        Assert.True(appended.IsSuccess);
+
+        Assert.DoesNotContain(statements, IsProvenanceWrite);
+
+        Result<LexiconEntryDto?> reloaded = await _service.GetByNameAsync("Aetherium", CancellationToken.None);
+
+        LexiconFactProvenance surviving = Assert.Single(reloaded.Value!.FactProvenance ?? []);
+
+        Assert.Equal("Ships on Tuesday.", surviving.Fact);
+
+        Assert.Equal(provenance.AttachmentId, surviving.Source.AttachmentId);
+
+    }
+
+    private static bool IsProvenanceWrite(string statement) =>
+        statement.Contains("lexicon_fact_attachment_provenance", StringComparison.Ordinal)
+        && (statement.Contains("DELETE", StringComparison.Ordinal)
+            || statement.Contains("INSERT", StringComparison.Ordinal));
+
     [SkippableFact]
     public async Task ListAsync_HydratesProvenanceForEveryEntityWithOneQuery()
     {
@@ -579,5 +703,168 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     private static int CountProvenanceQueries(List<string> statements) =>
         statements.Count(static statement =>
             statement.Contains("lexicon_fact_attachment_provenance", StringComparison.Ordinal));
+
+    /// <summary>
+    /// A rollback that fails in an unanticipated way must not replace the failure that caused it.
+    /// </summary>
+    /// <remarks>
+    /// Both callers are shaped <c>catch { await TryRollbackAsync(...); throw; }</c>, and an exception
+    /// raised inside a catch block discards the one being handled. The outer handler would then see the
+    /// rollback's exception instead of the real failure — and because it filters on
+    /// <c>ex is not OperationCanceledException</c>, an aborted request whose rollback threw would stop
+    /// being reported as a cancellation and start being reported as a generic Lexicon write failure.
+    /// Best-effort has to mean best-effort for every failure kind, not for three enumerated ones.
+    /// </remarks>
+    [Fact]
+    public async Task A_rollback_that_fails_unexpectedly_never_replaces_the_original_failure()
+    {
+
+        MethodInfo rollback = typeof(LexiconService).GetMethod(
+                "TryRollbackAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("TryRollbackAsync is no longer where this suite expects it.");
+
+        using HostileConnection connection = new();
+
+        // NotSupportedException is neither one of the three anticipated kinds nor derived from any.
+        await (Task)rollback.Invoke(_service!, [connection, "entity"])!;
+
+        Assert.True(connection.RollbackAttempted);
+
+    }
+
+    /// <summary>
+    /// A connection whose command execution fails in a way the rollback's author did not enumerate.
+    /// </summary>
+    private sealed class HostileConnection : DbConnection
+    {
+
+        public bool RollbackAttempted { get; private set; }
+
+        [AllowNull]
+        public override string ConnectionString { get; set; } = string.Empty;
+
+        public override string Database => string.Empty;
+
+        public override string DataSource => string.Empty;
+
+        public override string ServerVersion => string.Empty;
+
+        public override ConnectionState State => ConnectionState.Open;
+
+        public override void ChangeDatabase(string databaseName) => throw new NotSupportedException();
+
+        public override void Close()
+        {
+        }
+
+        public override void Open()
+        {
+        }
+
+        protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) =>
+            throw new NotSupportedException();
+
+        protected override DbCommand CreateDbCommand()
+        {
+
+            RollbackAttempted = true;
+
+            return new HostileCommand(this);
+
+        }
+
+    }
+
+    private sealed class HostileCommand(DbConnection connection) : DbCommand
+    {
+
+        [AllowNull]
+        public override string CommandText { get; set; } = string.Empty;
+
+        public override int CommandTimeout { get; set; }
+
+        public override CommandType CommandType { get; set; } = CommandType.Text;
+
+        public override bool DesignTimeVisible { get; set; }
+
+        public override UpdateRowSource UpdatedRowSource { get; set; }
+
+        protected override DbConnection? DbConnection { get; set; } = connection;
+
+        protected override DbParameterCollection DbParameterCollection { get; } = new HostileParameterCollection();
+
+        protected override DbTransaction? DbTransaction { get; set; }
+
+        public override void Cancel()
+        {
+        }
+
+        public override int ExecuteNonQuery() =>
+            throw new NotSupportedException("The provider refused the statement outright.");
+
+        public override object? ExecuteScalar() => throw new NotSupportedException();
+
+        public override void Prepare() => throw new NotSupportedException();
+
+        protected override DbParameter CreateDbParameter() => throw new NotSupportedException();
+
+        protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) =>
+            throw new NotSupportedException();
+
+    }
+
+    private sealed class HostileParameterCollection : DbParameterCollection
+    {
+
+        private readonly List<object> _items = [];
+
+        public override int Count => _items.Count;
+
+        public override object SyncRoot => _items;
+
+        public override int Add(object value)
+        {
+
+            _items.Add(value);
+
+            return _items.Count - 1;
+
+        }
+
+        public override void AddRange(Array values) => throw new NotSupportedException();
+
+        public override void Clear() => _items.Clear();
+
+        public override bool Contains(object value) => _items.Contains(value);
+
+        public override bool Contains(string value) => false;
+
+        public override void CopyTo(Array array, int index) => throw new NotSupportedException();
+
+        public override IEnumerator GetEnumerator() => _items.GetEnumerator();
+
+        public override int IndexOf(object value) => _items.IndexOf(value);
+
+        public override int IndexOf(string parameterName) => -1;
+
+        public override void Insert(int index, object value) => _items.Insert(index, value);
+
+        public override void Remove(object value) => _items.Remove(value);
+
+        public override void RemoveAt(int index) => _items.RemoveAt(index);
+
+        public override void RemoveAt(string parameterName) => throw new NotSupportedException();
+
+        protected override DbParameter GetParameter(int index) => throw new NotSupportedException();
+
+        protected override DbParameter GetParameter(string parameterName) => throw new NotSupportedException();
+
+        protected override void SetParameter(int index, DbParameter value) => throw new NotSupportedException();
+
+        protected override void SetParameter(string parameterName, DbParameter value) =>
+            throw new NotSupportedException();
+
+    }
 
 }

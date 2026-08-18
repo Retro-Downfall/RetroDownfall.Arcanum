@@ -595,9 +595,27 @@ public static class GrimoireDatabaseBootstrapper
             context,
             cancellationToken).ConfigureAwait(false);
 
-        CovenantAvailabilitySnapshot published = scope.ServiceProvider
-            .GetRequiredService<CovenantAvailability>()
+        CovenantAvailability covenantAvailability = scope.ServiceProvider
+            .GetRequiredService<CovenantAvailability>();
+
+        CovenantAvailabilitySnapshot published = covenantAvailability
             .PublishSchema(result, CovenantHealthTransition.Bootstrap);
+
+        // PublishSchema only reports which tiers installed. The dataset generation, the sequences and
+        // the accelerator's applied tuple are persisted in covenant_state, and until they are read
+        // the snapshot keeps its bootstrap default of a null DatasetGeneration — on which
+        // CovenantOperationGate refuses every requireCanonical acquisition, which AcquireOrdinary
+        // always is. Publishing here, after the install transactions commit and before readiness, is
+        // what makes the ordinary Covenant path reachable at all; it is also the correct ordering,
+        // since a generation published earlier could name a transaction that then rolled back.
+        published = await CovenantPersistedAvailabilityPublisher.PublishAsync(
+                covenantAvailability,
+                installConnection,
+                result.CovenantAccelerator.IsHealthy,
+                CovenantHealthTransition.Bootstrap,
+                cancellationToken).ConfigureAwait(false)
+            ? covenantAvailability.Current
+            : published;
 
         // Authority publication and envelope key derivation happen after the install transactions
         // commit and before readiness. Publishing earlier would leave the process asserting a
@@ -816,7 +834,7 @@ public static class GrimoireDatabaseBootstrapper
         if (GrimoireKdfSidecarFile.Exists(dbPath))
         {
 
-            GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(dbPath);
+            GrimoireKdfSidecar sidecar = ReadSidecarOrFailClosed(dbPath);
 
             string secret = await ResolveActiveSecretAsync(secretStore).ConfigureAwait(false);
 
@@ -845,6 +863,53 @@ public static class GrimoireDatabaseBootstrapper
         }
 
         return await CreateNewDatabaseSecretAsync(secretStore, dbPath, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Reads the KDF sidecar, turning a damaged one into a Grimoire-unavailable failure that names
+    /// the file the operator has to restore.
+    /// </summary>
+    /// <remarks>
+    /// The sidecar holds the only copy of the salt, and truncation or byte damage is what it
+    /// actually suffers. <c>GrimoireKdfSidecarFile.Read</c> already normalizes that into
+    /// <see cref="InvalidDataException"/>, but letting it escape raw put the startup failure into
+    /// <c>CliFailureMapper</c>'s default arm, which prints "An unexpected CLI error occurred." and
+    /// names nothing — on the one path that cannot continue without this file. This mirrors what
+    /// <see cref="ResolveActiveSecretAsync"/> does for a missing or undecryptable grimoire-key.dat.
+    /// </remarks>
+    private static GrimoireKdfSidecar ReadSidecarOrFailClosed(string dbPath)
+    {
+
+        try
+        {
+
+            return GrimoireKdfSidecarFile.Read(dbPath);
+
+        }
+        catch (Exception ex) when (
+            ex is InvalidDataException
+                or NotSupportedException
+                or FileNotFoundException
+                or IOException
+                or UnauthorizedAccessException)
+        {
+
+            Log.Fatal(
+                ex,
+                "The Grimoire KDF sidecar at {SidecarPath} exists but cannot be read ({Message}). "
+                + "It holds the only copy of the salt the database was keyed with, so the Grimoire cannot be opened without it. "
+                + "Restore arcanum.db.kdf from backup alongside the arcanum.db it belongs to, "
+                + "run 'arcanum backup restore' against a verified .arcbackup generation, "
+                + "or reset the Grimoire (delete arcanum.db and arcanum.db.kdf under ~/.config/arcanum/) to start fresh — session data is otherwise unrecoverable.",
+                GrimoireKdfSidecarFile.GetSidecarPath(dbPath),
+                ex.Message);
+
+            throw new GrimoireDatabaseUnavailableException(
+                "The Grimoire KDF sidecar (arcanum.db.kdf) exists but cannot be read. See logs for recovery steps.",
+                ex);
+
+        }
 
     }
 

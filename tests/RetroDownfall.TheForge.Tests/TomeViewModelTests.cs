@@ -442,7 +442,13 @@ public class TomeViewModelTests
             ForkedSession = NewSession("Fork", forkedId),
         };
 
-        TomeViewModel viewModel = new(SessionId, dataSource, navigation, new FoundryFloorViewModel(new NullLogService()), new FakeClipboardService());
+        TomeViewModel viewModel = new(
+            SessionId,
+            dataSource,
+            navigation,
+            new FoundryFloorViewModel(new NullLogService()),
+            new FakeClipboardService(),
+            new ScriptedConfirmationDialogService(confirm: true));
 
         await viewModel.LoadAsync(CancellationToken.None);
 
@@ -690,16 +696,73 @@ public class TomeViewModelTests
     // AppendEntryIfNew backfill during SSE observation is not unit-tested here — the path is private
     // and only reachable mid-stream; RefreshEntries is the identity source of truth (see above).
 
+    [Fact]
+    public async Task DeleteEntry_WhenDeclined_KeepsTheEntry()
+    {
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+        };
+
+        ScriptedConfirmationDialogService confirmation = new(confirm: false);
+
+        TomeViewModel viewModel = CreateViewModel(dataSource, confirmation: confirmation);
+
+        ChatMessageViewModel message = new("assistant", "irreplaceable transcript turn", entryId: Guid.NewGuid());
+
+        viewModel.Messages.Add(message);
+
+        // Removing a transcript entry is not undoable from the Tome, so it must be confirmed.
+        await viewModel.DeleteEntryAsync(message, CancellationToken.None);
+
+        Assert.Null(dataSource.LastDeletedEntryId);
+
+        Assert.Single(confirmation.Prompts);
+
+        Assert.Contains(message, viewModel.Messages);
+
+    }
+
+    [Fact]
+    public async Task DeleteEntry_WhenConfirmed_RemovesTheEntry()
+    {
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+        };
+
+        TomeViewModel viewModel = CreateViewModel(
+            dataSource,
+            confirmation: new ScriptedConfirmationDialogService(confirm: true));
+
+        Guid entryId = Guid.NewGuid();
+
+        ChatMessageViewModel message = new("assistant", "disposable", entryId: entryId);
+
+        viewModel.Messages.Add(message);
+
+        await viewModel.DeleteEntryAsync(message, CancellationToken.None);
+
+        Assert.Equal(entryId, dataSource.LastDeletedEntryId);
+
+        Assert.DoesNotContain(message, viewModel.Messages);
+
+    }
+
     private static TomeViewModel CreateViewModel(
         FakeTomeDataSource dataSource,
         FoundryFloorViewModel? foundryFloor = null,
-        FakeClipboardService? clipboard = null) =>
+        FakeClipboardService? clipboard = null,
+        IConfirmationDialogService? confirmation = null) =>
         new(
             SessionId,
             dataSource,
             new NavigationService(),
             foundryFloor ?? new FoundryFloorViewModel(new NullLogService()),
-            clipboard ?? new FakeClipboardService());
+            clipboard ?? new FakeClipboardService(),
+            confirmation ?? new ScriptedConfirmationDialogService(confirm: true));
 
     private static SessionDetailDto NewSession(string title = "Session", Guid? id = null) =>
         new(
@@ -827,8 +890,16 @@ public class TomeViewModelTests
         public Task<DataSourceResult<bool>> UnpinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
             Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
 
-        public Task<DataSourceResult<bool>> DeleteEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
-            Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
+        public Guid? LastDeletedEntryId { get; private set; }
+
+        public Task<DataSourceResult<bool>> DeleteEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken)
+        {
+
+            LastDeletedEntryId = entryId;
+
+            return Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
+
+        }
 
         public Task<DataSourceResult<CompactResult>> CompactAsync(Guid id, CancellationToken cancellationToken)
         {

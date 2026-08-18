@@ -532,20 +532,27 @@ internal sealed class ApprenticeService(
 
         ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
 
-        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
         {
             CurrentStep = apprentice.CurrentStep,
-            ConversationSummary = existing?.ConversationSummary,
-            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
             Timestamp = DateTimeOffset.UtcNow,
-            EscalationReason = existing?.EscalationReason,
             DmGuidance = guidance,
-            ParentApprenticeId = existing?.ParentApprenticeId,
         });
 
         apprentice.ErrorMessage = null;
 
     }
+
+    /// <summary>
+    /// The base every checkpoint rewrite must build on. Rewrites go through <c>with</c> on this value rather
+    /// than a fresh initializer so that a member the rewriting path does not name is carried forward instead
+    /// of silently reset — <see cref="ApprenticeCheckpoint.DelegationChain"/> is the only durable carrier of
+    /// the A2A delegation lineage, and <c>ConclaveDelegationChain.ContainsSelf</c> at the receiving peer is
+    /// the sole cycle guard (issue #55 forbids a hop ceiling), so losing it on a step boundary makes every
+    /// later dispatch loop-blind.
+    /// </summary>
+    private static ApprenticeCheckpoint RebaseCheckpoint(ApprenticeCheckpoint? existing) =>
+        existing ?? new ApprenticeCheckpoint();
 
     public IAsyncEnumerable<ApprenticeEvent> SubscribeChronicleAsync(
         Guid apprenticeId,
@@ -579,15 +586,11 @@ internal sealed class ApprenticeService(
 
                 ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
 
-                apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+                apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
                 {
                     CurrentStep = apprentice.CurrentStep,
-                    ConversationSummary = existing?.ConversationSummary,
-                    CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
                     Timestamp = DateTimeOffset.UtcNow,
                     EscalationReason = reason,
-                    DmGuidance = existing?.DmGuidance,
-                    ParentApprenticeId = existing?.ParentApprenticeId,
                 });
 
                 await repo.UpdateAsync(apprentice, stoppingToken).ConfigureAwait(false);
@@ -1590,15 +1593,11 @@ internal sealed class ApprenticeService(
 
         ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
 
-        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
         {
             CurrentStep = apprentice.CurrentStep,
-            ConversationSummary = existing?.ConversationSummary,
-            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
             Timestamp = DateTimeOffset.UtcNow,
             EscalationReason = sanitized,
-            DmGuidance = existing?.DmGuidance,
-            ParentApprenticeId = existing?.ParentApprenticeId,
         });
 
         await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
@@ -1800,15 +1799,11 @@ internal sealed class ApprenticeService(
 
         ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
 
-        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
         {
             CurrentStep = apprentice.CurrentStep,
-            ConversationSummary = existing?.ConversationSummary,
-            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
             Timestamp = DateTimeOffset.UtcNow,
-            EscalationReason = existing?.EscalationReason,
             DmGuidance = null,
-            ParentApprenticeId = existing?.ParentApprenticeId,
         });
 
         await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
@@ -2085,15 +2080,11 @@ internal sealed class ApprenticeService(
 
         ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
 
-        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
         {
             CurrentStep = groupEnd,
-            ConversationSummary = existing?.ConversationSummary,
-            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
             Timestamp = DateTimeOffset.UtcNow,
-            EscalationReason = existing?.EscalationReason,
             DmGuidance = null,
-            ParentApprenticeId = existing?.ParentApprenticeId,
         });
 
         await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
@@ -2378,6 +2369,15 @@ internal sealed class ApprenticeService(
         IReadOnlyList<Guid> childIds,
         CancellationToken cancellationToken)
     {
+        // cast_sending builds its ConclaveCastRequest without a delegation chain, so this stamping pass is
+        // where a locally cast child inherits the caller's A2A lineage — exactly as it inherits the caller's
+        // id. Without it a grandchild of an inbound Sending dispatches with an empty chain and the peer that
+        // originated the work cannot recognise itself in it.
+        IReadOnlyList<string>? inheritedChain = await ReadDelegationChainAsync(
+            repo,
+            parentApprenticeId,
+            cancellationToken).ConfigureAwait(false);
+
         foreach (Guid childId in childIds)
         {
             try
@@ -2395,15 +2395,11 @@ internal sealed class ApprenticeService(
 
                 child.ParentApprenticeId = parentApprenticeId;
 
-                child.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+                child.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
                 {
-                    CurrentStep = existing?.CurrentStep ?? 0,
-                    ConversationSummary = existing?.ConversationSummary,
-                    CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
                     Timestamp = DateTimeOffset.UtcNow,
-                    EscalationReason = existing?.EscalationReason,
-                    DmGuidance = existing?.DmGuidance,
                     ParentApprenticeId = parentApprenticeId,
+                    DelegationChain = existing?.DelegationChain is { Count: > 0 } own ? own : inheritedChain,
                 });
 
                 await repo.UpdateAsync(child, cancellationToken).ConfigureAwait(false);
@@ -2443,6 +2439,44 @@ internal sealed class ApprenticeService(
                 logger.LogWarning(ex, "Failed to stamp Cast Sending lineage for child {ChildId}.", childId);
 
             }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Reads an Apprentice's persisted A2A delegation chain, normalising "absent" and "empty" to
+    /// <see langword="null"/> so purely local work never has a chain invented for it. Best-effort: a read
+    /// failure yields no chain rather than failing the step that is stamping lineage.
+    /// </summary>
+    private async Task<IReadOnlyList<string>?> ReadDelegationChainAsync(
+        IApprenticeRepository repo,
+        Guid apprenticeId,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
+
+            ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice?.CheckpointData);
+
+            return checkpoint?.DelegationChain is { Count: > 0 } chain ? chain : null;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(ex, "Failed to read the delegation chain for Apprentice {ApprenticeId}.", apprenticeId);
+
+            return null;
 
         }
 

@@ -21,6 +21,12 @@ public sealed class ApiKeyResolver
 
     public const string EnvironmentVariableName = "THEFORGE_ARCANUM_KEY";
 
+    /// <summary>Shortest value accepted from <c>arcanum key show</c> before it is written to the OS store.</summary>
+    internal const int MinRecoveredKeyLength = 8;
+
+    /// <summary>Longest value accepted from <c>arcanum key show</c> before it is written to the OS store.</summary>
+    internal const int MaxRecoveredKeyLength = 512;
+
     private readonly IOsCredentialStore _osStore;
 
     private readonly ITheForgeSettingsStore _settingsStore;
@@ -128,10 +134,22 @@ public sealed class ApiKeyResolver
 
         }
 
+        string recovered = shelledOutKey.Trim();
+
+        if (!IsPlausibleApiKey(recovered))
+        {
+
+            _logger.LogWarning(
+                "`arcanum key show` returned a value that does not look like a master API key; it was not persisted.");
+
+            return new ApiKeyResolution(null, IsSessionOnly: false);
+
+        }
+
         OsCredentialStoreResult persist = _osStore.Set(
             ArcanumCredentialIdentity.Service,
             ArcanumCredentialIdentity.MasterApiKeyAccount,
-            shelledOutKey);
+            recovered);
 
         if (persist.Status != OsCredentialStoreStatus.Ok)
         {
@@ -140,11 +158,11 @@ public sealed class ApiKeyResolver
                 "`arcanum key show` succeeded but OS store persist failed: {Message}",
                 persist.Message);
 
-            return new ApiKeyResolution(shelledOutKey, IsSessionOnly: true);
+            return new ApiKeyResolution(recovered, IsSessionOnly: true);
 
         }
 
-        return new ApiKeyResolution(shelledOutKey, IsSessionOnly: false);
+        return new ApiKeyResolution(recovered, IsSessionOnly: false);
 
     }
 
@@ -209,8 +227,118 @@ public sealed class ApiKeyResolver
 
     }
 
+    /// <summary>
+    /// Resolves the <c>arcanum</c> CLI to a fully qualified path by walking <c>PATH</c> itself. A bare
+    /// file name is never handed to <see cref="System.Diagnostics.Process"/>: on Windows
+    /// <c>CreateProcess</c> searches the loading application's directory and the process working
+    /// directory ahead of <c>PATH</c>, so a planted <c>arcanum.exe</c> in whatever directory The Forge
+    /// happened to inherit would run with the operator's privileges (CWE-426 untrusted search path).
+    /// Relative <c>PATH</c> entries are rejected for the same reason. Returns <see langword="null"/>
+    /// when no absolute candidate exists, in which case the shell-out step is skipped.
+    /// </summary>
+    internal static string? ResolveCliExecutablePath(
+        Func<string, string?> getEnvironmentVariable,
+        Func<string, bool> fileExists)
+    {
+
+        string? path = getEnvironmentVariable("PATH");
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+
+            return null;
+
+        }
+
+        string fileName = OperatingSystem.IsWindows() ? "arcanum.exe" : "arcanum";
+
+        foreach (string entry in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+
+            string directory = entry.Trim();
+
+            if (directory.Length == 0 || !Path.IsPathFullyQualified(directory))
+            {
+
+                continue;
+
+            }
+
+            string candidate = Path.Combine(directory, fileName);
+
+            if (fileExists(candidate))
+            {
+
+                return candidate;
+
+            }
+
+        }
+
+        return null;
+
+    }
+
+    /// <summary>
+    /// Rejects anything that does not look like a master API key before it reaches the shared
+    /// <c>arcanum</c>/<c>master-api-key</c> credential slot. Keys are single-line printable ASCII
+    /// (the bootstrapper writes base64 of 32 random bytes), so diagnostics, prose, and anything
+    /// carrying whitespace or control characters never get persisted.
+    /// </summary>
+    internal static bool IsPlausibleApiKey(string? value)
+    {
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+
+            return false;
+
+        }
+
+        if (value.Length is < MinRecoveredKeyLength or > MaxRecoveredKeyLength)
+        {
+
+            return false;
+
+        }
+
+        foreach (char character in value)
+        {
+
+            if (character is < ' ' or > '~')
+            {
+
+                return false;
+
+            }
+
+            if (character == ' ')
+            {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
+
+    }
+
     private async Task<string?> TryShellOutAsync(CancellationToken cancellationToken)
     {
+
+        string? executable = ResolveCliExecutablePath(_getEnvironmentVariable, File.Exists);
+
+        if (executable is null)
+        {
+
+            _logger.LogInformation(
+                "No `arcanum` executable was found on an absolute PATH entry; skipping the CLI key hand-off.");
+
+            return null;
+
+        }
 
         try
         {
@@ -219,7 +347,7 @@ public sealed class ApiKeyResolver
             {
                 StartInfo = new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName = "arcanum",
+                    FileName = executable,
                     ArgumentList = { "key", "show" },
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,

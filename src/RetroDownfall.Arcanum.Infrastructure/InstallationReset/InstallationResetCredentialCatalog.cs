@@ -27,11 +27,18 @@ internal sealed partial class InstallationResetCredentialCatalog(
 
         ArgumentNullException.ThrowIfNull(settings);
 
+        // The Campaign root-identity key is named here and nowhere else. Its documented lifetime is
+        // "regenerated only by a full installation reset", and this catalog is the only delete path
+        // that exists: the credential store answers by account name and cannot be enumerated, so an
+        // account this seed omits survives every reset the operator can run. The restore-journal trio
+        // and the host-process-tools taint marker are deliberately absent — their retention across a
+        // reset is the point of them (§10.19.6, §11.2.1).
         HashSet<string> accounts = new(StringComparer.Ordinal)
         {
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             ArcanumCredentialIdentity.FileEncryptionKeyAccount,
             ArcanumCredentialIdentity.PerplexityApiKeyAccount,
+            ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
         };
 
         foreach (ProviderSettings provider in settings.Providers ?? [])

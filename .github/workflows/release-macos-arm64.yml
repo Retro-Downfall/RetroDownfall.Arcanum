@@ -21,7 +21,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Nothing in this job talks to git; `gh` carries its own GH_TOKEN at the release step.
+          # Left on, checkout persists the `contents: write` token into .git/config as an http
+          # extraheader, which is the one credential anything running early in the job gets free.
+          persist-credentials: false
 
       - name: Assert Apple Silicon and print toolchain
         run: |
@@ -108,7 +113,7 @@ jobs:
           fi
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
 
@@ -160,6 +165,9 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" \
             "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          # The PKCS#12 has served its purpose the moment the key is in the keychain. Removing it
+          # here rather than in the cleanup step means it does not sit on disk for the whole job.
+          rm -f "$CERT_PATH"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
@@ -211,7 +219,7 @@ jobs:
             --output-dir dist
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-arm64-${{ steps.ver.outputs.version }}
           path: |

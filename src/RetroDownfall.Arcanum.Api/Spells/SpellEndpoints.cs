@@ -178,9 +178,15 @@ internal static class SpellEndpoints
                     .CreateAsync(resolvedWorkspace, request, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
+                // Through the shared mapper rather than an unconditional BadRequest: validation
+                // refusals still answer 400 (they are unmapped, and DefaultBadRequest is what this
+                // route needs), while Spell.WriteFailed reaches the caller as the 500 §8.23 gives it.
                 return result.IsSuccess
                     ? Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId))
-                    : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
+                    : SpellApiResults.MapFailure(
+                        result.Error,
+                        traceId,
+                        ArcanumJsonContext.Default.ApiResponseBoolean);
             })
         .WithName("CreateSpell")
         .WithLargeRequestBody();

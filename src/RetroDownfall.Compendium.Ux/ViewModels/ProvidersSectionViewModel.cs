@@ -52,8 +52,22 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     }
 
+    /// <summary>
+    /// Projects every row for persistence. Throws when a row cannot be saved as it stands, which is
+    /// what routes the problem to the operator through the Save failure dialog.
+    /// </summary>
     public ProviderSettings[] BuildProviders() =>
         [.. Providers.Select(static provider => provider.Build())];
+
+    /// <summary>
+    /// Projects every row exactly as it is typed, without the save-time validation. Read-only callers
+    /// that only need to look at the configured providers — the Covenant retention disclosure resolves
+    /// its help targets this way while a section is being constructed — must use this: a validating
+    /// projection makes rendering a section throw on a value the operator has not asked to save yet,
+    /// and a throw during view construction has no error surface to land on.
+    /// </summary>
+    public ProviderSettings[] BuildProvidersUnvalidated() =>
+        [.. Providers.Select(static provider => provider.BuildUnvalidated())];
 
     [RelayCommand]
     private void AddProvider() =>
@@ -289,6 +303,14 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                     $"Provider '{Name}': {envVarError}");
             }
 
+            return BuildUnvalidated();
+        }
+
+        /// <summary>
+        /// The same projection without the save-time validation, for callers that only read the row.
+        /// </summary>
+        public ProviderSettings BuildUnvalidated()
+        {
             bool familiar = FamiliarProviders.IsFamiliar(Type);
 
             return _snapshot with

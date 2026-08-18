@@ -17,6 +17,14 @@ public sealed class CovenantStoreTests
 
     private static readonly Guid CampaignTwo = CovenantOperationGateFixture.CampaignTwo;
 
+    // The shared gate-fixture identities are digit-only, so their uppercase and lowercase text are
+    // the same string and no case mismatch can ever surface through them. Real Campaign identities
+    // carry hex letters, EF writes "Campaigns"."Id" uppercase, and Covenant writes its own
+    // covenant_heads.CampaignId lowercase, so any query that crosses that boundary needs these.
+    private static readonly Guid HexCampaignOne = new("A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D");
+
+    private static readonly Guid HexCampaignTwo = new("F0E1D2C3-B4A5-4968-8778-695A4B3C2D1E");
+
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
@@ -791,6 +799,98 @@ public sealed class CovenantStoreTests
         Assert.True(effect.CampaignRegistryEpoch > 0);
 
         Assert.True(effect.DependentHeadVectorDigest.IsValid);
+
+    }
+
+    [Fact]
+    public async Task A_global_effect_snapshot_sees_heads_whose_campaign_row_was_written_by_ef()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(HexCampaignOne, "one", Token);
+
+        await fixture.AddCampaignAsync(HexCampaignTwo, "two", Token);
+
+        // Only the first Campaign holds a local Confirmed override, so a Global Set does nothing
+        // there and resurfaces in the second. The identity mismatch inverted exactly this: the join
+        // matched no head at all, so every Campaign was reported as inheriting the Global value.
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            HexCampaignOne,
+            "shared.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Local override.",
+            Token);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease lease = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        CovenantMutationEffectSnapshot effect = (await fixture.Store.ReadMutationEffectSnapshotAsync(
+            new CovenantMutationEffectQuery(
+                CovenantOperationScope.Global,
+                "shared.key",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set),
+            lease,
+            Token)).Value;
+
+        CovenantMutationEffectExample one = Assert.Single(
+            effect.Examples,
+            example => example.CampaignId == HexCampaignOne);
+
+        Assert.True(one.HasCampaignConfirmedHead);
+
+        Assert.Equal(CovenantEffectDecision.NoEffect, one.Decision);
+
+        CovenantMutationEffectExample two = Assert.Single(
+            effect.Examples,
+            example => example.CampaignId == HexCampaignTwo);
+
+        Assert.False(two.HasCampaignConfirmedHead);
+
+        Assert.Equal(CovenantEffectDecision.GlobalConfirmedResurfaces, two.Decision);
+
+    }
+
+    [Fact]
+    public async Task A_campaign_effect_snapshot_finds_a_campaign_row_written_by_ef()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(HexCampaignOne, "one", Token);
+
+        await fixture.AddCampaignAsync(HexCampaignTwo, "two", Token);
+
+        FakeCovenantCampaignScopeProbe campaigns = new();
+
+        campaigns.Set(HexCampaignOne, CovenantCampaignScopeState.Live);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(campaigns: campaigns);
+
+        await using CovenantReadLease lease = (await gate.AcquireReadAsync(
+            CovenantOperationScope.ForCampaign(HexCampaignOne),
+            Token)).Value;
+
+        CovenantMutationEffectSnapshot effect = (await fixture.Store.ReadMutationEffectSnapshotAsync(
+            new CovenantMutationEffectQuery(
+                CovenantOperationScope.ForCampaign(HexCampaignOne),
+                "scoped.key",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set),
+            lease,
+            Token)).Value;
+
+        // The scoped arm binds its own identity against the EF-owned column, so a mismatch makes the
+        // preflight report that the mutation affects no Campaign at all.
+        Assert.Equal(1, effect.AffectedCampaignCount);
+
+        CovenantMutationEffectExample only = Assert.Single(effect.Examples);
+
+        Assert.Equal(HexCampaignOne, only.CampaignId);
 
     }
 

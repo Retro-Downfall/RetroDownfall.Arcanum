@@ -194,13 +194,27 @@ internal static class CovenantStoreSql
     /// The narrow indexed scan behind Global effect streaming: every current Campaign ID beside the
     /// heads that share one normalized key, with no compiled text or provenance in the projection.
     /// </summary>
+    /// <remarks>
+    /// This is the only Covenant statement that joins its own identity text to the EF-owned
+    /// <c>"Campaigns"</c> table, and the two sides disagree on case: EF binds a <see cref="Guid"/>
+    /// through the provider, which stores an uppercase <c>D</c>-format literal, while
+    /// <c>covenant_heads.CampaignId</c> is written by the mutation kernel as a lowercase one. Neither
+    /// column is <c>COLLATE NOCASE</c>, so an unnormalized <c>=</c> matched nothing for any identity
+    /// containing a hex letter and every Campaign silently reported no head.
+    ///
+    /// <para>The normalization sits on the outer <c>"Campaigns"</c> row rather than on
+    /// <c>h.CampaignId</c> so <c>idx_covenant_heads_campaign_active</c> still drives the per-Campaign
+    /// head lookup that keeps a Global scan from going quadratic. The scoped predicate stays a bare
+    /// column comparison, and its parameter is bound as a <see cref="Guid"/> instead, so the
+    /// <c>"Campaigns"</c> primary key index still serves it.</para>
+    /// </remarks>
     internal static string DependentHeadScan(bool allCampaigns) => $"""
         SELECT c."Id",
                MAX(CASE WHEN h.LaneCode = 1 THEN h.CurrentLaneRevision ELSE 0 END) AS ConfirmedRevision,
                MAX(CASE WHEN h.LaneCode = 2 THEN h.CurrentLaneRevision ELSE 0 END) AS ProposedRevision
         FROM "Campaigns" c
         LEFT JOIN covenant_heads h
-            ON h.CampaignId = c."Id" AND h.NormalizedKey = $key AND h.CurrentOperationCode = 1
+            ON h.CampaignId = lower(c."Id") AND h.NormalizedKey = $key AND h.CurrentOperationCode = 1
         {(allCampaigns ? string.Empty : "WHERE c.\"Id\" = $campaign")}
         GROUP BY c."Id"
         ORDER BY c."Id";

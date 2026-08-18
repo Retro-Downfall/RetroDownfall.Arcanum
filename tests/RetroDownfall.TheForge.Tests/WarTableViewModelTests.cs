@@ -113,7 +113,124 @@ public class WarTableViewModelTests
 
         Assert.Contains(viewModel.SelectedApprentice.Chronicle.Entries, static e => e.IsWarning);
 
+        Assert.Equal(1, dataSource.ChronicleSubscriptions);
+
         viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public async Task SelectApprenticeAsync_SubscribesToTheChronicleExactlyOnce()
+    {
+
+        FakeWarTableDataSource dataSource = new()
+        {
+            Summaries = [NewSummary(ChildId, "scout", "Running")],
+            Details =
+            {
+                [ChildId] = NewDetail(ChildId, null, "scout", []),
+            },
+            ChronicleFrames =
+            [
+                new ChronicleFrame("planGenerated", ChildId, DateTimeOffset.UtcNow, Message: "plan ready"),
+            ],
+        };
+
+        WarTableViewModel viewModel = new(dataSource)
+        {
+            IsVisible = true,
+        };
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        await viewModel.SelectApprenticeAsync(viewModel.Apprentices[0], CancellationToken.None);
+
+        await Task.Delay(50);
+
+        Assert.Equal(1, dataSource.ChronicleSubscriptions);
+
+        Assert.NotNull(viewModel.SelectedApprentice);
+
+        Assert.Single(viewModel.SelectedApprentice.Chronicle.Entries);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public async Task Chronicle_Start_ClearsReplayedEntriesSoReactivationDoesNotDuplicateThem()
+    {
+
+        FakeWarTableDataSource dataSource = new()
+        {
+            ChronicleFrames =
+            [
+                new ChronicleFrame("planGenerated", ChildId, DateTimeOffset.UtcNow, Message: "plan ready"),
+                new ChronicleFrame("stepStarted", ChildId, DateTimeOffset.UtcNow, Message: "step 0"),
+            ],
+        };
+
+        ChronicleViewModel chronicle = new(ChildId, dataSource);
+
+        chronicle.Start();
+
+        await WaitForEntriesAsync(chronicle, 2);
+
+        chronicle.Stop();
+
+        chronicle.Start();
+
+        await WaitForEntriesAsync(chronicle, 2);
+
+        Assert.Equal(2, chronicle.Entries.Count);
+
+        chronicle.Dispose();
+
+    }
+
+    [Fact]
+    public async Task Chronicle_EnforcesEntryCapOnALongStream()
+    {
+
+        List<ChronicleFrame> frames = [];
+
+        for (int i = 0; i < ChronicleViewModel.MaxEntries + 25; i++)
+        {
+
+            frames.Add(new ChronicleFrame("toolCall", ChildId, DateTimeOffset.UtcNow, Message: $"frame-{i}"));
+
+        }
+
+        FakeWarTableDataSource dataSource = new()
+        {
+            ChronicleFrames = frames,
+        };
+
+        ChronicleViewModel chronicle = new(ChildId, dataSource);
+
+        chronicle.Start();
+
+        await WaitForEntriesAsync(chronicle, ChronicleViewModel.MaxEntries);
+
+        Assert.Equal(ChronicleViewModel.MaxEntries, chronicle.Entries.Count);
+
+        Assert.Equal(
+            $"frame-{ChronicleViewModel.MaxEntries + 24}",
+            chronicle.Entries[0].Message);
+
+        chronicle.Dispose();
+
+    }
+
+    private static async Task WaitForEntriesAsync(ChronicleViewModel chronicle, int expected)
+    {
+
+        for (int i = 0; i < 400 && chronicle.Entries.Count < expected; i++)
+        {
+
+            await Task.Delay(10);
+
+        }
 
     }
 
@@ -329,6 +446,8 @@ public class WarTableViewModelTests
 
         public List<Guid> RequestedDetailIds { get; } = [];
 
+        public int ChronicleSubscriptions { get; private set; }
+
         public Task<IReadOnlyList<ApprenticeSummaryDto>> ListApprenticesAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Summaries);
 
@@ -434,6 +553,8 @@ public class WarTableViewModelTests
 
         public async IAsyncEnumerable<ChronicleFrame> StreamChronicleAsync(Guid id, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
+
+            ChronicleSubscriptions++;
 
             foreach (ChronicleFrame frame in ChronicleFrames)
             {

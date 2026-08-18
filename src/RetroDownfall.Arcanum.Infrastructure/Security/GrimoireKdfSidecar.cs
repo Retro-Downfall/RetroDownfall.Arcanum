@@ -92,9 +92,16 @@ public static partial class GrimoireKdfSidecarFile
 
             stream.ReadExactly(json);
 
-            GrimoireKdfSidecar? sidecar = JsonSerializer.Deserialize(
-                json,
-                GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar);
+            // Truncation and byte damage are what this file actually suffers, and they surface as a raw
+            // JsonException (torn or empty payload, missing required member) or FormatException (salt
+            // that is no longer base64). Neither derives from InvalidDataException, so without this both
+            // escape callers that filter on the normalized type to degrade a damaged sidecar into a
+            // typed failure — the same normalization the length, version and salt-size checks already do.
+            GrimoireKdfSidecar? sidecar = Guarded(
+                sidecarPath,
+                () => JsonSerializer.Deserialize(
+                    json,
+                    GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar));
 
             if (sidecar is null)
             {
@@ -111,7 +118,7 @@ public static partial class GrimoireKdfSidecarFile
 
             }
 
-            byte[] salt = sidecar.GetSaltBytes();
+            byte[] salt = Guarded(sidecarPath, sidecar.GetSaltBytes);
 
             if (salt.Length != GrimoireKeyDerivation.SaltLengthBytes)
             {
@@ -122,6 +129,30 @@ public static partial class GrimoireKdfSidecarFile
             }
 
             return sidecar;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Runs one parse step, normalizing the two exception types a damaged sidecar produces into the
+    /// <see cref="InvalidDataException"/> the length, version and salt-size rejections already throw.
+    /// </summary>
+    private static T Guarded<T>(string sidecarPath, Func<T> parse)
+    {
+
+        try
+        {
+
+            return parse();
+
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException)
+        {
+
+            throw new InvalidDataException(
+                $"Grimoire KDF sidecar at {sidecarPath} is empty or malformed.",
+                exception);
 
         }
 

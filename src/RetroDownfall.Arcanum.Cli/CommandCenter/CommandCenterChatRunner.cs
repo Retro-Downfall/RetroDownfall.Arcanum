@@ -42,11 +42,21 @@ internal sealed class CommandCenterChatRunner(
         string[] stagedPathSnapshot = state.StagedAttachmentPaths.ToArray();
         Guid[] stagedRefSnapshot = state.StagedAttachmentReferences.ToArray();
 
-        TurnAttachmentBuildResult attachments = CommandCenterTurnAttachmentBuilder.Build(
-            prompt,
-            state.WorkingDirectory,
-            stagedPathSnapshot,
-            settingsMonitor.CurrentValue);
+        // Off the caller's thread on purpose: submit reaches here straight from the Terminal.Gui key
+        // handler with nothing awaited in between, and the build reads every staged text file and
+        // base64-encodes every staged image. Doing that inline freezes the main loop — no redraw, no
+        // spinner, and Ctrl+C never pumped — for as long as the reads take, which on a FIFO or a
+        // stalled mount is forever. This await is the turn's first yield, so the loop keeps pumping.
+        string workingDirectory = state.WorkingDirectory;
+        ArcanumSettings settings = settingsMonitor.CurrentValue;
+        TurnAttachmentBuildResult attachments = await Task.Run(
+                () => CommandCenterTurnAttachmentBuilder.Build(
+                    prompt,
+                    workingDirectory,
+                    stagedPathSnapshot,
+                    settings),
+                cancellationToken)
+            .ConfigureAwait(false);
 
         foreach (string line in attachments.StatusLines)
         {

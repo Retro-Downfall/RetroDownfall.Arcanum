@@ -7,6 +7,61 @@ public class LineDiffTests
 {
 
     [Fact]
+    public void Compare_OversizeInput_DoesNotAllocateAQuadraticTable()
+    {
+
+        // BuildLcsTable allocates one contiguous int[left+1, right+1]; at 6,000 lines a side that is a
+        // ~144 MB LOH block plus 36M inner-loop iterations, all on the Avalonia UI thread.
+        string left = BuildLines("left", 6_000);
+
+        string right = BuildLines("right", 6_000);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        IReadOnlyList<DiffLineItem> lines = LineDiff.Compare(left, right);
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(
+            allocated < 32L * 1024 * 1024,
+            $"Compare allocated {allocated:N0} bytes for a 6,000 x 6,000 line diff.");
+
+        Assert.Equal(12_000, lines.Count);
+
+    }
+
+    [Fact]
+    public void Compare_OversizeInput_FallsBackToWholeFileReplacement()
+    {
+
+        string left = BuildLines("left", 6_000);
+
+        string right = BuildLines("right", 6_000);
+
+        IReadOnlyList<DiffLineItem> lines = LineDiff.Compare(left, right);
+
+        Assert.All(lines.Take(6_000), static line => Assert.Equal(LineDiffKind.Removed, line.Kind));
+
+        Assert.All(lines.Skip(6_000), static line => Assert.Equal(LineDiffKind.Added, line.Kind));
+
+        Assert.Equal("left 0", lines[0].Text);
+
+        Assert.Equal(1, lines[0].LeftLineNumber);
+
+        Assert.Null(lines[0].RightLineNumber);
+
+        Assert.Equal("right 0", lines[6_000].Text);
+
+        Assert.Null(lines[6_000].LeftLineNumber);
+
+        Assert.Equal(1, lines[6_000].RightLineNumber);
+
+    }
+
+    private static string BuildLines(string prefix, int count) =>
+        string.Join('\n', Enumerable.Range(0, count).Select(i => $"{prefix} {i}"));
+
+    [Fact]
     public void Compare_Identical_AllUnchanged()
     {
 

@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -95,7 +96,7 @@ public sealed class PromptEditorDataSource : IPromptEditorDataSource
 
     }
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+    public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
         _promptService.DeleteAsync(id, cancellationToken);
 
 }

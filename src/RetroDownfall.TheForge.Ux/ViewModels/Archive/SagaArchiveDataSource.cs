@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Archive;
@@ -67,11 +68,15 @@ public sealed class SagaArchiveDataSource : ISagaArchiveDataSource
     public async Task<DataSourceResult<bool>> DeleteAllAsync(CancellationToken cancellationToken)
     {
 
-        bool deleted = await _sagaService.DeleteAllAsync(cancellationToken).ConfigureAwait(false);
+        DeleteOutcome outcome = await _sagaService.DeleteAllAsync(cancellationToken).ConfigureAwait(false);
 
-        return deleted
+        return outcome.Success
             ? new DataSourceResult<bool>(true, true, null, null)
-            : new DataSourceResult<bool>(default, false, "Saga.DeleteAllFailed", "Failed to delete all Saga memories.");
+            : new DataSourceResult<bool>(
+                default,
+                false,
+                outcome.ErrorCode ?? "Saga.DeleteAllFailed",
+                outcome.ErrorMessage ?? "Failed to delete all Saga memories.");
 
     }
 

@@ -75,7 +75,7 @@ public sealed class AskCommand(
 
         if (string.IsNullOrWhiteSpace(promptText))
         {
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 palette.ErrorLabelMarkup(
                     Markup.Escape("Error:"),
                     Markup.Escape(
@@ -90,7 +90,7 @@ public sealed class AskCommand(
                 out string? attachmentError))
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 palette.ErrorMarkup(
                     Markup.Escape(attachmentError!)));
 
@@ -133,7 +133,7 @@ public sealed class AskCommand(
                 }
                 catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
                 {
-                    AnsiConsole.MarkupLine(
+                    CliErrorOutput.WriteMarkupLine(
                         palette.ErrorLabelMarkup(
                             Markup.Escape("Error:"),
                             Markup.Escape($"--image '{imagePath}' could not be resolved as a path ({ex.GetType().Name}).")));
@@ -143,7 +143,7 @@ public sealed class AskCommand(
 
                 if (!File.Exists(fullPath))
                 {
-                    AnsiConsole.MarkupLine(
+                    CliErrorOutput.WriteMarkupLine(
                         palette.ErrorLabelMarkup(
                             Markup.Escape("Error:"),
                             Markup.Escape($"--image '{fullPath}' not found.")));
@@ -155,7 +155,7 @@ public sealed class AskCommand(
 
                 if (staged.Error is not null)
                 {
-                    AnsiConsole.MarkupLine(
+                    CliErrorOutput.WriteMarkupLine(
                         palette.ErrorLabelMarkup(
                             Markup.Escape($"--image '{Path.GetFileName(fullPath)}':"),
                             Markup.Escape(staged.Error)));
@@ -174,7 +174,7 @@ public sealed class AskCommand(
 
         if (@new && !string.IsNullOrWhiteSpace(sessionIdOption))
         {
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 palette.ErrorMarkup(
                     Markup.Escape("--new and --session cannot be used together.")));
 
@@ -183,10 +183,8 @@ public sealed class AskCommand(
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+        void RequestCancellation()
         {
-            e.Cancel = true;
-
             try
             {
                 linked.Cancel();
@@ -194,6 +192,13 @@ public sealed class AskCommand(
             catch (ObjectDisposedException)
             {
             }
+        }
+
+        void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+        {
+            e.Cancel = true;
+
+            RequestCancellation();
         }
 
         Console.CancelKeyPress += OnCancelKeyPress;
@@ -353,14 +358,23 @@ public sealed class AskCommand(
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
                 receivedAnyStreamEvent = true;
-                hitl ??= new ConsoleAskHumanCoordinator(apiClient, palette);
+                // An ask_human prompt captures Ctrl+C as a keystroke, so CancelKeyPress never runs for
+                // it. Without this hand-back the interrupt would settle the prompt and leave the pump
+                // below waiting for a turn the operator has already abandoned.
+                hitl ??= new ConsoleAskHumanCoordinator(
+                    apiClient,
+                    palette,
+                    onOperatorInterrupt: RequestCancellation);
                 hitl.ObserveStreamEvent(evt);
 
                 switch (evt.Type)
                 {
                     case IntelligenceEventType.Status:
 
-                        stderrConsole.MarkupLine(palette.MutedMarkup(Markup.Escape(evt.Message)));
+                        CliStreamDiagnostic.WriteMarkupLine(
+                            stderrConsole,
+                            streamContent,
+                            palette.MutedMarkup(Markup.Escape(evt.Message)));
 
                         break;
 
@@ -415,13 +429,19 @@ public sealed class AskCommand(
 
                     case IntelligenceEventType.ToolError:
 
-                        stderrConsole.MarkupLine(palette.ErrorMarkup(Markup.Escape($"⚠ Tool {evt.Message} failed (tolerated)")));
+                        CliStreamDiagnostic.WriteMarkupLine(
+                            stderrConsole,
+                            streamContent,
+                            palette.ErrorMarkup(Markup.Escape($"⚠ Tool {evt.Message} failed (tolerated)")));
 
                         break;
 
                     case IntelligenceEventType.ToolResult:
 
-                        stderrConsole.MarkupLine(palette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));
+                        CliStreamDiagnostic.WriteMarkupLine(
+                            stderrConsole,
+                            streamContent,
+                            palette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));
 
                         break;
 
@@ -445,7 +465,9 @@ public sealed class AskCommand(
                     case IntelligenceEventType.Error:
 
                         _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
-                        stderrConsole.MarkupLine(
+                        CliStreamDiagnostic.WriteMarkupLine(
+                            stderrConsole,
+                            streamContent,
                             palette.ErrorLabelMarkup(
                                 Markup.Escape("Error:"),
                                 Markup.Escape(FormatStreamTransportError(evt.Message))));
@@ -590,30 +612,11 @@ public sealed class AskCommand(
             : $"{ArcanumApiClient.StreamEmptyResultMessage} {ArcanumApiClient.StreamUnreachableMessage} {ArcanumApiClient.StreamDoctorHint}";
 
     /// <summary>
-    /// Appends the doctor/serve hint when the transport message is one of the known ArcanumApiClient copies.
+    /// Appends the doctor/serve hint when the transport message is one of the known ArcanumApiClient
+    /// copies. Shared with every other streaming command, so the same failure names the same remedy
+    /// wherever it surfaces.
     /// </summary>
-    internal static string FormatStreamTransportError(string message)
-    {
-
-        if (string.IsNullOrWhiteSpace(message))
-        {
-
-            return $"{ArcanumApiClient.StreamEmptyResultMessage} {ArcanumApiClient.StreamDoctorHint}";
-
-        }
-
-        if (string.Equals(message, ArcanumApiClient.StreamTimeoutMessage, StringComparison.Ordinal)
-            || string.Equals(message, ArcanumApiClient.StreamDisconnectMessage, StringComparison.Ordinal)
-            || string.Equals(message, ArcanumApiClient.StreamUnreachableMessage, StringComparison.Ordinal)
-            || string.Equals(message, ArcanumApiClient.StreamEmptyResultMessage, StringComparison.Ordinal))
-        {
-
-            return $"{message} {ArcanumApiClient.StreamDoctorHint}";
-
-        }
-
-        return message;
-
-    }
+    internal static string FormatStreamTransportError(string message) =>
+        CliStreamTransportHint.Append(message);
 
 }

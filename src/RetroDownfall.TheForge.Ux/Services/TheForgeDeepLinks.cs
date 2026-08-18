@@ -267,7 +267,12 @@ public sealed class TheForgeDeepLinkCoordinator
 
         }
 
-        await WaitForConnectedAsync(cancellationToken).ConfigureAwait(false);
+        if (!await WaitForConnectedAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            return TheForgeDeepLinkRouteResult.Rejected;
+
+        }
 
         return await _router
             .RouteAsync(deepLink, cancellationToken)
@@ -284,27 +289,45 @@ public sealed class TheForgeDeepLinkCoordinator
             or ApplicationResourceKind.Prompt
             or ApplicationResourceKind.Apprentice;
 
-    private async Task WaitForConnectedAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Defers routing until the connection reports Connected (docs/Arcanum.DESIGN.md) without inventing a
+    /// timeout. The single terminal answer is an auth-class failure: the resolved key is cached for the
+    /// process lifetime, so re-polling can only repeat the rejection, the wait would never complete, and the
+    /// caller's rejection whisper would never fire. Every other Error keeps waiting — the health poller
+    /// settles on Error after three consecutive missed polls yet goes on polling, so a link that arrives
+    /// while Arcanum is restarting or still booting still routes once the connection recovers.
+    /// </summary>
+    private async Task<bool> WaitForConnectedAsync(CancellationToken cancellationToken)
     {
 
-        if (_connection.State == ConnectionState.Connected)
+        if (TrySettle(out bool settled))
         {
 
-            return;
+            return settled;
 
         }
 
-        TaskCompletionSource connected = new(
+        TaskCompletionSource<bool> connected = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         PropertyChangedEventHandler handler = (_, args) =>
         {
 
-            if (args.PropertyName == nameof(IArcanumConnection.State)
-                && _connection.State == ConnectionState.Connected)
+            // LastErrorCode has to be watched in its own right: once State has settled on Error a later
+            // auth failure changes only the code, so a State-only observer would wait on a key that the
+            // provider has already cached and can never clear.
+            if (args.PropertyName is not (nameof(IArcanumConnection.State)
+                or nameof(IArcanumConnection.LastErrorCode)))
             {
 
-                connected.TrySetResult();
+                return;
+
+            }
+
+            if (TrySettle(out bool observed))
+            {
+
+                connected.TrySetResult(observed);
 
             }
 
@@ -315,14 +338,14 @@ public sealed class TheForgeDeepLinkCoordinator
         try
         {
 
-            if (_connection.State == ConnectionState.Connected)
+            if (TrySettle(out bool current))
             {
 
-                connected.TrySetResult();
+                connected.TrySetResult(current);
 
             }
 
-            await connected.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return await connected.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         }
         finally
@@ -331,6 +354,30 @@ public sealed class TheForgeDeepLinkCoordinator
             _connection.PropertyChanged -= handler;
 
         }
+
+    }
+
+    /// <summary>
+    /// True when the connection has reached an answer the router can act on — Connected, or an Error the
+    /// poller cannot recover from on its own. A transient Error (missed health polls while Arcanum
+    /// restarts) is not an answer: the caller keeps waiting for the next successful poll.
+    /// </summary>
+    private bool TrySettle(out bool isConnected)
+    {
+
+        if (_connection.State == ConnectionState.Connected)
+        {
+
+            isConnected = true;
+
+            return true;
+
+        }
+
+        isConnected = false;
+
+        return _connection.State == ConnectionState.Error
+            && ArcanumConnectionService.IsImmediateError(_connection.LastErrorCode);
 
     }
 

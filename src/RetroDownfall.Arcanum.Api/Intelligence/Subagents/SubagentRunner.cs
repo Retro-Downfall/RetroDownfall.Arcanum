@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -12,7 +13,8 @@ internal sealed class SubagentRunner(
     Lazy<ITurnExecutionFacade> turnCoordinator,
     ILongRunningOperationCoordinator operations,
     ISubagentTelemetrySink telemetry,
-    TimeProvider timeProvider) : ISubagentRunner
+    TimeProvider timeProvider,
+    ILogger<SubagentRunner> logger) : ISubagentRunner
 {
     private static readonly TimeSpan OperationLease = TimeSpan.FromMinutes(15);
 
@@ -289,7 +291,11 @@ internal sealed class SubagentRunner(
     /// owner still holds an unexpired lease, so counting successful renewals locally keeps the
     /// subsequent <c>CompleteAsync</c>/<c>FailAsync</c> addressed at the current row. A refused
     /// renewal means the lease is gone — there is nothing left to renew, so the loop stops and the
-    /// terminal transition is left to fail its compare-and-set.
+    /// terminal transition is left to fail its compare-and-set. A renewal that <em>throws</em> stops
+    /// the same way rather than faulting this Task: the caller awaits it from a <c>finally</c> that
+    /// runs after the child turn has already produced its answer, so a throw here would discard an
+    /// already-billed, unrepeatable result — and would mask the caller's own cancellation — rather
+    /// than merely ending the renewals.
     /// </summary>
     private async Task<long> RenewLeaseWhileRunningAsync(
         Guid operationId,
@@ -318,6 +324,16 @@ internal sealed class SubagentRunner(
         catch (OperationCanceledException)
         {
             // The child finished, failed, or was cancelled. Outliving it was the loop's only job.
+        }
+        catch (Exception ex)
+        {
+            // A heartbeat that threw committed nothing, so the last accepted revision still
+            // addresses the current row and the caller's terminal transition remains correct.
+            logger.LogWarning(
+                ex,
+                "Subagent lease renewal for operation {OperationId} stopped after a failed heartbeat; the child turn continues on revision {Revision}.",
+                operationId,
+                revision);
         }
 
         return revision;

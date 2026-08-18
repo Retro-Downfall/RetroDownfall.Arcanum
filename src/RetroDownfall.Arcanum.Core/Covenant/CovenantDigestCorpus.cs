@@ -930,7 +930,7 @@ public static class CovenantDigestCorpus
         {
             RecordId(category, id);
             AppendResultHeader(category, 1);
-            _results.AppendData(actual.Bytes);
+            _results.AppendData(actual.Span);
             Accept(id, actual == FromHex(expectedHex));
         }
 
@@ -960,8 +960,8 @@ public static class CovenantDigestCorpus
             CovenantDigest results = new(_results.GetHashAndReset());
             using IncrementalHash aggregate = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-            aggregate.AppendData(manifest.Bytes);
-            aggregate.AppendData(results.Bytes);
+            aggregate.AppendData(manifest.Span);
+            aggregate.AppendData(results.Span);
 
             Span<byte> countBytes = stackalloc byte[sizeof(uint)];
 

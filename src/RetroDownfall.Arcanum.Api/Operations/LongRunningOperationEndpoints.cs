@@ -27,7 +27,7 @@ internal static class LongRunningOperationEndpoints
                 return Error<LongRunningOperationDto[]>(
                     httpContext,
                     StatusCodes.Status400BadRequest,
-                    "Operation.InvalidState",
+                    ErrorCodes.Operation.InvalidState,
                     "State must be Pending, Running, Waiting, Cancelling, Completed, Failed, Abandoned, or ReconciliationRequired.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDtoArray);
             }
@@ -56,7 +56,7 @@ internal static class LongRunningOperationEndpoints
                 ? Error<LongRunningOperationDto>(
                     httpContext,
                     StatusCodes.Status404NotFound,
-                    "Operation.NotFound",
+                    ErrorCodes.Operation.NotFound,
                     "The durable operation was not found.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto)
                 : Success(
@@ -79,7 +79,7 @@ internal static class LongRunningOperationEndpoints
                 return Error<LongRunningOperationDto>(
                     httpContext,
                     StatusCodes.Status404NotFound,
-                    "Operation.NotFound",
+                    ErrorCodes.Operation.NotFound,
                     "The durable operation was not found.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
@@ -94,7 +94,7 @@ internal static class LongRunningOperationEndpoints
                 return Error<LongRunningOperationDto>(
                     httpContext,
                     StatusCodes.Status409Conflict,
-                    "Operation.StateConflict",
+                    ErrorCodes.Operation.StateConflict,
                     "The operation changed or is already terminal.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
@@ -120,7 +120,7 @@ internal static class LongRunningOperationEndpoints
                 return Error<LongRunningOperationDto>(
                     httpContext,
                     StatusCodes.Status404NotFound,
-                    "Operation.NotFound",
+                    ErrorCodes.Operation.NotFound,
                     "The durable operation was not found.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
@@ -135,7 +135,7 @@ internal static class LongRunningOperationEndpoints
                 return Error<LongRunningOperationDto>(
                     httpContext,
                     StatusCodes.Status409Conflict,
-                    "Operation.StateConflict",
+                    ErrorCodes.Operation.StateConflict,
                     "Only Failed, Abandoned, or ReconciliationRequired operations can be retried.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }

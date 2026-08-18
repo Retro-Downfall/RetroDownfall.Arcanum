@@ -310,6 +310,106 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.Equal(0L, await CountReservationsAsync());
     }
 
+    [SkippableFact]
+    public async Task ReserveAsync_WhenTheTokenIsCancelledMidTransaction_LeavesTheScopedConnectionInAutocommit()
+    {
+        RequireSqlCipher();
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
+        {
+            Enabled = true,
+            DailyLimitUsd = 100m,
+        });
+
+        using CancellationTokenSource cancellation = new();
+        await ArrangeCancelOnWriteAsync("BEFORE INSERT ON \"BudgetReservations\"", cancellation);
+
+        _ = await Assert.ThrowsAnyAsync<SqliteException>(() => service.ReserveAsync(
+            new BudgetReservationRequest(
+                Guid.NewGuid(),
+                ReservedUsd: 1m,
+                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(15),
+                BudgetPeriod: "2035-02-03"),
+            cancellation.Token));
+
+        await AssertConnectionIsNotInATransactionAsync();
+        Assert.Equal(0L, await CountReservationsAsync());
+    }
+
+    [SkippableFact]
+    public async Task AdjustAsync_WhenTheTokenIsCancelledMidTransaction_LeavesTheScopedConnectionInAutocommit()
+    {
+        RequireSqlCipher();
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
+        {
+            Enabled = true,
+            DailyLimitUsd = 100m,
+        });
+
+        BudgetReservation reservation = await ReserveAsync(
+            service,
+            amount: 1m,
+            DateTimeOffset.UtcNow.AddMinutes(15),
+            "2035-02-03");
+
+        using CancellationTokenSource cancellation = new();
+        await ArrangeCancelOnWriteAsync("BEFORE UPDATE ON \"BudgetReservations\"", cancellation);
+
+        _ = await Assert.ThrowsAnyAsync<SqliteException>(() => service.AdjustAsync(
+            reservation.Id,
+            reservedUsd: 2m,
+            cancellation.Token));
+
+        await AssertConnectionIsNotInATransactionAsync();
+    }
+
+    private async Task ArrangeCancelOnWriteAsync(string triggerScope, CancellationTokenSource cancellation)
+    {
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await _db.Database.OpenConnectionAsync();
+        }
+
+        connection.CreateFunction(
+            "cancel_reservation_token",
+            () =>
+            {
+                cancellation.Cancel();
+
+                return 1L;
+            });
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER cancel_reservation_write
+            {triggerScope}
+            BEGIN
+                SELECT RAISE(ABORT, 'cancelled mid transaction') WHERE cancel_reservation_token() = 1;
+            END;
+            """);
+    }
+
+    private async Task AssertConnectionIsNotInATransactionAsync()
+    {
+        await ExecuteAsync("DROP TRIGGER IF EXISTS cancel_reservation_write;");
+
+        // An orphaned BEGIN IMMEDIATE on the scoped connection surfaces here as
+        // "cannot start a transaction within a transaction".
+        await ExecuteAsync("BEGIN IMMEDIATE;");
+        await ExecuteAsync("ROLLBACK;");
+    }
+
+    private async Task ExecuteAsync(string sql)
+    {
+        await using DbCommand command = _db!.Database.GetDbConnection().CreateCommand();
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 

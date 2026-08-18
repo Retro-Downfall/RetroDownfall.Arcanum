@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -7,10 +8,12 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -1044,6 +1047,103 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsCall_read_file_chunk_returns_a_multi_line_lf_range_without_its_trailing_terminator()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReadFileChunkParams
+            {
+                RelativePath = "notes/alpha.txt",
+                StartLine = 1,
+                EndLine = 2,
+            },
+            McpJsonSerializerContext.Default.ReadFileChunkParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("read_file_chunk", arguments);
+
+        Assert.False(result.IsError);
+
+        Assert.Equal("line one\nline two", result.Content![0].Text);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_read_file_chunk_returns_a_crlf_range_verbatim_so_replace_text_block_can_match_it()
+    {
+
+        const string relativePath = "notes/crlf.txt";
+
+        _workspace.WriteFile(relativePath, "alpha\r\nbeta\r\ngamma\r\n");
+
+        await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        McpToolsCallResultWire chunk = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 2,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.False(chunk.IsError);
+
+        Assert.Equal("alpha\r\nbeta", chunk.Content![0].Text);
+
+        // The schema promises exactSearchText is verbatim, so whatever read_file_chunk hands back has
+        // to be a literal substring of the file's bytes or the two tools can never agree on a CRLF file.
+        McpToolsCallResultWire replaced = await session.CallToolAsync(
+            "replace_text_block",
+            JsonSerializer.SerializeToElement(
+                new ReplaceTextBlockParams
+                {
+                    RelativePath = relativePath,
+                    ExactSearchText = chunk.Content![0].Text!,
+                    ReplacementText = "alpha\r\nreplaced",
+                },
+                McpJsonSerializerContext.Default.ReplaceTextBlockParams));
+
+        Assert.False(replaced.IsError);
+
+        Assert.Equal(
+            "alpha\r\nreplaced\r\ngamma\r\n",
+            await File.ReadAllTextAsync(Path.Combine(_workspace.Root, relativePath)));
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_read_file_chunk_preserves_a_lone_carriage_return_terminator()
+    {
+
+        const string relativePath = "notes/classic-mac.txt";
+
+        _workspace.WriteFile(relativePath, "alpha\rbeta\rgamma");
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "read_file_chunk",
+            JsonSerializer.SerializeToElement(
+                new ReadFileChunkParams
+                {
+                    RelativePath = relativePath,
+                    StartLine = 1,
+                    EndLine = 2,
+                },
+                McpJsonSerializerContext.Default.ReadFileChunkParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Equal("alpha\rbeta", result.Content![0].Text);
+
+    }
+
+    [Fact]
     public async Task ToolsCall_write_file_writes_inside_workspace_sandbox()
     {
 
@@ -1063,6 +1163,48 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.True(File.Exists(fullPath));
 
         Assert.Equal("written by test", await File.ReadAllTextAsync(fullPath));
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_write_file_without_content_returns_a_tool_error_not_a_protocol_error()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        // WriteFileParams is positional, so System.Text.Json binds a missing 'content' to the
+        // parameter default — null — without throwing. Omitting it is a routine schema violation for a
+        // model under context pressure and must not escape the handler as an unhandled exception.
+        using JsonDocument partialArguments = JsonDocument.Parse(
+            "{\"relativePath\":\"missing-content.txt\"}");
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams
+            {
+                Name = "write_file",
+                Arguments = partialArguments.RootElement.Clone(),
+            },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/call", callParams);
+
+        Assert.Null(response.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+
+        Assert.Contains(
+            "content",
+            Assert.Single(result.Content).Text,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(
+            File.Exists(
+                Path.Combine(_workspace.Root, "missing-content.txt")));
 
     }
 
@@ -1448,6 +1590,66 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task Outbound_response_sized_exactly_at_the_line_budget_still_reaches_the_client()
+    {
+
+        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            EnableLexiconSystem = false,
+            EnableArchiveSearch = false,
+            ToolOutputCapBytes = 65_536,
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            configureWorkspace: true,
+            intelligenceSettings: intelligenceSettings,
+            maxJsonRpcLineBytes: 16_384);
+
+        // The writer measures the payload, but it then writes payload + "\n" and every reader measures
+        // the delimited element it receives. The overlap window is exactly one byte wide, so sweep the
+        // frame size across it: each '<' escapes to six bytes and each 'x' to one, which walks the
+        // serialized frame past 16384 in single-byte steps. Whichever length lands on the cap must
+        // still produce a response frame — dropping it strands the pending id forever, because no
+        // internal tool call carries a request timeout.
+        for (int escaped = 2_705; escaped <= 2_735; escaped++)
+        {
+
+            for (int plain = 0; plain <= 5; plain++)
+            {
+
+                _workspace.WriteFile(
+                    "notes/boundary.txt",
+                    new string('<', escaped) + new string('x', plain));
+
+                JsonElement arguments = JsonSerializer.SerializeToElement(
+                    new ReadFileChunkParams
+                    {
+                        RelativePath = "notes/boundary.txt",
+                        StartLine = 1,
+                        EndLine = 1,
+                    },
+                    McpJsonSerializerContext.Default.ReadFileChunkParams);
+
+                JsonElement callParams = JsonSerializer.SerializeToElement(
+                    new McpToolsCallParams { Name = "read_file_chunk", Arguments = arguments },
+                    McpJsonSerializerContext.Default.McpToolsCallParams);
+
+                JsonRpcResponse? response = await session.SendRequestWithTimeoutAsync(
+                    "tools/call",
+                    callParams,
+                    TimeSpan.FromSeconds(5));
+
+                Assert.True(
+                    response is not null,
+                    $"No response frame for a payload of {escaped} escaped + {plain} plain characters; the writer admitted a line the reader then dropped.");
+
+            }
+
+        }
+
+    }
+
     // Net-new coverage for the ModelContextProtocol SDK migration: ArcanumInternalToolServer now
     // reads inbound notifications/cancelled directly off the wire (replacing the pre-migration
     // McpRequestCancellationBroker, which correlated ids on the client side before the SDK existed).
@@ -1547,6 +1749,67 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
 
         Assert.True(result.IsError);
+
+    }
+
+    [Fact]
+    public async Task Duplicate_in_flight_request_id_leaves_the_first_calls_bindings_intact()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        string sentinelPath = Path.Combine(_workspace.Root, "dup-binding-sentinel.txt");
+
+        (string command, string[] argumentList) = ResolveDelayedWriteCommand(sentinelPath);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams
+            {
+                Name = "execute_command",
+                Arguments = JsonSerializer.SerializeToElement(
+                    new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+                    McpJsonSerializerContext.Default.ExecuteCommandParams),
+            },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        const int sharedId = 5353;
+
+        string connectionKey = session.Server.AmbientConnectionKey;
+
+        PersistedToolInvocationContext persisted = new(Guid.NewGuid(), Guid.NewGuid());
+
+        PersistedToolInvocationBinding.BindRequest(
+            connectionKey,
+            sharedId.ToString(CultureInfo.InvariantCulture),
+            persisted);
+
+        await session.WriteRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
+
+        await Task.Delay(300);
+
+        await session.WriteRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
+
+        JsonRpcResponse duplicate = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(-32600, duplicate.Error!.Code);
+
+        // The binding stores are keyed by (connectionKey, requestId) alone, so anything the loser
+        // unbinds is exactly what the winner still in flight depends on. The rejection must touch no
+        // shared state; the winner unbinds all four stores in its own finally.
+        Assert.True(
+            PersistedToolInvocationBinding.TryResolveRequest(
+                connectionKey,
+                sharedId.ToString(CultureInfo.InvariantCulture),
+                out PersistedToolInvocationContext? stillBound),
+            "The duplicate rejection unbound the persisted-turn context belonging to the call still in flight.");
+
+        Assert.Same(persisted, stillBound);
+
+        await session.SendCancelNotificationAsync(sharedId);
+
+        _ = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
     }
 
@@ -1916,6 +2179,141 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         } while (true);
 
         Assert.Equal(expectedCount, observed.Count);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_search_archives_truncates_an_oversized_match_instead_of_failing_the_call()
+    {
+
+        // One archived entry is allowed to be as large as the whole tool-result allocation, and the
+        // Grimoire concatenates every match's full content, so a perfectly ordinary archive can only
+        // ever produce a result larger than one response frame.
+        string oversized = string.Join(
+            '\n',
+            Enumerable.Range(1, 400)
+                .Select(static index => $"[2026-01-01 00:00:0{index % 10}] User: deployment note {index:D3} {new string('x', 96)}"));
+
+        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            EnableLexiconSystem = false,
+            EnableArchiveSearch = true,
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: intelligenceSettings,
+            maxJsonRpcLineBytes: 16_384,
+            grimoireRepository: new ArchiveSearchGrimoireRepository(oversized));
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "search_archives",
+            JsonSerializer.SerializeToElement(
+                new SearchArchivesParams("deployment"),
+                McpJsonSerializerContext.Default.SearchArchivesParams));
+
+        Assert.False(result.IsError);
+
+        string text = Assert.Single(result.Content).Text!;
+
+        // search_archives exposes neither a cursor nor a max_results knob, so rejecting the whole
+        // result leaves the caller with nothing to narrow. It has to return what fits.
+        Assert.Contains("deployment note 001", text, StringComparison.Ordinal);
+
+        Assert.Contains("TRUNCATED", text, StringComparison.Ordinal);
+
+        Assert.InRange(Encoding.UTF8.GetByteCount(text), 1, 4_096);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_list_directory_does_not_revalidate_already_paged_entries_on_every_continuation()
+    {
+
+        const int fileCount = 300;
+
+        for (int index = 0; index < fileCount; index++)
+        {
+
+            _workspace.WriteFile($"tree/deep/paged-{index:D3}.txt", "x");
+
+        }
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        int validations = 0;
+
+        session.Server.ListDirectoryEntryValidationObserverForTests =
+            _ => Interlocked.Increment(ref validations);
+
+        int observed = 0;
+
+        string? continuation = null;
+
+        try
+        {
+
+            do
+            {
+
+                JsonElement arguments = JsonSerializer.SerializeToElement(
+                    new ListDirectoryParams
+                    {
+                        RelativePath = ".",
+                        Recursive = true,
+                        Continuation = continuation,
+                    },
+                    McpJsonSerializerContext.Default.ListDirectoryParams);
+
+                McpToolsCallResultWire result = await session.CallToolAsync(
+                    "list_directory",
+                    arguments);
+
+                Assert.False(result.IsError);
+
+                string text = Assert.Single(result.Content).Text!;
+
+                observed += text.Split('\n')
+                    .Count(static line => line.Contains("paged-", StringComparison.Ordinal)
+                        && !line.StartsWith("...", StringComparison.Ordinal));
+
+                const string cursorPrefix = "continuation=";
+
+                int cursorStart = text.LastIndexOf(
+                    cursorPrefix,
+                    StringComparison.Ordinal);
+
+                if (cursorStart < 0)
+                {
+
+                    break;
+
+                }
+
+                cursorStart += cursorPrefix.Length;
+
+                int cursorEnd = text.IndexOf(';', cursorStart);
+
+                Assert.True(cursorEnd > cursorStart);
+
+                continuation = text[cursorStart..cursorEnd];
+
+            } while (true);
+
+        }
+        finally
+        {
+
+            session.Server.ListDirectoryEntryValidationObserverForTests = null;
+
+        }
+
+        Assert.Equal(fileCount, observed);
+
+        // The continuation replays the walk from the top of the tree on every page, and each replayed
+        // entry used to pay a full symlink component walk (several syscalls per path component) before
+        // the cheap cursor comparison discarded it. Paging 302 entries at 64 per page therefore cost
+        // ~950 validations instead of ~one per emitted entry.
+        Assert.InRange(validations, 1, 2 * (fileCount + 2));
 
     }
 
@@ -2777,16 +3175,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ToolsCall_read_file_chunk_rejects_symlink_to_outside_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outsidePath = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}.txt");
 
@@ -2902,7 +3297,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         bool attachmentsToolEnabled = false,
         IA2AClientService? a2aClientService = null,
         CodingToolsSettings? codingToolsSettings = null,
-        IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
+        IWorkspaceCheckRuntime? workspaceCheckRuntime = null,
+        IGrimoireRepository? grimoireRepository = null)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -2932,6 +3328,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 }));
 
         services.AddSingleton<ILexiconService, FakeLexiconService>();
+
+        if (grimoireRepository is not null)
+        {
+
+            services.AddSingleton(grimoireRepository);
+
+        }
 
         if (a2aClientService is not null)
         {
@@ -2974,6 +3377,137 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         await transport.StartAsync();
 
         return new TestMcpSession(transport, server, serverTask, cts);
+
+    }
+
+    /// <summary>
+    /// Answers <c>search_archives</c> with a caller-supplied body and refuses everything else. The
+    /// Grimoire concatenates every matched entry's full <c>Content</c> column with no per-row snippet
+    /// limit, so one archived tool result is enough to push the tool past one response allocation.
+    /// </summary>
+    private sealed class ArchiveSearchGrimoireRepository(string archiveSearchResult) : IGrimoireRepository
+    {
+
+        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+            Task.FromResult(archiveSearchResult);
+
+        public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
+            Guid? sessionId,
+            string prompt,
+            string model,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task AppendToolInteractionAsync(
+            Guid sessionId,
+            string toolName,
+            string arguments,
+            string result,
+            string modelUsed,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<Session?> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<Session?> GetSessionHeaderAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(
+            Guid sessionId,
+            int takeLast,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<GrimoireEntryDto?> GetEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<bool> SetEntryPinnedAsync(Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<int> GetPinnedEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<List<Guid>> GetSessionsNeedingSummarizationAsync(
+            int threshold,
+            DateTime idleCutoff,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<List<Entry>> GetUnsummarizedEntriesAsync(
+            Guid sessionId,
+            DateTime watermark,
+            int batchSize,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task IncrementSessionTokensAsync(Guid sessionId, long totalTokens, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task IncrementSessionTokensAndCostAsync(
+            Guid sessionId,
+            long totalTokens,
+            decimal costUsd,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task UpdateSessionCampaignRollupAsync(
+            Guid sessionId,
+            string summary,
+            DateTime lastSummarizedMessageAt,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<LoreDto> ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<ListPageResult<LoreDto>> ListLoreAsync(
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
 
     }
 

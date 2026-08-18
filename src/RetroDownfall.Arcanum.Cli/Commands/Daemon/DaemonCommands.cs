@@ -25,7 +25,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), result.Error));
 
             return 1;
         }
@@ -46,7 +46,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), result.Error));
 
             return 1;
         }
@@ -67,7 +67,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), result.Error));
 
             return 1;
         }
@@ -89,7 +89,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -175,7 +175,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         if (minutes < 1)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Minutes must be a positive integer (>= 1).")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Minutes must be a positive integer (>= 1).")));
 
             return 1;
 
@@ -188,7 +188,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
@@ -224,7 +224,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         if (string.IsNullOrWhiteSpace(message))
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape("A non-empty message is required.")));
 
@@ -235,7 +235,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         if (!TryParseSeverity(severity, out CommLinkSeverity parsedSeverity))
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorLabelMarkup(
                     Markup.Escape("--severity"),
                     Markup.Escape("must be one of: Info, Warning, Critical.")));
@@ -257,7 +257,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 

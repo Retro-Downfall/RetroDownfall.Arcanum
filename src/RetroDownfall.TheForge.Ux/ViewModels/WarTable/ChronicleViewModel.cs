@@ -12,6 +12,9 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
 {
 
+    /// <summary>Retention bound for <see cref="Entries"/>; newest frames win and the tail is dropped.</summary>
+    public const int MaxEntries = 2000;
+
     private readonly Guid _apprenticeId;
 
     private readonly IWarTableDataSource _dataSource;
@@ -58,6 +61,10 @@ public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
     {
 
         Stop();
+
+        // The server replays plan/escalation/step frames on every reconnect, so a re-activation that
+        // kept the previous entries would prepend a second copy of the same preamble.
+        Entries.Clear();
 
         _streamCts = new CancellationTokenSource();
 
@@ -109,6 +116,18 @@ public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
 
     }
 
+    private void EnforceEntryCap()
+    {
+
+        while (Entries.Count > MaxEntries)
+        {
+
+            Entries.RemoveAt(Entries.Count - 1);
+
+        }
+
+    }
+
     private void OnEntriesChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
 
@@ -128,7 +147,16 @@ public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
                                .ConfigureAwait(true))
             {
 
+                if (cancellationToken.IsCancellationRequested)
+                {
+
+                    return;
+
+                }
+
                 Entries.Insert(0, new ChronicleEntryViewModel(frame));
+
+                EnforceEntryCap();
 
             }
 
@@ -142,7 +170,14 @@ public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
 
-            LastError = ex.Message;
+            // A cancelled stream can surface its abort as an IO failure; a superseded run must not
+            // raise an error banner on the run that replaced it.
+            if (!cancellationToken.IsCancellationRequested)
+            {
+
+                LastError = ex.Message;
+
+            }
 
         }
         finally

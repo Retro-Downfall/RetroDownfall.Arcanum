@@ -254,6 +254,11 @@ public sealed class InMemoryDaemonExecutionRepository(
         {
             if (record.Status == DaemonJobStatus.Cancelled)
             {
+                // Idempotent, and nothing more. This method is reachable straight from
+                // POST /api/daemons/executions/{id}/cancel, so re-entry is just as likely to be a second
+                // operator hit as the runner reporting the body returned — and the two mean opposite
+                // things about whether the reservation may be freed. The runner says so explicitly
+                // through ReportDrainedAsync instead.
                 return Task.FromResult(record.ToSummary());
             }
 
@@ -276,12 +281,39 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             record.ErrorMessage = "Job was cancelled.";
 
-            DisposeCancellation(record);
-
-            RemoveInFlightIfMatch(record.DaemonId, executionId);
-
+            // Cancel, but neither dispose the token source nor release the in-flight reservation:
+            // cancellation is cooperative, so the job body is still executing and still holds that token.
+            // The reservation is this daemon's only single-flight mechanism, so freeing it here would let a
+            // second headless run start against the same target spell while the first is mid-turn. Both
+            // happen in ReleaseDrainedExecution once a terminal transition reports the body has returned —
+            // the cancel-not-dispose ordering the Apprentice runtime already uses (DESIGN §5.7).
             return Task.FromResult(record.ToSummary());
         }
+    }
+
+    public Task ReportDrainedAsync(string executionId, CancellationToken ct)
+    {
+
+        ct.ThrowIfCancellationRequested();
+
+        if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? record))
+        {
+
+            // A drain report comes from a catch arm, which can run after history trimming evicted the
+            // record. There is nothing left to release, and nothing to complain about.
+            return Task.CompletedTask;
+
+        }
+
+        lock (GetLock(record.DaemonId))
+        {
+
+            ReleaseDrainedExecution(record, executionId);
+
+        }
+
+        return Task.CompletedTask;
+
     }
 
     public bool HasRunningExecution(string daemonId) =>
@@ -367,9 +399,13 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         lock (GetLock(record.DaemonId))
         {
-            // Terminal CAS: only Running → terminal; first terminal wins; later Complete/Fail no-op.
+            // Terminal CAS: only Running → terminal; first terminal wins; later Complete/Fail no-op on the
+            // recorded status — but a job cancelled out of band drains through exactly this call, so the
+            // release still has to happen here or the daemon stays reserved for the life of the host.
             if (record.Status != DaemonJobStatus.Running)
             {
+                ReleaseDrainedExecution(record, executionId);
+
                 return record.ToSummary();
             }
 
@@ -379,12 +415,24 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             record.ErrorMessage = errorMessage;
 
-            DisposeCancellation(record);
-
-            RemoveInFlightIfMatch(record.DaemonId, executionId);
+            ReleaseDrainedExecution(record, executionId);
 
             return record.ToSummary();
         }
+    }
+
+    /// <summary>
+    /// The one place an execution's runtime resources are handed back: called only from a terminal
+    /// transition, which the runner performs after <c>job.RunAsync</c> has returned. Idempotent and
+    /// id-matched, so the repeated terminal calls a cancelled-then-completed execution produces are safe.
+    /// </summary>
+    private void ReleaseDrainedExecution(DaemonExecutionRecord record, string executionId)
+    {
+
+        DisposeCancellation(record);
+
+        RemoveInFlightIfMatch(record.DaemonId, executionId);
+
     }
 
     // W3.3 Fix 4: id-matched removal. Only evict the in-flight slot when the

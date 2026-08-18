@@ -22,6 +22,16 @@ public sealed class SessionRepository(
     ISessionAttachmentIndexQueue? attachmentIndexQueue = null) : ISessionRepository
 {
 
+    /// <summary>
+    /// Ceiling on how far a session-list page may widen to keep a one-timestamp tie group whole.
+    /// </summary>
+    /// <remarks>
+    /// Widening is unavoidable — a bare-timestamp cursor cannot express a position inside a tie
+    /// group — but it must not be unbounded, or a population whose <c>UpdatedAt</c> values collapse
+    /// onto one tick turns a paged list into a whole-table materialization.
+    /// </remarks>
+    internal const int MaxTieGroupWidening = 1_000;
+
     private const int ExportEntryBatchSize = 500;
 
     private const int ForkEntryBatchSize = 256;
@@ -290,16 +300,32 @@ public sealed class SessionRepository(
 
         tieParameters.Add(boundary.ToUniversalTime());
 
+        // One more than the bound, so an oversized group is detected rather than silently clipped.
+        // Clipping would leave the cursor on the boundary timestamp and make the rest of the group
+        // permanently unreachable through the strict "UpdatedAt" < @before predicate, so the bound
+        // has to fail loudly instead.
         string sql =
             "SELECT * FROM \"Sessions\" WHERE "
             + string.Join(" AND ", tieConditions)
-            + " ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC";
+            + " ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC LIMIT "
+            + (MaxTieGroupWidening + 1).ToString(CultureInfo.InvariantCulture);
 
-        return await db.Sessions
+        List<Session> group = await db.Sessions
             .FromSqlRaw(sql, tieParameters.ToArray())
             .AsNoTracking()
             .ToListAsync(ct)
             .ConfigureAwait(false);
+
+        if (group.Count > MaxTieGroupWidening)
+        {
+            throw new InvalidOperationException(
+                $"More than {MaxTieGroupWidening.ToString(CultureInfo.InvariantCulture)} sessions share "
+                + "the timestamp at this page boundary. The session-list cursor is a bare timestamp and "
+                + "cannot express a position inside a tie group, so a group this large cannot be paged; "
+                + "narrow the query with a status, campaign, or date filter.");
+        }
+
+        return group;
     }
 
     public async Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct)

@@ -49,6 +49,41 @@ public class InferenceTraceViewModelTests
     }
 
     [Fact]
+    public async Task ExportAsync_WhenTheWriteFails_ReportsInsteadOfEscaping()
+    {
+
+        // A directory that does not exist: File.WriteAllTextAsync throws, exactly as a read-only
+        // volume, a vanished removable drive, or a permission denial would.
+        InferenceTraceViewModel trace = new(
+            fileDialog: new FixedPathArtifactFileDialogService(FixedPathArtifactFileDialogService.UnwritablePath()));
+
+        trace.BeginCapture("spell", "echo");
+
+        await trace.ExportAsync(CancellationToken.None);
+
+        Assert.False(string.IsNullOrWhiteSpace(trace.LastError));
+
+        Assert.NotEqual("Trace exported.", trace.StatusText);
+
+    }
+
+    [Fact]
+    public async Task PersistAsync_WhenTheStoreFails_ReportsInsteadOfEscaping()
+    {
+
+        InferenceTraceViewModel trace = new(store: new ThrowingInferenceTraceStore());
+
+        trace.BeginCapture("spell", "echo");
+
+        await trace.PersistAsync(CancellationToken.None);
+
+        Assert.False(string.IsNullOrWhiteSpace(trace.LastError));
+
+        Assert.NotEqual("Trace saved locally.", trace.StatusText);
+
+    }
+
+    [Fact]
     public void DryRunButtons_WithoutHooks_SetHonestStatus()
     {
 
@@ -106,6 +141,19 @@ public class InferenceTraceViewModelTests
         Assert.Equal("Summary", exportedReasoning.ReasoningOutputMode);
         Assert.Equal(7, exportedReasoning.ReasoningTokens);
         Assert.Null(exportedReasoning.Data);
+    }
+
+    private sealed class ThrowingInferenceTraceStore : RetroDownfall.TheForge.Core.Services.IInferenceTraceStore
+    {
+
+        public string StorePath { get; } = Path.Combine(Path.GetTempPath(), "forge-throwing-traces.json");
+
+        public Task<InferenceTraceStoreDocument> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new InferenceTraceStoreDocument(1, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, []));
+
+        public Task SaveAsync(InferenceTraceStoreDocument document, CancellationToken cancellationToken = default) =>
+            Task.FromException(new IOException("the-forge traces file is read-only"));
+
     }
 
 }

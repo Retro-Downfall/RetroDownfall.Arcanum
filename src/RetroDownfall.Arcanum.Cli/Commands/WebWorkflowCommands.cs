@@ -101,7 +101,9 @@ public sealed class WebWorkflowCommands(
 
         }
 
-        WriteAttachmentDiagnostic(response.Value.AttachmentId);
+        WriteAttachmentDiagnostic(
+            response.Value.AttachmentId,
+            response.Value.AttachmentError);
 
         return 0;
 
@@ -174,7 +176,9 @@ public sealed class WebWorkflowCommands(
 
         }
 
-        WriteAttachmentDiagnostic(response.Value.AttachmentId);
+        WriteAttachmentDiagnostic(
+            response.Value.AttachmentId,
+            response.Value.AttachmentError);
 
         return 0;
 
@@ -317,8 +321,11 @@ public sealed class WebWorkflowCommands(
 
                 case WebResearchStreamFrameType.Error:
 
+                    // A transport failure here is the same failure `arcanum ask` reports, so it gets
+                    // the same next step. A provider or policy error keeps its own copy untouched.
                     dispatcher.WriteDiagnostic(
-                        $"{frame.Code ?? ErrorCodes.WebResearch.ProviderUnavailable}: {frame.Message ?? "Research failed."}");
+                        $"{frame.Code ?? ErrorCodes.WebResearch.ProviderUnavailable}: "
+                        + CliStreamTransportHint.Append(frame.Code, frame.Message ?? "Research failed."));
 
                     return 1;
 
@@ -337,7 +344,7 @@ public sealed class WebWorkflowCommands(
         {
 
             dispatcher.WriteDiagnostic(
-                ArcanumApiClient.StreamEmptyResultMessage);
+                CliStreamTransportHint.Append(ArcanumApiClient.StreamEmptyResultMessage));
 
             return 1;
 
@@ -374,7 +381,11 @@ public sealed class WebWorkflowCommands(
 
         }
 
-        WriteAttachmentDiagnostic(result.AttachmentId);
+        // Research streams, so a failed attachment already arrived as its own `attachment_failed`
+        // progress frame and was written to stderr by the frame loop above. There is no
+        // `AttachmentError` on the research result to pass here, and printing one would double the
+        // diagnostic.
+        WriteAttachmentDiagnostic(result.AttachmentId, attachmentError: null);
 
         return 0;
 
@@ -573,7 +584,19 @@ public sealed class WebWorkflowCommands(
 
     }
 
-    private void WriteAttachmentDiagnostic(Guid? attachmentId)
+    /// <summary>
+    /// Reports what became of a requested <c>--attach-to-session</c>: the stored id, or the reason it was
+    /// not stored.
+    /// </summary>
+    /// <remarks>
+    /// Search and browse return the answer with a non-fatal <c>attachmentError</c> rather than failing the
+    /// whole workflow, because the provider call is billed before the attachment is attempted. That trade
+    /// only holds if the operator hears about it — an unreported failure is indistinguishable from an
+    /// attachment that happened — so the error goes to stderr, leaving stdout to the answer and the exit
+    /// code at success. Both fields are never set at once: an id means it was stored, an error means it
+    /// was not.
+    /// </remarks>
+    private void WriteAttachmentDiagnostic(Guid? attachmentId, string? attachmentError)
     {
 
         if (attachmentId is Guid id)
@@ -581,6 +604,14 @@ public sealed class WebWorkflowCommands(
 
             dispatcher.WriteDiagnostic(
                 $"Attached result to session as {id:D}.");
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(attachmentError))
+        {
+
+            dispatcher.WriteDiagnostic(
+                $"The result could not be attached to the session: {attachmentError}");
 
         }
 

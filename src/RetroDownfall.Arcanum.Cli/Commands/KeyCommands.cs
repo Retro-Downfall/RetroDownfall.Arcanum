@@ -100,8 +100,22 @@ public sealed class KeyCommands(
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        string? key = await ReadCredentialAsync(apiKey, "Master API key:", cancellationToken)
+        SensitiveValueRead read = await ReadCredentialAsync(
+                apiKey,
+                "Master API key:",
+                cancellationToken)
             .ConfigureAwait(false);
+
+        if (!read.IsAvailable)
+        {
+
+            console.WriteDiagnostic(SensitiveValueInput.UnavailableDiagnostic);
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        string? key = read.Value;
 
         if (string.IsNullOrWhiteSpace(key))
         {
@@ -226,8 +240,19 @@ public sealed class KeyCommands(
             ? "Perplexity API key:"
             : $"API key for provider '{provider.Trim()}':";
 
-        string? key = await ReadCredentialAsync(apiKey, prompt, cancellationToken)
+        SensitiveValueRead read = await ReadCredentialAsync(apiKey, prompt, cancellationToken)
             .ConfigureAwait(false);
+
+        if (!read.IsAvailable)
+        {
+
+            console.WriteDiagnostic(SensitiveValueInput.UnavailableDiagnostic);
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        string? key = read.Value;
 
         if (string.IsNullOrWhiteSpace(key))
         {
@@ -361,7 +386,7 @@ public sealed class KeyCommands(
 
     }
 
-    private async Task<string?> ReadCredentialAsync(
+    private async Task<SensitiveValueRead> ReadCredentialAsync(
         string? provided,
         string prompt,
         CancellationToken cancellationToken)
@@ -370,18 +395,19 @@ public sealed class KeyCommands(
         if (!string.IsNullOrWhiteSpace(provided))
         {
 
-            return provided;
+            return SensitiveValueRead.From(provided);
 
         }
 
-        if (Console.IsInputRedirected)
-        {
+        SensitiveValueRead read = await SensitiveValueInput
+            .ReadAsync(
+                SystemSensitiveValueConsole.Instance,
+                invocationContext.Options,
+                prompt,
+                cancellationToken)
+            .ConfigureAwait(false);
 
-            return (await Console.In.ReadLineAsync(cancellationToken).ConfigureAwait(false))?.Trim();
-
-        }
-
-        return AnsiConsole.Prompt(new TextPrompt<string>(prompt).Secret());
+        return SensitiveValueInput.NormalizeCredential(read);
 
     }
 

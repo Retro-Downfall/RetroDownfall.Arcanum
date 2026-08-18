@@ -17,7 +17,7 @@ public sealed class OperationCommands(
             .ConfigureAwait(false);
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             return 1;
         }
 
@@ -53,7 +53,7 @@ public sealed class OperationCommands(
             .ConfigureAwait(false);
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             return 1;
         }
 
@@ -98,7 +98,7 @@ public sealed class OperationCommands(
             .ConfigureAwait(false);
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             return 1;
         }
 
@@ -119,7 +119,7 @@ public sealed class OperationCommands(
         Result<LongRunningOperationDto> result = await action(id, cancellationToken).ConfigureAwait(false);
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             return 1;
         }
 

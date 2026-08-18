@@ -1239,6 +1239,37 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task QueryAsync_refuses_to_widen_past_the_tie_group_bound()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tied = new(2025, 6, 1, 9, 0, 0, TimeSpan.Zero);
+
+        for (int index = 0; index <= SessionRepository.MaxTieGroupWidening; index++)
+        {
+
+            _db!.Sessions.Add(NewSession(Guid.NewGuid(), "tied-" + index, tied));
+
+        }
+
+        await _db!.SaveChangesAsync(CancellationToken.None);
+
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+
+        // The bare-timestamp cursor cannot express a position inside a tie group, so the page has to
+        // widen to the whole group — but the widening must be bounded. Past the bound the group is
+        // unservable, and failing loudly beats materializing the whole table into one response.
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.QueryAsync(
+                new SessionQueryRequest(Limit: 1),
+                CancellationToken.None));
+
+        Assert.Contains("tie group", error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [SkippableFact]
     public async Task QueryAsync_reports_entry_counts_per_session()
     {
 

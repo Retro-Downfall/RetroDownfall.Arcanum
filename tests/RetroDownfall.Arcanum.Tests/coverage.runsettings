@@ -14,6 +14,19 @@
             Cli is exercised by scenario tests but excluded from the Include denominator
             (Terminal.Gui / interactive surfaces are not line-covered).
             Api.DevHost is WAF-only and must stay out of the denominator.
+
+            KNOWN GAP, recorded rather than silent: RetroDownfall.Arcanum.Secrets is a first-party
+            shipping assembly (every OS credential store) and is NOT in this filter. It was created
+            after the filter was written and was never added, so it is instrumented by nothing and
+            contributes no lines or branches to the 80/70 floors. Widening the filter is not a
+            one-line change: WindowsOsCredentialStore, MacOsCredentialStore and LinuxOsCredentialStore
+            are mutually exclusive by platform, so whichever two do not match the runner would park
+            structurally unreachable lines in the denominator on every lane and must be excluded by
+            type at the same time. The platform-neutral remainder is about 720 lines against a
+            denominator of roughly 335,000, so the aggregate impact is small, but it has not been
+            measured against the live floors and must be before the filter changes.
+            The historical WindowsOsCredentialStore defect is pinned by OsCredentialStoreRoundTripTests
+            against the real backend on the Windows lane, not by this gate.
           -->
           <Include>[RetroDownfall.Arcanum.Core]*,[RetroDownfall.Arcanum.Infrastructure]*,[RetroDownfall.Arcanum.Api]*</Include>
           <!--

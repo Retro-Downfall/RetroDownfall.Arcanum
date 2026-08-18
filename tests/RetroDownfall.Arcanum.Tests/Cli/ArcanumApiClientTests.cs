@@ -889,6 +889,55 @@ public sealed class ArcanumApiClientTests
 
     }
 
+    /// <summary>
+    /// Issue #33 — <c>POST /api/web/research</c> is an unbounded multi-pass progress stream, so a
+    /// <c>serve</c> restart mid-research is routine. Every sibling stream on this client maps that to
+    /// the transport copy; research read its lines bare, so the disconnect escaped the async iterator
+    /// and the operator was told "An unexpected CLI error occurred." instead.
+    /// </summary>
+    [Fact]
+    public async Task ResearchWebAsync_yields_an_error_frame_when_the_stream_disconnects_mid_read()
+    {
+
+        WebResearchStreamFrame progress = new()
+        {
+            Type = WebResearchStreamFrameType.Progress,
+            Stage = "search",
+            Message = "Searching the web.",
+        };
+
+        byte[] firstLine = JsonSerializer.SerializeToUtf8Bytes(
+            progress,
+            ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+        DisconnectingStreamHandler handler = new(firstLine);
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<WebResearchStreamFrame> frames = [];
+
+        await foreach (WebResearchStreamFrame frame in client.ResearchWebAsync(
+            new WebResearchWorkflowRequest { Question = "why" },
+            CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        Assert.Equal(2, frames.Count);
+
+        Assert.Equal(WebResearchStreamFrameType.Progress, frames[0].Type);
+
+        Assert.Equal(WebResearchStreamFrameType.Error, frames[1].Type);
+
+        Assert.Equal(ErrorCodes.Connection.Unreachable, frames[1].Code);
+
+        Assert.Contains(
+            "lost before the stream completed",
+            frames[1].Message,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
     [Fact]
     public async Task SubmitHumanResponseAsync_returns_success_when_envelope_data_is_true()
     {

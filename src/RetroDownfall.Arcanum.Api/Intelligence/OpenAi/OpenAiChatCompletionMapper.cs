@@ -11,6 +11,12 @@ internal static class OpenAiChatCompletionMapper
 
     private const string ImageReferenceSuffix = "]";
 
+    private const string DataUriScheme = "data:";
+
+    private const string ElidedPayloadMarker = "<elided>";
+
+    private const int MaxDataUriHeaderChars = 128;
+
     internal static PingRequest ToPingRequest(OpenAiChatRequest request, bool forwardClientTools = false)
     {
         List<OpenAiChatMessage> msgs = request.Messages!;
@@ -145,13 +151,50 @@ internal static class OpenAiChatCompletionMapper
                     textBuilder.Append('\n');
                 }
 
-                textBuilder.Append(ImageReferencePrefix).Append(imageUrl.Url).Append(ImageReferenceSuffix);
+                textBuilder.Append(ImageReferencePrefix);
+
+                AppendImageReference(textBuilder, imageUrl.Url);
+
+                textBuilder.Append(ImageReferenceSuffix);
 
                 coreParts.Add(new CoreContentPart("image_url", null, imageUrl.Url, imageUrl.Detail));
             }
         }
 
         return (textBuilder.ToString(), coreParts);
+    }
+
+    /// <summary>
+    /// Appends the flattened rendering of an <c>image_url</c> part. Remote URLs are written verbatim;
+    /// a <c>data:</c> URI keeps only its media-type header and elides the base64 payload, so the
+    /// rendering stays bounded no matter how large the inline image is. The full URI is preserved
+    /// verbatim on the <see cref="CoreContentPart"/>, which is the copy that actually reaches the
+    /// provider — the flattened text exists only for storage/logging and the text-only fallback
+    /// consumers (guardrails scanning, the RAG probe), none of which can do anything with base64.
+    /// Inlining the payload here would charge every inline image twice against
+    /// <c>MaxEntryContentBytes</c> (once as <c>Content</c>, once as the part), pushing the effective
+    /// inline-image ceiling well below the configured <c>Scrying:MaxImageBytes</c>, and would pour a
+    /// megabyte of encoding into transcripts and embeddings.
+    /// </summary>
+    private static void AppendImageReference(StringBuilder builder, string url)
+    {
+        if (!url.StartsWith(DataUriScheme, StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Append(url);
+
+            return;
+        }
+
+        int payloadStart = url.IndexOf(',');
+
+        if (payloadStart < 0 || payloadStart > MaxDataUriHeaderChars)
+        {
+            builder.Append(DataUriScheme).Append(ElidedPayloadMarker);
+
+            return;
+        }
+
+        builder.Append(url.AsSpan(0, payloadStart + 1)).Append(ElidedPayloadMarker);
     }
 
     private static IReadOnlyList<string>? ExtractStop(JsonElement? stop)

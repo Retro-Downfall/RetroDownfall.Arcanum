@@ -1272,6 +1272,11 @@ public sealed class DoctorCommand(
                 + $"DurableOperations: {probe.Detail ?? "status unavailable"}")),
             DoctorProbeKind.Unauthorized => (false, new DoctorCheck("API Health", "fail", $"Reached {targetUrl} but auth failed (HTTP {probe.HttpStatus})")),
             DoctorProbeKind.UnexpectedStatus => (false, new DoctorCheck("API Health", "fail", $"{targetUrl} returned HTTP {probe.HttpStatus}")),
+            DoctorProbeKind.UnexpectedResponder => (false, new DoctorCheck(
+                "API Health",
+                "fail",
+                $"Something is listening at {targetUrl} but answered as no Arcanum host would "
+                + $"({probe.Detail ?? "no detail"}); a foreign service is likely holding the port")),
             DoctorProbeKind.Timeout => (true, new DoctorCheck("API Health", "warn", $"Timed out after {timeoutSeconds}s: {targetUrl}")),
             DoctorProbeKind.Unreachable => (true, new DoctorCheck(
                 "API Health",
@@ -1366,6 +1371,13 @@ public sealed class DoctorCommand(
                 probe.StatusCode ?? 0,
                 probe.Error),
             HealthProbeState.Timeout => new DoctorProbeResult(DoctorProbeKind.Timeout, 0, probe.Error),
+            // Something holds the port and answered as no Arcanum host would. Folding this into the
+            // unreachable arm advises starting a host, which is the one remedy that cannot work here:
+            // a second host cannot bind a port another process already owns.
+            HealthProbeState.UnexpectedResponder => new DoctorProbeResult(
+                DoctorProbeKind.UnexpectedResponder,
+                probe.StatusCode ?? 0,
+                probe.Error),
             HealthProbeState.ConnectionRefused
                 or HealthProbeState.NetworkUnreachable
                 or HealthProbeState.DnsFailure
@@ -1432,6 +1444,9 @@ public sealed class DoctorCommand(
         Unauthorized,
 
         UnexpectedStatus,
+
+        /// <summary>Something answered on the address, and answered as no Arcanum host would.</summary>
+        UnexpectedResponder,
 
         Timeout,
 

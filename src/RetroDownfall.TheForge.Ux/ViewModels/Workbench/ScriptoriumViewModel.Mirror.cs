@@ -5,6 +5,7 @@ using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services.Diff;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -31,9 +32,18 @@ public sealed partial class ScriptoriumViewModel
 
     private string _persistedMaxOutputTokensText = string.Empty;
 
-    private string _persistedParameterSchemaJson = "{}";
+    // Seeded to match the unloaded editor fields exactly. Seeding these two to "{}" instead made a
+    // freshly opened Scriptorium report IsEditorDirty before the operator had typed anything, which
+    // the Load guard would then read as a buffer worth protecting.
+    private string _persistedParameterSchemaJson = string.Empty;
 
-    private string _persistedDefaultParametersJson = "{}";
+    private string _persistedDefaultParametersJson = string.Empty;
+
+    /// <summary>
+    /// Monotonic ticket for mirror refreshes. Only the newest refresh may write the mirror surface,
+    /// so rapid version selection cannot leave a superseded version's diff on screen.
+    /// </summary>
+    private int _mirrorRefreshGeneration;
 
     [ObservableProperty]
     private PromptDetailDto? _mirrorComparedPrompt;
@@ -41,7 +51,7 @@ public sealed partial class ScriptoriumViewModel
     [ObservableProperty]
     private string _mirrorStatusText = string.Empty;
 
-    public ObservableCollection<DiffLineItem> MirrorDiffLines { get; } = [];
+    public BulkObservableCollection<DiffLineItem> MirrorDiffLines { get; } = [];
 
     public bool IsEditorDirty =>
         !string.Equals(Template, _persistedTemplate, StringComparison.Ordinal)
@@ -86,7 +96,7 @@ public sealed partial class ScriptoriumViewModel
         if (value is not null)
         {
 
-            _ = RefreshMirrorDiffAsync(CancellationToken.None);
+            TaskUtilities.FireAndForget(RefreshMirrorDiffAsync(CancellationToken.None));
 
         }
 
@@ -127,11 +137,22 @@ public sealed partial class ScriptoriumViewModel
     public async Task RefreshMirrorDiffAsync(CancellationToken cancellationToken)
     {
 
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        int generation = ++_mirrorRefreshGeneration;
+
         MirrorDiffLines.Clear();
 
         MirrorComparedPrompt = null;
 
-        if (SelectedVersion is null)
+        PromptVersionDto? version = SelectedVersion;
+
+        if (version is null)
         {
 
             MirrorStatusText = "Select a version to compare.";
@@ -140,9 +161,35 @@ public sealed partial class ScriptoriumViewModel
 
         }
 
-        PromptDetailDto? detail = await _dataSource
-            .LoadPromptAsync(SelectedVersion.Id, cancellationToken)
-            .ConfigureAwait(true);
+        PromptDetailDto? detail;
+
+        try
+        {
+
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                _lifetimeCts.Token);
+
+            detail = await _dataSource
+                .LoadPromptAsync(version.Id, linked.Token)
+                .ConfigureAwait(true);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return;
+
+        }
+
+        if (_disposed || generation != _mirrorRefreshGeneration)
+        {
+
+            // A newer selection (or a closed document) already owns the mirror surface.
+
+            return;
+
+        }
 
         if (detail is null)
         {
@@ -151,7 +198,7 @@ public sealed partial class ScriptoriumViewModel
 
             MirrorStatusText = "Version detail unavailable.";
 
-            _foundryFloor.AppendLine($"Scriptorium Mirror failed for version {SelectedVersion.Version} ({SelectedVersion.Id:D}).");
+            _foundryFloor.AppendLine($"Scriptorium Mirror failed for version {version.Version} ({version.Id:D}).");
 
             return;
 
@@ -185,12 +232,20 @@ public sealed partial class ScriptoriumViewModel
             detail.ParameterSchema?.RootElement.GetRawText() ?? "{}",
             detail.DefaultParameters?.RootElement.GetRawText() ?? "{}");
 
-        foreach (DiffLineItem line in LineDiff.Compare(left, right))
+        // LCS over two large snapshots is bounded but still CPU-bound, and every caller is on the UI
+        // thread. Compute it on the pool, then publish the whole diff in one notification.
+        IReadOnlyList<DiffLineItem> lines = await Task
+            .Run(() => LineDiff.Compare(left, right), cancellationToken)
+            .ConfigureAwait(true);
+
+        if (_disposed || generation != _mirrorRefreshGeneration)
         {
 
-            MirrorDiffLines.Add(line);
+            return;
 
         }
+
+        MirrorDiffLines.ResetTo(lines);
 
         MirrorStatusText =
             $"Compared persisted editor snapshot vs version {detail.Version} ({detail.Id:D}). "

@@ -182,7 +182,25 @@ public readonly record struct CovenantDigest
         _bytes = bytes.ToArray();
     }
 
+    /// <summary>
+    /// The serialization surface, which copies so no caller can retain the backing array.
+    /// </summary>
+    /// <remarks>
+    /// Source-generated JSON needs a concrete <see cref="byte"/> array here, and a digest handed out
+    /// by reference would be a mutable view of an immutable identity. Every read that only feeds a
+    /// canonical writer or a hash should take <see cref="Span"/> instead: those copies are pure
+    /// waste on the generation-bound turn path, where one snapshot alone reads several hundred.
+    /// </remarks>
     public byte[] Bytes => _bytes?.ToArray() ?? [];
+
+    /// <summary>The 32 digest bytes in place, or an empty span for an uninitialized digest.</summary>
+    /// <remarks>
+    /// Internal on purpose: the span targets the heap array rather than struct-internal storage, so
+    /// it is safe to return from a readonly struct, but only Core can be trusted not to write
+    /// through it.
+    /// </remarks>
+    [JsonIgnore]
+    internal ReadOnlySpan<byte> Span => _bytes;
 
     [JsonIgnore]
     public bool IsValid => _bytes is { Length: CovenantLimits.DigestBytes };

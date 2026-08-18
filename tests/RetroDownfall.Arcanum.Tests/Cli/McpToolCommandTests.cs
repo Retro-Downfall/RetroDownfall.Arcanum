@@ -372,9 +372,9 @@ public sealed class McpToolCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Contains("Forbidden Art", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Forbidden Art", result.Error, StringComparison.OrdinalIgnoreCase);
 
-        Assert.Contains("Master", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Master", result.Error, StringComparison.OrdinalIgnoreCase);
 
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
@@ -402,11 +402,11 @@ public sealed class McpToolCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Contains("internal", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("internal", result.Error, StringComparison.OrdinalIgnoreCase);
 
-        Assert.Contains("external", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("external", result.Error, StringComparison.OrdinalIgnoreCase);
 
-        Assert.Contains("tool invoke", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("tool invoke", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Empty(handler.Requests);
 
@@ -520,7 +520,7 @@ public sealed class McpToolCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Contains("JSON object", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("JSON object", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Empty(handler.Requests);
 

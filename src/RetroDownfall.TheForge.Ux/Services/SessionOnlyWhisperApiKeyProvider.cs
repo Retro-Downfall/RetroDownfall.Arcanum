@@ -13,6 +13,12 @@ internal sealed class SessionOnlyWhisperApiKeyProvider : ITheForgeApiKeyProvider
 
     private readonly Lazy<IWhispersService> _whispers;
 
+    /// <summary>
+    /// 1 once the session-only warning has been raised for the current resolution. <see cref="Interlocked"/>
+    /// rather than a plain <see langword="bool"/>: the background health poller races user-initiated requests.
+    /// </summary>
+    private int _warned;
+
     public SessionOnlyWhisperApiKeyProvider(TheForgeApiKeyProvider inner, Lazy<IWhispersService> whispers)
     {
 
@@ -27,7 +33,13 @@ internal sealed class SessionOnlyWhisperApiKeyProvider : ITheForgeApiKeyProvider
 
         string? key = await _inner.GetApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
-        if (_inner.IsSessionOnlyKey && !string.IsNullOrWhiteSpace(key))
+        // IsSessionOnlyKey stays latched for the lifetime of a resolution while this method runs once per
+        // outbound HTTP request, so warn only on the transition into a session-only key. Whispers cap at
+        // IWhispersService.MaxActive and evict oldest-non-Error first: re-emitting per request would starve
+        // every Success/Info notification out of the stack.
+        if (_inner.IsSessionOnlyKey
+            && !string.IsNullOrWhiteSpace(key)
+            && Interlocked.Exchange(ref _warned, 1) == 0)
         {
 
             _whispers.Value.Show(
@@ -40,9 +52,22 @@ internal sealed class SessionOnlyWhisperApiKeyProvider : ITheForgeApiKeyProvider
 
     }
 
-    public Task PersistPastedKeyAsync(string apiKey, CancellationToken cancellationToken) =>
-        _inner.PersistPastedKeyAsync(apiKey, cancellationToken);
+    public Task PersistPastedKeyAsync(string apiKey, CancellationToken cancellationToken)
+    {
 
-    public void ClearPasteDecline() => _inner.ClearPasteDecline();
+        Interlocked.Exchange(ref _warned, 0);
+
+        return _inner.PersistPastedKeyAsync(apiKey, cancellationToken);
+
+    }
+
+    public void ClearPasteDecline()
+    {
+
+        Interlocked.Exchange(ref _warned, 0);
+
+        _inner.ClearPasteDecline();
+
+    }
 
 }

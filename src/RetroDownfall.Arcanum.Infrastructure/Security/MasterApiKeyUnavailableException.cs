@@ -10,4 +10,14 @@ public sealed class MasterApiKeyUnavailableException : InvalidOperationException
     {
     }
 
+    /// <summary>
+    /// Takes an explicit message so a refusal can name its own cause. The parameterless overload speaks
+    /// only for the existing-Grimoire case, and borrowing its text for a different refusal would send
+    /// the operator after the wrong artefact.
+    /// </summary>
+    public MasterApiKeyUnavailableException(string message)
+        : base(message)
+    {
+    }
+
 }

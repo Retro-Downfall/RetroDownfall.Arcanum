@@ -22,6 +22,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// becomes unresolvable, and resolution degrades to Global-only until an authenticated repair. That is
 /// strictly safer than the alternative of minting a fresh key, which would silently orphan every
 /// registered root while continuing to look healthy.</para>
+///
+/// <para>A failed resolution is cached exactly like a successful one, because it is the failure path
+/// that the cache exists for: a store that is unavailable (headless Linux with no Secret Service) or
+/// that refuses the read (a macOS keychain ACL invalidated by a resign) fails on every attempt, so
+/// retrying per turn buys nothing and costs a warning per turn — or, on macOS, a confidential-information
+/// prompt per turn that the operator cannot dismiss for good. Recovery is therefore: repair the
+/// credential, then restart the process. There is no in-process repair entry point yet (§10.12).</para>
 /// </remarks>
 internal sealed class CampaignRootIdentityKeyProvider(IOsCredentialStore credentials)
     : ICampaignRootIdentityKeyProvider, IDisposable
@@ -38,6 +45,8 @@ internal sealed class CampaignRootIdentityKeyProvider(IOsCredentialStore credent
         credentials ?? throw new ArgumentNullException(nameof(credentials));
 
     private byte[]? _key;
+
+    private bool _resolved;
 
     private bool _disposed;
 
@@ -58,7 +67,17 @@ internal sealed class CampaignRootIdentityKeyProvider(IOsCredentialStore credent
                 return false;
             }
 
-            _key ??= LoadOrCreate();
+            // Latch on the attempt, not on the result: `_key ??= LoadOrCreate()` would memoise only
+            // success and re-enter the OS credential read on every turn for the whole life of a
+            // degraded installation.
+            if (!_resolved)
+            {
+
+                _resolved = true;
+
+                _key = LoadOrCreate();
+
+            }
 
             if (_key is null)
             {

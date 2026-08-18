@@ -128,6 +128,14 @@ internal sealed class CompletionCommands(
     /// so it must never print a diagnostic, never start the host, and always exit successfully —
     /// an unavailable host simply yields no suggestions.
     /// </summary>
+    /// <remarks>
+    /// One candidate per line, because that is the only separator all four supported shells agree
+    /// on. A fish command substitution splits its output on newlines and never re-splits on
+    /// whitespace, so a space-joined list arrives as a single candidate holding every name at once.
+    /// Newline is IFS for bash's <c>compgen -W</c> and zsh's <c>${=...}</c>, and PowerShell splits
+    /// on <c>\s+</c>, so per-line output keeps those three working unchanged; the resolver already
+    /// rejects names containing whitespace, so a name can never span two lines.
+    /// </remarks>
     public async Task<int> ResolveAsync(string provider, CancellationToken cancellationToken)
     {
 
@@ -135,10 +143,10 @@ internal sealed class CompletionCommands(
             .ResolveAsync(provider, cancellationToken)
             .ConfigureAwait(false);
 
-        if (values.Count > 0)
+        foreach (string value in values)
         {
 
-            dispatcher.WritePayload(string.Join(' ', values));
+            dispatcher.WritePayload(value);
 
         }
 

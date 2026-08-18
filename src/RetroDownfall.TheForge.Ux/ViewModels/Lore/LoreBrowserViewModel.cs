@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Lore;
@@ -10,7 +11,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Lore;
 /// <summary>
 /// The Lore Browser — operator key-value Lore over <c>/api/lore/*</c> (list/get/upsert/delete). A dock
 /// tool that refreshes on first show. Selecting an entry loads its key/value into the editor; Save
-/// upserts and refreshes; Delete removes the selected entry. API failures surface inline via
+/// upserts and refreshes; Delete confirms first, then removes the selected entry. API failures surface inline via
 /// <see cref="LastError"/> and the Foundry Floor — nothing throws.
 /// </summary>
 public sealed partial class LoreBrowserViewModel : ViewModelBase
@@ -19,6 +20,8 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
     private readonly ILoreDataSource _dataSource;
 
     private readonly FoundryFloorViewModel _foundryFloor;
+
+    private readonly IConfirmationDialogService _confirmationDialog;
 
     private bool _loaded;
 
@@ -43,12 +46,17 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
     [ObservableProperty]
     private string _editValue = string.Empty;
 
-    public LoreBrowserViewModel(ILoreDataSource dataSource, FoundryFloorViewModel foundryFloor)
+    public LoreBrowserViewModel(
+        ILoreDataSource dataSource,
+        FoundryFloorViewModel foundryFloor,
+        IConfirmationDialogService confirmationDialog)
     {
 
         _dataSource = dataSource;
 
         _foundryFloor = foundryFloor;
+
+        _confirmationDialog = confirmationDialog;
 
         Title = "Lore Browser";
 
@@ -238,6 +246,23 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
         {
 
             StatusText = "Select a Lore entry to delete.";
+
+            return;
+
+        }
+
+        // Delete sits beside Save in the same button row, so a mis-click is one gesture away from
+        // removing durable operator memory the server has no undo for.
+        bool confirmed = await _confirmationDialog
+            .ConfirmAsync(
+                "Delete Lore entry",
+                $"Delete Lore entry \"{selected.Key}\"? This cannot be undone.",
+                cancellationToken,
+                confirmIsDefault: false)
+            .ConfigureAwait(true);
+
+        if (!confirmed)
+        {
 
             return;
 

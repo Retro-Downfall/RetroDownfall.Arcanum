@@ -121,6 +121,40 @@ public sealed class DoctorCommandJsonTests : IDisposable
 
     }
 
+    /// <summary>
+    /// Something answered on the host's port, and answered as no Arcanum host would. "Not reachable"
+    /// is the one verdict that is wrong here: it points the operator at starting a host, and a second
+    /// host cannot bind a port another process already holds. The registered health check already
+    /// reports this correctly, so the legacy probe row must not contradict it.
+    /// </summary>
+    [Fact]
+    public async Task DoctorJson_reports_a_foreign_responder_on_the_port_rather_than_an_unreachable_host()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<ISecretStore>(new NullSecretStore());
+
+        services.AddSingleton<IHttpClientFactory>(new UnexpectedResponderHttpClientFactory());
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["doctor", "--json"]);
+
+        DoctorReport? report = JsonSerializer.Deserialize(result.Output, DoctorReportJsonContext.Default.DoctorReport);
+
+        Assert.NotNull(report);
+
+        DoctorCheck apiHealth = Assert.Single(report.Checks, c => c.Name == "API Health");
+
+        Assert.Equal("fail", apiHealth.Status);
+
+        Assert.DoesNotContain("Not reachable", apiHealth.Detail ?? string.Empty, StringComparison.Ordinal);
+
+    }
+
     private sealed class NullSecretStore : ISecretStore
     {
 
@@ -156,6 +190,33 @@ public sealed class DoctorCommandJsonTests : IDisposable
             throw new HttpRequestException(
                 "Connection refused",
                 new SocketException((int)SocketError.ConnectionRefused));
+
+    }
+
+    private sealed class UnexpectedResponderHttpClientFactory : IHttpClientFactory
+    {
+
+        public HttpClient CreateClient(string name) =>
+            new(new UnexpectedResponderHandler(), disposeHandler: true)
+            {
+                BaseAddress = new Uri("http://localhost:5001/"),
+            };
+
+    }
+
+    /// <summary>
+    /// A peer that accepted the connection and then answered as nothing HTTP would — the shape a
+    /// foreign service holding the configured port produces.
+    /// </summary>
+    private sealed class UnexpectedResponderHandler : HttpMessageHandler
+    {
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            throw new HttpRequestException(
+                HttpRequestError.InvalidResponse,
+                "The response ended prematurely.");
 
     }
 

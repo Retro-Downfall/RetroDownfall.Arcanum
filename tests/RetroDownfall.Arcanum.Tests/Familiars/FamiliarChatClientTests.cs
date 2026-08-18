@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Intelligence.Familiars;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Familiars;
 
@@ -927,6 +929,62 @@ public sealed class FamiliarChatClientTests
 
     }
 
+    /// <summary>
+    /// One <see cref="IChatClient"/> serves every model call in a turn, and the structured-output
+    /// correction loop re-invokes that same instance with the same <c>ResponseFormat</c>. The schema
+    /// file therefore has to be per call: a fixed name opened <c>CreateNew</c> throws on the second
+    /// write, and the swallowed failure silently drops <c>--output-schema</c> on exactly the retry
+    /// that exists to make the answer well-formed.
+    /// </summary>
+    [Fact]
+    public async Task Codex_writes_a_fresh_output_schema_for_every_call_on_one_client()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        ChatOptions options = new() { ResponseFormat = SchemaFormat() };
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            options,
+            CancellationToken.None);
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "that was not valid JSON; try again")],
+            options,
+            CancellationToken.None);
+
+        Assert.Equal(2, runner.Requests.Count);
+
+        List<string> first = [.. runner.Requests[0].Arguments];
+
+        List<string> second = [.. runner.Requests[1].Arguments];
+
+        int firstIndex = first.IndexOf("--output-schema");
+
+        int secondIndex = second.IndexOf("--output-schema");
+
+        Assert.True(firstIndex >= 0, "the first call lost --output-schema");
+
+        Assert.True(secondIndex >= 0, "the correction call lost --output-schema");
+
+        // Distinct paths, not a reused one: handing the child a name that already exists is the
+        // symlink-following hazard `CreateNew` is there to refuse.
+        Assert.NotEqual(first[firstIndex + 1], second[secondIndex + 1]);
+
+        Assert.Contains(
+            "\"answer\"",
+            File.ReadAllText(second[secondIndex + 1]),
+            StringComparison.Ordinal);
+
+    }
+
     private static ChatResponseFormat SchemaFormat() =>
         ChatResponseFormat.ForJsonSchema(
             JsonSerializer.Deserialize<JsonElement>(
@@ -942,6 +1000,55 @@ public sealed class FamiliarChatClientTests
                 + "\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"),
             "answer",
             schemaDescription: string.Empty);
+
+    /// <summary>
+    /// The schema write is deliberately best-effort — the turn survives losing it — but it used to fail
+    /// in complete silence, so an operator whose disk filled or whose lease directory lost write
+    /// permission saw only structured-output retries with no cause anywhere.
+    /// </summary>
+    [Fact]
+    public async Task Codex_logs_a_warning_when_it_cannot_hand_the_schema_to_the_child_process()
+    {
+
+        TestCapturingLogger<CodexCliChatClient> logger = new();
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        using IChatClient client = new CodexCliChatClient(runner, CodexProvider, "gpt-5.6", [], logger);
+
+        ChatOptions options = new() { ResponseFormat = SchemaFormat() };
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            options,
+            CancellationToken.None);
+
+        List<string> firstArgv = [.. runner.LastRequest.Arguments];
+
+        Assert.Contains("--output-schema", firstArgv);
+
+        Assert.Empty(logger.Entries);
+
+        // A directory squatting on the name the next call will use: CreateNew cannot open it, which is
+        // the same UnauthorizedAccessException a full disk or a read-only lease directory produces.
+        _ = Directory.CreateDirectory(
+            Path.Combine(runner.LastRequest.WorkingDirectory!, "output-schema-2.json"));
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "again")],
+            options,
+            CancellationToken.None);
+
+        // Best-effort by design: the turn still runs, just without the schema.
+        Assert.DoesNotContain("--output-schema", runner.LastRequest.Arguments);
+
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+    }
 
     private static IChatClient CreateClaude(IFamiliarProcessRunner runner, string model) =>
         new ClaudeCodeCliChatClient(runner, ClaudeProvider, model, []);

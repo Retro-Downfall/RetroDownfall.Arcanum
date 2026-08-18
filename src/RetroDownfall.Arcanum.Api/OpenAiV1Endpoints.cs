@@ -497,7 +497,26 @@ internal static partial class OpenAiV1Endpoints
 
         try
         {
-            await WriteRoleChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ct).ConfigureAwait(false);
+            try
+            {
+                await WriteRoleChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ct).ConfigureAwait(false);
+            }
+            catch (Exception roleEx) when (ClientDisconnect.IsClientDisconnect(roleEx, httpContext))
+            {
+                // Write-side broken pipe before the pump starts. Classified here rather than in the
+                // whole-pipeline catch below, which now only treats a genuinely gone client as a
+                // disconnect and would otherwise report this as a provider fault.
+                clientGone = true;
+                disconnected = true;
+
+                if (!continueThenReplay)
+                {
+                    streamCts.Cancel();
+                    aborted = true;
+
+                    return Results.Empty;
+                }
+            }
 
             // Pump via the intelligence provider facade (already TurnExecutionCoordinator →
             // TurnEngine for production). Keep-alives and SSE serialization stay in this writer
@@ -694,7 +713,14 @@ internal static partial class OpenAiV1Endpoints
         {
             throw;
         }
-        catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+        // Direction matters here. Every write on this route is wrapped by its own disconnect catch
+        // above, so an IOException/HttpIOException surfacing at this level came out of the
+        // provider's MoveNextAsync. While the client socket is still healthy that is a PROVIDER
+        // fault owed the terminal error frame the general catch below writes, not a silent
+        // truncation — so only classify it as a disconnect when the client really is gone.
+        catch (Exception ex) when (
+            ClientDisconnect.IsClientDisconnect(ex, httpContext)
+            && (clientGone || httpContext.RequestAborted.IsCancellationRequested))
         {
             if (!continueThenReplay)
             {
@@ -917,7 +943,7 @@ internal static partial class OpenAiV1Endpoints
 
         string arguments = toolCall.ArgumentsJson ?? string.Empty;
 
-        int firstChunkLength = Math.Min(ToolCallArgumentChunkChars, arguments.Length);
+        int firstChunkLength = WholeCodePointChunkLength(arguments, 0, Math.Min(ToolCallArgumentChunkChars, arguments.Length));
 
         OpenAiStreamToolCall firstDelta = new(
             Index: deltaIndex,
@@ -927,10 +953,10 @@ internal static partial class OpenAiV1Endpoints
 
         await WriteToolCallDeltaChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, firstDelta, ct).ConfigureAwait(false);
 
-        for (int offset = firstChunkLength; offset < arguments.Length; offset += ToolCallArgumentChunkChars)
+        for (int offset = firstChunkLength; offset < arguments.Length;)
         {
 
-            int length = Math.Min(ToolCallArgumentChunkChars, arguments.Length - offset);
+            int length = WholeCodePointChunkLength(arguments, offset, Math.Min(ToolCallArgumentChunkChars, arguments.Length - offset));
 
             OpenAiStreamToolCall nextDelta = new(
                 Index: deltaIndex,
@@ -938,7 +964,35 @@ internal static partial class OpenAiV1Endpoints
 
             await WriteToolCallDeltaChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, nextDelta, ct).ConfigureAwait(false);
 
+            offset += length;
+
         }
+
+    }
+
+    /// <summary>
+    /// Shortens a candidate chunk by one UTF-16 code unit when it would otherwise end on a high
+    /// surrogate, deferring the whole pair to the next delta.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ToolCallArgumentChunkChars"/> is a code-unit count, not a code-point count, so a
+    /// raw slice can cut an astral character (emoji, rare CJK, older mathematical alphanumerics) in
+    /// half. <see cref="System.Text.Json.Utf8JsonWriter"/> substitutes U+FFFD for the resulting lone
+    /// surrogate rather than throwing, so the corruption is silent: an accumulating OpenAI SDK
+    /// concatenates the deltas and gets arguments that no longer round-trip. Shrinking (rather than
+    /// growing) keeps every delta within the advertised ceiling.
+    /// </remarks>
+    private static int WholeCodePointChunkLength(string value, int offset, int length)
+    {
+
+        if (length <= 1 || offset + length >= value.Length)
+        {
+
+            return length;
+
+        }
+
+        return char.IsHighSurrogate(value[offset + length - 1]) ? length - 1 : length;
 
     }
 
@@ -1058,7 +1112,18 @@ internal static partial class OpenAiV1Endpoints
 
     }
 
-    private static async Task WriteSseJsonAsync<T>(
+    /// <summary>
+    /// Writes one complete SSE frame — <c>data: </c>, the serialized payload, and the terminating
+    /// blank line — with a single <c>WriteAsync</c>.
+    /// </summary>
+    /// <remarks>
+    /// Assembled in the buffer first, the way <c>EventEndpoints.WriteSseJsonAsync</c> does it. Issuing
+    /// the prefix as its own write commits it before the payload exists, so a failure during
+    /// serialization or the payload write leaves an orphan <c>data: </c> on the socket and the next
+    /// frame lands behind it as a malformed <c>data: data: {...}</c>. Buffering also cuts the frame
+    /// from three writes plus a flush to one write plus a flush.
+    /// </remarks>
+    internal static async Task WriteSseJsonAsync<T>(
         HttpContext httpContext,
         ArrayBufferWriter<byte> buffer,
         T value,
@@ -1068,7 +1133,7 @@ internal static partial class OpenAiV1Endpoints
 
         buffer.Clear();
 
-        await httpContext.Response.Body.WriteAsync(SseDataPrefix, cancellationToken).ConfigureAwait(false);
+        buffer.Write(SseDataPrefix);
 
         await using (Utf8JsonWriter jsonWriter = new(buffer, new JsonWriterOptions { Indented = false }))
         {
@@ -1077,9 +1142,9 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+        buffer.Write(SseLineBreak);
 
-        await httpContext.Response.Body.WriteAsync(SseLineBreak, cancellationToken).ConfigureAwait(false);
+        await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
         await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
 

@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -10,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -112,6 +114,52 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.Equal(GrimoireKeyDerivation.KdfVersion2, sidecar.Version);
 
         Assert.NotNull(_secretStore.DedicatedSecret);
+
+    }
+
+    /// <summary>
+    /// Bootstrap publishes the canonical facts it just installed, not only which tiers installed.
+    /// </summary>
+    /// <remarks>
+    /// <c>PublishSchema</c> reports tier health; the dataset generation, the sequences and the
+    /// accelerator's applied tuple live in <c>covenant_state</c> and nothing read them, so the
+    /// snapshot kept its bootstrap default of a null <c>DatasetGeneration</c> for the process
+    /// lifetime. <c>CovenantOperationGate.CaptureFacts</c> refuses every <c>requireCanonical: true</c>
+    /// acquisition on exactly that null — and <c>AcquireOrdinary</c>, the lease every Covenant turn
+    /// takes, always requires it. So the whole ordinary path failed closed the instant the feature
+    /// flag was enabled, and every staleness guard downstream compared values that never moved.
+    /// </remarks>
+    [Fact]
+    public async Task EnsureInitializedAsync_PublishesTheCanonicalStateItInstalled()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+        CovenantAvailabilitySnapshot snapshot = scope.ServiceProvider
+            .GetRequiredService<CovenantAvailability>()
+            .Current;
+
+        Assert.Equal(CovenantCapabilityState.Healthy, snapshot.Canonical);
+
+        // The one value whose absence closes the ordinary lease gate.
+        Assert.NotNull(snapshot.DatasetGeneration);
+
+        Assert.NotEqual(Guid.Empty, snapshot.DatasetGeneration!.Value);
+
+        // A never-built accelerator is behind by definition, so a fresh install owes a rebuild.
+        Assert.True(snapshot.RebuildRequired);
+
+        Assert.Null(snapshot.AppliedDatasetGeneration);
 
     }
 
@@ -225,6 +273,43 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             "missing test key",
             error.Message,
             StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A damaged KDF sidecar fails closed as a Grimoire-unavailable error naming the file to restore.
+    /// </summary>
+    /// <remarks>
+    /// The sidecar is the only copy of the salt, and truncation or byte damage is what it actually
+    /// suffers. <c>GrimoireKdfSidecarFile.Read</c> normalizes that into <c>InvalidDataException</c>,
+    /// but the bootstrap call site let it escape raw — and <c>CliFailureMapper</c>'s default arm
+    /// prints "An unexpected CLI error occurred." for anything it does not recognise, so the
+    /// operator was told nothing about <c>arcanum.db.kdf</c> on the one startup path that cannot
+    /// continue without it. The sibling secret-store failure already fails closed this way.
+    /// </remarks>
+    [Fact]
+    public async Task EnsureInitializedAsync_UnreadableKdfSidecar_FailsClosedNamingTheSidecar()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        _secretStore.SetDedicatedSecret(
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
+
+        // A torn write: the file exists, so the sidecar branch is taken, but nothing parses.
+        await File.WriteAllTextAsync(_sidecarPath, "{\"version\":2,\"salt\":\"not-base64!!\"");
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                    _secretStore,
+                    _passphraseSource,
+                    _scopeFactory,
+                    _dbPath,
+                    _tempDir,
+                    CancellationToken.None));
+
+        Assert.Contains("arcanum.db.kdf", error.Message, StringComparison.Ordinal);
 
     }
 

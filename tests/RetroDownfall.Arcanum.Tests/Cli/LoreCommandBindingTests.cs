@@ -59,6 +59,61 @@ public sealed class LoreCommandBindingTests
 
     }
 
+    /// <summary>
+    /// A stored lore value is read back to be used, not to be looked at. Rendering it inside a
+    /// Spectre panel drew a border box around it and re-flowed every line at the 80-column profile
+    /// width redirection falls back to, so `VALUE=$(arcanum lore get k)` captured box art and a
+    /// multi-line value could not survive a set/get round-trip.
+    /// </summary>
+    [Fact]
+    public void Lore_get_emits_the_stored_value_verbatim_without_panel_chrome()
+    {
+
+        string value = string.Join(
+            "\n",
+            new string('a', 120),
+            "second line with  doubled  spaces",
+            "third");
+
+        RecordingHandler handler = new(_ => CreateLoreResponse(new ApiResponse<LoreDto>(
+            new LoreDto("deploy.notes", value, DateTime.UtcNow),
+            true,
+            null)));
+
+        CliTestResult result = RunCommand(handler, ["lore", "get", "deploy.notes"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(value, result.Output.TrimEnd('\r', '\n'));
+
+    }
+
+    /// <summary>
+    /// Writing the value verbatim fixed the panel, but only for the text mode. Under <c>--output-format json</c> anything left on stdout still falls through the legacy text wrapper, which strips every ESC-introduced sequence out of the middle of the buffer and trims the trailing newlines off the end — so the mode that exists for machines was the one that could not reproduce the stored value. A structured document keeps it out of that wrapper, exactly as <c>workspace read</c> already does.
+    /// </summary>
+    [Fact]
+    public void Lore_get_json_reproduces_the_stored_value_byte_for_byte()
+    {
+
+        string value = "\u001b[31mred\u001b[0m literal escape\nplain line\n\n";
+
+        RecordingHandler handler = new(_ => CreateLoreResponse(new ApiResponse<LoreDto>(
+            new LoreDto("deploy.notes", value, DateTime.UtcNow),
+            true,
+            null)));
+
+        CliTestResult result = RunCommand(handler, ["lore", "get", "deploy.notes", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal("deploy.notes", document.RootElement.GetProperty("key").GetString());
+
+        Assert.Equal(value, document.RootElement.GetProperty("value").GetString());
+
+    }
+
     [Fact]
     public void Lore_delete_binds_key_argument()
     {

@@ -96,6 +96,11 @@ internal static partial class MacOsCredentialStore
 
         byte[] secretBytes = Encoding.UTF8.GetBytes(secret);
 
+        // The item ref comes back retained here too, and an `out _` is a call-site discard only —
+        // the generated stub still hands Security.framework the address of a real local, so the
+        // reference is created either way. Released before anything else can return, exactly as the
+        // lookup above does; a fresh account is written on every provider re-add, marker re-mint and
+        // purged-then-restored credential, so a discarded one accumulates for the life of the host.
         int status = SecKeychainAddGenericPassword(
             nint.Zero,
             (uint)serviceBytes.Length,
@@ -104,7 +109,14 @@ internal static partial class MacOsCredentialStore
             accountBytes,
             (uint)secretBytes.Length,
             secretBytes,
-            out _);
+            out nint addedRef);
+
+        if (addedRef != nint.Zero)
+        {
+
+            CFRelease(addedRef);
+
+        }
 
         if (status == ErrSecDuplicateItem)
         {

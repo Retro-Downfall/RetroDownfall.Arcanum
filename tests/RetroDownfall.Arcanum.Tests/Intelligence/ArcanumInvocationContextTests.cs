@@ -1,6 +1,8 @@
 using System.Reflection;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.AspNetCore.Http;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -33,6 +35,30 @@ public sealed class ArcanumInvocationContextTests
         Assert.Null(context.Campaign);
         Assert.Null(context.ReadAuthorityEpoch);
         Assert.False(context.CanReadCovenant);
+        Assert.False(context.CanStageCovenantMutation);
+
+    }
+
+    /// <summary>
+    /// <c>CanStageCovenantMutation</c> asks only whether the policy "is not NoTools", so an undefined
+    /// policy passed that gate. The wire converter refuses undefined values, but an in-process caller
+    /// can still construct one, and the covenant-authority view must never be the place that treats an
+    /// unrecognized restriction as permission.
+    /// </summary>
+    [Theory]
+    [InlineData((ToolPolicy)99)]
+    [InlineData((ToolPolicy)(-1))]
+    public void An_undefined_tool_policy_resolves_to_no_tools(ToolPolicy undefined)
+    {
+
+        PingRequest request = new("hello", SessionId: Campaign, ToolPolicy: undefined);
+
+        ArcanumInvocationContext context = ArcanumInvocationContexts.ForTurn(
+            new DefaultHttpContext(),
+            request);
+
+        Assert.Equal(ToolPolicy.NoTools, context.ToolPolicy);
+
         Assert.False(context.CanStageCovenantMutation);
 
     }

@@ -390,10 +390,22 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
         if (!string.IsNullOrEmpty(existingEncoded))
         {
 
-            if (existingEncoded.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal))
+            // The canonical encoding is LF-delimited, but a ring persisted by an older Windows build
+            // used Environment.NewLine and both FileEncryptionKeyProvider and
+            // BackupSecretSnapshotReader deliberately still load it — so this must too. A machine
+            // whose ring carries CRLF is running normally, and refusing it here fails the one path
+            // that exists to repair such a machine. The trailing '\r' has to come off every line, not
+            // just the header: Convert.FromBase64String skips it, so the keys would decode while the
+            // active id carried an invisible '\r' and matched none of them.
+            if (existingEncoded.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal)
+                || existingEncoded.StartsWith(KeyRingHeader + "\r\n", StringComparison.Ordinal))
             {
 
-                string[] lines = existingEncoded.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                string[] lines = existingEncoded
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(static line => line.TrimEnd('\r'))
+                    .Where(static line => line.Length > 0)
+                    .ToArray();
 
                 if (lines.Length < 2 || !lines[1].StartsWith("active=", StringComparison.Ordinal))
                 {

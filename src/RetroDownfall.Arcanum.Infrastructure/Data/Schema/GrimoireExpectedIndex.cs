@@ -13,12 +13,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// <para><see cref="Origin"/> uses SQLite's closed vocabulary: <c>pk</c> for a primary key,
 /// <c>u</c> for a unique constraint, <c>c</c> for an explicitly created index. Explicit indexes match
 /// by their declared name; implicit ones match by origin plus exact column shape.</para>
+///
+/// <para><see cref="NormalizedSql"/> carries what shape cannot. <c>PRAGMA index_list</c> reduces a
+/// partial index to a 0/1 flag and <c>PRAGMA index_xinfo</c> has no predicate column, so a changed
+/// <c>WHERE</c> predicate — or a changed expression position — is visible only in the index's own
+/// stored DDL, which is compared verbatim against this value.</para>
 /// </remarks>
 internal sealed record GrimoireExpectedIndex(
     string Name,
     bool IsUnique,
     string Origin,
     bool IsPartial,
+    string NormalizedSql,
     IReadOnlyList<GrimoireExpectedIndexColumn> Columns);
 
 /// <summary>
@@ -31,7 +37,8 @@ internal sealed record GrimoireExpectedIndex(
 /// <paramref name="Name"/> is null for an expression or rowid position, and
 /// <paramref name="ColumnId"/> carries SQLite's own marker for which: <c>-2</c> for an expression,
 /// <c>-1</c> for the rowid. An expression position is therefore expected by its place in the shape
-/// rather than by its text; the expression itself lives in the index's stored DDL.
+/// rather than by its text; the expression itself is compared through
+/// <see cref="GrimoireExpectedIndex.NormalizedSql"/>.
 /// </remarks>
 internal sealed record GrimoireExpectedIndexColumn(
     int Sequence,

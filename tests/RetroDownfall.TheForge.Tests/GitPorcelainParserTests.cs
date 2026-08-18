@@ -100,6 +100,107 @@ public class GitPorcelainParserTests
     }
 
     [Fact]
+    public void Parse_OctalEscapedPath_DecodesUtf8Bytes()
+    {
+
+        // core.quotePath defaults to true, so git C-quotes every non-ASCII path as three-digit octal
+        // escapes, one per UTF-8 byte.
+        IReadOnlyList<GitPorcelainEntry> entries = GitPorcelainParser.Parse("?? \"caf\\303\\251.txt\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("café.txt", entry.Path);
+
+    }
+
+    [Fact]
+    public void Parse_OctalEscapedPath_DecodesMultiByteRuns()
+    {
+
+        IReadOnlyList<GitPorcelainEntry> entries =
+            GitPorcelainParser.Parse(" M \"\\346\\274\\242\\345\\255\\227/\\360\\237\\232\\200.md\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("漢字/🚀.md", entry.Path);
+
+    }
+
+    [Fact]
+    public void Parse_OctalEscapedRename_DecodesBothPaths()
+    {
+
+        IReadOnlyList<GitPorcelainEntry> entries =
+            GitPorcelainParser.Parse("R  \"caf\\303\\251.txt\" -> \"th\\303\\251.txt\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("thé.txt", entry.Path);
+
+        Assert.Equal("café.txt", entry.OriginalPath);
+
+    }
+
+    [Fact]
+    public void Parse_QuotedPath_UnescapesRemainingCEscapes()
+    {
+
+        IReadOnlyList<GitPorcelainEntry> entries =
+            GitPorcelainParser.Parse("?? \"tab\\there\\\\back\\\"quote\\a.txt\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("tab\there\\back\"quote\a.txt", entry.Path);
+
+    }
+
+    [Fact]
+    public void Parse_UnquotedPathWithSurroundingSpaces_PreservesThem()
+    {
+
+        // git only C-quotes a path that needs escaping; a leading or trailing space does not, so
+        // "notes .txt " arrives unquoted and trimming it produces a path that does not exist.
+        IReadOnlyList<GitPorcelainEntry> entries = GitPorcelainParser.Parse(" M notes .txt \n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("notes .txt ", entry.Path);
+
+    }
+
+    [Fact]
+    public void Parse_ModifiedPathContainingArrowText_IsNotReadAsARename()
+    {
+
+        // "a -> b.txt" is a legal filename and needs no quoting. Only an R/C status means rename.
+        IReadOnlyList<GitPorcelainEntry> entries = GitPorcelainParser.Parse("M  a -> b.txt\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("a -> b.txt", entry.Path);
+
+        Assert.Null(entry.OriginalPath);
+
+    }
+
+    [Fact]
+    public void Parse_RenameWithEscapedQuoteInTheOriginalPath_SplitsOnTheRealArrow()
+    {
+
+        // The \" inside the quoted original must not close the quote; if it does, the scanner treats
+        // the arrow inside the filename as the separator and both paths come out wrong.
+        IReadOnlyList<GitPorcelainEntry> entries =
+            GitPorcelainParser.Parse("R  \"we\\\"ird -> name.txt\" -> \"new.txt\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("new.txt", entry.Path);
+
+        Assert.Equal("we\"ird -> name.txt", entry.OriginalPath);
+
+    }
+
+    [Fact]
     public void Parse_QuotedRename_UnescapesBoth()
     {
 

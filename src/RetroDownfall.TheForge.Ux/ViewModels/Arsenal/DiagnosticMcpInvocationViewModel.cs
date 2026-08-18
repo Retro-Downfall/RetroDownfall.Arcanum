@@ -535,7 +535,28 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
 
         }
 
-        await File.WriteAllTextAsync(path, ResultText, System.Text.Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        try
+        {
+
+            await File.WriteAllTextAsync(path, ResultText, System.Text.Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            // Unguarded this escapes onto the dispatcher from a fire-and-forget command and takes the
+            // window with it, for something as ordinary as a read-only export directory.
+            LastError = ex.Message;
+
+            StatusText = "Result export failed.";
+
+            _foundryFloor.AppendLine($"Diagnostic MCP export error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Result export failed.");
+
+            return;
+
+        }
 
         StatusText = "Result exported.";
 

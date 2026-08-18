@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
@@ -220,6 +223,39 @@ public sealed class SphericalKMeansTests
         Assert.Equal(6, result.Clusters.Count);
 
         Assert.All(result.Clusters, static cluster => Assert.NotEmpty(cluster.MemberIds));
+
+    }
+
+    /// <summary>
+    /// The empty-cluster repair reads each point's similarity to its own centroid out of the buffer
+    /// the assignment pass already filled instead of re-deriving it. That is only sound if the
+    /// buffer cannot go stale mid-repair, so this pins the exact memberships of a corpus that drives
+    /// the repair hard: the fingerprint below was captured from the implementation that recomputed
+    /// every similarity, and a cache that ever went stale would move a donor and change it.
+    /// </summary>
+    [Fact]
+    public void Cluster_RepairingManyEmptyClustersMatchesRecomputedSimilarities()
+    {
+
+        SphericalKMeansPoint[] points =
+        [
+            .. Enumerable.Range(0, 400).Select(index =>
+                Point($"n{index:D4}", 1f, index * 0.00001f, 0.5f)),
+        ];
+
+        SphericalKMeansResult result = SphericalKMeans.Cluster(points, k: 64, seed: 7UL);
+
+        Assert.Equal(64, result.Clusters.Count);
+
+        Assert.All(result.Clusters, static cluster => Assert.NotEmpty(cluster.MemberIds));
+
+        string memberships = string.Join(
+            "|",
+            result.Clusters.Select(static cluster => string.Join(",", cluster.MemberIds)));
+
+        Assert.Equal(
+            "8db504b833897d307de7c09bac6f907c54585aeac763687b6173370c077da7b4",
+            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(memberships))));
 
     }
 

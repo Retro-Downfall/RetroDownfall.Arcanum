@@ -167,7 +167,7 @@ internal sealed class CampaignPathIdentityReader(
             WHERE CampaignId = $campaignId;
             """;
 
-        _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString());
+        BindCoreCampaignIdentity(command, "$campaignId", campaignId);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -194,6 +194,25 @@ internal sealed class CampaignPathIdentityReader(
                 new CovenantDigest(digest)));
 
     }
+
+    /// <summary>
+    /// Binds a Campaign identity that will be compared against text the EF-owned <c>"Campaigns"."Id"</c>
+    /// column governs.
+    /// </summary>
+    /// <remarks>
+    /// The value is bound as a <see cref="Guid"/> rather than as a formatted string, so the provider
+    /// produces exactly the uppercase <c>D</c>-format text EF stored. A lowercase literal matched no row
+    /// for any identity carrying a hex letter, which is every realistic Campaign.
+    ///
+    /// <para><c>campaign_path_identities.CampaignId</c> counts as that same crossing even though the table
+    /// is Covenant-owned: it is declared <c>REFERENCES "Campaigns"("Id")</c>, and
+    /// <c>CovenantSqliteConnectionInitializer</c> both sets and verifies <c>PRAGMA foreign_keys=ON</c>, so
+    /// no row can hold a representation that differs from the EF-written parent. Covenant tables that key
+    /// themselves — <c>covenant_heads.CampaignId</c>, written lowercase by the mutation kernel — are a
+    /// different crossing and keep their own representation.</para>
+    /// </remarks>
+    private static void BindCoreCampaignIdentity(SqliteCommand command, string name, Guid value) =>
+        _ = command.Parameters.AddWithValue(name, value);
 
 }
 
@@ -232,7 +251,10 @@ internal sealed class CampaignAvailabilityReader(ICovenantConnectionSource conne
               AND EXISTS (SELECT 1 FROM "Campaigns" AS c WHERE c."Id" = $campaignId);
             """;
 
-        _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString());
+        // Bound as a Guid, not as a formatted string: EF stores the uppercase D-format text the provider
+        // produces for a Guid, and neither side is COLLATE NOCASE. A lowercase literal made the EXISTS
+        // match nothing for any identity carrying a hex letter, so every live Campaign resolved as deleted.
+        _ = command.Parameters.AddWithValue("$campaignId", campaignId);
 
         object? epoch = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 

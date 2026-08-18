@@ -3,12 +3,14 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -119,8 +121,12 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         Assert.Contains(result.StatusLines, static s => s.Contains("not found", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// A staging failure must never rewrite the operator's message: the token is the only record of
+    /// what they actually asked about, and the turn is dispatched (and billed) regardless.
+    /// </summary>
     [Fact]
-    public void Oversized_text_file_is_rejected()
+    public void Oversized_text_file_is_rejected_and_keeps_the_literal_token()
     {
         string path = Path.Combine(_root, "big.txt");
         long maxFileBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
@@ -128,13 +134,42 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         File.WriteAllBytes(path, new byte[checked((int)maxFileBytes + 1)]);
 
         TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
-            $"@{path}",
+            $"summarize the failures in @{path} please",
             workingDirectory: _root,
             preStagedPaths: [],
             settings: DefaultSettings());
 
         Assert.Null(result.AttachedFiles);
         Assert.Contains(result.StatusLines, static s => s.Contains("exceeds", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains($"@{path}", result.Prompt, StringComparison.Ordinal);
+        Assert.Contains(
+            result.StatusLines,
+            static s => s.Contains("literal token kept in the prompt", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// An oversized inline image already keeps its token; the text branch must match it so one
+    /// staging failure does not behave differently from the other.
+    /// </summary>
+    [Fact]
+    public void Oversized_image_keeps_the_literal_token()
+    {
+        string path = Path.Combine(_root, "huge.png");
+        byte[] png = new byte[2 * 1024 * 1024];
+        png[0] = 0x89;
+        png[1] = 0x50;
+        png[2] = 0x4E;
+        png[3] = 0x47;
+        File.WriteAllBytes(path, png);
+
+        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+            $"look at @{path} closely",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings());
+
+        Assert.Null(result.ScryingFoci);
+        Assert.Contains($"@{path}", result.Prompt, StringComparison.Ordinal);
     }
 
     private static ArcanumSettings DefaultSettings() =>
@@ -142,6 +177,164 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         {
             Features = new FeatureSettings { Scrying = true },
         };
+}
+
+/// <summary>
+/// Submit reaches <see cref="CommandCenterChatRunner.RunTurnAsync"/> straight from the Terminal.Gui
+/// key handler with nothing awaited in between, so anything the turn does before its first yield runs
+/// on the main loop: no redraw, no spinner, and Ctrl+C never pumped.
+/// </summary>
+public sealed class CommandCenterTurnStartThreadingTests : IDisposable
+{
+    private readonly string _root;
+
+    public CommandCenterTurnStartThreadingTests()
+    {
+        _root = Path.Combine(Path.GetTempPath(), "arcanum-cc-fifo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_root);
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            if (Directory.Exists(_root))
+            {
+                Directory.Delete(_root, recursive: true);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// A FIFO in the workspace is the unbounded case: <c>File.Exists</c> reports it as a file and the
+    /// read never returns until a writer appears. Staged attachments are read and base64-encoded at
+    /// submit time, so the turn has to reach its first yield before touching the filesystem — otherwise
+    /// the TUI is wedged with no cancel path.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_turn_yields_before_it_reads_a_staged_attachment()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "mkfifo is POSIX-only; the blocking-read hazard this pins is a Unix file type.");
+
+        string fifo = Path.Combine(_root, "trace.log");
+        Assert.True(TryMakeFifo(fifo), "mkfifo did not create the FIFO.");
+
+        CommandCenterChatRunner runner = CreateRunner();
+        CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = _root };
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        Task turn = Task.CompletedTask;
+        Thread mainLoop = new(() =>
+            turn = runner.RunTurnAsync("summarize @trace.log", state, updates.Writer, CancellationToken.None))
+        {
+            IsBackground = true,
+        };
+
+        mainLoop.Start();
+        bool yielded = mainLoop.Join(TimeSpan.FromSeconds(5));
+
+        // Pair with the blocked reader — whichever thread it is on — so nothing is left wedged.
+        await File.WriteAllTextAsync(fifo, "trace body");
+        _ = mainLoop.Join(TimeSpan.FromSeconds(30));
+        await turn.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(
+            yielded,
+            "RunTurnAsync blocked its caller reading a staged attachment; on the real submit path that "
+                + "caller is the Terminal.Gui main loop.");
+    }
+
+    private static bool TryMakeFifo(string path)
+    {
+        using System.Diagnostics.Process? mkfifo = System.Diagnostics.Process.Start(
+            new ProcessStartInfo("/usr/bin/mkfifo", [path]) { UseShellExecute = false });
+
+        if (mkfifo is null)
+        {
+            return false;
+        }
+
+        mkfifo.WaitForExit();
+        return mkfifo.ExitCode == 0 && File.Exists(path);
+    }
+
+    private static CommandCenterChatRunner CreateRunner()
+    {
+        string ndjson = JsonSerializer.Serialize(
+            new IntelligenceEvent(IntelligenceEventType.Result, "done", "done"),
+            ArcanumJsonContext.Default.IntelligenceEvent) + "\n";
+        ArcanumApiClient client = new(new Factory(new StaticNdjsonHandler(ndjson)), new FakeSecretStore());
+        SessionWorkspaceService workspace = new(
+            client,
+            new NoopLastSessionStore(),
+            NullLogger<SessionWorkspaceService>.Instance);
+        CommandCenterHardModalArbiter arbiter = new();
+        return new CommandCenterChatRunner(
+            client,
+            new TestOptionsMonitor(new ArcanumSettings()),
+            workspace,
+            new CommandCenterWardCoordinator(arbiter),
+            new CommandCenterHumanPromptCoordinator(client, arbiter),
+            NullLogger<CommandCenterChatRunner>.Instance);
+    }
+
+    private sealed class StaticNdjsonHandler(string ndjson) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson"),
+            });
+    }
+
+    private sealed class Factory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) =>
+            new(handler, disposeHandler: false)
+            {
+                BaseAddress = new Uri("http://127.0.0.1:9"),
+                Timeout = Timeout.InfiniteTimeSpan,
+            };
+    }
+
+    private sealed class FakeSecretStore : ISecretStore
+    {
+        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>("test-key");
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Ok("test-key"));
+
+        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
+    }
+
+    private sealed class NoopLastSessionStore : ILastSessionStore
+    {
+        public Guid? GetLastSessionId() => null;
+
+        public void SaveSessionId(Guid id)
+        {
+        }
+    }
+
+    private sealed class TestOptionsMonitor(ArcanumSettings current) : IOptionsMonitor<ArcanumSettings>
+    {
+        public ArcanumSettings CurrentValue { get; } = current;
+
+        public ArcanumSettings Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
+    }
 }
 
 public sealed class ShellCommandParserAttachTests

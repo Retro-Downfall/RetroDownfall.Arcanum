@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Sanctum;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -35,10 +37,24 @@ public sealed class WebResearchWorkflowService(
     IArcanumIntelligenceProvider intelligence,
     ISessionRepository sessions,
     ISessionAttachmentStore attachments,
-    ICampaignRepository campaigns)
+    ICampaignRepository campaigns,
+    ISanctumGuard sanctum)
 {
 
     private const int MaximumResearchPromptCharacters = 120_000;
+
+    /// <summary>
+    /// Code-owned ceiling on citations fetched when the request names no <c>sourceTarget</c>. An
+    /// explicit target is the operator's own authority and is honoured as written.
+    /// </summary>
+    private const int MaximumResearchSources = 50;
+
+    /// <summary>
+    /// Surface recorded on a <c>NetworkEgress</c> breach raised by research. The citation URLs are
+    /// chosen by the search provider rather than by a model tool call, so they carry the endpoint's own
+    /// name rather than <c>read_url</c>.
+    /// </summary>
+    private const string ResearchEgressSurface = "web_research";
 
     private const string SynthesisInstruction =
         "Write a concise Markdown answer. Cite factual claims using only the supplied [n] numbers. State material uncertainty and disagreement.";
@@ -115,8 +131,12 @@ public sealed class WebResearchWorkflowService(
             FormatSearchMarkdown(result),
             cancellationToken).ConfigureAwait(false);
 
+        // The provider call above is already billed. Failing the whole workflow because the attachment
+        // could not be written discards an answer the caller paid for; the answer is returned and the
+        // attachment failure travels with it as a non-fatal field.
         return attached.IsFailure
-            ? Result<WebSearchWorkflowResult>.Failure(attached.Error)
+            ? Result<WebSearchWorkflowResult>.Success(
+                result with { AttachmentId = null, AttachmentError = attached.Error.Message })
             : Result<WebSearchWorkflowResult>.Success(
                 result with { AttachmentId = attached.Value });
 
@@ -249,8 +269,11 @@ public sealed class WebResearchWorkflowService(
             result.Markdown,
             cancellationToken).ConfigureAwait(false);
 
+        // Same reasoning as SearchAsync: the fetch is already billed, so the page is returned and the
+        // attachment failure is reported alongside it rather than replacing it.
         return attached.IsFailure
-            ? Result<WebBrowseWorkflowResult>.Failure(attached.Error)
+            ? Result<WebBrowseWorkflowResult>.Success(
+                result with { AttachmentId = null, AttachmentError = attached.Error.Message })
             : Result<WebBrowseWorkflowResult>.Success(
                 result with { AttachmentId = attached.Value });
 
@@ -449,18 +472,57 @@ public sealed class WebResearchWorkflowService(
 
         List<ResearchSource> sources = [];
 
+        // An absent sourceTarget used to mean "every URL the discovery loop ever found", each page
+        // retained in full until synthesis returned. The ceiling bounds the fetch phase even when every
+        // read comes back empty and the character budget below therefore never advances.
         WebCitation[] selectedCitations = request.SourceTarget is int targetCount
             ? citations.Values.Take(targetCount).ToArray()
-            : citations.Values.ToArray();
+            : citations.Values.Take(MaximumResearchSources).ToArray();
+
+        int retainedContentChars = 0;
+
+        int retainedContentBudget = ResolveRetainedContentBudget(searches);
+
+        Func<Uri, CancellationToken, ValueTask<bool>>? egressWard =
+            BuildCampaignEgressWard(synthesisEnvelope.CampaignId);
 
         for (int index = 0; index < selectedCitations.Length; index++)
         {
 
             WebCitation citation = selectedCitations[index];
 
+            // Everything past the synthesis prompt's character budget is fetched, held, and then
+            // discarded unread, so the phase stops here rather than paying for pages the model will
+            // never see.
+            if (retainedContentChars >= retainedContentBudget)
+            {
+
+                yield return Progress(
+                    "source_budget_reached",
+                    $"Stopped fetching at source {index + 1} of {selectedCitations.Length}; the synthesis prompt budget is already covered.");
+
+                break;
+
+            }
+
             yield return Progress(
                 "fetching",
                 $"Fetching source {index + 1} of {selectedCitations.Length}.");
+
+            // A host the campaign Sanctum forbids is never dialed and never reaches the synthesis
+            // prompt — carrying it through with an empty body would still hand the model a citation
+            // the campaign is not allowed to reach.
+            if (!await IsEgressAllowedAsync(egressWard, citation.Url, cancellationToken)
+                    .ConfigureAwait(false))
+            {
+
+                yield return Progress(
+                    "source_denied",
+                    $"Source {index + 1} of {selectedCitations.Length} was denied by the Campaign Sanctum network policy.");
+
+                continue;
+
+            }
 
             string content = string.Empty;
 
@@ -471,18 +533,26 @@ public sealed class WebResearchWorkflowService(
                 Result<WebReadResult> read = await readProvider
                     .ReadUrlAsync(
                         citation.Url,
-                        BuildReadOptions(),
+                        BuildReadOptions(egressWard),
                         cancellationToken)
                     .ConfigureAwait(false);
 
                 if (read.IsSuccess)
                 {
 
-                    content = read.Value.Markdown;
+                    // Truncate as the page is retained, not when the prompt is built — holding a full
+                    // 1 MB body only to slice a few thousand characters off it is the whole cost.
+                    string markdown = read.Value.Markdown;
+
+                    content = markdown[..Utf8Truncation.SafeCharSliceLength(
+                        markdown,
+                        retainedContentBudget - retainedContentChars)];
 
                 }
 
             }
+
+            retainedContentChars += content.Length;
 
             yield return Progress(
                 "rendering",
@@ -490,7 +560,7 @@ public sealed class WebResearchWorkflowService(
 
             sources.Add(
                 new ResearchSource(
-                    index + 1,
+                    sources.Count + 1,
                     citation.Url,
                     citation.Title,
                     content));
@@ -600,12 +670,17 @@ public sealed class WebResearchWorkflowService(
             FormatResearchMarkdown(result),
             cancellationToken).ConfigureAwait(false);
 
+        // Attachment is an optional side effect on an answer the operator has already paid for — every
+        // search pass, every citation fetch, and the synthesis model call are billed by the time it
+        // runs. The preflight narrows the failure window but cannot close it (the target session can
+        // still be archived or purged in between), so a late failure is reported as a non-terminal
+        // progress frame and the `result` frame is still emitted, with no attachment id on it.
         if (attached.IsFailure)
         {
 
-            yield return ErrorFrame(attached.Error);
-
-            yield break;
+            yield return Progress(
+                "attachment_failed",
+                $"The research answer could not be attached to the Session ({attached.Error.Code}): {attached.Error.Message}");
 
         }
 
@@ -614,18 +689,28 @@ public sealed class WebResearchWorkflowService(
 
             Type = WebResearchStreamFrameType.Result,
 
-            Result = result with { AttachmentId = attached.Value },
+            Result = result with
+            {
+
+                AttachmentId = attached.IsSuccess ? attached.Value : null,
+
+            },
 
         };
 
     }
 
+    /// <remarks>
+    /// The domain parameters are nullable because they can be: the request record declares them
+    /// non-nullable with an empty-array initializer, and System.Text.Json writes an explicit JSON
+    /// <c>null</c> straight over that initializer.
+    /// </remarks>
     private Result<WebSearchOptions> BuildSearchOptions(
         string query,
         int resultCount,
         string? freshness,
-        string[] includeDomains,
-        string[] excludeDomains)
+        string[]? includeDomains,
+        string[]? excludeDomains)
     {
 
         WebBrowsingSettings web = settings.Value.ResolveWebBrowsing();
@@ -685,21 +770,26 @@ public sealed class WebResearchWorkflowService(
                     ? null
                     : freshness.Trim().ToLowerInvariant(),
 
-                IncludeDomains = includeDomains,
+                // Coalesced here rather than only in each provider: the request record cannot guarantee
+                // these are arrays, and every provider that reads them would otherwise repeat the guard.
+                IncludeDomains = includeDomains ?? [],
 
-                ExcludeDomains = excludeDomains,
+                ExcludeDomains = excludeDomains ?? [],
 
             });
 
     }
 
-    private WebReadOptions BuildReadOptions()
+    private WebReadOptions BuildReadOptions(
+        Func<Uri, CancellationToken, ValueTask<bool>>? redirectEgressWard = null)
     {
 
         WebBrowsingSettings web = settings.Value.ResolveWebBrowsing();
 
         return new WebReadOptions
         {
+
+            RedirectEgressWard = redirectEgressWard,
 
             IdleTimeout = TimeSpan.FromSeconds(
                 ArcanumSettingClamps.WebBrowsingIdleTimeoutSeconds(
@@ -725,6 +815,98 @@ public sealed class WebResearchWorkflowService(
                     web.MaxRedirects),
 
         };
+
+    }
+
+    /// <summary>
+    /// Characters of fetched page text worth retaining. <see cref="BuildSynthesisPrompt"/> consumes the
+    /// search summaries before it reaches the sources and reserves the trailing instruction out of the
+    /// same budget, so everything past what is left here is fetched, held in memory, and then dropped
+    /// unread. Deliberately an over-approximation — it ignores per-block fence and label overhead — so
+    /// the prompt builder stays the exact authority and this never trims material the prompt would have
+    /// carried.
+    /// </summary>
+    private static int ResolveRetainedContentBudget(IReadOnlyList<WebSearchResult> searches)
+    {
+
+        int consumedBySummaries = 0;
+
+        foreach (WebSearchResult search in searches)
+        {
+
+            consumedBySummaries = int.CreateSaturating(
+                (long)consumedBySummaries + search.Answer.Length);
+
+        }
+
+        int synthesisBudget = Math.Min(
+            MaximumResearchPromptCharacters,
+            ArcanumSettingClamps.MaxPingPromptChars(
+                ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars));
+
+        return Math.Max(
+            0,
+            synthesisBudget - SynthesisInstruction.Length - consumedBySummaries);
+
+    }
+
+    /// <summary>
+    /// Per-hop campaign egress ward for research fetches, mirroring what
+    /// <c>ToolExecutionPipeline.BeginSanctumEgressWard</c> publishes for the <c>read_url</c> tool.
+    /// Citation URLs are chosen by the search provider, so the campaign's network policy has to gate
+    /// them and every redirect they follow — otherwise one <c>302</c> off an allowed host turns a
+    /// contained campaign into arbitrary outbound egress. <c>null</c> for an uncontained run, which
+    /// leaves redirects bounded by the SSRF guard alone exactly as before.
+    /// </summary>
+    private Func<Uri, CancellationToken, ValueTask<bool>>? BuildCampaignEgressWard(Guid? campaignId)
+    {
+
+        if (campaignId is not Guid resolved)
+        {
+
+            return null;
+
+        }
+
+        string campaign = resolved.ToString();
+
+        return async (Uri target, CancellationToken token) =>
+        {
+
+            SanctumResult verdict = await sanctum
+                .ValidateNetworkAsync(
+                    campaign,
+                    target.AbsoluteUri,
+                    ResearchEgressSurface,
+                    token)
+                .ConfigureAwait(false);
+
+            return verdict.Allowed;
+
+        };
+
+    }
+
+    /// <summary>
+    /// Pre-checks a citation URL against the campaign ward before it is dialed. A URL that will not
+    /// parse as an absolute address is denied rather than handed to the provider, since the ward can
+    /// say nothing about it.
+    /// </summary>
+    private static async ValueTask<bool> IsEgressAllowedAsync(
+        Func<Uri, CancellationToken, ValueTask<bool>>? ward,
+        string url,
+        CancellationToken cancellationToken)
+    {
+
+        if (ward is null)
+        {
+
+            return true;
+
+        }
+
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? target)
+            && await ward(target, cancellationToken).ConfigureAwait(false);
 
     }
 

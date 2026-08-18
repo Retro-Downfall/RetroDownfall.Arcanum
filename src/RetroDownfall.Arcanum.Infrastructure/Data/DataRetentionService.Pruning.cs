@@ -3574,10 +3574,49 @@ internal sealed partial class DataRetentionService
 
         int? earliestSkippedIndex = null;
 
+        DateTimeOffset lastLeaseRenewalAt = timeProvider.GetUtcNow();
+
         for (int index = startIndex; index < plan.CandidateIds.Length; index++)
         {
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Renewal is wall-clock driven, not candidate-count driven. A sweep of candidates that are
+            // each faster than the heartbeat interval never wakes the lease maintainer, and the
+            // checkpoint-boundary renewal below is up to PruneCheckpointInterval candidates away, so
+            // without this the lease can lapse mid-sweep — which lets the background reconciler adopt
+            // this operation and run a second concurrent prune under the same plan. Time spent outside
+            // the lease maintainer (age boundaries, journal builds, checkpoints, existence probes) is
+            // counted here too, because none of it renews anything.
+            if (saveCheckpoints)
+            {
+
+                DateTimeOffset iterationStartedAt = timeProvider.GetUtcNow();
+
+                if (iterationStartedAt - lastLeaseRenewalAt
+                    >= DataRetentionLeaseMaintainer.DefaultHeartbeatInterval)
+                {
+
+                    bool renewedLease = await operations.HeartbeatAsync(
+                        operationId,
+                        ownerId,
+                        iterationStartedAt,
+                        iterationStartedAt.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (!renewedLease)
+                    {
+
+                        throw new InvalidOperationException(
+                            "The retention operation lost its durable lease while applying candidates.");
+
+                    }
+
+                    lastLeaseRenewalAt = iterationStartedAt;
+
+                }
+
+            }
 
             string candidate = plan.CandidateIds[index];
 
@@ -3726,6 +3765,8 @@ internal sealed partial class DataRetentionService
                     "The retention operation lost its durable lease while checkpointing.");
 
             }
+
+            lastLeaseRenewalAt = now;
 
             // A journal-bearing candidate already wrote its own cursor above, and an earlier
             // preserved candidate pins the resume point, so neither may advance it here.

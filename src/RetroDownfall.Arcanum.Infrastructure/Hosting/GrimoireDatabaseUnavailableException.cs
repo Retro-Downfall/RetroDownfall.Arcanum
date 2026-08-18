@@ -9,4 +9,13 @@ internal sealed class GrimoireDatabaseUnavailableException : InvalidOperationExc
 
     }
 
+    /// <summary>
+    /// Wraps the failure that made the Grimoire unopenable, so the cause survives the normalization.
+    /// </summary>
+    public GrimoireDatabaseUnavailableException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+
+    }
+
 }

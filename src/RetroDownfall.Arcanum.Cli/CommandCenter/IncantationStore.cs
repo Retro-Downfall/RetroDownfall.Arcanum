@@ -488,24 +488,32 @@ internal sealed class IncantationStore
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(lineAnchors);
 
-        IncantationRecord[] snapshot = Snapshot().ToArray();
         List<string> lines = new();
         List<string?> anchors = new();
 
-        for (int i = 0; i < snapshot.Length; i++)
+        // Format inside the gate, exactly as SessionLogBuffer.CopyLinesTo does. The chat thread mutates
+        // these records for the whole of a streamed turn, and the formatter re-reads each nullable
+        // payload after its own null check and indexes WardNotes after its own count — reading them
+        // outside the lock throws on the Terminal.Gui main loop. The per-record memo keeps the repeat
+        // cost of holding the gate here negligible.
+        lock (_gate)
         {
-            if (i > 0)
+            for (int i = 0; i < _order.Count; i++)
             {
-                string rule = IncantationFormatter.SeparatorLine(contentWidth);
-                lines.Add(rule);
-                anchors.Add(null);
-            }
+                if (i > 0)
+                {
+                    string rule = IncantationFormatter.SeparatorLine(contentWidth);
+                    lines.Add(rule);
+                    anchors.Add(null);
+                }
 
-            IReadOnlyList<string> block = snapshot[i].DisplayLines(contentWidth);
-            foreach (string line in block)
-            {
-                lines.Add(line);
-                anchors.Add(snapshot[i].CallId);
+                IncantationRecord record = _order[i];
+                IReadOnlyList<string> block = record.DisplayLines(contentWidth);
+                foreach (string line in block)
+                {
+                    lines.Add(line);
+                    anchors.Add(record.CallId);
+                }
             }
         }
 

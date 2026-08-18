@@ -174,6 +174,34 @@ public class WhispersServiceTests
     }
 
     [Fact]
+    public async Task Show_AutoDismissNotification_ExpiresWithoutAnExternalSweep()
+    {
+
+        // Nothing in the app ever called ExpireDue(), so AutoDismiss/AutoDismissDelay were dead and every
+        // toast persisted until the operator clicked its x or the 5-slot cap evicted it.
+        FakeWhispersClock clock = new();
+
+        DateTimeOffset baseTime = new(2026, 7, 14, 12, 0, 0, TimeSpan.Zero);
+
+        clock.UtcNow = baseTime;
+
+        using WhispersService service = NewService(clock);
+
+        service.Show(WhisperSeverity.Info, "Transient");
+
+        service.Show(WhisperSeverity.Error, "Persistent");
+
+        Assert.Equal(2, service.Notifications.Count);
+
+        clock.UtcNow = baseTime.AddSeconds(5);
+
+        await WaitUntilAsync(() => service.Notifications.Count == 1);
+
+        Assert.Equal("Persistent", Assert.Single(service.Notifications).Message);
+
+    }
+
+    [Fact]
     public void Show_Error_DoesNotAutoDismiss()
     {
 
@@ -182,6 +210,27 @@ public class WhispersServiceTests
         service.Show(WhisperSeverity.Error, "Failed");
 
         Assert.False(service.Notifications[0].AutoDismiss);
+
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+
+        while (DateTime.UtcNow < deadline)
+        {
+
+            if (condition())
+            {
+
+                return;
+
+            }
+
+            await Task.Delay(25);
+
+        }
 
     }
 
@@ -197,6 +246,8 @@ public class WhispersServiceTests
 
     private sealed class SynchronousUiThreadDispatcher : IUiThreadDispatcher
     {
+
+        public bool CheckAccess() => true;
 
         public void Post(Action action) => action();
 

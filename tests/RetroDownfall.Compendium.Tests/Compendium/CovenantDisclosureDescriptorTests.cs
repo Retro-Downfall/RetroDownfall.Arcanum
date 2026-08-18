@@ -166,6 +166,92 @@ public sealed class CovenantDisclosureDescriptorTests
 
     }
 
+    /// <summary>
+    /// Opening Features must survive a provider row whose credential variable is not a portable
+    /// environment-variable name. The disclosure resolves its help targets from the configured
+    /// providers during synchronous view construction, so a projection that validates on the way out
+    /// turns "click Features" into an unhandled exception on the UI thread. No keystroke is needed to
+    /// arm it: a hand-edited <c>arcanum.json</c> loads the offending value into the row verbatim.
+    /// </summary>
+    [Fact]
+    public void Features_section_renders_when_a_provider_carries_a_non_portable_credential_variable()
+    {
+
+        using InMemoryConfigurationStore store = new(
+            new ArcanumSettings
+            {
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "openai",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://api.openai.com/v1",
+                        CredentialEnvironmentVariable = "MY-KEY",
+                    },
+                ],
+            });
+
+        ConfigurationViewModel root = new(
+            store,
+            new NoopDialogService(),
+            new SynchronousUiDispatcher(),
+            NullLogger<ConfigurationViewModel>.Instance);
+
+        GenericSettingsSectionView view = new()
+        {
+            Section = ConfigSection.Features,
+            DataContext = root,
+        };
+
+        List<Control> ordered = view.GetLogicalDescendants().OfType<Control>().ToList();
+
+        Assert.Contains(
+            ordered,
+            control => control is LabeledToggle toggle
+                && toggle.DataContext is GenericSettingFieldViewModel field
+                && field.Descriptor.Key == "features.covenant");
+
+        // The endpoint still resolves the documented retention page, so degrading the projection must
+        // not degrade the disclosure the operator reads before flipping the toggle.
+        Assert.Contains(
+            ordered,
+            control => control is Button button
+                && button.Tag is CovenantRetentionHelpTarget target
+                && target.Kind == CovenantRetentionHelpKind.ProviderRetentionDocumentation);
+
+    }
+
+    /// <summary>
+    /// Rendering must not silently accept the value the save path rejects. Building for persistence
+    /// keeps validating, so the operator is still told the name is not portable when it matters.
+    /// </summary>
+    [Fact]
+    public void Building_providers_for_persistence_still_rejects_a_non_portable_credential_variable()
+    {
+
+        ProvidersSectionViewModel section = new(new NoopDialogService());
+
+        section.LoadFrom(
+            [
+                new ProviderSettings
+                {
+                    Name = "openai",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://api.openai.com/v1",
+                    CredentialEnvironmentVariable = "MY-KEY",
+                },
+            ],
+            defaultModel: null,
+            fastModel: null);
+
+        InvalidOperationException failure =
+            Assert.Throws<InvalidOperationException>(() => section.BuildProviders());
+
+        Assert.Contains("not portable", failure.Message, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public void Every_other_bool_descriptor_renders_without_a_help_route()
     {

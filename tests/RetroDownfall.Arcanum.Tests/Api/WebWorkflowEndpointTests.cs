@@ -26,11 +26,19 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 
+using RetroDownfall.Arcanum.Core.Platform;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Sanctum;
+
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Core.TheForge;
 
 using RetroDownfall.Arcanum.Core.Workspaces;
+
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -109,8 +117,10 @@ public sealed class WebWorkflowEndpointTests
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
+        StubWebProvider provider = new();
+
         await using ArcanumWebApplicationFactory factory = Factory(
-            new StubWebProvider(),
+            provider,
             new StubIntelligence());
 
         HttpClient client = factory.CreateAuthenticatedClient();
@@ -120,6 +130,14 @@ public sealed class WebWorkflowEndpointTests
             new StringContent(body, Encoding.UTF8, "application/json"));
 
         Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        Assert.NotNull(provider.LastSearchOptions);
+
+        // Normalized where the options are built, not merely tolerated downstream: otherwise every
+        // provider that reads these filters has to defend against the same null on its own.
+        Assert.NotNull(provider.LastSearchOptions.IncludeDomains);
+
+        Assert.NotNull(provider.LastSearchOptions.ExcludeDomains);
 
     }
 
@@ -1029,10 +1047,521 @@ public sealed class WebWorkflowEndpointTests
 
     }
 
+    /// <summary>
+    /// Citation URLs come from the search provider, not the operator, so a campaign Sanctum that
+    /// restricts egress must gate them exactly as it gates the <c>read_url</c> tool. Otherwise the
+    /// endpoint is a way to fetch any host the provider names from inside a contained campaign.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_does_not_fetch_a_citation_the_campaign_sanctum_denies()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubSanctumGuard sanctum = new()
+        {
+
+            DeniedHosts = new(StringComparer.OrdinalIgnoreCase) { "example.test" },
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            new StubIntelligence(),
+            sanctum: sanctum);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid campaignId = await RegisterCampaignAsync(client, factory);
+
+        _ = await ResearchAsync(client, campaignId);
+
+        Assert.Empty(provider.ReadUrls);
+
+        Assert.Contains(
+            sanctum.NetworkChecks,
+            check => check.Url.Contains("example.test", StringComparison.OrdinalIgnoreCase)
+                && check.CampaignId == campaignId.ToString());
+
+    }
+
+    /// <summary>
+    /// A citation host the Sanctum allows is still only the first hop. Without a per-hop ward on the
+    /// read options one <c>302</c> off that allowed host converts a contained campaign into arbitrary
+    /// outbound egress, so the ward has to travel with every fetch.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_carries_the_campaign_egress_ward_into_every_citation_fetch()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubSanctumGuard sanctum = new()
+        {
+
+            DeniedHosts = new(StringComparer.OrdinalIgnoreCase) { "redirected.test" },
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            new StubIntelligence(),
+            sanctum: sanctum);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid campaignId = await RegisterCampaignAsync(client, factory);
+
+        _ = await ResearchAsync(client, campaignId);
+
+        Assert.NotEmpty(provider.ReadUrls);
+
+        Assert.NotNull(provider.LastReadOptions);
+
+        Assert.NotNull(provider.LastReadOptions.RedirectEgressWard);
+
+        Assert.False(
+            await provider.LastReadOptions.RedirectEgressWard(
+                new Uri("https://redirected.test/hop"),
+                CancellationToken.None));
+
+        Assert.True(
+            await provider.LastReadOptions.RedirectEgressWard(
+                new Uri("https://example.test/hop"),
+                CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// No campaign means no Sanctum to enforce, so an uncontained research run must keep fetching
+    /// exactly as before rather than gaining a ward that denies everything.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_without_a_campaign_fetches_citations_unwarded()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubSanctumGuard sanctum = new()
+        {
+
+            DeniedHosts = new(StringComparer.OrdinalIgnoreCase) { "example.test" },
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            new StubIntelligence(),
+            sanctum: sanctum);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        _ = await ResearchAsync(client, campaignId: null);
+
+        Assert.NotEmpty(provider.ReadUrls);
+
+        Assert.Empty(sanctum.NetworkChecks);
+
+        Assert.NotNull(provider.LastReadOptions);
+
+        Assert.Null(provider.LastReadOptions.RedirectEgressWard);
+
+    }
+
+    /// <summary>
+    /// Without a <c>sourceTarget</c> the discovery loop runs until a pass finds nothing new, and every
+    /// fetched page was retained in full until synthesis finished — even though the synthesis prompt
+    /// budget consumes only the first few. Fetching stops once the retained material covers that budget,
+    /// so the phase cannot accumulate megabytes it will never read.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_stops_fetching_once_the_synthesis_prompt_budget_is_covered()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new()
+        {
+
+            ChangingCitationRounds = 8,
+
+            ReadMarkdown = new string('x', 20_000),
+
+        };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "What changed?",
+
+                    TokenBudget = 1_200,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        _ = await response.Content.ReadAsStringAsync();
+
+        // Eight unique citations were discovered; the prompt can hold nowhere near eight 20,000-char
+        // pages, so most of them must never be fetched at all.
+        Assert.True(
+            provider.ReadCalls < 8,
+            $"fetched {provider.ReadCalls} sources for a prompt budget that cannot hold them.");
+
+        Assert.True(provider.ReadCalls >= 1, "no source was fetched at all.");
+
+        Assert.NotNull(intelligence.Request);
+
+        // Retained page text never exceeds what the synthesis prompt can carry.
+        Assert.True(
+            intelligence.Request.Prompt.Length <= 32_768,
+            $"synthesis prompt was {intelligence.Request.Prompt.Length} characters.");
+
+    }
+
+    /// <summary>
+    /// Attachment is an optional side effect on an answer the operator has already paid for. The
+    /// preflight narrows the window but cannot close it — the target session can still be archived or
+    /// purged between preflight and persist — and when it is, the searches, the citation fetches and
+    /// the synthesis model call have all been billed. The stream must still deliver the answer.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_still_emits_the_billed_answer_when_attachment_fails_late()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence,
+            vanishSessionAfterCalls: 1);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage createdResponse = await client.PostAsJsonAsync(
+            "/api/sessions",
+            new CreateSessionRequest(null, "Research target"),
+            ArcanumJsonContext.Default.CreateSessionRequest);
+
+        ApiResponse<SessionDetailDto>? session = JsonSerializer.Deserialize(
+            await createdResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Assert.NotNull(session?.Data);
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "What changed?",
+
+                    SourceTarget = 1,
+
+                    TokenBudget = 1_200,
+
+                    AttachToSessionId = session.Data.Id,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        WebResearchStreamFrame[] frames = ndjson
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static line => JsonSerializer.Deserialize(
+                line,
+                ArcanumJsonContext.Default.WebResearchStreamFrame)!)
+            .ToArray();
+
+        WebResearchStreamFrame terminal = frames[^1];
+
+        Assert.Equal(WebResearchStreamFrameType.Result, terminal.Type);
+
+        Assert.NotNull(terminal.Result);
+
+        Assert.Equal("Synthesized answer [1].", terminal.Result.Answer);
+
+        // The attachment did not happen, and the stream says so rather than swallowing it.
+        Assert.Null(terminal.Result.AttachmentId);
+
+        Assert.Contains(
+            frames,
+            static frame => frame.Type == WebResearchStreamFrameType.Progress
+                && frame.Stage == "attachment_failed");
+
+        // The progress frame is the whole story: unlike search and browse, the research result carries
+        // no `attachmentError` of its own. A permanently-null field on the terminal frame would read to
+        // a client as "the attachment succeeded", which is the opposite of what happened.
+        string terminalLine = ndjson
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[^1];
+
+        using JsonDocument terminalJson = JsonDocument.Parse(terminalLine);
+
+        Assert.False(
+            terminalJson.RootElement
+                .GetProperty("result")
+                .TryGetProperty("attachmentError", out _),
+            $"the research result frame carried an attachmentError property: {terminalLine}");
+
+    }
+
+    /// <summary>
+    /// Search and browse have no progress channel, so the research path's <c>attachment_failed</c> frame
+    /// has no counterpart here: a failed attachment discarded the whole result, including the answer the
+    /// caller has already been billed for. The billed work is returned and the attachment failure is
+    /// reported alongside it, rather than one information loss being traded for another.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Search_still_returns_the_billed_answer_when_attachment_fails_late()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            new StubWebProvider(),
+            new StubIntelligence(),
+            vanishSessionAfterCalls: 1);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/web/search",
+            new WebSearchWorkflowRequest
+            {
+
+                Query = "current facts",
+
+                ResultCount = 3,
+
+                AttachToSessionId = sessionId,
+
+            },
+            ArcanumJsonContext.Default.WebSearchWorkflowRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<WebSearchWorkflowResult>? envelope = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseWebSearchWorkflowResult);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.True(envelope.IsSuccess);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.Answer));
+
+        Assert.Null(envelope.Data.AttachmentId);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.AttachmentError));
+
+    }
+
+    [SkippableFact]
+
+    public async Task Browse_still_returns_the_billed_page_when_attachment_fails_late()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            new StubWebProvider(),
+            new StubIntelligence(),
+            vanishSessionAfterCalls: 1);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/web/browse",
+            new WebBrowseWorkflowRequest
+            {
+
+                Url = "https://example.test/article",
+
+                AttachToSessionId = sessionId,
+
+            },
+            ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<WebBrowseWorkflowResult>? envelope = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseWebBrowseWorkflowResult);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.True(envelope.IsSuccess);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.Markdown));
+
+        Assert.Null(envelope.Data.AttachmentId);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.AttachmentError));
+
+    }
+
+    private static async Task<Guid> CreateSessionAsync(HttpClient client)
+    {
+
+        HttpResponseMessage created = await client.PostAsJsonAsync(
+            "/api/sessions",
+            new CreateSessionRequest(null, "Attachment target"),
+            ArcanumJsonContext.Default.CreateSessionRequest);
+
+        ApiResponse<SessionDetailDto>? session = JsonSerializer.Deserialize(
+            await created.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Assert.NotNull(session?.Data);
+
+        return session.Data.Id;
+
+    }
+
+    private static async Task<Guid> RegisterCampaignAsync(
+        HttpClient client,
+        ArcanumWebApplicationFactory factory)
+    {
+
+        string campaignPath = Path.Combine(
+            factory.TempHome,
+            $"research-campaign-{Guid.NewGuid():N}");
+
+        _ = Directory.CreateDirectory(campaignPath);
+
+        RegisterCampaignRequest registration = new(
+            "Research Campaign",
+            campaignPath,
+            WorkspaceType.Campaign,
+            null);
+
+        HttpResponseMessage campaignResponse = await client.PostAsync(
+            "/api/campaigns",
+            new StringContent(
+                JsonSerializer.Serialize(
+                    registration,
+                    ArcanumJsonContext.Default.RegisterCampaignRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        ApiResponse<CampaignDto>? campaign = JsonSerializer.Deserialize(
+            await campaignResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseCampaignDto);
+
+        Assert.NotNull(campaign?.Data);
+
+        return campaign.Data.Id;
+
+    }
+
+    private static async Task<string> ResearchAsync(
+        HttpClient client,
+        Guid? campaignId)
+    {
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "What changed?",
+
+                    SourceTarget = 1,
+
+                    TokenBudget = 1_200,
+
+                    CampaignId = campaignId,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        return await response.Content.ReadAsStringAsync();
+
+    }
+
     private static ArcanumWebApplicationFactory Factory(
         StubWebProvider provider,
         StubIntelligence intelligence,
-        bool attachmentsEnabled = true) =>
+        bool attachmentsEnabled = true,
+        StubSanctumGuard? sanctum = null,
+        int vanishSessionAfterCalls = 0) =>
         new()
         {
 
@@ -1090,9 +1619,105 @@ public sealed class WebWorkflowEndpointTests
                 services.AddScoped<IArcanumIntelligenceProvider>(
                     _ => intelligence);
 
+                if (sanctum is not null)
+                {
+
+                    services.RemoveAll<ISanctumGuard>();
+
+                    services.AddScoped<ISanctumGuard>(_ => sanctum);
+
+                }
+
+                if (vanishSessionAfterCalls > 0)
+                {
+
+                    services.RemoveAll<ISessionRepository>();
+
+                    services.AddScoped<SessionRepository>();
+
+                    services.AddScoped<ISessionRepository>(
+                        sp => new VanishingSessionRepository(
+                            sp.GetRequiredService<SessionRepository>(),
+                            vanishSessionAfterCalls));
+
+                }
+
             },
 
         };
+
+    /// <summary>
+    /// Reproduces the archive/purge race the attachment preflight cannot close: the target session
+    /// resolves for the preflight and is gone by the time the workflow tries to persist onto it.
+    /// </summary>
+    private sealed class VanishingSessionRepository(
+        ISessionRepository inner,
+        int lookupsBeforeVanishing) : ISessionRepository
+    {
+
+        private int _lookups;
+
+        public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) =>
+            Interlocked.Increment(ref _lookups) > lookupsBeforeVanishing
+                ? Task.FromResult<Session?>(null)
+                : inner.GetByIdAsync(id, ct);
+
+        public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
+            inner.CreateAsync(campaignId, title, ct);
+
+        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
+            inner.QueryAsync(request, ct);
+
+        public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) =>
+            inner.GetAnalyticsAsync(ct);
+
+        public Task<Result<SessionExportResult>> ExportAsync(
+            Guid id,
+            SessionExportFormat format,
+            CancellationToken ct) =>
+            inner.ExportAsync(id, format, ct);
+
+        public Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct) =>
+            inner.AddEntryAsync(sessionId, entry, ct);
+
+        public Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct) =>
+            inner.ForkAsync(sourceId, request, ct);
+
+        public Task<List<Entry>> GetEntriesAscendingAsync(
+            Guid sessionId,
+            int takeLast,
+            CancellationToken ct = default) =>
+            inner.GetEntriesAscendingAsync(sessionId, takeLast, ct);
+
+        public Task<List<Entry>> GetEntriesAfterAsync(
+            Guid sessionId,
+            long afterSequence,
+            int limit,
+            CancellationToken ct = default) =>
+            inner.GetEntriesAfterAsync(sessionId, afterSequence, limit, ct);
+
+        public Task<Entry?> GetEntryAsync(Guid sessionId, Guid entryId, CancellationToken ct = default) =>
+            inner.GetEntryAsync(sessionId, entryId, ct);
+
+        public Task<List<Entry>> GetEntriesAsync(
+            Guid sessionId,
+            int offset = 0,
+            int limit = 100,
+            DateTimeOffset? beforeCreatedAt = null,
+            Guid? beforeId = null,
+            CancellationToken ct = default) =>
+            inner.GetEntriesAsync(sessionId, offset, limit, beforeCreatedAt, beforeId, ct);
+
+        public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
+            inner.GetEntryCountAsync(sessionId, ct);
+
+        public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
+            inner.UpdateSessionAsync(session, ct);
+
+        public Task ArchiveAsync(Guid id, CancellationToken ct) =>
+            inner.ArchiveAsync(id, ct);
+
+    }
 
     private sealed class StubCatalog(
         IWebResearchProvider provider) : IWebResearchProviderCatalog
@@ -1169,6 +1794,13 @@ public sealed class WebWorkflowEndpointTests
 
         }
 
+        public List<string> ReadUrls { get; } = [];
+
+        public WebReadOptions? LastReadOptions { get; private set; }
+
+        /// <summary>Markdown returned per read, or null for the default single-line body.</summary>
+        public string? ReadMarkdown { get; init; }
+
         public Task<Result<WebReadResult>> ReadUrlAsync(
             string url,
             WebReadOptions options,
@@ -1177,15 +1809,92 @@ public sealed class WebWorkflowEndpointTests
 
             ReadCalls++;
 
+            ReadUrls.Add(url);
+
+            LastReadOptions = options;
+
             return Task.FromResult(
                 Result<WebReadResult>.Success(
                     new WebReadResult(
                         "Source",
-                        "Rendered evidence.",
+                        ReadMarkdown ?? "Rendered evidence.",
                         url,
                         [])));
 
         }
+
+    }
+
+    /// <summary>
+    /// Records every campaign network check and denies the hosts it is told to deny, standing in for
+    /// the real guard's config lookup so the workflow's own enforcement is what the test observes.
+    /// </summary>
+    private sealed class StubSanctumGuard : ISanctumGuard
+    {
+
+        public List<(string CampaignId, string Url, string ToolName)> NetworkChecks { get; } = [];
+
+        /// <summary>Hosts denied by this Sanctum; empty denies nothing.</summary>
+        public HashSet<string> DeniedHosts { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public Task<SanctumResult> ValidateNetworkAsync(
+            string campaignId,
+            string url,
+            string toolName,
+            CancellationToken ct = default)
+        {
+
+            NetworkChecks.Add((campaignId, url, toolName));
+
+            bool denied = Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
+                && DeniedHosts.Contains(parsed.Host);
+
+            return Task.FromResult(
+                new SanctumResult
+                {
+
+                    Allowed = !denied,
+
+                    DenyReason = denied
+                        ? $"Host '{parsed!.Host}' is not in the Sanctum allowed domain list."
+                        : null,
+
+                });
+
+        }
+
+        public Task<SanctumResult> ValidatePathAsync(
+            string campaignId,
+            string requestedPath,
+            string operationType,
+            string toolName,
+            CancellationToken ct = default) =>
+            Task.FromResult(new SanctumResult { Allowed = true });
+
+        public Task<SanctumResult> ValidateToolAsync(
+            string campaignId,
+            string toolName,
+            CancellationToken ct = default) =>
+            Task.FromResult(new SanctumResult { Allowed = true });
+
+        public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult(new ResourceLimits());
+
+        public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult<SanctumChildProcessBoundary?>(null);
+
+        public Task RecordResourceLimitBreachAsync(
+            string? workspaceRoot,
+            string toolName,
+            ResourceLimitKind resource,
+            string limitValue,
+            string? actualValue,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
 
     }
 

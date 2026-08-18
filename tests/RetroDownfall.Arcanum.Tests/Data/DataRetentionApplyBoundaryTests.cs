@@ -479,13 +479,66 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// The cancellation arm surrenders its lease from inside <c>catch (OperationCanceledException) { …; throw; }</c>,
+    /// and an exception raised in a catch block discards the one being handled. So a Grimoire that is briefly
+    /// locked while an operator aborts an apply must not be able to replace the abort with a store failure:
+    /// callers filter on <c>ex is not OperationCanceledException</c>, and would otherwise report an
+    /// operator-initiated abort as a generic retention failure. Same right-of-way rule
+    /// <c>LexiconService.TryRollbackAsync</c> spells out for its own cleanup-inside-catch.
+    /// </summary>
+    [SkippableFact]
+    public async Task ApplyAsync_WhenCancellationRacesAnUnavailableStore_StillSurfacesTheCancellation()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        _ = await SeedAttachmentAsync(sessionId, entryId);
+
+        LeaseSurrenderFailingOperationStore operations = new(new LongRunningOperationStore(_db!));
+
+        DataRetentionService service = CreateBoundaryService(
+            new ArcanumSettings(),
+            (_, _) =>
+            {
+
+                // Armed only once the apply is under way, so the lease acquisition itself still succeeds
+                // and the failure lands exactly where the cancellation handler reads the operation back.
+                operations.FailNextGet();
+
+                throw new OperationCanceledException();
+
+            },
+            operationStore: operations);
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            sessionId);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.ApplyAsync(
+                new DataRetentionApplyRequest(request, plan.PlanId),
+                CancellationToken.None));
+
+        // Pins that the surrender was actually attempted, so the test cannot pass by never reaching it.
+        Assert.True(operations.GetFailed);
+
+    }
+
     private DataRetentionService CreateBoundaryService(
         ArcanumSettings settings,
         Func<Guid, CancellationToken, Task> acquireSessionGate,
-        ILogger<DataRetentionService>? logger = null)
+        ILogger<DataRetentionService>? logger = null,
+        ILongRunningOperationStore? operationStore = null)
     {
 
-        LongRunningOperationStore operations = new(_db!);
+        ILongRunningOperationStore operations = operationStore ?? new LongRunningOperationStore(_db!);
 
         return new DataRetentionService(
             _db!,
@@ -616,6 +669,178 @@ public sealed partial class DataRetentionServiceTests
         return result is null || result == DBNull.Value
             ? null
             : Convert.ToString(result, CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// Delegates everything to the real store, but fails the next <c>GetAsync</c> once armed — the shape a
+    /// momentarily locked Grimoire takes when a handler reads an operation back to surrender its lease.
+    /// </summary>
+    private sealed class LeaseSurrenderFailingOperationStore(ILongRunningOperationStore inner)
+        : ILongRunningOperationStore
+    {
+
+        private int _failNextGet;
+
+        public bool GetFailed { get; private set; }
+
+        public void FailNextGet() => Volatile.Write(ref _failNextGet, 1);
+
+        public Task<LongRunningOperation?> GetAsync(
+            Guid operationId,
+            CancellationToken cancellationToken = default)
+        {
+
+            if (Interlocked.Exchange(ref _failNextGet, 0) == 1)
+            {
+
+                GetFailed = true;
+
+                throw new Microsoft.Data.Sqlite.SqliteException("database is locked", 5);
+
+            }
+
+            return inner.GetAsync(operationId, cancellationToken);
+
+        }
+
+        public Task<LongRunningOperation> CreateAsync(
+            LongRunningOperationCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            inner.CreateAsync(request, cancellationToken);
+
+        public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+            LongRunningOperationCreateRequest request,
+            LongRunningOperationRequestIdentity identity,
+            CancellationToken cancellationToken = default) =>
+            inner.ResolveOrCreateAsync(request, identity, cancellationToken);
+
+        public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+            LongRunningOperationCreateRequest request,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) =>
+            inner.TryStartSingleFlightAsync(
+                request,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
+            LongRunningOperationQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListAsync(query, cancellationToken);
+
+        public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+            DateTimeOffset utcNow,
+            int limit,
+            CancellationToken cancellationToken = default) =>
+            inner.FindExpiredAsync(utcNow, limit, cancellationToken);
+
+        public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) =>
+            inner.TryAcquireLeaseAsync(
+                operationId,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        public Task<bool> HeartbeatAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) =>
+            inner.HeartbeatAsync(
+                operationId,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        public Task<bool> RenewLeaseAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) =>
+            inner.RenewLeaseAsync(
+                operationId,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        public Task<bool> SaveCheckpointAsync(
+            Guid operationId,
+            string ownerId,
+            int expectedCheckpointVersion,
+            int checkpointVersion,
+            byte[]? checkpointPayload,
+            string? checkpointReference,
+            string publicSummary,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            inner.SaveCheckpointAsync(
+                operationId,
+                ownerId,
+                expectedCheckpointVersion,
+                checkpointVersion,
+                checkpointPayload,
+                checkpointReference,
+                publicSummary,
+                utcNow,
+                cancellationToken);
+
+        public Task<bool> TryTransitionAsync(
+            Guid operationId,
+            long expectedRevision,
+            string? ownerId,
+            LongRunningOperationState state,
+            DateTimeOffset utcNow,
+            string? terminalErrorCode = null,
+            CancellationToken cancellationToken = default) =>
+            inner.TryTransitionAsync(
+                operationId,
+                expectedRevision,
+                ownerId,
+                state,
+                utcNow,
+                terminalErrorCode,
+                cancellationToken);
+
+        public Task<bool> RequestCancellationAsync(
+            Guid operationId,
+            long expectedRevision,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            inner.RequestCancellationAsync(
+                operationId,
+                expectedRevision,
+                utcNow,
+                cancellationToken);
+
+        public Task<bool> ResetForRetryAsync(
+            Guid operationId,
+            long expectedRevision,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            inner.ResetForRetryAsync(
+                operationId,
+                expectedRevision,
+                utcNow,
+                cancellationToken);
+
+        public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
+            CancellationToken cancellationToken = default) =>
+            inner.GetCountsAsync(cancellationToken);
 
     }
 

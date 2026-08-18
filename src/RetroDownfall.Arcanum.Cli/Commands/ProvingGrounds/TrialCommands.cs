@@ -44,7 +44,7 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
         if (targetKind is null)
         {
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("--target must be one of: spell, prompt, apprenticeGoal.")));
 
             return 1;
@@ -52,7 +52,7 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
         if (string.IsNullOrWhiteSpace(targetValue))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--target-value is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--target-value is required.")));
 
             return 1;
         }
@@ -64,7 +64,7 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
             if (!CliArgReader.TryReadInlineOrFile(raw, out string json, out string? readError))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(readError!)));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(readError!)));
 
                 return 1;
             }
@@ -77,14 +77,14 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
             }
             catch (JsonException ex)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid inquisitor JSON: {ex.Message}")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid inquisitor JSON: {ex.Message}")));
 
                 return 1;
             }
 
             if (parsedInquisitor is null)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Inquisitor JSON parsed to null.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Inquisitor JSON parsed to null.")));
 
                 return 1;
             }
@@ -95,7 +95,7 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
         if (!CliArgReader.TryParseKeyValuePairs(var, out Dictionary<string, string> variables, out string? varError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(varError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(varError!)));
 
             return 1;
         }
@@ -113,7 +113,7 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }

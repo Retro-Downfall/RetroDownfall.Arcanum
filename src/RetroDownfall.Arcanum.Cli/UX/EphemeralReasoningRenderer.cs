@@ -1,5 +1,6 @@
 using System.Text;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -15,6 +16,7 @@ internal sealed class CliStreamContent
     private readonly StringBuilder _reasoning = new();
     private readonly int _maxReasoningChars;
     private bool _reasoningTruncated;
+    private bool _answerLineBreakWritten;
 
     public CliStreamContent(int maxReasoningChars = DefaultMaxReasoningChars)
     {
@@ -27,11 +29,23 @@ internal sealed class CliStreamContent
 
     public string ReasoningText => _reasoning.ToString();
 
+    /// <summary>
+    /// Whether the answer written so far left the caret part-way along a row. The accumulated answer
+    /// is byte-for-byte what the raw stream wrote to stdout, so it is also the record of where that
+    /// stream left the cursor.
+    /// </summary>
+    public bool AnswerEndsMidLine =>
+        !_answerLineBreakWritten && _answer.Length > 0 && _answer[^1] != '\n';
+
+    /// <summary>Records a newline written to the answer stream on the answer's behalf.</summary>
+    public void NoteAnswerLineBreak() => _answerLineBreakWritten = true;
+
     public void AppendAnswer(string? text)
     {
         if (!string.IsNullOrEmpty(text))
         {
             _ = _answer.Append(text);
+            _answerLineBreakWritten = false;
         }
     }
 
@@ -78,7 +92,15 @@ internal sealed class CliStreamContent
         int available = contentLimit - _reasoning.Length;
         if (available > 0)
         {
-            _ = _reasoning.Append(text.AsSpan(0, Math.Min(available, text.Length)));
+            _ = _reasoning.Append(text.AsSpan(0, Utf8Truncation.SafeCharSliceLength(text, available)));
+        }
+
+        // Both cuts above land on a raw UTF-16 code unit, which can fall between the halves of a
+        // surrogate pair. Drop an orphaned high surrogate so the astral-plane glyph is dropped whole
+        // rather than rendering as a replacement character before the marker (DESIGN §16.7).
+        if (_reasoning.Length > 0 && char.IsHighSurrogate(_reasoning[^1]))
+        {
+            _reasoning.Length--;
         }
 
         _ = _reasoning.Append(ReasoningTruncationMarker);
@@ -107,7 +129,9 @@ internal static class EphemeralReasoningRenderer
     public static bool Flush(
         IAnsiConsole console,
         CliStreamContent content,
-        IThemePalette palette)
+        IThemePalette palette,
+        TextWriter? answerStream = null,
+        bool? answerSharesTerminal = null)
     {
         ArgumentNullException.ThrowIfNull(console);
         ArgumentNullException.ThrowIfNull(content);
@@ -117,6 +141,12 @@ internal static class EphemeralReasoningRenderer
         {
             return false;
         }
+
+        // The panel is a full-width box that Spectre lays out from column 0, so a flush that lands
+        // part-way through an answer paints it from the column the last token ended on and wraps its
+        // own border. Every other diagnostic the streaming loop writes shares that hazard, so both go
+        // through the one guard and its once-only accounting.
+        _ = CliStreamDiagnostic.EnsureColumnZero(content, answerStream, answerSharesTerminal);
 
         console.Write(Build(reasoning, palette));
         return true;

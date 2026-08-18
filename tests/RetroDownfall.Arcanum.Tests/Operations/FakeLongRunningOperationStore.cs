@@ -19,10 +19,24 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
     private int _listCallCount;
 
+    private readonly ConcurrentQueue<LeaseAcquisition> _leaseAcquisitions = new();
+
     public IReadOnlyCollection<LongRunningOperation> Operations => [.. _operations.Values];
 
     /// <summary>How many paging round-trips callers have made, for tests that assert a lookup is cheap.</summary>
     public int ListCallCount => Volatile.Read(ref _listCallCount);
+
+    /// <summary>
+    /// Every <see cref="TryAcquireLeaseAsync"/> call, pairing the clock reading observed at the moment of
+    /// the call with the arguments the caller supplied — so a test can assert a lease was stamped from a
+    /// current timestamp rather than one captured before a long pass began.
+    /// </summary>
+    public IReadOnlyList<LeaseAcquisition> LeaseAcquisitions => [.. _leaseAcquisitions];
+
+    internal readonly record struct LeaseAcquisition(
+        DateTimeOffset ObservedNow,
+        DateTimeOffset SuppliedUtcNow,
+        DateTimeOffset SuppliedExpiresAt);
 
     public LongRunningOperation Seed(
         string kind,
@@ -162,6 +176,8 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default)
     {
+        _leaseAcquisitions.Enqueue(new LeaseAcquisition(timeProvider.GetUtcNow(), utcNow, leaseExpiresAt));
+
         lock (_gate)
         {
             if (!_operations.TryGetValue(operationId, out LongRunningOperation? current))

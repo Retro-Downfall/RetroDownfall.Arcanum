@@ -234,6 +234,163 @@ public sealed class CliCompletionTests
     }
 
     /// <summary>
+    /// A symbol whose values are a live resource catalog is completed from the running host, and
+    /// the provider name is the entire contract between a generated script and
+    /// <c>completion resolve</c>. Nothing pinned this pipeline before, for options or positionals.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Shells))]
+    public void Generated_scripts_bind_an_options_dynamic_source(string shell)
+    {
+
+        string script = CliCompletionScriptWriter.Write(shell, CliSurfaceTests.BuildMap());
+
+        string expected = shell == CliCompletionShells.Fish
+            ? "\"run\"' -l 'model' -a '(__arcanum_resolve model)'"
+            : ProviderBinding(shell, "run|--model", "model");
+
+        Assert.Contains(expected, script, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Several commands name their resource with a positional and have no option for it at all —
+    /// <c>campaign show</c>, <c>session show</c> and <c>workspace unregister</c> carry no options
+    /// whatsoever. A binding that reaches the command map and no shell leaves those positions
+    /// offering nothing in every shell.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Shells))]
+    public void Generated_scripts_bind_a_positionals_dynamic_source(string shell)
+    {
+
+        string script = CliCompletionScriptWriter.Write(shell, CliSurfaceTests.BuildMap());
+
+        string expected = shell == CliCompletionShells.Fish
+            ? "\"campaign show\"; and __arcanum_positional_open' -a '(__arcanum_resolve campaign)'"
+            : ArgumentBinding(shell, "campaign show", "campaign");
+
+        Assert.Contains(expected, script, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A resource positional is offered until it has been supplied and not after: once
+    /// <c>arcanum campaign show Arcanum </c> is typed, the next word is an option, not a second
+    /// campaign name.
+    /// </summary>
+    [Fact]
+    public void Fish_stops_offering_a_positional_once_it_has_been_supplied()
+    {
+
+        Assert.Contains(
+            "(__arcanum_resolve campaign)",
+            FishOffers("campaign show"),
+            StringComparer.Ordinal);
+
+        Assert.DoesNotContain(
+            "(__arcanum_resolve campaign)",
+            FishOffers("campaign show Arcanum"),
+            StringComparer.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The map is keyed by the token the operator actually typed, and <c>-m</c> is as valid a
+    /// spelling of <c>--model</c> as the long form. Keying only the canonical name leaves every
+    /// published short flag resolving nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(CliCompletionShells.Bash)]
+    [InlineData(CliCompletionShells.Zsh)]
+    [InlineData(CliCompletionShells.PowerShell)]
+    public void Generated_scripts_bind_a_dynamic_source_to_every_accepted_spelling(string shell)
+    {
+
+        string script = CliCompletionScriptWriter.Write(shell, CliSurfaceTests.BuildMap());
+
+        Assert.Contains(ProviderBinding(shell, "run|-m", "model"), script, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The zsh script installs to <c>~/.zfunc/_arcanum</c> and is autoloaded, so the whole file is
+    /// the body of <c>_arcanum</c> — the maps and the trailing <c>compdef</c> after the definition
+    /// are exactly what rules out zsh's ksh-style "source then call" shortcut. Without a self-call
+    /// the invocation that triggered the autoload defines the function, adds no candidates, and
+    /// returns: the first TAB of every new shell is dead. The guard is correct for the sourced
+    /// install too, where <c>compdef</c> is the right call and only exists once compinit has run.
+    /// </summary>
+    [Fact]
+    public void Zsh_script_calls_the_completion_function_when_it_is_autoloaded()
+    {
+
+        string script = CliCompletionScriptWriter.Write(
+            CliCompletionShells.Zsh,
+            CliSurfaceTests.BuildMap());
+
+        Assert.Contains("if [ \"$funcstack[1]\" = \"_arcanum\" ]; then", script, StringComparison.Ordinal);
+
+        Assert.Contains("_arcanum \"$@\"", script, StringComparison.Ordinal);
+
+        Assert.Contains("(( $+functions[compdef] )) && compdef _arcanum arcanum", script, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// <c>$commandAst.CommandElements</c> includes the word under the cursor, unlike bash's
+    /// <c>COMP_WORDS[COMP_CWORD-1]</c> and zsh's <c>words[CURRENT-1]</c>. Deriving the path and the
+    /// preceding token from it unfiltered makes a partially typed value its own predecessor, so
+    /// <c>arcanum run --model gp&lt;TAB&gt;</c> looks up <c>run|gp</c> and offers nothing where
+    /// bash and zsh complete the model names. Asserted against the emitted text: no PowerShell host
+    /// is available to the test run, and the derivation is the defect.
+    /// </summary>
+    [Fact]
+    public void PowerShell_completer_excludes_the_word_under_the_cursor()
+    {
+
+        string script = CliCompletionScriptWriter.Write(
+            CliCompletionShells.PowerShell,
+            CliSurfaceTests.BuildMap());
+
+        Assert.DoesNotContain("$tokens[$tokens.Count - 1]", script, StringComparison.Ordinal);
+
+        Assert.Contains("foreach ($token in $walk)", script, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "$previous = if ($walk.Count -ge 1) { $walk[$walk.Count - 1] } else { '' }",
+            script,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// How one shell writes "after <paramref name="key"/>, resolve <paramref name="provider"/>".
+    /// </summary>
+    private static string ProviderBinding(string shell, string key, string provider) =>
+        shell switch
+        {
+            CliCompletionShells.Bash => $"\"{key}\") echo \"{provider}\" ;;",
+            CliCompletionShells.Zsh => $"['{key}']='{provider}'",
+            CliCompletionShells.PowerShell => $"$script:ArcanumProviders['{key}'] = '{provider}'",
+            _ => throw new ArgumentOutOfRangeException(nameof(shell), shell, "Unmodelled shell."),
+        };
+
+    /// <summary>
+    /// How one shell writes "at <paramref name="path"/>, the positional resolves
+    /// <paramref name="provider"/>". Keyed on the path alone, because a positional has no
+    /// preceding option token to key on.
+    /// </summary>
+    private static string ArgumentBinding(string shell, string path, string provider) =>
+        shell switch
+        {
+            CliCompletionShells.Bash => $"\"{path}\") echo \"{provider}\" ;;",
+            CliCompletionShells.Zsh => $"['{path}']='{provider}'",
+            CliCompletionShells.PowerShell => $"$script:ArcanumArguments['{path}'] = '{provider}'",
+            _ => throw new ArgumentOutOfRangeException(nameof(shell), shell, "Unmodelled shell."),
+        };
+
+    /// <summary>
     /// fish runs a command substitution only outside double quotes or through the <c>$(…)</c> form,
     /// so a path condition written as <c>test "(__arcanum_path)" = "session list"</c> compares the
     /// literal text <c>(__arcanum_path)</c> and can never hold — the script installs cleanly and
@@ -244,12 +401,15 @@ public sealed class CliCompletionTests
     [Theory]
     [InlineData("", "session")]
     [InlineData("session", "list")]
-    [InlineData("session list", "output-format")]
-    [InlineData("session list", "json text")]
-    public void Fish_completes_the_path_the_operator_has_already_typed(string path, string expected)
+    [InlineData("session list", "--output-format")]
+    [InlineData("session list --output-format", "json")]
+    [InlineData("session list --output-format", "text")]
+    public void Fish_completes_the_position_the_operator_has_typed_their_way_to(
+        string typed,
+        string expected)
     {
 
-        Assert.Contains(expected, FishOffers(path), StringComparer.Ordinal);
+        Assert.Contains(expected, FishOffers(typed), StringComparer.Ordinal);
 
     }
 
@@ -266,52 +426,199 @@ public sealed class CliCompletionTests
     }
 
     /// <summary>
-    /// The words a fish shell would offer for <c>arcanum &lt;path&gt; &lt;TAB&gt;</c>: the payload
-    /// of every generated <c>complete</c> line whose condition holds for that command path.
+    /// An option's values belong after the option and nowhere else. Offering <c>json</c> and
+    /// <c>text</c> at the bare <c>session list</c> path would be a suggestion the parser rejects.
     /// </summary>
-    private static IReadOnlyList<string> FishOffers(string path)
+    [Fact]
+    public void Fish_does_not_offer_an_option_value_at_the_bare_path()
+    {
+
+        Assert.DoesNotContain("json", FishOffers("session list"), StringComparer.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The path walk must stop at the first word that is not a command, exactly as bash, zsh and
+    /// PowerShell stop. Concatenating every non-dash token instead — a positional value, or any
+    /// option's value — builds a path no generated condition matches, and because every
+    /// <c>complete</c> line carries <c>-f</c> the operator is then offered filenames where the
+    /// command's own flags belong.
+    /// </summary>
+    [Theory]
+    [InlineData("campaign show Arcanum")]
+    [InlineData("session list --limit 10")]
+    public void Fish_still_completes_once_a_value_has_been_typed(string typed)
+    {
+
+        IReadOnlyList<string> offers = FishOffers(typed);
+
+        Assert.Contains("--json", offers, StringComparer.Ordinal);
+
+        Assert.DoesNotContain("doctor", offers, StringComparer.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The model below walks the command path against the list the generated script declares, so
+    /// this pins that the generated <c>__arcanum_path</c> walks it the same way — the one part of
+    /// the script the model cannot read out of the emitted text.
+    /// </summary>
+    [Fact]
+    public void Fish_walks_the_command_path_against_the_declared_paths()
     {
 
         string script = CliCompletionScriptWriter.Write(
             CliCompletionShells.Fish,
             CliSurfaceTests.BuildMap());
 
-        List<string> offers = [];
+        Assert.Contains("contains -- $candidate $__arcanum_paths", script, StringComparison.Ordinal);
 
-        foreach (string line in script.Split('\n'))
+        Assert.Contains("set -a __arcanum_paths 'session list'", script, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The words a fish shell would offer for <c>arcanum &lt;typed&gt; &lt;TAB&gt;</c>.
+    ///
+    /// The command path is walked against the path list the script itself declares, so a script
+    /// that declares none — or an incomplete one — is judged on that rather than on the model's
+    /// own idea of the tree. Option values are routed the way fish routes them: an <c>-a</c> list
+    /// attached to an option is reachable only after that option, and only when the option is
+    /// declared as taking a parameter (<c>-x</c>, which is <c>-r -f</c>). Without that declaration
+    /// fish treats the option as a flag and the list is unreachable by any spelling.
+    /// </summary>
+    private static IReadOnlyList<string> FishOffers(string typed)
+    {
+
+        string script = CliCompletionScriptWriter.Write(
+            CliCompletionShells.Fish,
+            CliSurfaceTests.BuildMap());
+
+        string[] words = typed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        HashSet<string> declared = [.. FishDeclaredPaths(script)];
+
+        (string path, int extra) = FishWalk(words, declared);
+
+        string previous = words.Length == 0 ? string.Empty : words[^1];
+
+        List<FishCompletion> applicable =
+        [
+            .. FishCompletions(script).Where(completion =>
+                FishConditionHolds(completion.Condition, path, extra)),
+        ];
+
+        FishCompletion? awaiting = applicable.FirstOrDefault(completion =>
+            completion.TakesParameter
+            && completion.Option is not null
+            && string.Equals($"--{completion.Option}", previous, StringComparison.Ordinal));
+
+        if (awaiting is not null)
         {
 
-            if (!line.StartsWith("complete ", StringComparison.Ordinal))
+            return [.. FishValues(awaiting.Values ?? string.Empty)];
+
+        }
+
+        List<string> offers = [];
+
+        foreach (FishCompletion completion in applicable)
+        {
+
+            if (completion.Option is not null)
             {
+
+                offers.Add($"--{completion.Option}");
 
                 continue;
 
             }
 
-            if (!FishConditionHolds(Quoted(line, " -n "), path))
-            {
-
-                continue;
-
-            }
-
-            foreach (string flag in (string[])[" -a ", " -l "])
-            {
-
-                if (line.Contains(flag, StringComparison.Ordinal))
-                {
-
-                    offers.Add(Quoted(line, flag));
-
-                }
-
-            }
+            offers.AddRange(FishValues(completion.Values ?? string.Empty));
 
         }
 
         return offers;
 
     }
+
+    /// <summary>
+    /// Walks the typed words into a command path the way the generated <c>__arcanum_path</c> does:
+    /// dash-led words are skipped, and the walk stops extending at the first word that is not a
+    /// declared path. <c>Extra</c> counts the words that fell outside it — a positional value or an
+    /// option's value — which is what tells a resource positional it has already been supplied.
+    /// </summary>
+    private static (string Path, int Extra) FishWalk(
+        IReadOnlyList<string> words,
+        IReadOnlySet<string> declared)
+    {
+
+        string path = string.Empty;
+
+        int extra = 0;
+
+        foreach (string word in words)
+        {
+
+            if (word.StartsWith('-'))
+            {
+
+                continue;
+
+            }
+
+            string candidate = path.Length == 0 ? word : $"{path} {word}";
+
+            if (extra == 0 && declared.Contains(candidate))
+            {
+
+                path = candidate;
+
+            }
+            else
+            {
+
+                extra++;
+
+            }
+
+        }
+
+        return (path, extra);
+
+    }
+
+    private static IEnumerable<string> FishDeclaredPaths(string script) =>
+        script
+            .Split('\n')
+            .Where(static line => line.StartsWith("set -a __arcanum_paths ", StringComparison.Ordinal))
+            .Select(static line => Quoted(line, "__arcanum_paths "));
+
+    private static IEnumerable<FishCompletion> FishCompletions(string script) =>
+        script
+            .Split('\n')
+            .Where(static line => line.StartsWith("complete ", StringComparison.Ordinal))
+            .Select(static line => new FishCompletion(
+                Quoted(line, " -n "),
+                line.Contains(" -l ", StringComparison.Ordinal) ? Quoted(line, " -l ") : null,
+                line.Contains(" -a ", StringComparison.Ordinal) ? Quoted(line, " -a ") : null,
+                line.Contains(" -x ", StringComparison.Ordinal)
+                    || line.Contains(" -r ", StringComparison.Ordinal)));
+
+    /// <summary>
+    /// A command substitution stays one candidate: it is the dynamic list, not a word list the
+    /// generator baked in.
+    /// </summary>
+    private static IEnumerable<string> FishValues(string values) =>
+        values.StartsWith('(')
+            ? [values]
+            : values.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+    private sealed record FishCompletion(
+        string Condition,
+        string? Option,
+        string? Values,
+        bool TakesParameter);
 
     /// <summary>
     /// The single-quoted value that follows <paramref name="flag"/> on a generated
@@ -332,8 +639,23 @@ public sealed class CliCompletionTests
     /// quotes is literal text. An unquoted substitution that produced nothing contributes no word,
     /// which is why the root's <c>test -z (__arcanum_path)</c> holds on an empty path.
     /// </summary>
-    private static bool FishConditionHolds(string condition, string path)
+    private static bool FishConditionHolds(string condition, string path, int extra)
     {
+
+        int separator = condition.IndexOf("; and ", StringComparison.Ordinal);
+
+        if (separator >= 0)
+        {
+
+            // The only compound condition the generator emits guards a resource positional that has
+            // not been supplied yet.
+            Assert.Equal(
+                "__arcanum_positional_open",
+                condition[(separator + "; and ".Length)..]);
+
+            return extra == 0 && FishConditionHolds(condition[..separator], path, extra);
+
+        }
 
         List<string> words = [];
 

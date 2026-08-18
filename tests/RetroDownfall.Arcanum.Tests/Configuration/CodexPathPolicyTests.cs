@@ -169,4 +169,81 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
+    [Fact]
+    public async Task ReadCappedAsync_CancelledToken_PropagatesCancellation()
+    {
+
+        string codexPath = _workspace.WriteFile("cancel-CODEX.md", new string('x', 4096));
+
+        using CancellationTokenSource cts = new();
+
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => CodexPathPolicy.ReadCappedAsync(codexPath, 1024 * 1024, cts.Token));
+
+    }
+
+    [Fact]
+    public async Task ReadCappedAsync_MissingFile_ReturnsNotFound()
+    {
+
+        string missing = Path.Combine(_workspace.Root, "absent-CODEX.md");
+
+        Result<string> result = await CodexPathPolicy.ReadCappedAsync(missing, 1024);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Prompt.CodexPathNotFound", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ReadCappedAsync_PermissionDenied_ReturnsReadFailedNotNotFound()
+    {
+
+        if (OperatingSystem.IsWindows() || System.Environment.IsPrivilegedProcess)
+        {
+
+            return;
+
+        }
+
+        string codexPath = _workspace.WriteFile("denied-CODEX.md", "# Denied");
+
+        File.SetUnixFileMode(codexPath, UnixFileMode.None);
+
+        try
+        {
+
+            Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, 1024);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Prompt.CodexReadFailed", result.Error.Code);
+
+        }
+        finally
+        {
+
+            File.SetUnixFileMode(codexPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task ReadCappedAsync_MaxBytesAtUpperBound_ReadsWithoutOverflow()
+    {
+
+        string codexPath = _workspace.WriteFile("wide-bound-CODEX.md", "# Wide");
+
+        Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, long.MaxValue);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("# Wide", result.Value);
+
+    }
+
 }

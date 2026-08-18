@@ -71,12 +71,44 @@ internal static class PromptMapping
 internal static class PromptImportHelper
 {
 
+    /// <remarks>
+    /// Every shape check below returns a <see cref="Result{T}"/> failure rather than throwing.
+    /// System.Text.Json does not enforce constructor-parameter nullability, so <c>{}</c> on
+    /// <c>POST /api/prompts/import</c> binds a non-null <see cref="PromptImportRequest"/> whose
+    /// <c>Payload</c> is null, and a truncated export file binds a payload with a null name,
+    /// version or template. Throwing would turn one bad element of a campaign bundle into a
+    /// whole-request 500 instead of the per-prompt warning the campaign-import loop expects.
+    /// </remarks>
     public static async Task<Result<PromptSummaryDto>> ImportAsync(
         IPromptRepository repo,
         PromptImportRequest request,
         CancellationToken ct)
     {
-        PromptExportDto payload = request.Payload;
+        PromptExportDto? payload = request.Payload;
+
+        if (payload is null)
+        {
+            return Result<PromptSummaryDto>.Failure(
+                new Error(ErrorCodes.Prompt.InvalidRequest, "Import payload is required."));
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Name))
+        {
+            return Result<PromptSummaryDto>.Failure(
+                new Error(ErrorCodes.Prompt.InvalidName, "Import payload must include a prompt name."));
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Version))
+        {
+            return Result<PromptSummaryDto>.Failure(
+                new Error(ErrorCodes.Prompt.InvalidVersion, "Import payload must include a prompt version."));
+        }
+
+        if (payload.Template is null)
+        {
+            return Result<PromptSummaryDto>.Failure(
+                new Error(ErrorCodes.Prompt.InvalidRequest, "Import payload must include a prompt template."));
+        }
 
         Prompt? existing = await repo
             .GetByNameAndVersionAsync(payload.Name, payload.Version, request.CampaignId, ct)
@@ -97,7 +129,7 @@ internal static class PromptImportHelper
             Name = payload.Name.Trim(),
             Version = payload.Version.Trim(),
             Description = payload.Description,
-            Tags = PromptRepository.SerializeTags(payload.Tags),
+            Tags = PromptRepository.SerializeTags(payload.Tags ?? []),
             Template = payload.Template,
             ParameterSchema = PromptMapping.SerializeJsonDocument(payload.ParameterSchema),
             DefaultParameters = PromptMapping.SerializeJsonDocument(payload.DefaultParameters),

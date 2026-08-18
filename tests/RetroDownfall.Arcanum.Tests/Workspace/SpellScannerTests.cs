@@ -1,3 +1,5 @@
+using System.Text.Json;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -210,9 +212,292 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         // Same rationale as ScanMetadataAsync_concurrent_misses_share_one_scan: single-flight
         // coalesces the miss onto one parse, but a caller released after the leader may hit the
-        // LRU cache or, if evicted, start a fresh content-equal parse. ParsedSpell is a record,
-        // so value equality is the correct stable invariant.
-        Assert.All(results, r => Assert.Equal(first, r));
+        // LRU cache or, if evicted, start a fresh content-equal parse. Record equality is NOT the
+        // stable invariant here — ParsedSpell carries an IReadOnlyList<string> and string[] members,
+        // whose compiler-generated equality is reference equality, so a fresh parse of the same file
+        // is never Equal to the leader's instance. Compare the content instead.
+        Assert.All(results, r => AssertSameSpellContent(first, r));
+
+    }
+
+    /// <summary>
+    /// Content equality for two independently produced <see cref="ParsedSpell"/> instances.
+    /// The compiler-generated record equality compares <see cref="ParsedSpell.AvailableScripts"/>,
+    /// <see cref="ParsedSpell.Tags"/>, <see cref="ParsedSpell.Tools"/> and
+    /// <see cref="ParsedSpell.RequiredMcpServers"/> by reference, so it holds only while every caller
+    /// happens to receive the same cached instance. That made
+    /// <c>LoadFullAsync_concurrent_misses_share_one_parse</c> pass in isolation and fail under load,
+    /// where a follower released after the wave closed re-parsed and got fresh collections.
+    /// </summary>
+    private static void AssertSameSpellContent(ParsedSpell? expected, ParsedSpell? actual)
+    {
+
+        Assert.NotNull(expected);
+
+        Assert.NotNull(actual);
+
+        Assert.Equal(expected!.Name, actual!.Name);
+
+        Assert.Equal(expected.Description, actual.Description);
+
+        Assert.Equal(expected.FilePath, actual.FilePath);
+
+        Assert.Equal(expected.FullContent, actual.FullContent);
+
+        Assert.Equal(expected.DirectoryPath, actual.DirectoryPath);
+
+        Assert.Equal(expected.Body, actual.Body);
+
+        Assert.Equal(expected.SystemPrompt, actual.SystemPrompt);
+
+        Assert.Equal(expected.Template, actual.Template);
+
+        Assert.Equal(expected.Model, actual.Model);
+
+        Assert.Equal(expected.Provider, actual.Provider);
+
+        Assert.Equal(expected.AvailableScripts, actual.AvailableScripts);
+
+        Assert.Equal(expected.Tags, actual.Tags);
+
+        Assert.Equal(expected.Tools, actual.Tools);
+
+        Assert.Equal(expected.RequiredMcpServers, actual.RequiredMcpServers);
+
+        AssertSameSkillMetadata(expected.SkillMetadata, actual.SkillMetadata);
+
+    }
+
+    /// <summary>
+    /// Content equality for two independently deserialized <see cref="SkillMetadata"/> instances. The
+    /// record closes over <c>List&lt;string&gt;</c>, <c>Dictionary&lt;string, double&gt;?</c> and
+    /// <c>JsonDocument?</c> members, every one of which its compiler-generated equality compares by
+    /// reference, so comparing the two records would hold only while both sides share one cached
+    /// instance — the exact assumption <see cref="AssertSameSpellContent"/> exists to stop relying on.
+    /// </summary>
+    private static void AssertSameSkillMetadata(SkillMetadata? expected, SkillMetadata? actual)
+    {
+
+        if (expected is null || actual is null)
+        {
+
+            Assert.Null(expected);
+
+            Assert.Null(actual);
+
+            return;
+
+        }
+
+        Assert.Equal(expected.Name, actual.Name);
+
+        Assert.Equal(expected.Version, actual.Version);
+
+        Assert.Equal(expected.Description, actual.Description);
+
+        Assert.Equal(expected.Tags, actual.Tags);
+
+        Assert.Equal(RawJson(expected.InputSchema), RawJson(actual.InputSchema));
+
+        Assert.Equal(RawJson(expected.OutputSchema), RawJson(actual.OutputSchema));
+
+        Assert.Equal(expected.DeclaredTools, actual.DeclaredTools);
+
+        Assert.Equal(expected.Dependencies, actual.Dependencies);
+
+        Assert.Equal(expected.Model, actual.Model);
+
+        Assert.Equal(expected.Provider, actual.Provider);
+
+        // Ordered by key so the comparison is over the pairs themselves rather than over whatever
+        // enumeration order the two dictionaries happened to be filled in.
+        Assert.Equal(
+            expected.DefaultParameters?.OrderBy(p => p.Key, StringComparer.Ordinal).ToArray(),
+            actual.DefaultParameters?.OrderBy(p => p.Key, StringComparer.Ordinal).ToArray());
+
+        Assert.Equal(expected.LastModified, actual.LastModified);
+
+        Assert.Equal(expected.ActiveVersion, actual.ActiveVersion);
+
+    }
+
+    /// <summary>
+    /// The schema's own text. Two <see cref="JsonDocument"/> instances parsed from one file are never
+    /// <c>Equal</c>, and the document is what the sidecar carries, so its raw text is the invariant.
+    /// </summary>
+    private static string? RawJson(JsonDocument? document) => document?.RootElement.GetRawText();
+
+    /// <summary>
+    /// The deterministic form of the load-flake in <c>LoadFullAsync_concurrent_misses_share_one_parse</c>:
+    /// bumping the file's last-write time changes the <c>$"{fullPath}|{mtimeTicks}"</c> cache key, so the
+    /// second call re-parses from disk exactly as a follower released after a closed single-flight wave
+    /// does. The two instances are content-identical, and that — not record equality — is what a
+    /// concurrent caller may rely on.
+    /// </summary>
+    [Fact]
+    public async Task LoadFullAsync_reparse_after_a_cache_miss_returns_a_content_equal_spell()
+    {
+
+        string spellDir = Path.Combine(_workspace.Root, "spells", "reparse-full");
+
+        Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
+
+        _workspace.WriteFile(
+            "spells/reparse-full/SPELL.md",
+            """
+            ---
+            name: reparse-full
+            description: reparse test
+            tags: [alpha]
+            tools: [read_file]
+            ---
+            body
+            """);
+
+        _workspace.WriteFile("spells/reparse-full/scripts/a.sh", "#!/bin/sh\necho a\n");
+
+        _workspace.WriteFile("spells/reparse-full/scripts/b.sh", "#!/bin/sh\necho b\n");
+
+        string spellPath = Path.Combine(spellDir, "SPELL.md");
+
+        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(first);
+
+        File.SetLastWriteTimeUtc(spellPath, File.GetLastWriteTimeUtc(spellPath).AddSeconds(1));
+
+        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(second);
+
+        Assert.NotSame(first, second);
+
+        AssertSameSpellContent(first, second);
+
+    }
+
+    /// <summary>
+    /// The same re-parse, over a spell that carries a <c>SPELL.json</c> sidecar. <see cref="SkillMetadata"/>
+    /// is a record over <c>List&lt;string&gt;</c>, <c>Dictionary&lt;string, double&gt;?</c> and
+    /// <c>JsonDocument?</c> members, every one of which the compiler-generated equality compares by
+    /// reference, so two independent deserializations of one sidecar are never <c>Equal</c>. Without a
+    /// sidecar the member is null on both sides and the reference comparison holds by accident — which is
+    /// exactly why this case has to be covered explicitly rather than left to the fixtures.
+    /// </summary>
+    [Fact]
+    public async Task LoadFullAsync_reparse_of_a_spell_with_a_sidecar_returns_a_content_equal_spell()
+    {
+
+        _workspace.WriteFile(
+            "spells/reparse-sidecar/SPELL.md",
+            """
+            ---
+            name: reparse-sidecar
+            description: reparse test with a sidecar
+            ---
+            body
+            """);
+
+        _workspace.WriteFile(
+            "spells/reparse-sidecar/SPELL.json",
+            """
+            {
+              "name": "reparse-sidecar",
+              "version": "3.1.0",
+              "description": "sidecar",
+              "tags": ["alpha", "beta"],
+              "inputSchema": { "type": "object" },
+              "outputSchema": { "type": "string" },
+              "declaredTools": ["read_file"],
+              "dependencies": ["other-spell"],
+              "model": "m",
+              "provider": "p",
+              "defaultParameters": { "temperature": 0.5 },
+              "activeVersion": "3.1.0"
+            }
+            """);
+
+        string spellPath = Path.Combine(_workspace.Root, "spells", "reparse-sidecar", "SPELL.md");
+
+        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(first);
+
+        Assert.NotNull(first!.SkillMetadata);
+
+        File.SetLastWriteTimeUtc(spellPath, File.GetLastWriteTimeUtc(spellPath).AddSeconds(1));
+
+        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(second);
+
+        Assert.NotSame(first, second);
+
+        Assert.NotSame(first.SkillMetadata, second!.SkillMetadata);
+
+        AssertSameSpellContent(first, second);
+
+    }
+
+    /// <summary>
+    /// The coalesced scan used to run under whichever caller happened to win the miss race, so a leader
+    /// that aborted (client disconnect, Ctrl-C on `arcanum spell list`) faulted the shared task with its
+    /// own OperationCanceledException and every joined caller rethrew it. A follower's own token was
+    /// healthy, so ArcanumExceptionHandler did not treat that OCE as a client abort — it surfaced as a
+    /// 500 Hub.Unhandled for a request nobody cancelled. A joined caller must observe only its own token.
+    /// </summary>
+    [Fact]
+    public async Task ScanMetadataAsync_does_not_cancel_a_joined_caller_when_the_leader_cancels()
+    {
+
+        const int spellCount = 3000;
+
+        for (int i = 0; i < spellCount; i++)
+        {
+
+            _workspace.WriteFile(
+                $"spells/leader-cancel-{i:D4}/SPELL.md",
+                $"---\nname: leader-cancel-{i:D4}\ndescription: leader cancellation test {i}\n---\nbody");
+
+        }
+
+        using CancellationTokenSource leaderCts = new();
+
+        // ttlSeconds 0 is what SpellRepository / SpellSearchService / SpellDependencyResolver pass, so
+        // both callers are guaranteed single-flight participants rather than TTL-cache readers.
+        Task<IReadOnlyList<SpellMetadata>> leader = Task.Run(
+            () => SpellScanner.ScanMetadataAsync(_workspace.Root, leaderCts.Token, MaxFileSizeBytes),
+            CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(25));
+
+        Task<IReadOnlyList<SpellMetadata>> follower = Task.Run(
+            () => SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes),
+            CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(25));
+
+        await leaderCts.CancelAsync();
+
+        IReadOnlyList<SpellMetadata> followerResult = await follower;
+
+        Assert.Contains(followerResult, m => m.Name == "leader-cancel-0000");
+
+        Assert.Contains(followerResult, m => m.Name == $"leader-cancel-{spellCount - 1:D4}");
+
+        try
+        {
+
+            _ = await leader;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // Expected when the cancel lands before the scan finishes; the leader must observe its own
+            // cancellation, and only its own.
+
+        }
 
     }
 
@@ -230,10 +515,19 @@ public sealed class SpellScannerTests : IAsyncLifetime
             body
             """);
 
-        const int ttl = 1;
+        // Two TTLs rather than one. The "serves stale" leg used to run under the same 1 second TTL as
+        // the refresh leg, so it silently required the first scan, the SPELL.md rewrite and the second
+        // scan — two real directory walks over a temp workspace plus frontmatter parsing — to finish
+        // inside 1000 ms. A cold, loaded or virus-scanned filesystem blew that budget and the entry had
+        // already expired, so the second scan re-read the file and the assertion failed with "mutated".
+        // The stale leg now has a 300 second budget (the ArcanumSettingClamps ceiling); only the refresh
+        // leg is timed, and it waits *longer* than the TTL, which no amount of load can invalidate.
+        const int staleTtl = 300;
+
+        const int refreshTtl = 1;
 
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> first =
-            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: staleTtl);
 
         Core.Intelligence.Spells.SpellSummary firstSummary = Assert.Single(first, s => s.Name == "ttl-spell");
 
@@ -251,18 +545,19 @@ public sealed class SpellScannerTests : IAsyncLifetime
             """);
 
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> second =
-            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: staleTtl);
 
         Core.Intelligence.Spells.SpellSummary secondSummary = Assert.Single(second, s => s.Name == "ttl-spell");
 
         // Within the TTL the cached (stale) description is served, proving the TTL is threaded through.
         Assert.Equal("original", secondSummary.Description);
 
-        // After the TTL expires the next call re-scans and picks up the mutation.
-        await Task.Delay(TimeSpan.FromSeconds(ttl + 1));
+        // The entry was stamped by the first scan, so sleeping past refreshTtl guarantees expiry however
+        // long the scans themselves took.
+        await Task.Delay(TimeSpan.FromSeconds(refreshTtl + 1));
 
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> third =
-            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: refreshTtl);
 
         Core.Intelligence.Spells.SpellSummary thirdSummary = Assert.Single(third, s => s.Name == "ttl-spell");
 
@@ -784,6 +1079,158 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Contains(spells, s => s.Name == "fireball");
 
         Assert.DoesNotContain(spells, s => s.Name == "piped");
+
+    }
+
+    /// <summary>
+    /// The SPELL.md body is read through SecureFileReader, but the SPELL.json sidecar sixty lines below was
+    /// read with a plain File.ReadAllTextAsync behind the weak TryGetFileLength gate. A FIFO stats as length
+    /// 0, so the size gate passed and open(2) parked forever waiting for a writer — no CancellationToken can
+    /// interrupt an open, so GET /api/spells/{name} never returned and pinned a thread-pool thread per call.
+    /// </summary>
+    [SkippableFact]
+    public async Task LoadFullAsync_skips_a_fifo_sidecar_instead_of_blocking_forever()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
+
+        _workspace.WriteFile(
+            "spells/piped-sidecar/SPELL.md",
+            """
+            ---
+            name: piped-sidecar
+            description: the sidecar next to this spell is a FIFO
+            ---
+            body
+            """);
+
+        await CreateFifoAsync("spells/piped-sidecar/SPELL.json");
+
+        string spellPath = Path.Combine(_workspace.Root, "spells", "piped-sidecar", "SPELL.md");
+
+        // Offloaded so a regression blocks a pool thread rather than wedging the whole test run.
+        Task<ParsedSpell?> load = Task.Run(
+            () => SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes));
+
+        Task completed = await Task.WhenAny(load, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        Assert.Same(load, completed);
+
+        ParsedSpell? loaded = await load;
+
+        Assert.NotNull(loaded);
+
+        Assert.Equal("piped-sidecar", loaded!.Name);
+
+        Assert.Null(loaded.SkillMetadata);
+
+    }
+
+    /// <summary>
+    /// The full-parse walk supplies a non-null revalidation root, but RevalidatePathBeforeIo is a lexical and
+    /// symlink-containment check with no file-kind test, so an in-workspace FIFO sidecar sailed through it too
+    /// and wedged the whole catalog walk rather than one spell.
+    /// </summary>
+    [SkippableFact]
+    public async Task ScanAsync_skips_a_fifo_sidecar_instead_of_blocking_forever()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
+
+        _workspace.WriteFile(
+            "spells/piped-sidecar/SPELL.md",
+            """
+            ---
+            name: piped-sidecar
+            description: the sidecar next to this spell is a FIFO
+            ---
+            body
+            """);
+
+        await CreateFifoAsync("spells/piped-sidecar/SPELL.json");
+
+        Task<IReadOnlyList<ParsedSpell>> scan = Task.Run(
+            () => SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        Task completed = await Task.WhenAny(scan, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        Assert.Same(scan, completed);
+
+        IReadOnlyList<ParsedSpell> spells = await scan;
+
+        Assert.Contains(spells, s => s.Name == "fireball");
+
+        ParsedSpell piped = Assert.Single(spells, s => s.Name == "piped-sidecar");
+
+        Assert.Null(piped.SkillMetadata);
+
+    }
+
+    /// <summary>
+    /// DESIGN §11 promises every SPELL.md / sidecar read is proven to stay inside the workspace. The sidecar
+    /// read bypassed that, so a SPELL.json symlinked out of the workspace was opened and deserialized, merging
+    /// its tags and description into the catalog entry.
+    /// </summary>
+    [SkippableFact]
+    public async Task LoadFullAsync_rejects_a_sidecar_symlinked_outside_root()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "Symlink creation requires elevation on Windows.");
+
+        string outsideFile = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N") + ".json");
+
+        await File.WriteAllTextAsync(
+            outsideFile,
+            """
+            {
+              "name": "escaped-sidecar",
+              "version": "9.9.9",
+              "description": "should never be read through a symlink",
+              "tags": ["from-outside-the-workspace"],
+              "declaredTools": [],
+              "dependencies": []
+            }
+            """);
+
+        try
+        {
+
+            _workspace.WriteFile(
+                "spells/escaped-sidecar/SPELL.md",
+                """
+                ---
+                name: escaped-sidecar
+                description: the sidecar next to this spell escapes the workspace
+                ---
+                body
+                """);
+
+            File.CreateSymbolicLink(
+                Path.Combine(_workspace.Root, "spells", "escaped-sidecar", "SPELL.json"),
+                outsideFile);
+
+            string spellPath = Path.Combine(_workspace.Root, "spells", "escaped-sidecar", "SPELL.md");
+
+            ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+            Assert.NotNull(loaded);
+
+            Assert.Null(loaded!.SkillMetadata);
+
+            Assert.DoesNotContain("from-outside-the-workspace", loaded.Tags);
+
+        }
+        finally
+        {
+
+            if (File.Exists(outsideFile))
+            {
+
+                File.Delete(outsideFile);
+
+            }
+
+        }
 
     }
 

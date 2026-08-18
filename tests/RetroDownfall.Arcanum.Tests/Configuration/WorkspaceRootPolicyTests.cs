@@ -167,16 +167,13 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void EnforceAllowedRoots_SymlinkEscapingRoot_Denies()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -209,16 +206,123 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
+    [SkippableFact]
+    public void EnforceAllowedRoots_SymlinkOnIntermediateComponent_Denies()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(outside, "secret"));
+
+        try
+        {
+
+            string linkPath = Path.Combine(_workspace.Root, "intermediate-link");
+
+            Directory.CreateSymbolicLink(linkPath, outside);
+
+            Result<string> result = WorkspaceRootPolicy.EnforceAllowedRoots(
+                Path.Combine(linkPath, "secret"),
+                [_workspace.Root],
+                "Path.NotAllowed",
+                "Path is not allowed.");
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Path.NotAllowed", result.Error.Code);
+
+        }
+        finally
+        {
+
+            Directory.Delete(outside, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public void IsStrictChildPath_SymlinkOnIntermediateComponent_ReturnsFalse()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(outside, "spells"));
+
+        try
+        {
+
+            string linkPath = Path.Combine(_workspace.Root, "strict-intermediate-link");
+
+            Directory.CreateSymbolicLink(linkPath, outside);
+
+            bool isChild = WorkspaceRootPolicy.IsStrictChildPath(
+                _workspace.Root,
+                Path.Combine(linkPath, "spells"));
+
+            Assert.False(isChild);
+
+        }
+        finally
+        {
+
+            Directory.Delete(outside, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public void IsUnderAnyAllowedRoot_SymlinkOnIntermediateComponentPointingBackInside_Allows()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string realDir = _workspace.CreateSubdir("intermediate-real-target");
+
+        Directory.CreateDirectory(Path.Combine(realDir, "nested"));
+
+        string linkPath = Path.Combine(_workspace.Root, "inside-intermediate-link");
+
+        Directory.CreateSymbolicLink(linkPath, realDir);
+
+        bool allowed = WorkspaceRootPolicy.IsUnderAnyAllowedRoot(
+            Path.Combine(linkPath, "nested"),
+            [_workspace.Root]);
+
+        Assert.True(allowed);
+
+    }
+
     [Fact]
+    public void IsUnderAnyAllowedRoot_NonExistentDescendant_Allows()
+    {
+
+        string candidate = Path.Combine(_workspace.Root, "not-created-yet", "deeper");
+
+        bool allowed = WorkspaceRootPolicy.IsUnderAnyAllowedRoot(candidate, [_workspace.Root]);
+
+        Assert.True(allowed);
+
+    }
+
+    [SkippableFact]
     public void EnforceAllowedRoots_SymlinkInsideRoot_Allows()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realDir = _workspace.CreateSubdir("real-target");
 

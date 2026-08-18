@@ -48,6 +48,8 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         CancellationToken,
         Task<ConfigurationWriteResult>> _transactionRunner;
 
+    private readonly Action<string> _hardenSavedConfiguration;
+
     private CancellationTokenSource? _debounceCts;
 
     private string? _acknowledgedFingerprint;
@@ -60,15 +62,25 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     }
 
+    /// <param name="hardenSavedConfiguration">
+    /// Re-applies owner-only permissions to <c>arcanum.json</c> after the replace has committed. It is
+    /// injectable because that one step runs when the new content is already durable, so its failure
+    /// mode is the opposite of every other step's, and no real filesystem reproduces it on the
+    /// platforms the suite runs on.
+    /// </param>
     internal ArcanumConfigurationStore(
         bool enableWatcher,
         Func<
             Func<Task<ConfigurationWriteResult>>,
             CancellationToken,
-            Task<ConfigurationWriteResult>>? transactionRunner = null)
+            Task<ConfigurationWriteResult>>? transactionRunner = null,
+        Action<string>? hardenSavedConfiguration = null)
     {
 
         _validator = new ConfigurationValidator();
+
+        _hardenSavedConfiguration = hardenSavedConfiguration
+            ?? SecureFilePermissions.ApplyOwnerOnlyFile;
 
         _directory = ArcanumPaths.GrimoireDirectory;
 
@@ -77,7 +89,14 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         _transactionRunner = transactionRunner
             ?? RunConfigurationTransactionAsync;
 
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_directory);
+        // Best-effort on purpose. A configuration directory that cannot be created or restricted — a
+        // home restored with another uid's ownership, a container/host uid mismatch over a bind mount,
+        // a read-only or mode-less volume — is a real problem, but throwing out of the constructor
+        // aborts DI composition before any window exists. Compendium logs only to the debugger, so the
+        // operator would get no window, no dialog and nothing on disk, and every fail-closed surface
+        // the editor owns (LoadFailed, the SaveBar repair state, the corrupt-config dialog) lives
+        // behind that window. The save path re-attempts the same work and reports what it could not do.
+        _ = SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExists(_directory, out _);
 
         if (!enableWatcher)
         {
@@ -86,24 +105,47 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         }
 
-        _watcher = new FileSystemWatcher(_directory, ConfigurationFileName)
+        FileSystemWatcher? watcher = null;
+
+        try
         {
 
-            InternalBufferSize = 65_536,
+            watcher = new FileSystemWatcher(_directory, ConfigurationFileName)
+            {
 
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+                InternalBufferSize = 65_536,
 
-            EnableRaisingEvents = true,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
 
-        };
+            };
 
-        _watcher.Changed += OnFileChanged;
+            watcher.Changed += OnFileChanged;
 
-        _watcher.Renamed += OnFileRenamed;
+            watcher.Renamed += OnFileRenamed;
 
-        _watcher.Created += OnFileChanged;
+            watcher.Created += OnFileChanged;
 
-        _watcher.Error += OnWatcherError;
+            watcher.Error += OnWatcherError;
+
+            // Raised last so no change can arrive before the handlers that interpret it are attached.
+            watcher.EnableRaisingEvents = true;
+
+            _watcher = watcher;
+
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException
+                or IOException
+                or UnauthorizedAccessException
+                or PlatformNotSupportedException)
+        {
+
+            // A watcher cannot be started on a directory that does not exist or cannot be watched. The
+            // store still reads and saves without one; it only loses the external-change warning, which
+            // is a far smaller loss than a process that vanishes before its first window.
+            watcher?.Dispose();
+
+        }
 
     }
 
@@ -334,7 +376,21 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             }
 
-            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_directory);
+            // Hardening the directory must not decide whether the operator's edits can be saved. A
+            // directory this process cannot chmod is still one it can usually write to, and refusing
+            // the save there would leave the editor permanently unable to persist anything. Report it
+            // alongside the save instead; a directory that genuinely cannot be created fails loudly a
+            // few lines below, when the staging file cannot be opened.
+            List<string> hardeningWarnings = [];
+
+            if (!SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExists(
+                _directory,
+                out string? directoryHardeningError))
+            {
+
+                hardeningWarnings.Add(directoryHardeningError!);
+
+            }
 
             tempPath = Path.Combine(_directory, $".arcanum.{Guid.NewGuid():N}.tmp");
 
@@ -409,12 +465,6 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
                 }
 
-                // Hardening the staging file is not enough. On Windows ReplaceFile keeps the
-                // replaced file's DACL, so a destination that arrived with a loose ACL would survive
-                // the save still readable by other principals — the CLI's ConfigurationWriter
-                // re-applies owner-only permissions to the destination for exactly this reason.
-                SecureFilePermissions.ApplyOwnerOnlyFile(_filePath);
-
             }
             catch (IOException ioEx)
             {
@@ -426,9 +476,27 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             }
 
+            // Deliberately outside the replace block. Hardening the staging file is not enough — on
+            // Windows ReplaceFile keeps the replaced file's DACL, so a destination that arrived with a
+            // loose ACL would survive the save still readable by other principals, which is why the
+            // CLI's ConfigurationWriter re-applies owner-only permissions to the destination too. But
+            // by the time this runs the new configuration is already durable, so a failure here is not
+            // a failed save: reporting one would contradict the file on disk, skip the fingerprint
+            // acknowledgement, and wedge the editor behind a phantom external change.
+            if (!TryHardenSavedConfiguration(out string? fileHardeningError))
+            {
+
+                hardeningWarnings.Add(fileHardeningError!);
+
+            }
+
             AcknowledgeFingerprint(writtenFingerprint);
 
-            return new ConfigurationWriteResult(true, [], null);
+            return new ConfigurationWriteResult(
+                true,
+                [],
+                null,
+                DescribeHardeningWarnings(hardeningWarnings));
 
         }
         catch (Exception ex)
@@ -463,6 +531,45 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         }
 
     }
+
+    /// <summary>
+    /// Re-applies owner-only permissions to the saved configuration, reporting what it could not do
+    /// rather than throwing. Runs only after the replace has committed, which is exactly why it may
+    /// not fail the save.
+    /// </summary>
+    private bool TryHardenSavedConfiguration(out string? error)
+    {
+
+        error = null;
+
+        try
+        {
+
+            _hardenSavedConfiguration(_filePath);
+
+            return true;
+
+        }
+        catch (Exception exception) when (SecureFilePermissions.IsPermissionFault(exception))
+        {
+
+            error = $"Could not restrict {_filePath} to the current user: {exception.Message}";
+
+            return false;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Turns the hardening failures of one save into the single sentence the operator reads. The lead
+    /// says the save worked, because it did, and the rest says which security objective was not met.
+    /// </summary>
+    private static string? DescribeHardeningWarnings(IReadOnlyList<string> warnings) =>
+        warnings.Count == 0
+            ? null
+            : "Saved arcanum.json, but its owner-only permissions could not be applied, so other"
+                + $" accounts on this machine may be able to read it. {string.Join(" ", warnings)}";
 
     private static string? ResultMessage(Result result)
     {

@@ -15,16 +15,28 @@ internal sealed class FakeActiveCampaignService : IActiveCampaignService
 
     public List<CampaignDto?> SetCalls { get; } = [];
 
-    public Task SetActiveCampaignAsync(CampaignDto? campaign, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// When set, the campaign write fails after yielding — mirroring a settings-store IO failure.
+    /// </summary>
+    public Exception? SetFailure { get; set; }
+
+    public async Task SetActiveCampaignAsync(CampaignDto? campaign, CancellationToken cancellationToken = default)
     {
 
         SetCalls.Add(campaign);
 
+        if (SetFailure is not null)
+        {
+
+            await Task.Yield();
+
+            throw SetFailure;
+
+        }
+
         ActiveCampaign = campaign;
 
         ActiveCampaignChanged?.Invoke(this, EventArgs.Empty);
-
-        return Task.CompletedTask;
 
     }
 

@@ -92,15 +92,15 @@ internal static class CommandCenterTurnAttachmentBuilder
 
             if (len > maxAttach)
             {
+                // Staging failed, so the token stays: rewriting the prompt would send the model a
+                // question the operator never asked and persist that edit as the user turn.
                 status.Add(
-                    $"Cannot stage {Path.GetFileName(fullPath)}: File exceeds the configured limit ({maxAttach} bytes).");
-            }
-            else
-            {
-                stagedText.Add(fullPath);
-                status.Add($"Staged: {Path.GetFileName(fullPath)}");
+                    $"Cannot stage {Path.GetFileName(fullPath)}: File exceeds the configured limit ({maxAttach} bytes); literal token kept in the prompt.");
+                continue;
             }
 
+            stagedText.Add(fullPath);
+            status.Add($"Staged: {Path.GetFileName(fullPath)}");
             workingPrompt = workingPrompt.Remove(match.Index, match.Length);
         }
 

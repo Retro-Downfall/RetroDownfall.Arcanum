@@ -396,7 +396,11 @@ public static class JsonSchemaHelper
                     errors);
 
             }
-            else if (schema.AdditionalProperties == false)
+            // Neither branch below recurses, so the one guard in ValidateElement never sees them:
+            // an object contributes one error per unexpected property and one per missing required
+            // name in flat loops. Cap the reporting here or the report scales with the payload for
+            // additionalProperties and with the caller's schema for required.
+            else if (schema.AdditionalProperties == false && errors.Count < MaxReportedErrors)
             {
 
                 errors.Add($"{path}: additional property '{property.Name}' is not allowed.");
@@ -405,8 +409,18 @@ public static class JsonSchemaHelper
 
         }
 
+        // The enumeration above is never cut short, so seenProperties is complete even when the
+        // report was capped. Breaking out of it instead would report properties the payload did in
+        // fact carry as missing, telling the model to add a field it already sent.
         foreach (string required in schema.Required)
         {
+
+            if (errors.Count >= MaxReportedErrors)
+            {
+
+                break;
+
+            }
 
             if (!seenProperties.Contains(required))
             {

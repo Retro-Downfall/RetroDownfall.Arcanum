@@ -19,6 +19,15 @@ public sealed class ErrorCodeCatalogContractTests
         "new\\s+Error\\(\\s*\"([^\"]+)\"",
         RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// Any two-segment PascalCase string literal, which is the shape every wire-stable code has.
+    /// Only literals whose first segment names a real <c>ErrorCodes</c> nest are treated as codes,
+    /// so ordinary prose such as <c>"HttpContext.RequestAborted"</c> in a comment is not an offender.
+    /// </summary>
+    private static readonly Regex DottedCodeLiteral = new(
+        "\"([A-Z][A-Za-z0-9]*)\\.([A-Z][A-Za-z0-9]*)\"",
+        RegexOptions.CultureInvariant);
+
     [Fact]
     public void Api_never_constructs_a_wire_error_code_from_an_inline_literal()
     {
@@ -57,6 +66,70 @@ public sealed class ErrorCodeCatalogContractTests
             "Wire-stable error codes must come from ErrorCodes (Core) so the constant table and the "
             + "§8.23 catalog stay authoritative; these Api sites inline the literal instead: "
             + string.Join("; ", offenders));
+
+    }
+
+    /// <summary>
+    /// The inline-literal contract above only sees <c>new Error("…")</c>. Endpoints that hand the code
+    /// to a local envelope helper — or park it in a file-local <c>static readonly Error</c> — sail past
+    /// it, which is how <c>Operation.NotFound</c>, <c>Perception.PathNotAllowed</c> and
+    /// <c>Codex.PathNotContained</c> reached the wire without ever reaching <c>ErrorCodes</c>.
+    /// </summary>
+    [Fact]
+    public void Api_never_names_a_code_in_a_declared_error_family_by_string_literal()
+    {
+
+        HashSet<string> families = DeclaredErrorCodes()
+            .Select(declared => declared.Nest)
+            .ToHashSet(StringComparer.Ordinal);
+
+        List<string> offenders = [];
+
+        foreach ((string relativePath, string source) in EnumerateApiSources())
+        {
+
+            foreach (Match match in DottedCodeLiteral.Matches(source))
+            {
+
+                if (families.Contains(match.Groups[1].Value))
+                {
+
+                    offenders.Add($"{relativePath}: \"{match.Groups[1].Value}.{match.Groups[2].Value}\"");
+
+                }
+
+            }
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A code inside a declared ErrorCodes family must be referenced through its constant, not "
+            + "spelled out, so the constant table and the §8.23 catalog stay authoritative; these Api "
+            + "sites spell it out instead: " + string.Join("; ", offenders));
+
+    }
+
+    /// <summary>
+    /// Codes clients must switch on but which §8.23 never listed. Each one is emitted by a live route,
+    /// so a client written against the published catalog had no row to match.
+    /// </summary>
+    [Theory]
+    [InlineData("Operation.NotFound")]
+    [InlineData("Operation.StateConflict")]
+    [InlineData("Operation.InvalidState")]
+    [InlineData("Perception.PathNotAllowed")]
+    [InlineData("Codex.PathNotContained")]
+    [InlineData("Spell.WriteFailed")]
+    [InlineData("Validation.InvalidLore")]
+    [InlineData("Validation.InvalidKey")]
+    [InlineData("Execution.NotFound")]
+    public void Catalog_and_constant_table_both_carry_every_code_a_route_emits(string code)
+    {
+
+        Assert.Contains(code, DeclaredErrorCodes().Select(declared => declared.Value));
+
+        Assert.Contains(code, ReadErrorCatalogSection(), StringComparison.Ordinal);
 
     }
 
@@ -107,6 +180,30 @@ public sealed class ErrorCodeCatalogContractTests
         Assert.Contains(
             unauthorizedRows,
             row => row.Contains(ErrorCodes.Auth.Unauthorized, StringComparison.Ordinal));
+
+    }
+
+    private static IEnumerable<(string RelativePath, string Source)> EnumerateApiSources()
+    {
+
+        string apiRoot = Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Api");
+
+        foreach (string file in Directory.EnumerateFiles(apiRoot, "*.cs", SearchOption.AllDirectories))
+        {
+
+            if (IsBuildOutput(apiRoot, file))
+            {
+
+                continue;
+
+            }
+
+            yield return (Path.GetRelativePath(apiRoot, file), File.ReadAllText(file));
+
+        }
 
     }
 

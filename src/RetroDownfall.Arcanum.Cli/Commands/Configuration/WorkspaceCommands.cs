@@ -1,4 +1,8 @@
+using System.Buffers;
+
 using System.Globalization;
+
+using System.Text.Json;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -22,7 +26,9 @@ public sealed class WorkspaceCommands(
     ArcanumApiClient apiClient,
     ICliResourceCatalog resourceCatalog,
     ICliContextStore contextStore,
-    IThemePalette themePalette)
+    IThemePalette themePalette,
+    IConsoleDispatcher dispatcher,
+    ICliInvocationContext invocationContext)
 {
 
     public async Task<int> List(CancellationToken cancellationToken)
@@ -162,7 +168,7 @@ public sealed class WorkspaceCommands(
         if (!TryParseWorkspaceType(type, out WorkspaceType workspaceType))
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     "--type must be one of: spell, campaign, data, custom."));
 
@@ -408,12 +414,56 @@ public sealed class WorkspaceCommands(
 
         }
 
+        // A structured document, not raw bytes, because the legacy --json text wrapper reaches
+        // anything left on stdout: it strips every ESC-introduced sequence out of the middle of the
+        // buffer and trims the trailing newlines off the end. Writing JSON marks the payload as
+        // structured, so the buffer is replayed verbatim and the file can be reproduced from it.
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(
+                BuildFileDocument(result.Value.RelativePath, result.Value.Content));
+
+            return 0;
+
+        }
+
         // Raw stdout: Spectre would render the file as a Text renderable and hard-wrap it at the
         // profile width (80 when stdout is redirected), and normalize CRLF to LF, so redirected
         // output would no longer match the file the server read.
         Console.Out.Write(result.Value.Content);
 
         return 0;
+
+    }
+
+    /// <summary>
+    /// Written by hand with <see cref="Utf8JsonWriter"/> rather than serialized from a record, so
+    /// the payload needs no new registration on the source-generated context and stays Native AOT
+    /// safe. The content is carried as a JSON string value, which round-trips control characters
+    /// and trailing newlines exactly.
+    /// </summary>
+    private static JsonElement BuildFileDocument(string path, string content)
+    {
+
+        ArrayBufferWriter<byte> buffer = new();
+
+        using (Utf8JsonWriter writer = new(buffer))
+        {
+
+            writer.WriteStartObject();
+
+            writer.WriteString("path", path);
+
+            writer.WriteString("content", content);
+
+            writer.WriteEndObject();
+
+        }
+
+        using JsonDocument document = JsonDocument.Parse(buffer.WrittenMemory);
+
+        return document.RootElement.Clone();
 
     }
 
@@ -742,7 +792,7 @@ public sealed class WorkspaceCommands(
         if (selection.Status == ResourceSelectionStatus.Error)
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(selection.Error!)));
 
@@ -838,7 +888,7 @@ public sealed class WorkspaceCommands(
     private int WriteError(Error error)
     {
 
-        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(error));
+        CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(error));
 
         return 1;
 

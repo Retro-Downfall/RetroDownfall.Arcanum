@@ -47,6 +47,12 @@ public static class LoggingBootstrapper
                     .MinimumLevel.Information()
                     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
                     .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
+                    // IHttpClientFactory's default handlers log the request URI at Information under
+                    // System.Net.Http.HttpClient.*. .NET redacts only the query, so a token in a path
+                    // segment — the dominant hosted-MCP shape — would reach the rolling file and the ring
+                    // buffer verbatim. Every named client also calls RemoveAllLoggers(); this is the
+                    // pipeline-wide floor that catches the next client which forgets to.
+                    .MinimumLevel.Override("System.Net.Http", LogEventLevel.Warning)
                     .Enrich.FromLogContext()
                     .WriteTo.Sink(new DeferredRingBufferSink(serviceProvider));
 

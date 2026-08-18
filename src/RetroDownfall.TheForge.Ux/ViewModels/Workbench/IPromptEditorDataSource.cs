@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 
@@ -25,6 +26,6 @@ public interface IPromptEditorDataSource
 
     Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken);
 
-    Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken);
+    Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken);
 
 }

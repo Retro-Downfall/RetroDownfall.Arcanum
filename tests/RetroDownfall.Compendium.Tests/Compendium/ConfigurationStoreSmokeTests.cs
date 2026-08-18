@@ -559,6 +559,147 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
     }
 
+    /// <summary>
+    /// Re-applying owner-only permissions runs after the replace has already committed, so a failure
+    /// there is not a failed save. Reporting one tells the operator the opposite of what is on disk,
+    /// leaves the acknowledged fingerprint pointing at the superseded file — which makes the watcher
+    /// raise a phantom external change and the stale-file guard refuse the retry — and wedges Save
+    /// behind a Reload. The save is reported as the success it is, carrying the unmet security
+    /// objective as a warning.
+    /// </summary>
+    [Fact]
+
+    public async Task WriteAsync_reports_a_committed_save_that_could_not_be_hardened_as_a_warning()
+    {
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        using ArcanumConfigurationStore store = new(
+            enableWatcher: false,
+            hardenSavedConfiguration: static _ => throw new UnauthorizedAccessException(
+                "Attempted to perform an unauthorized operation."));
+
+        _ = await store.ReadAsync(CancellationToken.None);
+
+        ConfigurationWriteResult result = await store.WriteAsync(
+            new ArcanumSettings
+            {
+
+                Host = new HostSettings { Port = 6124 },
+
+            },
+            CancellationToken.None);
+
+        Assert.Contains(
+            "6124",
+            await File.ReadAllTextAsync(configPath),
+            StringComparison.Ordinal);
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+
+        Assert.Null(result.ErrorMessage);
+
+        Assert.NotNull(result.WarningMessage);
+
+        Assert.Contains(
+            "unauthorized operation",
+            result.WarningMessage,
+            StringComparison.Ordinal);
+
+        // The fingerprint has to be acknowledged or the next save is refused as a stale write over a
+        // file the operator never edited outside the editor.
+        ConfigurationWriteResult again = await store.WriteAsync(
+            new ArcanumSettings
+            {
+
+                Host = new HostSettings { Port = 7333 },
+
+            },
+            CancellationToken.None);
+
+        Assert.True(again.IsSuccess, again.ErrorMessage);
+
+        Assert.Contains(
+            "7333",
+            await File.ReadAllTextAsync(configPath),
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Constructing the store must never be the thing that kills Compendium. Hardening the
+    /// configuration directory is advisory: a directory that cannot be created or restricted (a home
+    /// restored with another uid's ownership, a container/host uid mismatch, a read-only or
+    /// mode-less mount) is a real problem, but throwing here aborts DI composition before any window
+    /// exists, so the operator gets no window, no dialog, and — Compendium logs only to the debugger —
+    /// nothing on disk to diagnose from. The editor's whole fail-closed surface (LoadFailed, the
+    /// SaveBar repair state, the corrupt-config dialog) lives behind a window that never opens.
+    /// </summary>
+    [Fact]
+
+    public async Task Construction_survives_a_configuration_directory_that_cannot_be_created()
+    {
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempRoot, ".config"),
+            "not a directory");
+
+        using ArcanumConfigurationStore store = new(enableWatcher: false);
+
+        ArcanumSettings settings = await store.ReadAsync(CancellationToken.None);
+
+        Assert.Empty(settings.Providers);
+
+        // The failure is not swallowed, it is deferred to a surface that can report it: the save path
+        // re-attempts the same directory work and returns a failure the SaveBar and dialog can show.
+        ConfigurationWriteResult result = await store.WriteAsync(
+            new ArcanumSettings
+            {
+
+                Host = new HostSettings { Port = 6124 },
+
+            },
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
+
+    }
+
+    /// <summary>
+    /// The external-change watcher is the second unguarded I/O call in the constructor: it cannot be
+    /// started on a directory that does not exist or cannot be watched. A store without a watcher
+    /// still reads and saves, it only loses the on-disk-change warning — which is a far better
+    /// outcome than a process that vanishes before its first window.
+    /// </summary>
+    [Fact]
+
+    public async Task Construction_survives_a_watcher_that_cannot_be_started()
+    {
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempRoot, ".config"),
+            "not a directory");
+
+        using ArcanumConfigurationStore store = new();
+
+        Assert.Equal(
+            Path.Combine(_tempRoot, ".config", "arcanum", "arcanum.json"),
+            store.ConfigurationFilePath);
+
+        Assert.Null(store.GetLastWriteTimeUtc());
+
+    }
+
     public void Dispose() => _home.Dispose();
 
 }

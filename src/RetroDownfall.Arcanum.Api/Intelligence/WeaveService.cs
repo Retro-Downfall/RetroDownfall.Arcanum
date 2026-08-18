@@ -325,7 +325,7 @@ public sealed class WeaveService(
         // Chunking intentionally uses a code-owned naive sliding window with no sentence or word
         // boundary detection, so a chunk boundary can fall mid-word. See
         // docs/Arcanum.DESIGN.md §21.
-        int step = Math.Max(1, chunkSizeChars - chunkOverlapChars);
+        int step = ResolveChunkStep(chunkSizeChars, chunkOverlapChars);
 
         List<(string Chunk, int Offset)> chunks = [];
 
@@ -364,6 +364,23 @@ public sealed class WeaveService(
         }
 
         return Task.FromResult(Result<(string Chunk, int Offset)[]>.Success([.. chunks]));
+
+    }
+
+    /// <summary>
+    /// Distance between adjacent window starts. <see cref="ArcanumSettingClamps.EmbeddingsChunkSizeChars"/>
+    /// (128–8,192) and <see cref="ArcanumSettingClamps.EmbeddingsChunkOverlapChars"/> (0–1,024) clamp
+    /// independently, so an overlap at or above the resolved chunk size survives both and would leave
+    /// <c>size - overlap</c> at zero or negative — a one-character step, one near-duplicate chunk per
+    /// character of the source, and the batched embedding spend that follows. Bounding the overlap at
+    /// half the window keeps the scan advancing and caps the emitted chunk count at twice the minimum.
+    /// </summary>
+    internal static int ResolveChunkStep(int chunkSizeChars, int chunkOverlapChars)
+    {
+
+        int boundedOverlap = Math.Clamp(chunkOverlapChars, 0, chunkSizeChars / 2);
+
+        return Math.Max(1, chunkSizeChars - boundedOverlap);
 
     }
 

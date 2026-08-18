@@ -775,7 +775,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             if (!global)
             {
 
-                Bind(command, "$campaign", query.Scope.CampaignId!.Value.ToString("D"));
+                BindCoreCampaignIdentity(command, "$campaign", query.Scope.CampaignId!.Value);
 
             }
 
@@ -1241,6 +1241,19 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             (byte)item.Lane);
 
     private static void Bind(SqliteCommand command, string name, object value) =>
+        _ = command.Parameters.AddWithValue(name, value);
+
+    /// <summary>
+    /// Binds a Campaign identity that will be compared against the EF-owned <c>"Campaigns"."Id"</c>.
+    /// </summary>
+    /// <remarks>
+    /// The value is bound as a <see cref="Guid"/> rather than as a formatted string so the provider
+    /// produces exactly the uppercase text EF stored. A lowercase <c>D</c>-format literal matched no
+    /// row for any identity carrying a hex letter, which made a Campaign-scoped effect preflight
+    /// report that its mutation affected nothing at all. Covenant's own tables keep the lowercase
+    /// representation their writers use, so this helper is only for that EF-owned crossing.
+    /// </remarks>
+    private static void BindCoreCampaignIdentity(SqliteCommand command, string name, Guid value) =>
         _ = command.Parameters.AddWithValue(name, value);
 
     private static Guid ReadGuidBlob(SqliteDataReader reader, int ordinal) =>

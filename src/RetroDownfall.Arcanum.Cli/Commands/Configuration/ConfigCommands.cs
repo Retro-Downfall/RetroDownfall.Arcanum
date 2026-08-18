@@ -23,7 +23,8 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
 internal sealed class ConfigCommands(
     IConfigurationCommandService configurationService,
     IConsoleDispatcher console,
-    CompendiumLauncher compendiumLauncher)
+    CompendiumLauncher compendiumLauncher,
+    ICliInvocationContext invocationContext)
 {
 
     public int Path()
@@ -144,7 +145,19 @@ internal sealed class ConfigCommands(
 
             }
 
-            resolvedValue = await ReadSensitiveValueAsync(cancellationToken).ConfigureAwait(false);
+            SensitiveValueRead sensitive = await ReadSensitiveValueAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!sensitive.IsAvailable)
+            {
+
+                console.WriteDiagnostic(SensitiveValueInput.UnavailableDiagnostic);
+
+                return (int)CliExitCode.ConfigurationError;
+
+            }
+
+            resolvedValue = sensitive.Value;
 
         }
 
@@ -450,22 +463,13 @@ internal sealed class ConfigCommands(
 
     }
 
-    private async Task<string?> ReadSensitiveValueAsync(
-        CancellationToken cancellationToken)
-    {
-
-        if (Console.IsInputRedirected)
-        {
-
-            return await Console.In.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-
-        return AnsiConsole.Prompt(
-            new TextPrompt<string>("Sensitive value:")
-                .Secret());
-
-    }
+    private Task<SensitiveValueRead> ReadSensitiveValueAsync(
+        CancellationToken cancellationToken) =>
+        SensitiveValueInput.ReadAsync(
+            SystemSensitiveValueConsole.Instance,
+            invocationContext.Options,
+            "Sensitive value:",
+            cancellationToken);
 
     private int Failure(Error error)
     {

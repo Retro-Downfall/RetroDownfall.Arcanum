@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.CommandLine.Help;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 
@@ -15,6 +16,12 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 /// here, and exposes <c>Terminating</c>/<c>ClearsParseErrors</c> as read-only. A wrapper action can
 /// therefore not reproduce the flag that makes <c>--help</c> exit 0 on a command whose required
 /// argument the caller has not supplied — appending afterwards leaves that contract untouched.
+///
+/// Whether help ran is asked of the parse result, never of argv. A token spelled like a help flag
+/// is not a help request when the parser bound it elsewhere: <c>run</c>'s variadic prompt absorbs
+/// everything after <c>--</c>, so <c>arcanum run --json -- -h</c> is an ordinary turn, and scanning
+/// argv would append prose to its output — a second, unparseable document on a <c>--json</c>
+/// stdout.
 /// </summary>
 internal static class CliHelpExamples
 {
@@ -22,7 +29,6 @@ internal static class CliHelpExamples
     public static void Append(
         Command root,
         ParseResult parseResult,
-        IReadOnlyList<string> arguments,
         TextWriter output)
     {
 
@@ -30,11 +36,9 @@ internal static class CliHelpExamples
 
         ArgumentNullException.ThrowIfNull(parseResult);
 
-        ArgumentNullException.ThrowIfNull(arguments);
-
         ArgumentNullException.ThrowIfNull(output);
 
-        if (!RequestsHelp(arguments))
+        if (parseResult.Action is not HelpAction)
         {
 
             return;
@@ -82,10 +86,6 @@ internal static class CliHelpExamples
         }
 
     }
-
-    private static bool RequestsHelp(IReadOnlyList<string> arguments) =>
-        arguments.Any(static argument =>
-            argument is "--help" or "-h" or "-?" or "/?" or "/h");
 
     /// <summary>
     /// Maps each command instance to its canonical space-separated path. Built by walking the tree

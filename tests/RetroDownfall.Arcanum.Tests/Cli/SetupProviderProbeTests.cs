@@ -272,6 +272,46 @@ public sealed class SetupProviderProbeTests : IDisposable
 
     }
 
+    /// <summary>
+    /// Issue #33 — the endpoint is operator-supplied and may be any local model server, so the 4 MiB
+    /// cap has to bound what the probe <em>allocates</em>, not merely what it classifies. Buffering
+    /// the whole body before consulting the cap makes it a report of damage already done.
+    /// </summary>
+    [Fact]
+    public async Task An_oversized_body_is_refused_without_being_buffered_first()
+    {
+
+        CountingStream body = new(OversizedBodyBytes);
+
+        HttpResponseMessage response = new(HttpStatusCode.OK)
+        {
+
+            Content = new StreamContent(body),
+
+        };
+
+        response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        SetupConnectivityResult result = await Probe(
+            new ScriptedHandler(response),
+            model: "gpt-test");
+
+        Assert.Equal(SetupConnectivityStatus.MalformedResponse, result.Status);
+
+        Assert.Contains("maximum allowed size", result.Detail, StringComparison.Ordinal);
+
+        Assert.True(
+            body.BytesRead <= ReadBudgetBytes,
+            $"The probe pulled {body.BytesRead} bytes for a body it refuses at 4 MiB.");
+
+    }
+
+    /// <summary>A body far beyond the 4 MiB cap, streamed rather than materialised by the test.</summary>
+    private const long OversizedBodyBytes = 64L * 1024 * 1024;
+
+    /// <summary>The cap, plus generous slack for buffering granularity.</summary>
+    private const long ReadBudgetBytes = 8L * 1024 * 1024;
+
     private static Task<SetupConnectivityResult> Probe(
         HttpMessageHandler handler,
         string model,
@@ -348,6 +388,78 @@ public sealed class SetupProviderProbeTests : IDisposable
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
             Task.FromException<HttpResponseMessage>(exception);
+
+    }
+
+    /// <summary>
+    /// A body of the requested length that is generated as it is read, never materialised, and that
+    /// records how much of itself the probe actually pulled.
+    /// </summary>
+    private sealed class CountingStream(long length) : Stream
+    {
+
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+
+            int take = (int)Math.Min(buffer.Length, length - BytesRead);
+
+            if (take <= 0)
+            {
+
+                return 0;
+
+            }
+
+            buffer[..take].Fill((byte)'a');
+
+            BytesRead += take;
+
+            return take;
+
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Read(buffer.Span));
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Read(buffer.AsSpan(offset, count)));
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
 
     }
 

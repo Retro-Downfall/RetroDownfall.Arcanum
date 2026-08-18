@@ -9,7 +9,7 @@
     <converters:DoubleToGridLengthConverter x:Key="DoubleToGridLengthConverter" />
   </UserControl.Resources>
 
-  <Grid>
+  <Grid x:Name="RootGrid">
     <Grid.RowDefinitions>
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
@@ -17,7 +17,7 @@
                       MinHeight="{Binding DockLayout.Bottom.EffectiveMinSize}" />
     </Grid.RowDefinitions>
 
-    <Grid Grid.Row="0">
+    <Grid Grid.Row="0" x:Name="ColumnsGrid">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="{Binding DockLayout.Left.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}"
                           MinWidth="{Binding DockLayout.Left.EffectiveMinSize}" />
@@ -34,6 +34,7 @@
       <GridSplitter Grid.Column="1"
                     Width="5"
                     ResizeDirection="Columns"
+                    DragCompleted="OnLeftSplitterDragCompleted"
                     IsVisible="{Binding !DockLayout.Left.IsCollapsed}" />
 
       <Border Grid.Column="2" Padding="10">
@@ -87,6 +88,7 @@
       <GridSplitter Grid.Column="3"
                     Width="5"
                     ResizeDirection="Columns"
+                    DragCompleted="OnRightSplitterDragCompleted"
                     IsVisible="{Binding !DockLayout.Right.IsCollapsed}" />
 
       <dockViews:DockGroupView Grid.Column="4"
@@ -96,6 +98,7 @@
     <GridSplitter Grid.Row="1"
                   Height="5"
                   ResizeDirection="Rows"
+                  DragCompleted="OnBottomSplitterDragCompleted"
                   IsVisible="{Binding !DockLayout.Bottom.IsCollapsed}" />
 
     <dockViews:DockGroupView Grid.Row="2"

@@ -486,22 +486,31 @@ internal sealed class BackupCommands(
         if (plan.Blockers.Length > 0)
         {
 
-            WriteIssues(plan.Blockers);
+            // The refusal ends the command, so this is the only thing stdout will carry. Under
+            // --output-format json that has to be the one document a consumer can parse, and the plan
+            // is the shape --dry-run already publishes for the same question — the blockers are on it
+            // as data rather than as the prose the text mode still prints.
+            Write(plan, CliJsonContext.Default.BackupRestorePlan, p => WriteIssues(p.Blockers));
 
             return ProtectedStateAnswer.Refused;
 
         }
 
-        dispatcher.WritePayload(CovenantExternalRetentionDisclosure.DestructiveOperationText);
+        // The question's stream, not the payload stream. Everything here is disclosure an operator
+        // reads before answering, which the output contract classes with the question itself. It
+        // stays on stderr in every mode: under --output-format json a payload write would be
+        // replayed ahead of the JSON document and break the one-document guarantee, and under --yes
+        // it is still written first so an unattended run records what it was told.
+        dispatcher.WriteDiagnostic(CovenantExternalRetentionDisclosure.DestructiveOperationText);
 
-        dispatcher.WritePayload(
+        dispatcher.WriteDiagnostic(
             DescribeExposure(plan.DestinationDisclosure ?? BackupRestoreDisclosureExposure.None));
 
         foreach (CovenantRetentionHelpTarget target in
                  CovenantExternalRetentionDisclosure.ResolveHelpTargets(settings.Value.Providers ?? []))
         {
 
-            dispatcher.WritePayload(
+            dispatcher.WriteDiagnostic(
                 target.Provider.Length == 0
                     ? $"  Retention guidance: {target.Uri}"
                     : $"  Retention guidance ({target.Provider}): {target.Uri}");

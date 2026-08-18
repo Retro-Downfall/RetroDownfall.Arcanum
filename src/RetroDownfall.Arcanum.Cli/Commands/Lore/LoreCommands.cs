@@ -1,4 +1,7 @@
+using System.Buffers;
 using System.Globalization;
+using System.Text.Json;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -10,7 +13,11 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Lore;
 /// <summary>
 /// Manage Grimoire explicit memory (lore) directly.
 /// </summary>
-public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class LoreCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    IConsoleDispatcher console,
+    ICliInvocationContext invocationContext)
 {
 
     private const int SnippetMaxLength = 50;
@@ -24,7 +31,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -66,20 +73,65 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
         }
 
-        Panel panel = new(new Markup(Markup.Escape(result.Value.Value)))
+        // A structured document, not raw bytes, because the legacy --json text wrapper reaches
+        // anything left on stdout: it strips every ESC-introduced sequence out of the middle of the
+        // buffer and trims the trailing newlines off the end. Writing JSON marks the payload as
+        // structured, so the buffer is replayed verbatim and the value can be reproduced from it.
+        // Same hazard and same answer as `workspace read`.
+        if (invocationContext.Options.Json)
         {
-            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Lore: {key}"))),
-        };
 
-        AnsiConsole.Write(panel);
+            console.WriteJson(BuildLoreDocument(key, result.Value.Value));
+
+            return 0;
+
+        }
+
+        // The key on the diagnostic stream, the value verbatim on the payload stream. A Spectre
+        // panel would draw a border around the value and re-flow it at the profile width (80 when
+        // stdout is redirected), so `VALUE=$(arcanum lore get k)` captured box art and a multi-line
+        // value could not survive a set/get round-trip.
+        console.WriteDiagnostic($"Lore: {key}");
+
+        await Console.Out.WriteLineAsync(result.Value.Value).ConfigureAwait(false);
 
         return 0;
+
+    }
+
+    /// <summary>
+    /// Written by hand with <see cref="Utf8JsonWriter"/> rather than serialized from a record, so
+    /// the payload needs no new registration on the source-generated context and stays Native AOT
+    /// safe. The value is carried as a JSON string, which round-trips control characters and
+    /// trailing newlines exactly.
+    /// </summary>
+    private static JsonElement BuildLoreDocument(string key, string value)
+    {
+
+        ArrayBufferWriter<byte> buffer = new();
+
+        using (Utf8JsonWriter writer = new(buffer))
+        {
+
+            writer.WriteStartObject();
+
+            writer.WriteString("key", key);
+
+            writer.WriteString("value", value);
+
+            writer.WriteEndObject();
+
+        }
+
+        using JsonDocument document = JsonDocument.Parse(buffer.WrittenMemory);
+
+        return document.RootElement.Clone();
 
     }
 
@@ -97,7 +149,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
@@ -122,7 +174,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 

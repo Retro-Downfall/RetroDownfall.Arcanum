@@ -104,6 +104,47 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
 
     }
 
+    /// <summary>
+    /// Truncation and byte damage are the corruptions this file actually suffers — an unclean shutdown,
+    /// a full disk mid-rename, a partial restore. They have to normalise to the same InvalidDataException
+    /// the length, version and salt-size rejections already produce, because callers that degrade a
+    /// damaged sidecar into a typed failure filter on exactly that type.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("{\"v\":2,\"salt\":")]
+    [InlineData("not json at all")]
+    public void Read_MalformedJson_ThrowsInvalidDataException(string contents)
+    {
+
+        string dbPath = Path.Combine(_tempDir, "grimoire.db");
+
+        File.WriteAllText(GrimoireKdfSidecarFile.GetSidecarPath(dbPath), contents);
+
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => GrimoireKdfSidecarFile.Read(dbPath));
+
+        Assert.Contains("grimoire.db.kdf", exception.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Read_NonBase64Salt_ThrowsInvalidDataException()
+    {
+
+        string dbPath = Path.Combine(_tempDir, "grimoire.db");
+
+        File.WriteAllText(
+            GrimoireKdfSidecarFile.GetSidecarPath(dbPath),
+            $"{{\"v\":{GrimoireKeyDerivation.KdfVersion2},\"salt\":\"not base64 at all!\"}}");
+
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => GrimoireKdfSidecarFile.Read(dbPath));
+
+        Assert.Contains("grimoire.db.kdf", exception.Message, StringComparison.Ordinal);
+
+    }
+
     public void Dispose()
     {
 

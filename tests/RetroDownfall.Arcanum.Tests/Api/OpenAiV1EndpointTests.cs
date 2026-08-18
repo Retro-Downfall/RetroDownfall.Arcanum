@@ -197,6 +197,43 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
+    public async Task PostChatCompletions_StreamingProviderIoException_EmitsErrorFrameRatherThanTruncating()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        // A broken pipe on the PROVIDER socket, not the client one. The client is still reading, so
+        // truncating the stream silently would hand it a partial answer with no error signal.
+        factory.FakeIntelligence.NextStreamException = new IOException("provider stream failed");
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "stream": true,
+              "messages": [
+                { "role": "user", "content": "hello" }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string sse = await response.Content.ReadAsStringAsync();
+        OpenAiChatChunk errorChunk = Assert.Single(
+            ParseSseChunks(sse),
+            static chunk => chunk.Error is not null);
+        Assert.Equal("Inference failed. See server logs for details.", errorChunk.Error?.Message);
+        Assert.Equal("api_error", errorChunk.Error?.Type);
+        Assert.Equal("inference_failed", errorChunk.Error?.Code);
+        Assert.Equal("error", Assert.Single(errorChunk.Choices).FinishReason);
+    }
+
+    [SkippableFact]
     public async Task PostChatCompletions_ReasoningFields_MapToNormalizedRequest()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);

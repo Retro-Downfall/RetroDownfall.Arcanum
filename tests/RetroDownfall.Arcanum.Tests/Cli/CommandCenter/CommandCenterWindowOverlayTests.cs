@@ -112,6 +112,48 @@ public sealed class CommandCenterWindowOverlayTests
     }
 
     /// <summary>
+    /// Same rule, third surface: Tab (or a bare PageUp from the composer) selects the Transcript
+    /// region and calls <c>FocusLog</c>. A body pane that cannot focus makes that a no-op, so
+    /// Terminal.Gui focus stays on the composer while the pane title claims the transcript owns it,
+    /// and every printable key keeps mutating the draft.
+    /// </summary>
+    [Fact]
+    internal void The_transcript_list_takes_focus_when_the_region_is_selected()
+    {
+
+        using var window = new CommandCenterWindow();
+
+        window.ApplyAbsoluteLayout(120, 40);
+
+        window.FocusLog();
+
+        Assert.True(window.LogView.HasFocus);
+
+        Assert.Equal(CommandCenterFocusRegion.Transcript, window.ResolveFocusedRegion());
+
+    }
+
+    /// <summary>
+    /// The Incantations pane has the same contract as the transcript: selecting the region must move
+    /// the keyboard there, or the ↑↓ handlers registered on the list are dead code.
+    /// </summary>
+    [Fact]
+    internal void The_incantations_list_takes_focus_when_the_region_is_selected()
+    {
+
+        using var window = new CommandCenterWindow();
+
+        window.ApplyAbsoluteLayout(120, 40);
+
+        window.FocusIncantations();
+
+        Assert.True(window.IncantationsView.HasFocus);
+
+        Assert.Equal(CommandCenterFocusRegion.Incantations, window.ResolveFocusedRegion());
+
+    }
+
+    /// <summary>
     /// Making the header and overlay panes focusable must not cost the composer the focus it starts
     /// with — typing is what Command Center opens for.
     /// </summary>

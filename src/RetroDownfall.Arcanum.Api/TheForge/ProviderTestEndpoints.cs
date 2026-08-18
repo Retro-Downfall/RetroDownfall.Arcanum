@@ -114,7 +114,13 @@ internal static class ProviderTestEndpoints
 
         try
         {
-            using HttpResponseMessage response = await client.GetAsync(probeUrl, cancellationToken).ConfigureAwait(false);
+            // ResponseHeadersRead, not the default: with ResponseContentRead the whole body is buffered
+            // inside GetAsync — pre-allocated to the declared Content-Length, up to HttpClient's ~2 GiB
+            // default — before TryReadCappedStringAsync is ever consulted, which reduces the cap below
+            // to a report of an allocation the probed endpoint already forced.
+            using HttpResponseMessage response = await client
+                .GetAsync(probeUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
 
             stopwatch.Stop();
 

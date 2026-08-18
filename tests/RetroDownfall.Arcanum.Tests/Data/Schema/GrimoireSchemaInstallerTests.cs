@@ -250,6 +250,143 @@ public sealed class GrimoireSchemaInstallerTests
 
     }
 
+    /// <summary>
+    /// Reopening a Grimoire whose Lexicon has entries does not re-tokenize the corpus. FTS5's
+    /// <c>rebuild</c> drops the entire index and re-reads every content row, so running it on every
+    /// bootstrap would make readiness — and every CLI verb that opens the Grimoire — slower in
+    /// proportion to a corpus that only ever grows.
+    /// </summary>
+    /// <remarks>
+    /// The index is kept exactly in step by <c>lexicon_entries_ai</c>/<c>_au</c>/<c>_ad</c>, which use
+    /// the external-content <c>'delete'</c> idiom, so there is nothing for a reopen to repair. The
+    /// deliberate desync below is the only way to observe whether a rebuild ran: if one did, the
+    /// removed row would be searchable again.
+    /// </remarks>
+    [Fact]
+    public async Task InstallAsync_does_not_rebuild_the_lexicon_index_over_a_populated_corpus()
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
+            VALUES ('lex-a', 'Thornwood', 'thornwood', 'Place', '[]', 'quenchable beacon', '2026-01-01T00:00:00Z');
+            """);
+
+        // Guards against the desync below passing because the index never held the row at all.
+        Assert.Equal(1L, await CountLexiconMatchesAsync(connection, "quenchable"));
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO lexicon_fts(lexicon_fts, rowid, Name, Type, FactsText)
+            SELECT 'delete', rowid, Name, Type, FactsText FROM lexicon_entries;
+            """);
+
+        Assert.Equal(0L, await CountLexiconMatchesAsync(connection, "quenchable"));
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            Dimensions,
+            CancellationToken.None);
+
+        Assert.Equal(0L, await CountLexiconMatchesAsync(connection, "quenchable"));
+
+    }
+
+    /// <summary>
+    /// An empty Lexicon still gets its index rebuilt, because there the rebuild is free and it is the
+    /// one desync that actually happens: a factory reset empties <c>lexicon_fts</c> while the content
+    /// rows are still present, then deletes those rows, leaving delete markers for terms the index no
+    /// longer holds.
+    /// </summary>
+    [Fact]
+    public async Task InstallAsync_rebuilds_the_lexicon_index_when_the_corpus_is_empty()
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO lexicon_fts(rowid, Name, Type, FactsText)
+            VALUES (1, 'Orphan', 'Place', 'unmoored spectre');
+            """);
+
+        Assert.Equal(1L, await CountLexiconMatchesAsync(connection, "unmoored"));
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            Dimensions,
+            CancellationToken.None);
+
+        Assert.Equal(0L, await CountLexiconMatchesAsync(connection, "unmoored"));
+
+    }
+
+    /// <summary>
+    /// A partial index's <c>WHERE</c> predicate is part of what the index means, so an installed index
+    /// that keeps its name, uniqueness, origin, partial-ness, and key columns while carrying a
+    /// different predicate is drift.
+    /// </summary>
+    /// <remarks>
+    /// <c>PRAGMA index_list</c> reports <c>partial</c> as a bare 0/1 flag and <c>PRAGMA index_xinfo</c>
+    /// has no predicate column, so shape alone structurally cannot see this. Only the index's stored
+    /// DDL carries it. The index chosen here is the one that enforces "at most one live claim per
+    /// Session": widening its predicate silently retires the constraint that makes a competing client
+    /// receive <c>Hub.SessionTurnBusy</c> instead of overtaking Entry order, and this is the shape a
+    /// partial manual repair leaves behind.
+    /// </remarks>
+    [Fact]
+    public async Task Inspection_rejects_a_partial_index_whose_predicate_changed()
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        await ExecuteAsync(connection, "DROP INDEX ux_session_turn_claims_active;");
+
+        await ExecuteAsync(
+            connection,
+            """
+            CREATE UNIQUE INDEX ux_session_turn_claims_active
+                ON session_turn_claims(SessionId)
+                WHERE StateCode IN (1, 2, 3);
+            """);
+
+        GrimoireSchemaInspectionResult drifted = await InspectCoreAsync(connection);
+
+        Assert.False(
+            drifted.IsValid,
+            $"failure={drifted.Failure} object={drifted.ObjectName}");
+
+        Assert.Equal(GrimoireSchemaInspectionFailure.IndexShapeDrift, drifted.Failure);
+
+        Assert.Equal("ux_session_turn_claims_active", drifted.ObjectName);
+
+        Assert.Null(drifted.InstalledCatalogFingerprint);
+
+        await ExecuteAsync(connection, "DROP INDEX ux_session_turn_claims_active;");
+
+        // Restoring the declared predicate clears the signal, so the rejection above was the
+        // predicate rather than a check that had latched on.
+        await ExecuteAsync(
+            connection,
+            """
+            CREATE UNIQUE INDEX ux_session_turn_claims_active
+                ON session_turn_claims(SessionId)
+                WHERE StateCode IN (1, 2);
+            """);
+
+        GrimoireSchemaInspectionResult restored = await InspectCoreAsync(connection);
+
+        Assert.True(
+            restored.IsValid,
+            $"failure={restored.Failure} object={restored.ObjectName}");
+
+    }
+
     [Fact]
     public async Task InstallAsync_leaves_no_migration_bookkeeping_behind()
     {
@@ -573,6 +710,29 @@ public sealed class GrimoireSchemaInstallerTests
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private static Task<GrimoireSchemaInspectionResult> InspectCoreAsync(SqliteConnection connection) =>
+        new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault())
+            .InspectAsync(
+                connection,
+                transaction: null,
+                GrimoireSchemaManifests.Core,
+                CancellationToken.None);
+
+    private static async Task<long> CountLexiconMatchesAsync(SqliteConnection connection, string term)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT COUNT(*) FROM lexicon_fts WHERE lexicon_fts MATCH $term;";
+
+        _ = command.Parameters.AddWithValue("$term", term);
+
+        object? result = await command.ExecuteScalarAsync(CancellationToken.None);
+
+        return result is null or DBNull ? 0L : (long)result;
 
     }
 

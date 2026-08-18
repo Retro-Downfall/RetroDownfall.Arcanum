@@ -68,6 +68,11 @@ internal static class GrimoireSchemaCatalog
             () => ComputeSourceFingerprint(LoadedObjects.Value),
             LazyThreadSafetyMode.ExecutionAndPublication);
 
+    private static readonly Lazy<string> LoadedCoreFingerprint =
+        new(
+            () => ComputeSourceFingerprint(LoadedCoreObjects.Value),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+
     private static readonly Lazy<string> LoadedCanonicalFingerprint =
         new(
             () => ComputeSourceFingerprint(LoadedCanonicalObjects.Value),
@@ -110,10 +115,23 @@ internal static class GrimoireSchemaCatalog
     /// <see cref="GrimoireSchemaManifestInspector"/> do the latter. Tests use it to decide whether a
     /// cached template database is still current.
     ///
+    /// <para>It is deliberately not any tier's identity: it moves when any resource in any tier
+    /// changes, so recording it against a tier would make an edit to one capability read as a change
+    /// to another. Each tier records its own scoped value instead.</para>
+    ///
     /// <para>Uppercase 64-character SHA-256 with no prefix. Installed-catalog fingerprints use the
     /// separate lowercase <c>sha256-</c> form and are never compared with this value.</para>
     /// </summary>
     public static string CanonicalSchemaFingerprint => LoadedFingerprint.Value;
+
+    /// <summary>
+    /// The same hash restricted to core resources, which is the durable schema's source identity in
+    /// <c>grimoire_feature_schemas</c>. Core is the one tier whose refusal aborts startup, so its
+    /// identity must not move for a change it does not contain: a comment-only edit under
+    /// <c>Capabilities/Covenant/</c> would otherwise read as a changed core schema and take the host
+    /// and every CLI verb that opens the Grimoire down with it.
+    /// </summary>
+    public static string CoreSchemaFingerprint => LoadedCoreFingerprint.Value;
 
     /// <summary>
     /// The same hash restricted to Covenant canonical resources, which is the capability's source

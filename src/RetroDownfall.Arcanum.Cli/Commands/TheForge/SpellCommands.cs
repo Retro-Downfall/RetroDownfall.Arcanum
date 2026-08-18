@@ -69,7 +69,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -111,7 +111,7 @@ public sealed class SpellCommands(
                     ? "Workspace selection failed."
                     : workspaceSelection.Error;
 
-                AnsiConsole.MarkupLine(
+                CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape(message)));
 
                 return 1;
@@ -134,7 +134,7 @@ public sealed class SpellCommands(
 
             if (selection.Status == ResourceSelectionStatus.Error)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
                 return 1;
             }
 
@@ -142,7 +142,7 @@ public sealed class SpellCommands(
         }
         else if (string.IsNullOrWhiteSpace(name))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<NAME> is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<NAME> is required.")));
             return 1;
         }
 
@@ -150,7 +150,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -241,14 +241,14 @@ public sealed class SpellCommands(
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
             return 1;
         }
 
         if (string.IsNullOrWhiteSpace(workspace))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
             return 1;
         }
@@ -258,7 +258,7 @@ public sealed class SpellCommands(
         if (!string.IsNullOrEmpty(body)
             && !CliArgReader.TryReadInlineOrFile(body, out resolvedBody, out string? bodyError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
 
             return 1;
         }
@@ -281,7 +281,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -310,7 +310,7 @@ public sealed class SpellCommands(
 
         if (string.IsNullOrWhiteSpace(workspace))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
             return 1;
         }
@@ -329,7 +329,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -350,7 +350,7 @@ public sealed class SpellCommands(
 
         if (string.IsNullOrWhiteSpace(workspace))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
             return 1;
         }
@@ -359,7 +359,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -402,7 +402,7 @@ public sealed class SpellCommands(
 
             if (parsedSource is null)
             {
-                AnsiConsole.MarkupLine(
+                CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape("--source must be one of: builtin, workspace, campaign.")));
 
                 return 1;
@@ -416,7 +416,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -441,7 +441,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -510,14 +510,14 @@ public sealed class SpellCommands(
 
         if (string.IsNullOrEmpty(input))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(input, out string resolvedInput, out string? inputError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(inputError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(inputError!)));
 
             return 1;
         }
@@ -530,7 +530,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -555,7 +555,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -605,7 +605,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -626,7 +626,7 @@ public sealed class SpellCommands(
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
 
                 return 1;
             }
@@ -649,7 +649,7 @@ public sealed class SpellCommands(
 
         if (string.IsNullOrWhiteSpace(file))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
             return 1;
         }
@@ -662,7 +662,7 @@ public sealed class SpellCommands(
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 
             return 1;
         }
@@ -675,14 +675,14 @@ public sealed class SpellCommands(
         }
         catch (JsonException ex)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid spell export JSON: {ex.Message}")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid spell export JSON: {ex.Message}")));
 
             return 1;
         }
 
         if (payload is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Spell export JSON parsed to an empty payload.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Spell export JSON parsed to an empty payload.")));
 
             return 1;
         }
@@ -693,7 +693,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -727,7 +727,7 @@ public sealed class SpellCommands(
 
             if (!CliArgReader.TryParseGuid(session, out Guid parsedSessionId))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
 
                 return 1;
             }
@@ -743,7 +743,7 @@ public sealed class SpellCommands(
 
             if (!CliArgReader.TryParseGuid(campaign, out Guid parsedCampaignId))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
 
                 return 1;
             }
@@ -758,7 +758,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -866,7 +866,7 @@ public sealed class SpellCommands(
 
         if (string.IsNullOrWhiteSpace(newName))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name is required.")));
 
             return 1;
         }
@@ -877,7 +877,7 @@ public sealed class SpellCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -916,21 +916,21 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
 
         if (string.IsNullOrWhiteSpace(version))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
             return 1;
         }
 
         if (string.IsNullOrEmpty(body))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(body, out string resolvedBody, out string? bodyError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
 
             return 1;
         }
@@ -941,7 +941,7 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -970,21 +970,21 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
 
         if (string.IsNullOrWhiteSpace(version))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
             return 1;
         }
 
         if (string.IsNullOrEmpty(body))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(body, out string resolvedBody, out string? bodyError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
 
             return 1;
         }
@@ -997,7 +997,7 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -1024,7 +1024,7 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
 
         if (string.IsNullOrWhiteSpace(version))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
             return 1;
         }
@@ -1037,7 +1037,7 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }

@@ -28,7 +28,7 @@ internal static class CliSurfaceBuilder
         [
             .. root.Options
                 .Where(static option => !option.Hidden)
-                .Select(BuildOption),
+                .Select(static option => BuildOption(option, string.Empty)),
         ];
 
         return new CliSurfaceMap(
@@ -51,14 +51,14 @@ internal static class CliSurfaceBuilder
             command.Description ?? string.Empty,
             command.Action is not null,
             [.. command.Aliases.OrderBy(static alias => alias, StringComparer.Ordinal)],
-            [.. command.Arguments.Where(static argument => !argument.Hidden).Select(BuildArgument)],
-            [.. command.Options.Where(static option => !option.Hidden).Select(BuildOption)],
+            [.. command.Arguments.Where(static argument => !argument.Hidden).Select(argument => BuildArgument(argument, path))],
+            [.. command.Options.Where(static option => !option.Hidden).Select(option => BuildOption(option, path))],
             CliSurfaceExamples.For(path),
             [.. command.Subcommands.Where(static child => !child.Hidden).Select(child => BuildCommand(child, path))]);
 
     }
 
-    private static CliSurfaceOption BuildOption(Option option)
+    private static CliSurfaceOption BuildOption(Option option, string path)
     {
 
         bool isFlag = option.ValueType == typeof(bool);
@@ -71,18 +71,18 @@ internal static class CliSurfaceBuilder
             !isFlag && option.Arity.MaximumNumberOfValues > 0,
             option.Arity.MaximumNumberOfValues > 1,
             isFlag ? [] : ClosedValues(option),
-            CliCompletionBindings.For(option.Name));
+            CliCompletionBindings.For(path, option.Name));
 
     }
 
-    private static CliSurfaceArgument BuildArgument(Argument argument) =>
+    private static CliSurfaceArgument BuildArgument(Argument argument, string path) =>
         new(
             argument.Name,
             argument.Description ?? string.Empty,
             argument.Arity.MinimumNumberOfValues > 0,
             argument.Arity.MaximumNumberOfValues > 1,
             ClosedValues(argument),
-            CliCompletionBindings.For(argument.Name));
+            CliCompletionBindings.For(path, argument.Name));
 
     /// <summary>
     /// Only a symbol constrained with <c>AcceptOnlyFromAmong</c> (or a naturally closed value type)

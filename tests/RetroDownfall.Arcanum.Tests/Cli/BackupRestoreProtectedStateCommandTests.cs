@@ -94,6 +94,42 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
     }
 
+    /// <summary>
+    /// The whole confirmation sequence shares the question's stream. A <c>--output-format json</c>
+    /// restore replays whatever the command wrote to stdout ahead of the JSON document, so a
+    /// disclosure line on the payload stream is several lines of prose followed by one JSON object —
+    /// and `arcanum backup restore ... --output-format json | jq` stops parsing at line one.
+    /// </summary>
+    [Fact]
+    public async Task No_part_of_the_disclosure_sequence_is_written_to_the_payload_stream()
+    {
+
+        Harness harness = new(confirm: true);
+
+        int exit = await harness.RestoreAsync("purge-protected-state");
+
+        Assert.Equal((int)CliExitCode.Success, exit);
+
+        // Still written, and still before the question — moving the stream must not lose the record.
+        Assert.True(
+            harness.IndexOf(CovenantExternalRetentionDisclosure.DestructiveOperationText)
+            < harness.IndexOf(Harness.PromptEvent),
+            harness.Describe());
+
+        Assert.DoesNotContain(
+            CovenantExternalRetentionDisclosure.DestructiveOperationText,
+            harness.Payloads);
+
+        Assert.DoesNotContain(
+            harness.Payloads,
+            static line => line.Contains("at least 9", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            harness.Payloads,
+            static line => line.Contains("Retention guidance", StringComparison.Ordinal));
+
+    }
+
     [Fact]
     public async Task Declining_the_protected_state_prompt_starts_no_restore_at_all()
     {
@@ -199,6 +235,39 @@ public sealed class BackupRestoreProtectedStateCommandTests
             static line => line.Contains(
                 BackupRestoreProtectedStatePolicy.CovenantRequiredCode,
                 StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// The same refusal under <c>--output-format json</c>. The blockers are the whole answer to "why
+    /// did this restore refuse", so a consumer has to receive them as data: prose lines on stdout are
+    /// both the wrong shape and, on this branch, the only thing written — the command returns before
+    /// any document is emitted, so `arcanum backup restore --output-format json | jq` gets a parse
+    /// error instead of a reason.
+    /// </summary>
+    [Fact]
+    public async Task A_plan_blocker_under_json_writes_one_typed_document_rather_than_prose()
+    {
+
+        Harness harness = new(confirm: true, json: true)
+        {
+
+            Blockers =
+            [
+                new BackupVerifyIssue(
+                    BackupRestoreProtectedStatePolicy.CovenantRequiredCode,
+                    "This installation does not run the Covenant restore arm."),
+            ],
+
+        };
+
+        int exit = await harness.RestoreAsync("purge-protected-state");
+
+        Assert.Equal((int)CliExitCode.GenericError, exit);
+
+        Assert.Empty(harness.Payloads);
+
+        Assert.Contains("<json:BackupRestorePlan>", harness.Events);
 
     }
 
@@ -317,14 +386,25 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         private readonly RecordingConfirmationPrompt _prompt;
 
-        internal Harness(bool confirm)
+        private readonly bool _json;
+
+        internal Harness(bool confirm, bool json = false)
         {
 
             _prompt = new RecordingConfirmationPrompt(Events, confirm);
 
+            _json = json;
+
         }
 
         internal List<string> Events { get; } = [];
+
+        /// <summary>
+        /// The subset of <see cref="Events"/> that went to stdout. Disclosure is operator-facing
+        /// text that precedes a question, so it belongs on the diagnostic stream with the question —
+        /// never on the payload stream a <c>--output-format json</c> consumer parses.
+        /// </summary>
+        internal List<string> Payloads { get; } = [];
 
         internal FakeRestoreService Restore { get; } = new();
 
@@ -349,8 +429,8 @@ public sealed class BackupRestoreProtectedStateCommandTests
                 Restore,
                 Passphrases,
                 _prompt,
-                new RecordingDispatcher(Events),
-                new FixedInvocationContext(),
+                new RecordingDispatcher(Events, Payloads),
+                new FixedInvocationContext(_json),
                 Options.Create(
                     new ArcanumSettings
                     {
@@ -406,10 +486,18 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
     }
 
-    private sealed class RecordingDispatcher(List<string> events) : IConsoleDispatcher
+    private sealed class RecordingDispatcher(List<string> events, List<string> payloads)
+        : IConsoleDispatcher
     {
 
-        public void WritePayload(string value) => events.Add(value);
+        public void WritePayload(string value)
+        {
+
+            events.Add(value);
+
+            payloads.Add(value);
+
+        }
 
         public void WriteDiagnostic(string value) => events.Add(value);
 
@@ -445,11 +533,11 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
     }
 
-    private sealed class FixedInvocationContext : ICliInvocationContext
+    private sealed class FixedInvocationContext(bool json) : ICliInvocationContext
     {
 
         public CliInvocationOptions Options { get; } =
-            new(Json: false, Plain: true, Yes: false);
+            new(json, Plain: true, Yes: false);
 
     }
 

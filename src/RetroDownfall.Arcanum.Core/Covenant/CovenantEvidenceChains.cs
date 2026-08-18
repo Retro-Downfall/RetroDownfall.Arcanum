@@ -25,9 +25,9 @@ public static class CovenantEvidenceChains
         ulong count = checked(chain.Count + 1);
         CovenantDigest head = Hash(CovenantDomainTag.AttemptChain, writer =>
         {
-            writer.WriteFixed32(chain.Head.Bytes);
+            writer.WriteFixed32(chain.Head.Span);
             writer.WriteUInt64(count);
-            writer.WriteFixed32(admissionDigest.Bytes);
+            writer.WriteFixed32(admissionDigest.Span);
         });
 
         return new CovenantAttemptChain(count, head);
@@ -65,9 +65,9 @@ public static class CovenantEvidenceChains
         CovenantDigest head = Hash(CovenantDomainTag.BranchChain, writer =>
         {
             writer.WriteGuid(chain.BranchId);
-            writer.WriteFixed32(chain.Head.Bytes);
+            writer.WriteFixed32(chain.Head.Span);
             writer.WriteUInt64(ordinal);
-            writer.WriteFixed32(admissionDigest.Bytes);
+            writer.WriteFixed32(admissionDigest.Span);
         });
 
         return new CovenantBranchChain(chain.BranchId, ordinal, head);
@@ -88,9 +88,9 @@ public static class CovenantEvidenceChains
         ulong count = checked(chain.Count + 1);
         CovenantDigest head = Hash(CovenantDomainTag.DisclosureChain, writer =>
         {
-            writer.WriteFixed32(chain.Head.Bytes);
+            writer.WriteFixed32(chain.Head.Span);
             writer.WriteUInt64(count);
-            writer.WriteFixed32(receiptDigest.Bytes);
+            writer.WriteFixed32(receiptDigest.Span);
         });
 
         return new CovenantDisclosureChain(count, head);
@@ -120,7 +120,7 @@ public static class CovenantEvidenceChains
 
         if (digest is { } present)
         {
-            writer.WriteFixed32(present.Bytes);
+            writer.WriteFixed32(present.Span);
         }
     }
 }

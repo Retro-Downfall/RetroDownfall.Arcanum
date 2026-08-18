@@ -275,6 +275,32 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task WeaveAsync_CancelledInsideThePlanPhase_StopsBeforeTheNextWholeClusterEstimate()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        using CancellationTokenSource cancellation = new();
+
+        _summarizer!.OnFitEstimate = cancellation.Cancel;
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => CreateWeaver().WeaveAsync(Scope, Settings(), cancellation.Token));
+
+        // Splitting, merging, and the per-candidate fit check are one long synchronous stretch with no
+        // await in it, and every fit estimate concatenates and tokenizes a whole cluster's text. DESIGN
+        // §21.11 promises the sweep "stays cancellable throughout rather than only at scope and layer
+        // boundaries", so the estimate that requested the stop has to be the last one this layer runs —
+        // not merely the last one before the next layer boundary.
+        Assert.Equal(1, _summarizer.FitEstimateCalls);
+
+        Assert.Null(await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
     public async Task WeaveAsync_BuildsAndPublishesAHierarchy()
     {
 
@@ -998,10 +1024,20 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public Action? OnSummarize { get; set; }
 
+        /// <summary>Fit estimates asked for — the whole-cluster tokenization the plan phase pays for.</summary>
+        public int FitEstimateCalls { get; private set; }
+
+        /// <summary>Runs inside every fit estimate, so a test can stop the sweep mid-plan.</summary>
+        public Action? OnFitEstimate { get; set; }
+
         public string? ResolveSummaryModel() => Model;
 
         public bool FitsOneRequest(TapestrySummaryRequest request)
         {
+
+            FitEstimateCalls++;
+
+            OnFitEstimate?.Invoke();
 
             LargestFitEstimate = Math.Max(LargestFitEstimate, request.ChildTexts.Count);
 

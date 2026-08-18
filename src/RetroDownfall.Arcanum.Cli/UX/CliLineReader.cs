@@ -19,6 +19,9 @@ internal enum CliLineReadOutcome
     /// <summary>The operator pressed Ctrl+D on an empty line.</summary>
     EndOfInput,
 
+    /// <summary>The caller's token fired while the read was waiting for a keystroke.</summary>
+    Cancelled,
+
 }
 
 /// <summary>
@@ -32,22 +35,143 @@ internal readonly record struct CliLineReadResult(
     bool HadPendingText);
 
 /// <summary>
+/// The console a line read draws on and takes keystrokes from. Erasing needs the caret geometry —
+/// a backspace cannot cross a wrap boundary — and the read loop needs to wait for a keystroke
+/// without blocking past its cancellation, so both sit behind this seam and can be driven by a fake.
+/// </summary>
+internal interface ICliLineTerminal
+{
+
+    /// <summary>Width in columns, or 0 when the console cannot report one.</summary>
+    int Width { get; }
+
+    /// <summary>Column the caret occupies, or -1 when the console cannot report one.</summary>
+    int CursorLeft { get; }
+
+    /// <summary>Whether cursor-motion escape sequences reach the terminal.</summary>
+    bool SupportsAnsi { get; }
+
+    /// <summary>Whether a keystroke can be taken without blocking.</summary>
+    bool KeyAvailable { get; }
+
+    ConsoleKeyInfo ReadKey();
+
+    void Write(string text);
+
+    void WriteLine();
+
+}
+
+/// <summary>
+/// The process console. Every geometry question a detached or redirected console cannot answer
+/// degrades to the "unknown" value rather than throwing, because a line read that cannot measure the
+/// terminal must still read the line.
+/// </summary>
+internal sealed class SystemCliLineTerminal : ICliLineTerminal
+{
+
+    public static readonly SystemCliLineTerminal Instance = new();
+
+    private SystemCliLineTerminal()
+    {
+    }
+
+    public int Width => TryRead(static () => Console.WindowWidth, 0);
+
+    public int CursorLeft => TryRead(static () => Console.CursorLeft, -1);
+
+    public bool SupportsAnsi => TryRead(static () => AnsiConsole.Profile.Capabilities.Ansi, false);
+
+    /// <summary>
+    /// A console that cannot answer is reported ready, so the wait degrades to the blocking
+    /// <see cref="Console.ReadKey(bool)"/> it has always been instead of spinning on a poll that
+    /// throws.
+    /// </summary>
+    public bool KeyAvailable => TryRead(static () => Console.KeyAvailable, true);
+
+    public ConsoleKeyInfo ReadKey() => Console.ReadKey(intercept: true);
+
+    public void Write(string text) => Console.Write(text);
+
+    public void WriteLine() => Console.WriteLine();
+
+    private static T TryRead<T>(Func<T> read, T fallback)
+    {
+
+        try
+        {
+
+            return read();
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or PlatformNotSupportedException or InvalidOperationException)
+        {
+
+            return fallback;
+
+        }
+
+    }
+
+}
+
+/// <summary>
 /// Reads a single line. Ctrl+C is captured as a keystroke (not as SIGINT) for the duration of the
 /// read, so the caller — not the process-termination handler — decides what an interrupt means.
 /// </summary>
 internal static class CliLineReader
 {
 
-    public static string? ReadLine(string promptMarkup, bool allowEmpty)
+    private const char Escape = '\u001b';
+
+    /// <summary>
+    /// How long the wait sleeps between polls when no keystroke is ready. Short enough that a
+    /// dismissed prompt gives the console back well inside the caller's abandonment grace.
+    /// </summary>
+    private static readonly TimeSpan KeyPollInterval = TimeSpan.FromMilliseconds(25);
+
+    /// <summary>
+    /// Reads one submitted line. Every other way a read can end is raised rather than flattened to
+    /// <c>null</c>: an interrupt and an end-of-input are operator decisions, and a caller that cannot
+    /// tell them apart from an empty answer reports "no answer was provided" for a deliberate Ctrl+C.
+    /// Callers that need the outcome without the exception should use <see cref="Read"/>.
+    /// </summary>
+    public static string? ReadLine(
+        string promptMarkup,
+        bool allowEmpty,
+        CancellationToken cancellationToken = default)
     {
 
-        CliLineReadResult result = Read(promptMarkup, allowEmpty);
+        CliLineReadResult result = Read(promptMarkup, allowEmpty, cancellationToken);
 
-        return result.Outcome == CliLineReadOutcome.Submitted ? result.Line : null;
+        return TranslateToLine(result, cancellationToken);
 
     }
 
-    public static CliLineReadResult Read(string promptMarkup, bool allowEmpty)
+    /// <summary>
+    /// Applies <see cref="ReadLine"/>'s mapping from a read outcome onto the <c>string?</c> contract.
+    /// End-of-input raises the same <see cref="InvalidOperationException"/> the redirected branch
+    /// raises when its stream ends, and both cancellation shapes raise
+    /// <see cref="OperationCanceledException"/>, so only a submitted line ever returns.
+    /// </summary>
+    internal static string? TranslateToLine(CliLineReadResult result, CancellationToken cancellationToken)
+    {
+
+        return result.Outcome switch
+        {
+            CliLineReadOutcome.Submitted => result.Line,
+            CliLineReadOutcome.EndOfInput => throw new InvalidOperationException("Console input ended."),
+            CliLineReadOutcome.Cancelled => throw new OperationCanceledException(cancellationToken),
+            _ => throw new OperationCanceledException("The console read was interrupted by the operator."),
+        };
+
+    }
+
+    public static CliLineReadResult Read(
+        string promptMarkup,
+        bool allowEmpty,
+        CancellationToken cancellationToken = default)
     {
 
         AnsiConsole.Markup(promptMarkup);
@@ -69,11 +193,17 @@ internal static class CliLineReader
             }
         }
 
+        ICliLineTerminal terminal = SystemCliLineTerminal.Instance;
+
+        // Taken after the prompt is painted: the composed line starts where the prompt left the
+        // caret, and every erase is measured from that column.
+        int originColumn = terminal.CursorLeft;
+
         bool controlCAsInputRestored = TryTreatControlCAsInput(true);
 
         try
         {
-            return ReadInteractive(allowEmpty);
+            return ReadInteractive(terminal, allowEmpty, originColumn, cancellationToken);
         }
         finally
         {
@@ -85,7 +215,11 @@ internal static class CliLineReader
 
     }
 
-    private static CliLineReadResult ReadInteractive(bool allowEmpty)
+    internal static CliLineReadResult ReadInteractive(
+        ICliLineTerminal terminal,
+        bool allowEmpty,
+        int originColumn,
+        CancellationToken cancellationToken)
     {
 
         StringBuilder sb = new();
@@ -93,16 +227,25 @@ internal static class CliLineReader
         while (true)
         {
 
-            ConsoleKeyInfo key = Console.ReadKey(intercept: true);
+            if (!TryWaitForKey(terminal, cancellationToken))
+            {
+
+                terminal.WriteLine();
+
+                return new CliLineReadResult(CliLineReadOutcome.Cancelled, null, sb.Length > 0);
+
+            }
+
+            ConsoleKeyInfo key = terminal.ReadKey();
 
             if (key.Key == ConsoleKey.C && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
 
                 bool hadPendingText = sb.Length > 0;
 
-                _ = ClearLine(sb);
+                _ = ClearLine(sb, terminal, originColumn);
 
-                Console.WriteLine();
+                terminal.WriteLine();
 
                 return new CliLineReadResult(CliLineReadOutcome.Interrupted, null, hadPendingText);
 
@@ -118,7 +261,7 @@ internal static class CliLineReader
 
                 }
 
-                Console.WriteLine();
+                terminal.WriteLine();
 
                 return new CliLineReadResult(CliLineReadOutcome.EndOfInput, null, false);
 
@@ -127,7 +270,7 @@ internal static class CliLineReader
             if (key.Key == ConsoleKey.Enter)
             {
 
-                Console.WriteLine();
+                terminal.WriteLine();
 
                 string line = sb.ToString();
 
@@ -145,7 +288,7 @@ internal static class CliLineReader
             if (key.Key == ConsoleKey.Backspace)
             {
 
-                _ = EraseLastCharacter(sb);
+                _ = EraseLastCharacter(sb, terminal, originColumn);
 
                 continue;
 
@@ -154,7 +297,7 @@ internal static class CliLineReader
             if (key.Key == ConsoleKey.U && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
 
-                _ = ClearLine(sb);
+                _ = ClearLine(sb, terminal, originColumn);
 
                 continue;
 
@@ -163,7 +306,7 @@ internal static class CliLineReader
             if (key.Key == ConsoleKey.W && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
 
-                _ = DeleteLastWord(sb);
+                _ = DeleteLastWord(sb, terminal, originColumn);
 
                 continue;
 
@@ -176,9 +319,41 @@ internal static class CliLineReader
 
             }
 
-            sb.Append(key.KeyChar);
+            _ = sb.Append(key.KeyChar);
 
-            Console.Write(key.KeyChar);
+            terminal.Write(key.KeyChar.ToString());
+
+        }
+
+    }
+
+    /// <summary>
+    /// Waits until a keystroke is ready, or until the caller's token fires. Returns false for the
+    /// latter. <see cref="Console.ReadKey(bool)"/> has no cancellable overload, so a read that
+    /// blocked on it outlived the prompt it belonged to: the operator had to type into a question
+    /// that no longer meant anything before the command could exit.
+    /// </summary>
+    private static bool TryWaitForKey(ICliLineTerminal terminal, CancellationToken cancellationToken)
+    {
+
+        while (true)
+        {
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+
+                return false;
+
+            }
+
+            if (terminal.KeyAvailable)
+            {
+
+                return true;
+
+            }
+
+            Thread.Sleep(KeyPollInterval);
 
         }
 
@@ -236,7 +411,7 @@ internal static class CliLineReader
     /// Removes the final character and repaints the columns it occupied. Returns the number of
     /// terminal columns erased.
     /// </summary>
-    internal static int EraseLastCharacter(StringBuilder sb)
+    internal static int EraseLastCharacter(StringBuilder sb, ICliLineTerminal terminal, int originColumn)
     {
 
         if (sb.Length == 0)
@@ -252,15 +427,22 @@ internal static class CliLineReader
 
         int removed = RemoveLastCharacter(sb);
 
-        return EraseCells(TerminalCellMetrics.MeasureWidth(tail[^removed..]));
+        int keptCells = TerminalCellMetrics.MeasureWidth(sb.ToString());
+
+        return EraseCells(
+            terminal,
+            originColumn,
+            keptCells,
+            TerminalCellMetrics.MeasureWidth(tail[^removed..]));
 
     }
 
     /// <summary>Erases the whole composed line. Returns the number of terminal columns erased.</summary>
-    internal static int ClearLine(StringBuilder sb) => EraseTrailing(sb, 0);
+    internal static int ClearLine(StringBuilder sb, ICliLineTerminal terminal, int originColumn) =>
+        EraseTrailing(sb, 0, terminal, originColumn);
 
     /// <summary>Erases the trailing word. Returns the number of terminal columns erased.</summary>
-    internal static int DeleteLastWord(StringBuilder sb)
+    internal static int DeleteLastWord(StringBuilder sb, ICliLineTerminal terminal, int originColumn)
     {
 
         int end = sb.Length - 1;
@@ -281,7 +463,7 @@ internal static class CliLineReader
 
         }
 
-        return EraseTrailing(sb, start + 1);
+        return EraseTrailing(sb, start + 1, terminal, originColumn);
 
     }
 
@@ -289,7 +471,11 @@ internal static class CliLineReader
     /// Drops everything from <paramref name="start"/> onward and repaints the columns that text
     /// occupied. Returns the number of terminal columns erased.
     /// </summary>
-    private static int EraseTrailing(StringBuilder sb, int start)
+    private static int EraseTrailing(
+        StringBuilder sb,
+        int start,
+        ICliLineTerminal terminal,
+        int originColumn)
     {
 
         int from = Math.Clamp(start, 0, sb.Length);
@@ -303,19 +489,98 @@ internal static class CliLineReader
 
         string removed = sb.ToString(from, sb.Length - from);
 
+        int keptCells = TerminalCellMetrics.MeasureWidth(sb.ToString(0, from));
+
         sb.Length = from;
 
-        return EraseCells(TerminalCellMetrics.MeasureWidth(removed));
+        return EraseCells(
+            terminal,
+            originColumn,
+            keptCells,
+            TerminalCellMetrics.MeasureWidth(removed));
 
     }
 
     /// <summary>
-    /// Walks the cursor back over <paramref name="cells"/> painted columns, blanks them, and returns.
-    /// The count must be display columns rather than UTF-16 code units: an ideograph paints two
-    /// columns from one code unit, an astral letter paints one column from two, and a combining mark
-    /// paints none, so erasing by code unit either strands text on the line or eats the prompt.
+    /// Blanks the <paramref name="erasedCells"/> columns that follow <paramref name="keptCells"/>
+    /// columns of surviving text and leaves the caret where the erased text began. The counts must be
+    /// display columns rather than UTF-16 code units: an ideograph paints two columns from one code
+    /// unit, an astral letter paints one column from two, and a combining mark paints none, so
+    /// erasing by code unit either strands text on the line or eats the prompt.
+    ///
+    /// <para>Backspace clamps at column 0 on every common terminal, so it cannot walk the caret back
+    /// onto the previous visual row. Once the composed line wraps, a bare-backspace erase therefore
+    /// under-erases backward and over-paints downward: the first row keeps the text the buffer no
+    /// longer holds, and the blanks spill onto a row below. When the caret geometry is known and the
+    /// terminal understands cursor motion, the erase moves up and clears to the end of the display
+    /// instead, which is exact at any width. Otherwise it falls back to backspaces, clamped to the
+    /// caret's own row so the returned column count stays honest.</para>
     /// </summary>
-    private static int EraseCells(int cells)
+    private static int EraseCells(
+        ICliLineTerminal terminal,
+        int originColumn,
+        int keptCells,
+        int erasedCells)
+    {
+
+        if (erasedCells <= 0)
+        {
+
+            return 0;
+
+        }
+
+        int width = terminal.Width;
+
+        if (originColumn < 0 || width <= 0)
+        {
+
+            return EraseWithBackspaces(terminal, erasedCells);
+
+        }
+
+        int startCell = originColumn + keptCells;
+
+        int endCell = startCell + erasedCells;
+
+        int targetRow = startCell / width;
+
+        // A terminal defers the wrap until the next glyph is written, so a caret that exactly filled
+        // a row is still on that row rather than at column 0 of the next one.
+        int caretRow = (endCell - 1) / width;
+
+        bool deferredWrap = endCell % width == 0;
+
+        if (caretRow == targetRow && !deferredWrap)
+        {
+
+            return EraseWithBackspaces(terminal, erasedCells);
+
+        }
+
+        if (!terminal.SupportsAnsi)
+        {
+
+            return EraseWithBackspaces(terminal, Math.Min(erasedCells, endCell - (caretRow * width)));
+
+        }
+
+        if (caretRow > targetRow)
+        {
+
+            terminal.Write($"{Escape}[{caretRow - targetRow}A");
+
+        }
+
+        terminal.Write($"{Escape}[{(startCell % width) + 1}G");
+
+        terminal.Write($"{Escape}[0J");
+
+        return erasedCells;
+
+    }
+
+    private static int EraseWithBackspaces(ICliLineTerminal terminal, int cells)
     {
 
         if (cells <= 0)
@@ -325,9 +590,11 @@ internal static class CliLineReader
 
         }
 
-        Console.Write(new string('\b', cells));
-        Console.Write(new string(' ', cells));
-        Console.Write(new string('\b', cells));
+        terminal.Write(new string('\b', cells));
+
+        terminal.Write(new string(' ', cells));
+
+        terminal.Write(new string('\b', cells));
 
         return cells;
 

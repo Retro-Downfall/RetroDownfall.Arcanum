@@ -210,13 +210,12 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ValidatePathAsync_AllowedPathSymlinkEntry_AllowsNestedFile()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         Guid campaignId = Guid.NewGuid();
 
@@ -804,8 +803,13 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// An IP-literal allow entry authorises that address, not every name that happens to resolve to it.
+    /// The operator wrote an address; a hostname request is a different subject and carries its own Host
+    /// header to its own virtual host, so it has to be listed by name to be admitted.
+    /// </summary>
     [Fact]
-    public async Task ValidateNetworkAsync_AllowListResolvesHostToAllowedIp_Allows()
+    public async Task ValidateNetworkAsync_AllowListHostnameResolvingToAllowedIpLiteral_Denies()
     {
 
         Guid campaignId = Guid.NewGuid();
@@ -827,7 +831,9 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "http://127.0.0.1.nip.io/",
             "fetch_url");
 
-        Assert.True(result.Allowed);
+        Assert.False(result.Allowed);
+
+        Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -939,7 +945,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ValidateNetworkAsync_AllowListSkipsWhitespaceAndMatchesIpLiteral_Allows()
+    public async Task ValidateNetworkAsync_AllowListSkipsWhitespaceWhileResolvingAllowedDomains_Allows()
     {
 
         Guid campaignId = Guid.NewGuid();
@@ -953,12 +959,14 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             {
                 Enabled = true,
                 NetworkPolicy = NetworkPolicy.AllowList,
-                AllowedDomains = ["   ", "127.0.0.1"],
+                AllowedDomains = ["   ", "127.0.0.1.nip.io"],
             }));
 
+        // An IP-literal request reaches the resolution loop, which is where the blank entry has to be
+        // skipped rather than handed to the resolver.
         SanctumResult result = await CreateGuard(repository).ValidateNetworkAsync(
             campaignId.ToString(),
-            "http://127.0.0.1.nip.io/",
+            "http://127.0.0.1/",
             "fetch_url");
 
         Assert.True(result.Allowed);
@@ -992,8 +1000,15 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The allow-list is the operator's containment boundary for URLs a model chose, so sharing an
+    /// address with an allowed domain must not admit a name the operator never listed. Address equality
+    /// is not domain identity: shared hosting puts unrelated sites on one address, and an attacker who
+    /// controls DNS for their own name can publish an allowed domain's address in their own zone. The
+    /// request still carries its own Host header and reaches its own virtual host either way.
+    /// </summary>
     [Fact]
-    public async Task ValidateNetworkAsync_AllowListResolvedIpLiteral_AllowsHostname()
+    public async Task ValidateNetworkAsync_AllowListHostSharingAnAddressWithAnAllowedDomain_Denies()
     {
 
         Guid campaignId = Guid.NewGuid();
@@ -1007,15 +1022,18 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             {
                 Enabled = true,
                 NetworkPolicy = NetworkPolicy.AllowList,
-                AllowedDomains = ["127.0.0.1"],
+                AllowedDomains = ["example.com"],
             }));
 
+        // evil.test and example.com share 93.184.216.34 in the deterministic resolver.
         SanctumResult result = await CreateGuard(repository).ValidateNetworkAsync(
             campaignId.ToString(),
-            "http://127.0.0.1.nip.io/",
-            "fetch_url");
+            "https://evil.test/?d=exfiltrated",
+            "read_url");
 
-        Assert.True(result.Allowed);
+        Assert.False(result.Allowed);
+
+        Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -1502,12 +1520,18 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             dnsResolver ?? DeterministicDns());
 
     /// <summary>
-    /// Allow-list evaluation resolves both the request host and any non-literal allowed domain, so
-    /// these tests would otherwise depend on live DNS — which fails in bursts when the resolver is
-    /// slow or unreachable. This fixed table covers every host the network tests use; anything else
-    /// raises <see cref="System.Net.Sockets.SocketException"/>, exactly as the real resolver does
-    /// for an unknown name, which is what the deny cases rely on.
+    /// Allow-list evaluation resolves any non-literal allowed domain, so these tests would otherwise
+    /// depend on live DNS — which fails in bursts when the resolver is slow or unreachable. This fixed
+    /// table covers every host the network tests use; anything else raises
+    /// <see cref="System.Net.Sockets.SocketException"/>, exactly as the real resolver does for an
+    /// unknown name.
     /// </summary>
+    /// <remarks>
+    /// evil.test deliberately resolves to the SAME address as example.com. Shared hosting, CDN address
+    /// space, and an attacker who simply publishes an allowed domain's address in their own zone all
+    /// produce that collision in the wild, so every deny case here has to hold against a name that
+    /// resolves and collides — not merely against one that fails to resolve.
+    /// </remarks>
     private static FakeDnsResolver DeterministicDns()
     {
 
@@ -1522,8 +1546,9 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         resolver.Add("localhost", IPAddress.Loopback);
         resolver.Add("example.com", IPAddress.Parse("93.184.216.34"));
         resolver.Add("api.example.com", IPAddress.Parse("93.184.216.34"));
+        resolver.Add("evil.test", IPAddress.Parse("93.184.216.34"));
 
-        // Deliberately absent, so they fail to resolve: evil.test and
+        // Deliberately absent, so it fails to resolve:
         // this-domain-definitely-does-not-exist-12345.invalid.
         return resolver;
     }

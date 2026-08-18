@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using RetroDownfall.TheForge.Ux.Services.Terminal;
 using Xunit;
 
@@ -121,6 +122,70 @@ public class TerminalCommandRunnerTests
     }
 
     [Fact]
+    public void BuildStartInfo_CmdShell_PassesTheCommandThroughWithoutCrtEscaping()
+    {
+
+        // cmd.exe does not parse its command line by MSVCRT rules, so the \" escapes ArgumentList inserts
+        // survive into the executed command. /S /C makes cmd strip exactly the outer quote pair.
+        ProcessStartInfo startInfo = TerminalCommandRunner.BuildStartInfo(
+            new TerminalShellSpec("cmd.exe", ["/C"]),
+            """git commit -m "fix: parser" """.TrimEnd(),
+            Path.GetTempPath());
+
+        Assert.Empty(startInfo.ArgumentList);
+
+        Assert.Equal("""/S /C "git commit -m "fix: parser"" """.TrimEnd(), startInfo.Arguments);
+
+        Assert.DoesNotContain("\\\"", startInfo.Arguments, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void BuildStartInfo_UnixShell_StillUsesArgumentList()
+    {
+
+        ProcessStartInfo startInfo = TerminalCommandRunner.BuildStartInfo(
+            new TerminalShellSpec("/bin/zsh", ["-lc"]),
+            """git commit -m "fix: parser" """.TrimEnd(),
+            Path.GetTempPath());
+
+        Assert.Equal(string.Empty, startInfo.Arguments);
+
+        Assert.Equal(["-lc", """git commit -m "fix: parser" """.TrimEnd()], startInfo.ArgumentList);
+
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenDescendantOutlivesShell_ReturnsWithoutWaitingForEof()
+    {
+
+        TerminalCommandRunner runner = new(new BackgroundingShellResolver());
+
+        // The shell exits immediately but the backgrounded grandchild keeps the inherited stdout/stderr
+        // write handles open, so the readers never observe EOF. The run must still return.
+        string command = OperatingSystem.IsWindows()
+            ? "start /b ping 127.0.0.1 -n 30"
+            : "sleep 30 &";
+
+        Task<TerminalCommandResult> runTask = runner.RunAsync(
+            command,
+            Path.GetTempPath(),
+            null,
+            CancellationToken.None);
+
+        Task completed = await Task.WhenAny(runTask, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        Assert.Same(runTask, completed);
+
+        TerminalCommandResult result = await runTask;
+
+        Assert.False(result.Cancelled);
+
+        Assert.False(result.FailedToStart);
+
+    }
+
+    [Fact]
     public async Task RunAsync_MissingShell_ReturnsFailedToStart()
     {
 
@@ -139,6 +204,18 @@ public class TerminalCommandRunnerTests
         Assert.Null(result.ExitCode);
 
         Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
+
+    }
+
+    private sealed class BackgroundingShellResolver : ITerminalShellResolver
+    {
+
+        // Not TerminalShellResolver: macOS zsh SIGHUPs its own background jobs on exit, which would tear
+        // the grandchild down and hide the defect. /bin/sh -c leaves it running.
+        public TerminalShellSpec Resolve() =>
+            OperatingSystem.IsWindows()
+                ? new TerminalShellSpec("cmd.exe", ["/C"])
+                : new TerminalShellSpec("/bin/sh", ["-c"]);
 
     }
 

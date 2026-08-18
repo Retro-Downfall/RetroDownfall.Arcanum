@@ -168,6 +168,50 @@ public sealed class GrimoireSchemaCatalogTests
 
     }
 
+    /// <summary>
+    /// Every tier's recorded source identity covers that tier's resources and nothing else. Core is
+    /// the one that has to hold: its identity is compared on every open and a Core
+    /// <c>SourceDefinitionMismatch</c> is fatal rather than degrading, so deriving it from the whole
+    /// tree would turn a comment-only edit under <c>Capabilities/Covenant/</c> into a host and a CLI
+    /// that cannot open the Grimoire at all.
+    /// </summary>
+    [Fact]
+    public void Core_tier_source_identity_is_scoped_to_core_resources()
+    {
+
+        // The whole-tree value is the test fixture's cached-template key, not any tier's identity. It
+        // moves when any resource in any tier changes, which is exactly what a tier identity must
+        // never do.
+        Assert.NotEqual(
+            GrimoireSchemaCatalog.CanonicalSchemaFingerprint,
+            GrimoireSchemaManifests.Core.SourceDefinitionFingerprint);
+
+        Assert.Equal(
+            GrimoireSchemaCatalog.CoreSchemaFingerprint,
+            GrimoireSchemaManifests.Core.SourceDefinitionFingerprint);
+
+        Assert.Equal(64, GrimoireSchemaCatalog.CoreSchemaFingerprint.Length);
+
+        // Three tiers, three identities. A shared value would let one tier's recorded row satisfy
+        // another's gate.
+        Assert.NotEqual(
+            GrimoireSchemaCatalog.CoreSchemaFingerprint,
+            GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint);
+
+        Assert.NotEqual(
+            GrimoireSchemaCatalog.CoreSchemaFingerprint,
+            GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint);
+
+        Assert.Equal(
+            GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
+            GrimoireSchemaManifests.CovenantCanonical.SourceDefinitionFingerprint);
+
+        Assert.Equal(
+            GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint,
+            GrimoireSchemaManifests.CovenantAccelerator.SourceDefinitionFingerprint);
+
+    }
+
     [Fact]
     public void Every_object_declares_exactly_one_object()
     {

@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 namespace RetroDownfall.Arcanum.Api;
 
@@ -20,10 +19,14 @@ internal static partial class OpenAiV1Endpoints
             .WithLargeRequestBody();
     }
 
-    private static IResult HandleModerationsAsync(OpenAiModerationRequest? body)
+    /// <summary>
+    /// Parameterless on purpose, matching <c>HandleNotSupportedAsync</c> in
+    /// <c>OpenAiV1UnsupportedStubs</c>. Binding a body the handler discards let a malformed payload or
+    /// a non-JSON <c>Content-Type</c> answer the framework's 400/415 instead of this route's 501, which
+    /// made "not supported" look conditional on a request nothing here reads.
+    /// </summary>
+    private static IResult HandleModerationsAsync()
     {
-        _ = body;
-
         return JsonError(
             "Moderation is not supported by this Arcanum server.",
             "invalid_request_error",

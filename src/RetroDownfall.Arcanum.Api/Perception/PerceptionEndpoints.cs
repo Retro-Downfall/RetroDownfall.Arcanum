@@ -52,7 +52,7 @@ internal static class PerceptionEndpoints
                 Result<string> allowed = WorkspaceRootPolicy.EnforceAllowedRoots(
                     resolved,
                     allowedRoots,
-                    "Perception.PathNotAllowed",
+                    ErrorCodes.Perception.PathNotAllowed,
                     "The specified directory is outside Arcanum:Security:PerceptionWorkspaceRoots.");
 
                 if (allowed.IsFailure)

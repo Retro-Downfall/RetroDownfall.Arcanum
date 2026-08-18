@@ -321,6 +321,64 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
     }
 
+    [SkippableTheory]
+    [InlineData("""{"input":""")]
+    [InlineData("""{"input":42}""")]
+    [InlineData("""{"input":["a",1]}""")]
+    [InlineData("""{"dimensions":"512","input":"hi"}""")]
+    public async Task PostEmbeddings_UnparsableBody_Returns400WithTheOpenAiErrorEnvelope(string payload)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        // §8.23: every /v1 failure answers with the OpenAI error envelope, never a body-less
+        // framework 400 the SDK cannot read a message, type or code out of.
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(error);
+
+        Assert.Equal("invalid_request_error", error!.Error.Type);
+
+        Assert.Equal("invalid_json", error.Error.Code);
+
+        Assert.False(string.IsNullOrWhiteSpace(error.Error.Message));
+
+    }
+
+    [SkippableFact]
+    public async Task PostEmbeddings_NonJsonContentType_Returns415WithTheOpenAiErrorEnvelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent("""{"input":"hi"}""", Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(error);
+
+        Assert.Equal("unsupported_media_type", error!.Error.Code);
+
+    }
+
     [SkippableFact]
     public async Task PostEmbeddings_LongInputExceedingChunkSize_MeanPoolsIntoUnitVector()
     {
@@ -375,6 +433,146 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PostEmbeddings_ProviderReturnsRaggedVectorsForShortInputs_Returns503()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // The short-input path never throws on ragged widths — it just emits one response whose
+        // data[] rows have different vector lengths, which violates the OpenAI embeddings contract
+        // silently. Same provider fault, same sanitized 503.
+        _fake.TrailingVectorDimensionDelta = 2;
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent("""{"input":["alpha","beta","gamma"]}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
+
+    }
+
+    [SkippableTheory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    public async Task PostEmbeddings_ProviderReturnsRaggedVectorsForLongInput_Returns503(int trailingDelta)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // WeaveService issues one round trip per BatchSize sub-batch, so a load-balanced or
+        // mid-rollout provider pool can answer one long input with vectors of two different widths
+        // while every individual HTTP response is well-formed. A narrower trailing vector reads off
+        // the end of the array (500); a wider one is silently truncated and mean-pooled into a
+        // plausible-looking but wrong unit vector (200). Both must be the same sanitized 503 the
+        // count-mismatch guard beside it produces.
+        _fake.TrailingVectorDimensionDelta = trailingDelta;
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string longText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over the lazy dog. ", 30));
+
+        OpenAiEmbeddingRequest request = new(Model: null, Input: new OpenAiEmbeddingInput { Strings = [longText] });
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent(
+                JsonSerializer.Serialize(request, ArcanumJsonContext.Default.OpenAiEmbeddingRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        OpenAiErrorResponse? raggedError = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.Equal("embedding_provider_unavailable", raggedError!.Error.Code);
+
+    }
+
+    [SkippableTheory]
+    [InlineData(-2)]
+    [InlineData(2)]
+    public async Task PostEmbeddings_ProviderWidthChangesBetweenBatches_Returns503(int subsequentBatchDelta)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // The per-batch width guards each pass here: the short-input batch is internally consistent, and
+        // so is the long input's chunk batch. The request still ends up ragged, because those are two
+        // different round trips and a load-balanced pool mid-rollout can answer them at two model
+        // versions — the exact scenario the per-batch guards were written for, one scope up. Without a
+        // check across the assembled response this answers 200 with data[] rows of two widths, which is
+        // the OpenAI contract violation the guards exist to prevent, so it must be the same sanitized 503.
+        _fake.SubsequentBatchDimensionDelta = subsequentBatchDelta;
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string longText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over the lazy dog. ", 30));
+
+        OpenAiEmbeddingRequest request = new(
+            Model: null,
+            Input: new OpenAiEmbeddingInput { Strings = ["alpha", longText] });
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent(
+                JsonSerializer.Serialize(request, ArcanumJsonContext.Default.OpenAiEmbeddingRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
+
+    }
+
+    /// <summary>
+    /// The cross-batch guard must reject only genuine raggedness. A request mixing a short and a long
+    /// input against an honest provider spans the same two round trips and must still answer 200 with one
+    /// equal-width vector per input, in request order.
+    /// </summary>
+    [SkippableFact]
+    public async Task PostEmbeddings_MixedShortAndLongInputs_ReturnsEqualWidthVectorsPerInput()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string longText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over the lazy dog. ", 30));
+
+        OpenAiEmbeddingRequest request = new(
+            Model: null,
+            Input: new OpenAiEmbeddingInput { Strings = ["alpha", longText] });
+
+        OpenAiEmbeddingResponse body = await PostAndReadAsync(
+            client,
+            JsonSerializer.Serialize(request, ArcanumJsonContext.Default.OpenAiEmbeddingRequest));
+
+        Assert.Equal(2, body.Data.Count);
+
+        Assert.Equal([0, 1], body.Data.Select(static entry => entry.Index));
+
+        Assert.Equal(
+            _fake.Dimensions,
+            Assert.Single(body.Data.Select(static entry => entry.Embedding.Values!.Length).Distinct()));
 
     }
 
@@ -565,10 +763,31 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         /// </summary>
         public int BatchVectorLimit { get; set; } = int.MaxValue;
 
+        /// <summary>
+        /// Widens or narrows every vector after the first by this many components, reproducing a
+        /// load-balanced or mid-rollout provider pool that answers one batch at two model versions.
+        /// Zero (the default) keeps every vector the same width.
+        /// </summary>
+        public int TrailingVectorDimensionDelta { get; set; }
+
+        /// <summary>
+        /// Widens or narrows every vector of every batch after the first by this many components, each
+        /// batch staying internally consistent. This is the same pool fault as
+        /// <see cref="TrailingVectorDimensionDelta"/> seen at request scope rather than batch scope: one
+        /// <c>/v1/embeddings</c> request issues one round trip for the short inputs and another per long
+        /// input, so a rollout that flips between them answers each batch honestly and the request
+        /// ragged. Zero (the default) keeps every batch the same width.
+        /// </summary>
+        public int SubsequentBatchDimensionDelta { get; set; }
+
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
 
             EmbedBatchCallCount++;
+
+            int batchDimensions = EmbedBatchCallCount == 1
+                ? Dimensions
+                : Dimensions + SubsequentBatchDimensionDelta;
 
             int count = Math.Min(texts.Count, BatchVectorLimit);
 
@@ -577,7 +796,9 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             for (int i = 0; i < count; i++)
             {
 
-                result[i] = new Embedding<float>(MakeVector(texts[i]));
+                int width = i == 0 ? batchDimensions : batchDimensions + TrailingVectorDimensionDelta;
+
+                result[i] = new Embedding<float>(MakeVector(texts[i], width));
 
             }
 
@@ -605,14 +826,16 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
         }
 
-        private float[] MakeVector(string text)
+        private float[] MakeVector(string text) => MakeVector(text, Dimensions);
+
+        private static float[] MakeVector(string text, int dimensions)
         {
 
             Random random = new(text.GetHashCode());
 
-            float[] vector = new float[Dimensions];
+            float[] vector = new float[dimensions];
 
-            for (int i = 0; i < Dimensions; i++)
+            for (int i = 0; i < dimensions; i++)
             {
 
                 vector[i] = (float)(random.NextDouble() * 2.0 - 1.0);

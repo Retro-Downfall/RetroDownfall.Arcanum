@@ -39,6 +39,20 @@ namespace RetroDownfall.Arcanum.Api.TheForge;
 internal static class MemoryEndpoints
 {
 
+    /// <summary>
+    /// Ceiling on the number of rows <c>POST /api/memory/search</c> materializes and returns, shared
+    /// across every scope of one request rather than granted per scope.
+    /// </summary>
+    /// <remarks>
+    /// A one-character query matches essentially every Grimoire entry, attachment chunk and workspace
+    /// chunk on a mature install, and every matched row carries its full text. Without this bound the
+    /// handler reads the whole corpus into one list — the same failure <c>GrimoireRepository</c>
+    /// windows long threads to avoid and <c>SagaEndpoints</c> clamps to <c>MaxListLimit</c> to avoid.
+    /// Set to <see cref="ArcanumSettingClamps.ListQueryLimit"/>'s upper bound so this surface is
+    /// bounded exactly like its neighbours.
+    /// </remarks>
+    internal const int SearchResultLimit = 10_000;
+
     private const string SessionRetention = "Session lifetime; archiving retains it and session purge removes it.";
 
     private const string PinRetention = "Until explicitly unpinned or the owning session is purged.";
@@ -328,6 +342,24 @@ internal static class MemoryEndpoints
 
         }
 
+        // Refused rather than clamped. A caller that asked for 50,000, silently got the budget, and
+        // read hasMore:false would take a truncated page for the whole answer.
+        if (request.Limit is { } requestedLimit
+            && (requestedLimit < 1 || requestedLimit > SearchResultLimit))
+        {
+
+            Result<MemorySearchResponse> invalid = Result<MemorySearchResponse>.Failure(
+                new Error(
+                    ErrorCodes.Validation.InvalidBody,
+                    $"Memory search limit must be between 1 and {SearchResultLimit}."));
+
+            return Results.Json(
+                ApiResponse<MemorySearchResponse>.FromResult(invalid, TraceId(context)),
+                ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
+                statusCode: StatusCodes.Status400BadRequest);
+
+        }
+
         if (request.SessionId is { } sessionId
             && !await db.Sessions.AsNoTracking().AnyAsync(
                 session => session.Id == sessionId,
@@ -350,87 +382,205 @@ internal static class MemoryEndpoints
 
         string query = request.Query.Trim();
 
+        // One budget for the whole request, not one per scope: a per-scope ceiling would still let
+        // scope=all return five times the bound. Each scope is asked only for what the budget has
+        // left, so a one-character query can never materialize more than the budget's worth of rows.
+        // A caller-supplied limit narrows that budget; it can never widen it.
+        int budget = request.Limit ?? SearchResultLimit;
+
         List<MemorySearchResultDto> results = [];
+
+        List<MemorySearchScopeStatusDto> scopes = [];
 
         if (Includes(request.Scope, MemorySearchScope.Session))
         {
 
-            await SearchSessionAsync(
-                connection,
-                query,
-                request.SessionId,
-                results,
-                context.RequestAborted).ConfigureAwait(false);
+            int slice = OpenSlice(MemorySearchScope.Session, results, budget, scopes);
+
+            if (slice > 0)
+            {
+
+                await SearchSessionAsync(
+                    connection,
+                    query,
+                    request.SessionId,
+                    results,
+                    slice + 1,
+                    context.RequestAborted).ConfigureAwait(false);
+
+                CloseSlice(MemorySearchScope.Session, results, budget, slice, scopes);
+
+            }
 
         }
 
         if (Includes(request.Scope, MemorySearchScope.Attachments))
         {
 
-            await SearchAttachmentsAsync(
-                connection,
-                query,
-                request.SessionId,
-                results,
-                context.RequestAborted).ConfigureAwait(false);
+            int slice = OpenSlice(MemorySearchScope.Attachments, results, budget, scopes);
+
+            if (slice > 0)
+            {
+
+                await SearchAttachmentsAsync(
+                    connection,
+                    query,
+                    request.SessionId,
+                    results,
+                    slice + 1,
+                    context.RequestAborted).ConfigureAwait(false);
+
+                CloseSlice(MemorySearchScope.Attachments, results, budget, slice, scopes);
+
+            }
 
         }
 
         if (Includes(request.Scope, MemorySearchScope.Workspace))
         {
 
-            await SearchWorkspaceAsync(
-                connection,
-                query,
-                request.WorkspaceId,
-                results,
-                context.RequestAborted).ConfigureAwait(false);
+            int slice = OpenSlice(MemorySearchScope.Workspace, results, budget, scopes);
+
+            if (slice > 0)
+            {
+
+                await SearchWorkspaceAsync(
+                    connection,
+                    query,
+                    request.WorkspaceId,
+                    results,
+                    slice + 1,
+                    context.RequestAborted).ConfigureAwait(false);
+
+                CloseSlice(MemorySearchScope.Workspace, results, budget, slice, scopes);
+
+            }
 
         }
 
         if (Includes(request.Scope, MemorySearchScope.Saga))
         {
 
-            await SearchSagaAsync(
-                sagaStore,
-                query,
-                request.SessionId,
-                results,
-                context.RequestAborted).ConfigureAwait(false);
+            int slice = OpenSlice(MemorySearchScope.Saga, results, budget, scopes);
+
+            if (slice > 0)
+            {
+
+                await SearchSagaAsync(
+                    sagaStore,
+                    query,
+                    request.SessionId,
+                    results,
+                    slice + 1,
+                    context.RequestAborted).ConfigureAwait(false);
+
+                CloseSlice(MemorySearchScope.Saga, results, budget, slice, scopes);
+
+            }
 
         }
 
         if (Includes(request.Scope, MemorySearchScope.Lexicon))
         {
 
-            Result<IReadOnlyList<LexiconEntryDto>> entries = await lexicon
-                .ListAsync(context.RequestAborted)
-                .ConfigureAwait(false);
+            int slice = OpenSlice(MemorySearchScope.Lexicon, results, budget, scopes);
 
-            if (entries.IsFailure)
+            if (slice > 0)
             {
 
-                Result<MemorySearchResponse> failed = Result<MemorySearchResponse>.Failure(
-                    entries.Error);
+                Result<IReadOnlyList<LexiconEntryDto>> entries = await lexicon
+                    .ListAsync(context.RequestAborted)
+                    .ConfigureAwait(false);
 
-                return Results.Json(
-                    ApiResponse<MemorySearchResponse>.FromResult(failed, TraceId(context)),
-                    ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
-                    statusCode: ArcanumErrorMapper.ResolveStatusCode(entries.Error.Code));
+                if (entries.IsFailure)
+                {
+
+                    Result<MemorySearchResponse> failed = Result<MemorySearchResponse>.Failure(
+                        entries.Error);
+
+                    return Results.Json(
+                        ApiResponse<MemorySearchResponse>.FromResult(failed, TraceId(context)),
+                        ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(entries.Error.Code));
+
+                }
+
+                AddLexiconMatches(entries.Value, query, results, slice + 1);
+
+                CloseSlice(MemorySearchScope.Lexicon, results, budget, slice, scopes);
 
             }
 
-            AddLexiconMatches(entries.Value, query, results);
-
         }
 
-        MemorySearchResponse payload = new(query, request.Scope, [.. results]);
+        MemorySearchResponse payload = new(
+            query,
+            request.Scope,
+            [.. results],
+            [.. scopes],
+            scopes.Exists(static scope => scope.HasMore));
 
         return Results.Json(
             ApiResponse<MemorySearchResponse>.FromResult(
                 Result<MemorySearchResponse>.Success(payload),
                 TraceId(context)),
             ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+    }
+
+    /// <summary>
+    /// How many rows this scope may still contribute. Zero means an earlier scope consumed the whole
+    /// budget: the scope is recorded as starved with <c>hasMore</c>, because "not consulted" and
+    /// "consulted and empty" are different answers and a caller raising <c>limit</c> needs to tell them
+    /// apart.
+    /// </summary>
+    private static int OpenSlice(
+        MemorySearchScope scope,
+        List<MemorySearchResultDto> results,
+        int budget,
+        List<MemorySearchScopeStatusDto> scopes)
+    {
+
+        int slice = budget - results.Count;
+
+        if (slice <= 0)
+        {
+
+            scopes.Add(new MemorySearchScopeStatusDto(scope, 0, HasMore: true));
+
+        }
+
+        return slice;
+
+    }
+
+    /// <summary>
+    /// Each scope is asked for one row beyond its slice, so an overflowing scope is distinguishable
+    /// from one that happened to fill its slice exactly. The extra row is trimmed here and never
+    /// reaches the caller.
+    /// </summary>
+    private static void CloseSlice(
+        MemorySearchScope scope,
+        List<MemorySearchResultDto> results,
+        int budget,
+        int slice,
+        List<MemorySearchScopeStatusDto> scopes)
+    {
+
+        int produced = results.Count - (budget - slice);
+
+        bool hasMore = produced > slice;
+
+        if (hasMore)
+        {
+
+            results.RemoveRange(budget, results.Count - budget);
+
+            produced = slice;
+
+        }
+
+        scopes.Add(new MemorySearchScopeStatusDto(scope, produced, hasMore));
 
     }
 
@@ -803,6 +953,7 @@ internal static class MemoryEndpoints
         string query,
         Guid? sessionId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -816,15 +967,20 @@ internal static class MemoryEndpoints
             WHERE instr(lower(e.Content), lower(@query)) > 0
             {(sessionId is null ? string.Empty : "AND e.SessionId = @sessionId")}
             ORDER BY e.CreatedAt DESC, e.Sequence DESC
+            LIMIT @limit
             """;
 
         AddParameter(command, "@query", query);
+
+        AddParameter(command, "@limit", limit);
 
         AddSessionParameter(command, sessionId);
 
         await using DbDataReader reader = await command
             .ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        int taken = 0;
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -839,9 +995,22 @@ internal static class MemoryEndpoints
                 SessionRetention,
                 reader.GetString(0)));
 
+            taken++;
+
         }
 
         await reader.DisposeAsync().ConfigureAwait(false);
+
+        // The entry scan and the summary scan share this scope's slice of the budget; entries are the
+        // narrower, more specific hit, so they are read first and the summaries take what is left.
+        int summaryLimit = limit - taken;
+
+        if (summaryLimit <= 0)
+        {
+
+            return;
+
+        }
 
         await using DbCommand summaries = connection.CreateCommand();
 
@@ -853,9 +1022,12 @@ internal static class MemoryEndpoints
               AND instr(lower(Summary), lower(@query)) > 0
               {(sessionId is null ? string.Empty : "AND Id = @sessionId")}
             ORDER BY UpdatedAt DESC
+            LIMIT @limit
             """;
 
         AddParameter(summaries, "@query", query);
+
+        AddParameter(summaries, "@limit", summaryLimit);
 
         AddSessionParameter(summaries, sessionId);
 
@@ -887,6 +1059,7 @@ internal static class MemoryEndpoints
         string query,
         Guid? sessionId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -902,9 +1075,12 @@ internal static class MemoryEndpoints
                    OR instr(lower(LogicalKey), lower(@query)) > 0)
               {(sessionId is null ? string.Empty : "AND SessionId = @sessionId")}
             ORDER BY IndexedAt DESC, ChunkIndex
+            LIMIT @limit
             """;
 
         AddParameter(command, "@query", query);
+
+        AddParameter(command, "@limit", limit);
 
         AddSessionParameter(command, sessionId);
 
@@ -932,6 +1108,7 @@ internal static class MemoryEndpoints
         string query,
         string? workspaceId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -981,9 +1158,12 @@ internal static class MemoryEndpoints
                    OR instr(lower(RelativePath), lower(@query)) > 0)
               {(workspacePath is null ? string.Empty : "AND WorkspacePath = @workspacePath")}
             ORDER BY IndexedAt DESC, RelativePath, ChunkIndex
+            LIMIT @limit
             """;
 
         AddParameter(command, "@query", query);
+
+        AddParameter(command, "@limit", limit);
 
         if (workspacePath is not null)
         {
@@ -1018,6 +1198,7 @@ internal static class MemoryEndpoints
         string query,
         Guid? sessionId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -1025,7 +1206,7 @@ internal static class MemoryEndpoints
             .ListAsync(
                 query,
                 sessionId,
-                int.MaxValue,
+                limit,
                 0,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1066,11 +1247,21 @@ internal static class MemoryEndpoints
     private static void AddLexiconMatches(
         IReadOnlyList<LexiconEntryDto> entries,
         string query,
-        List<MemorySearchResultDto> results)
+        List<MemorySearchResultDto> results,
+        int limit)
     {
+
+        int taken = 0;
 
         foreach (LexiconEntryDto entry in entries)
         {
+
+            if (taken >= limit)
+            {
+
+                break;
+
+            }
 
             if (!LexiconMatches(entry, query))
             {
@@ -1101,6 +1292,8 @@ internal static class MemoryEndpoints
                 provenance,
                 LexiconRetention,
                 entry.Id.ToString("D")));
+
+            taken++;
 
         }
 

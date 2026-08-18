@@ -9,10 +9,10 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// <remarks>
 /// Every field an agent could otherwise assert is derived here from the capability, never read from
 /// the tool arguments: the scope is the turn's canonical Campaign, the lane is Proposed for a
-/// proposal, the origin is agent-authored, the turn and tool-call identities come from the
-/// capability, and the provenance is the exact materialization snapshot of the provider call that
-/// emitted the request. Agent-originated Global mutation is therefore unrepresentable rather than
-/// merely refused (§10.14).
+/// proposal, the origin is AgentProposed for a proposal and AgentApproved for the operator-approved
+/// retirement, the turn and tool-call identities come from the capability, and the provenance is the
+/// exact materialization snapshot of the provider call that emitted the request. Agent-originated
+/// Global mutation is therefore unrepresentable rather than merely refused (§10.14).
 /// </remarks>
 public static class CovenantAgentMutationFactory
 {
@@ -53,6 +53,7 @@ public static class CovenantAgentMutationFactory
             capability,
             CovenantMutationKind.AgentPropose,
             CovenantOperation.Set,
+            CovenantOrigin.AgentProposed,
             new CovenantKey(compiled.NormalizedKey),
             compiled.NormalizedKey,
             CovenantLane.Proposed,
@@ -71,6 +72,10 @@ public static class CovenantAgentMutationFactory
     /// The target, its lane, and its expected revision all come from the capability's preflight, so
     /// the staged tombstone is provably the thing the operator approved rather than whatever the
     /// model named afterwards.
+    ///
+    /// <para>The origin is <see cref="CovenantOrigin.AgentApproved"/> and not
+    /// <see cref="CovenantOrigin.AgentProposed"/>: the model asked, but the operator authorized, and
+    /// that is the one origin permitted to carry Ward evidence into a durable version (§5).</para>
     /// </remarks>
     public static Result<CovenantMutationIntent> Retire(
         CovenantToolInvocationContext capability,
@@ -98,6 +103,7 @@ public static class CovenantAgentMutationFactory
             capability,
             CovenantMutationKind.AgentRetire,
             CovenantOperation.Retire,
+            CovenantOrigin.AgentApproved,
             new CovenantKey(preflight.NormalizedKey),
             preflight.NormalizedKey,
             preflight.Lane,
@@ -167,6 +173,7 @@ public static class CovenantAgentMutationFactory
         CovenantToolInvocationContext capability,
         CovenantMutationKind kind,
         CovenantOperation operation,
+        CovenantOrigin origin,
         CovenantKey normalizedKey,
         string authoredKey,
         CovenantLane lane,
@@ -196,7 +203,7 @@ public static class CovenantAgentMutationFactory
             operation,
             checked((ulong)expectedLaneRevision),
             Reactivation: false,
-            CovenantOrigin.AgentProposed,
+            origin,
             artifact?.AuthoredHash,
             artifact?.RenderedHash,
             (uint)(artifact?.CompilerPolicyVersion ?? CovenantCompiler.CompilerPolicyVersion),
@@ -226,7 +233,7 @@ public static class CovenantAgentMutationFactory
             capability.MutationId,
             kind,
             operation,
-            CovenantOrigin.AgentProposed,
+            origin,
             new CovenantMutationTarget(scope, normalizedKey, authoredKey, lane, requestDigest),
             expectedLaneRevision,
             reactivate: false,

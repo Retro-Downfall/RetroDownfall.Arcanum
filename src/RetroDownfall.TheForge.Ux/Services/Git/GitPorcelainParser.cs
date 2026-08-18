@@ -55,7 +55,16 @@ public static class GitPorcelainParser
 
             }
 
-            if (!TrySplitRename(remainder, out string path, out string? originalPath))
+            // Only an R (rename) or C (copy) status carries an "old -> new" pair. Scanning every line
+            // for the arrow mis-splits an ordinary path that legitimately contains " -> ": that needs
+            // no quoting, so git emits it bare and it is indistinguishable from a separator by text.
+            bool renameOrCopy = indexStatus is 'R' or 'C' || workTreeStatus is 'R' or 'C';
+
+            string path;
+
+            string? originalPath;
+
+            if (!renameOrCopy || !TrySplitRename(remainder, out path, out originalPath))
             {
 
                 path = UnquotePath(remainder);
@@ -116,6 +125,17 @@ public static class GitPorcelainParser
 
             char c = text[i];
 
+            if (inQuotes && c == '\\')
+            {
+
+                // Inside a C-quoted path \" is a literal quote, not the closing delimiter. Toggling on
+                // it desynchronises the scan and the arrow inside the filename reads as the separator.
+                i++;
+
+                continue;
+
+            }
+
             if (c == '"')
             {
 
@@ -148,53 +168,144 @@ public static class GitPorcelainParser
     private static string UnquotePath(string raw)
     {
 
-        string trimmed = raw.Trim();
-
-        if (trimmed.Length < 2 || trimmed[0] != '"')
+        // No Trim: git leaves a path bare unless it needs escaping, and a leading or trailing space
+        // never does. Trimming here silently renames "notes .txt " to a file that does not exist.
+        // Quoted paths are delimited by the quotes themselves, so they need no trimming either.
+        if (raw.Length < 2 || raw[0] != '"')
         {
 
-            return trimmed;
+            return raw;
 
         }
 
-        StringBuilder builder = new(trimmed.Length);
+        StringBuilder builder = new(raw.Length);
 
-        for (int i = 1; i < trimmed.Length; i++)
+        // core.quotePath defaults to true, so git C-quotes any byte outside printable ASCII as a
+        // three-digit octal escape — one escape per UTF-8 byte. Escapes must therefore be gathered into a
+        // byte run and decoded together, not mapped one character at a time.
+        List<byte> pendingBytes = [];
+
+        int i = 1;
+
+        while (i < raw.Length)
         {
 
-            char c = trimmed[i];
+            char c = raw[i];
 
-            if (c == '"' && i == trimmed.Length - 1)
+            if (c == '"' && i == raw.Length - 1)
             {
 
                 break;
 
             }
 
-            if (c == '\\' && i + 1 < trimmed.Length)
+            if (c == '\\' && i + 1 < raw.Length)
             {
 
-                char next = trimmed[++i];
+                if (TryReadOctalEscape(raw, i, out byte octalByte))
+                {
 
-                builder.Append(next switch
+                    pendingBytes.Add(octalByte);
+
+                    i += 4;
+
+                    continue;
+
+                }
+
+                AppendPendingBytes(builder, pendingBytes);
+
+                builder.Append(raw[i + 1] switch
                 {
                     'n' => '\n',
                     't' => '\t',
                     'r' => '\r',
+                    'a' => '\a',
+                    'b' => '\b',
+                    'f' => '\f',
+                    'v' => '\v',
                     '"' => '"',
                     '\\' => '\\',
-                    _ => next,
+                    char other => other,
                 });
+
+                i += 2;
 
                 continue;
 
             }
 
+            AppendPendingBytes(builder, pendingBytes);
+
             builder.Append(c);
+
+            i++;
 
         }
 
+        AppendPendingBytes(builder, pendingBytes);
+
         return builder.ToString();
+
+    }
+
+    /// <summary>True when <paramref name="index"/> starts a <c>\NNN</c> three-digit octal escape.</summary>
+    private static bool TryReadOctalEscape(string text, int index, out byte value)
+    {
+
+        value = 0;
+
+        if (index + 3 >= text.Length)
+        {
+
+            return false;
+
+        }
+
+        int result = 0;
+
+        for (int offset = 1; offset <= 3; offset++)
+        {
+
+            char digit = text[index + offset];
+
+            if (digit is < '0' or > '7')
+            {
+
+                return false;
+
+            }
+
+            result = (result * 8) + (digit - '0');
+
+        }
+
+        if (result > byte.MaxValue)
+        {
+
+            return false;
+
+        }
+
+        value = (byte)result;
+
+        return true;
+
+    }
+
+    private static void AppendPendingBytes(StringBuilder builder, List<byte> pendingBytes)
+    {
+
+        if (pendingBytes.Count == 0)
+        {
+
+            return;
+
+        }
+
+        builder.Append(Encoding.UTF8.GetString(pendingBytes.ToArray()));
+
+        pendingBytes.Clear();
 
     }
 

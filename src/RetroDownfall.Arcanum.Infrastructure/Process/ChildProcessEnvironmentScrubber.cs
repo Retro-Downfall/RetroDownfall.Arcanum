@@ -6,7 +6,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 internal static class ChildProcessEnvironmentScrubber
 {
 
-    internal static void ApplyProfile(ProcessStartInfo startInfo, ChildProcessEnvironmentProfile profile)
+    /// <param name="operatorDeclaredSecretNames">
+    /// The variable names the operator has configured Arcanum's own secrets into — the list
+    /// <c>FamiliarSecretEnvironmentNames.Collect</c> builds. The <c>ARCANUM_</c> prefix scrub covers
+    /// only the derived default names, so without this list a provider key the operator legitimately
+    /// pointed at <c>MY_OPENAI_KEY</c> is inherited by every model-directed child.
+    /// </param>
+    internal static void ApplyProfile(
+        ProcessStartInfo startInfo,
+        ChildProcessEnvironmentProfile profile,
+        IReadOnlyCollection<string>? operatorDeclaredSecretNames = null)
     {
 
         switch (profile)
@@ -15,6 +24,10 @@ internal static class ChildProcessEnvironmentScrubber
             case ChildProcessEnvironmentProfile.ToolExec:
 
                 RemoveArcanumSecretVariables(startInfo.Environment);
+
+                RemoveOperatorDeclaredSecretVariables(
+                    startInfo.Environment,
+                    operatorDeclaredSecretNames);
 
                 RemoveHijackableEnvironmentVariables(startInfo.Environment);
 
@@ -26,6 +39,10 @@ internal static class ChildProcessEnvironmentScrubber
                 // or loader/runtime hijack variables from the host process.
                 RemoveArcanumSecretVariables(startInfo.Environment);
 
+                RemoveOperatorDeclaredSecretVariables(
+                    startInfo.Environment,
+                    operatorDeclaredSecretNames);
+
                 RemoveHijackableEnvironmentVariables(startInfo.Environment);
 
                 break;
@@ -36,6 +53,10 @@ internal static class ChildProcessEnvironmentScrubber
                 // needs PATH and HOME and must never receive an Arcanum secret. The caller strips
                 // configured provider credential variables by name on top of this.
                 RemoveArcanumSecretVariables(startInfo.Environment);
+
+                RemoveOperatorDeclaredSecretVariables(
+                    startInfo.Environment,
+                    operatorDeclaredSecretNames);
 
                 RemoveHijackableEnvironmentVariables(startInfo.Environment);
 
@@ -87,6 +108,69 @@ internal static class ChildProcessEnvironmentScrubber
         {
 
             if (key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase))
+            {
+
+                environment.Remove(key);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Removes every variable the operator has told Arcanum holds one of <em>its</em> secrets. Those
+    /// names are configuration, not a prefix: <c>Arcanum:Providers:*:CredentialEnvironmentVariable</c>,
+    /// <c>Host:Https:CertificatePasswordEnvironmentVariable</c>,
+    /// <c>Integrations:CommLink:WebhookUrlEnvironmentVariable</c>,
+    /// <c>WebBrowsing:CredentialEnvironmentVariable</c> and
+    /// <c>Integrations:A2A:OutboundCredentialEnvironmentVariable</c> all accept any portable name, so
+    /// a key called <c>MY_OPENAI_KEY</c> is no less Arcanum's secret for being named that and
+    /// <see cref="RemoveArcanumSecretVariables"/> alone would hand it straight to the child. Matching
+    /// is case-insensitive: the configured spelling need not match the exported one, and
+    /// over-removing a name the operator themselves called a secret is the safe direction.
+    /// </summary>
+    internal static void RemoveOperatorDeclaredSecretVariables(
+        IDictionary<string, string?> environment,
+        IReadOnlyCollection<string>? declaredNames)
+    {
+
+        ArgumentNullException.ThrowIfNull(environment);
+
+        if (declaredNames is null || declaredNames.Count == 0)
+        {
+
+            return;
+
+        }
+
+        HashSet<string> denied = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string name in declaredNames)
+        {
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+
+                _ = denied.Add(name.Trim());
+
+            }
+
+        }
+
+        if (denied.Count == 0)
+        {
+
+            return;
+
+        }
+
+        string[] keys = environment.Keys.ToArray();
+
+        foreach (string key in keys)
+        {
+
+            if (denied.Contains(key))
             {
 
                 environment.Remove(key);

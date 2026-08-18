@@ -49,6 +49,30 @@ public sealed class ArcanumJsonContextCompletenessTests
     }
 
     [Fact]
+    public void TypeInfo_NotRegisteredForRawResultTypes()
+    {
+
+        // Result<T> marks Value with [JsonIgnore] (see the "never serialize Value directly" note on
+        // Result.cs), so an endpoint that mistakenly hands Results.Ok a raw Result<T> serializes an
+        // envelope with the payload dropped and a hollow Error.None — a silent wrong answer. With no
+        // registration the resolver chain throws NotSupportedException instead, and the published AOT
+        // binary sheds the dead JsonTypeInfo classes.
+        string[] registeredResultProperties = typeof(ArcanumJsonContext)
+            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Where(static property =>
+                property.PropertyType.IsGenericType
+                && property.PropertyType.GetGenericTypeDefinition() == typeof(JsonTypeInfo<>)
+                && property.PropertyType.GetGenericArguments()[0] is { IsGenericType: true } payload
+                && payload.GetGenericTypeDefinition() == typeof(Result<>))
+            .Select(static property => property.Name)
+            .OrderBy(static name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Empty(registeredResultProperties);
+
+    }
+
+    [Fact]
     public void RoundTrip_ApiResponseBool()
     {
 

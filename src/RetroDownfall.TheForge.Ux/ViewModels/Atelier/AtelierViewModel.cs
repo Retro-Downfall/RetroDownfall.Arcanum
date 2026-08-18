@@ -140,7 +140,37 @@ public sealed partial class AtelierViewModel : ViewModelBase
         if (value is CampaignNodeViewModel campaignNode)
         {
 
-            _ = _activeCampaign.SetActiveCampaignAsync(campaignNode.Campaign);
+            TaskUtilities.FireAndForget(ApplyActiveCampaignAsync(campaignNode.Campaign));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Records the tree selection as the active campaign. The selection hook cannot await, so failures
+    /// are reported here rather than left as an unobserved task.
+    /// </summary>
+    private async Task ApplyActiveCampaignAsync(CampaignDto campaign)
+    {
+
+        try
+        {
+
+            await _activeCampaign.SetActiveCampaignAsync(campaign).ConfigureAwait(true);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // The selection was superseded before the active campaign could be recorded.
+
+        }
+        catch (Exception ex)
+        {
+
+            _foundryFloor.AppendLine($"Active campaign error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, $"Could not record “{campaign.Name}” as the active campaign.");
 
         }
 

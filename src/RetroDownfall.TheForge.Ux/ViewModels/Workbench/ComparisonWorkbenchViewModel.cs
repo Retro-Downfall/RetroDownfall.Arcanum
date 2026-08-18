@@ -125,7 +125,7 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
     public ObservableCollection<ComparisonVariantResultViewModel> Results { get; } = [];
 
-    public ObservableCollection<DiffLineItem> DiffLines { get; } = [];
+    public BulkObservableCollection<DiffLineItem> DiffLines { get; } = [];
 
     public ObservableCollection<ComparisonRunRecord> History { get; } = [];
 
@@ -267,8 +267,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         Trace.BeginCapture("comparison", SingletonDocumentId);
 
-        _pricing ??= await _dataSource.GetPricingAsync(runToken).ConfigureAwait(true);
-
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
 
         Guid runId = Guid.NewGuid();
@@ -277,6 +275,8 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         try
         {
+
+            _pricing ??= await _dataSource.GetPricingAsync(runToken).ConfigureAwait(true);
 
             foreach (ComparisonVariantDraftViewModel variant in Variants.ToArray())
             {
@@ -305,7 +305,7 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
             }
 
-            RefreshDiff();
+            await RefreshDiffAsync(runToken).ConfigureAwait(true);
 
             ComparisonRunRecord run = new(
                 runId,
@@ -356,26 +356,42 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
     }
 
-    partial void OnLeftResultChanged(ComparisonVariantResultViewModel? value) => RefreshDiff();
+    partial void OnLeftResultChanged(ComparisonVariantResultViewModel? value) =>
+        TaskUtilities.FireAndForget(RefreshDiffAsync(CancellationToken.None));
 
-    partial void OnRightResultChanged(ComparisonVariantResultViewModel? value) => RefreshDiff();
+    partial void OnRightResultChanged(ComparisonVariantResultViewModel? value) =>
+        TaskUtilities.FireAndForget(RefreshDiffAsync(CancellationToken.None));
+
+    /// <summary>
+    /// Monotonic ticket for diff refreshes. Selecting a different pair while one is in flight must not
+    /// let the older comparison land on the surface afterwards.
+    /// </summary>
+    private int _diffRefreshGeneration;
 
     [RelayCommand]
-    public void RefreshDiff()
+    public async Task RefreshDiffAsync(CancellationToken cancellationToken)
     {
 
-        DiffLines.Clear();
+        int generation = ++_diffRefreshGeneration;
 
         string left = LeftResult?.Output ?? string.Empty;
 
         string right = RightResult?.Output ?? string.Empty;
 
-        foreach (DiffLineItem line in LineDiff.Compare(left, right))
+        // Two model outputs can be long, and LCS over them is CPU-bound on the UI thread. Compute off
+        // it, then publish the whole diff in one notification instead of one event per line.
+        IReadOnlyList<DiffLineItem> lines = await Task
+            .Run(() => LineDiff.Compare(left, right), cancellationToken)
+            .ConfigureAwait(true);
+
+        if (generation != _diffRefreshGeneration)
         {
 
-            DiffLines.Add(line);
+            return;
 
         }
+
+        DiffLines.ResetTo(lines);
 
     }
 
@@ -431,7 +447,12 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         string json = JsonSerializer.Serialize(run, TheForgeComparisonsJsonContext.Default.ComparisonRunRecord);
 
-        await File.WriteAllTextAsync(path, json, Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        if (!await TryWriteExportAsync(path, json, "JSON", cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         StatusText = "Comparison exported (JSON).";
 
@@ -489,7 +510,12 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         }
 
-        await File.WriteAllTextAsync(path, sb.ToString(), Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        if (!await TryWriteExportAsync(path, sb.ToString(), "Markdown", cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         StatusText = "Comparison exported (Markdown).";
 
@@ -533,9 +559,58 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         }
 
-        await File.WriteAllTextAsync(path, sb.ToString(), Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        if (!await TryWriteExportAsync(path, sb.ToString(), "CSV", cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         StatusText = "Comparison exported (CSV).";
+
+    }
+
+    /// <summary>
+    /// Writes an export to the operator's chosen path. A destination that turns out to be unwritable
+    /// is reported like every other command failure rather than escaping the command.
+    /// </summary>
+    private async Task<bool> TryWriteExportAsync(
+        string path,
+        string contents,
+        string format,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await File.WriteAllTextAsync(path, contents, Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+
+            return true;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            StatusText = "Comparison export cancelled.";
+
+            return false;
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = $"Comparison export failed ({format}).";
+
+            _foundryFloor.AppendLine($"Comparison Workbench export error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Comparison export failed.");
+
+            return false;
+
+        }
 
     }
 

@@ -111,6 +111,50 @@ public sealed class CommandCenterOperatorGuidanceTests
 
     }
 
+    public static TheoryData<string> PinUsages =>
+    [
+        ShellCommandDispatcher.PinUsage,
+        ShellCommandDispatcher.UnpinUsage,
+    ];
+
+    /// <summary>
+    /// The pin verbs' failure messages are the only place they tell the operator how to spell them,
+    /// so they get replayed through the parser like every other piece of guidance.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(PinUsages))]
+    public void Every_pin_usage_is_accepted_by_the_parser(string usage)
+    {
+
+        AssertEveryDocumentedFormParses(usage);
+
+    }
+
+    /// <summary>
+    /// <c>/context unpin &lt;id&gt;</c> is a removed spelling, so a failure message recommending it
+    /// sends the operator to a form the parser rejects.
+    /// </summary>
+    [Fact]
+    public void The_pin_failure_messages_quote_the_canonical_usage()
+    {
+
+        Assert.Contains(
+            ShellCommandDispatcher.UnpinUsage,
+            ShellCommandDispatcher.UnpinUsageMessage,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            ShellCommandDispatcher.PinUsage,
+            ShellCommandDispatcher.PinUsageMessage,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "/context",
+            ShellCommandDispatcher.UnpinUsageMessage,
+            StringComparison.Ordinal);
+
+    }
+
     private const string SampleId = "11111111-1111-1111-1111-111111111111";
 
     private static void AssertEveryDocumentedFormParses(string helpText)

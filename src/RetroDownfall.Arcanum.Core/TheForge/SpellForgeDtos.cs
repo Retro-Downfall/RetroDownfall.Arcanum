@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.TheForge;
 
@@ -7,16 +8,22 @@ public sealed record SpellValidationResultDto(
     string[] Errors,
     string[] Warnings);
 
+/// <remarks>
+/// <c>FullContent</c> and <c>Scripts</c> carry <c>[JsonRequired]</c> because they are declared
+/// non-nullable. Without it a body that omits them binds null into both and the import succeeds,
+/// writing a spell with no content at all; STJ refusing the body is what makes the declared shape true.
+/// <c>Metadata</c> is genuinely optional and stays as it is.
+/// </remarks>
 public sealed record SpellExportDto(
     SkillMetadata? Metadata,
-    string FullContent,
-    IReadOnlyList<SpellExportScriptDto> Scripts);
+    [property: JsonRequired] string FullContent,
+    [property: JsonRequired] IReadOnlyList<SpellExportScriptDto> Scripts);
 
 public sealed record SpellExportScriptDto(
-    string FileName,
-    string Base64Content);
+    [property: JsonRequired] string FileName,
+    [property: JsonRequired] string Base64Content);
 
 public sealed record SpellImportRequest(
-    SpellExportDto Payload,
+    [property: JsonRequired] SpellExportDto Payload,
     string? Workspace,
     Guid? CampaignId);

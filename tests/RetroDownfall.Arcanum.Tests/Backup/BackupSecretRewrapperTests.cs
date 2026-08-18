@@ -216,6 +216,62 @@ public sealed class BackupSecretRewrapperTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A key ring an older Windows build persisted with <c>Environment.NewLine</c> still merges.
+    /// </summary>
+    /// <remarks>
+    /// <c>FileEncryptionKeyProvider</c> and <c>BackupSecretSnapshotReader</c> both accept CRLF, so a
+    /// machine whose ring carries it is running normally. Refusing that same ring here fails the
+    /// import of portable recovery keys as <c>restore_recovery_material_invalid</c> — the operator is
+    /// told their intact ring is corrupt on the one path that exists to repair a machine. The
+    /// trailing '\r' has to come off every line, not just the header: base64 decoding skips it, so
+    /// the keys would load while the active id carried an invisible '\r' and matched none of them.
+    /// </remarks>
+    [Fact]
+    public async Task A_crlf_key_ring_left_by_an_older_windows_build_still_accepts_imported_keys()
+    {
+
+        byte[] existing = RandomNumberGenerator.GetBytes(32);
+
+        byte[] imported = RandomNumberGenerator.GetBytes(32);
+
+        string ring = "ARCANUM-KEYRING-1\r\n"
+            + $"active={KeyId(existing)}\r\n"
+            + $"{KeyId(existing)}={Convert.ToBase64String(existing)}\r\n";
+
+        RecordingSecretStore store = new();
+
+        store.Seed(ring);
+
+        string path = WriteRecovery(
+            "grimoire-secret",
+            activeKeyId: KeyId(imported),
+            keys: [(KeyId(imported), imported)],
+            masterApiKey: null);
+
+        BackupSecretRewrapResult result = await new BackupSecretRewrapper(store)
+            .MergeFileEncryptionKeysAsync(path, CancellationToken.None);
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(1, result.FileEncryptionKeysWritten);
+
+        string merged = Assert.IsType<string>(store.FileEncryptionSecret);
+
+        // Re-emitted in the one canonical LF form, carrying both the pre-existing and imported keys.
+        Assert.StartsWith("ARCANUM-KEYRING-1\n", merged, StringComparison.Ordinal);
+
+        Assert.DoesNotContain('\r', merged);
+
+        Assert.Contains($"{KeyId(existing)}={Convert.ToBase64String(existing)}", merged, StringComparison.Ordinal);
+
+        Assert.Contains($"{KeyId(imported)}={Convert.ToBase64String(imported)}", merged, StringComparison.Ordinal);
+
+        // The active id survived the CRLF, so the ring still names a key it actually holds.
+        Assert.Contains($"active={KeyId(existing)}\n", merged, StringComparison.Ordinal);
+
+    }
+
     private static string KeyId(byte[] key) =>
         Convert.ToHexString(SHA256.HashData(key).AsSpan(0, 8)).ToLowerInvariant();
 
@@ -298,6 +354,11 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         public string? GrimoireSecret { get; private set; }
 
         public string? FileEncryptionSecret { get; private set; }
+
+        /// <summary>
+        /// Plants a pre-existing ring, so a merge has something to merge into.
+        /// </summary>
+        public void Seed(string encryptionSecret) => FileEncryptionSecret = encryptionSecret;
 
         public Task<string?> GetApiKeyAsync() => Task.FromResult(ApiKey);
 

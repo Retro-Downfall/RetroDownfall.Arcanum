@@ -19,40 +19,75 @@ public sealed class SessionEventHubTests
 
         using CancellationTokenSource cts = new();
 
-        Task<Entry?> readTask = ReadOneAsync(hub, sessionId, cts.Token);
+        // Starting the enumerator registers the subscription synchronously, before MoveNextAsync's task
+        // is awaited, so the publish below cannot race ahead of it.
+        await using IAsyncEnumerator<Entry> entries = hub
+            .SubscribeAsync(sessionId, cts.Token)
+            .GetAsyncEnumerator(cts.Token);
 
-        Entry entry = new()
-        {
-            Id = Guid.NewGuid(),
-            SessionId = sessionId,
-            Content = "hello",
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
+        Task<bool> first = entries.MoveNextAsync().AsTask();
 
-        hub.Publish(sessionId, entry);
+        hub.Publish(sessionId, MakeEntry(sessionId, "hello"));
 
-        Entry? received = await readTask;
+        Assert.True(await first.WaitAsync(TimeSpan.FromSeconds(5)));
 
-        Assert.NotNull(received);
-
-        Assert.Equal("hello", received!.Content);
+        Assert.Equal("hello", entries.Current.Content);
 
     }
 
-    private static async Task<Entry?> ReadOneAsync(
-        SessionEventHub hub,
-        Guid sessionId,
-        CancellationToken ct)
+    /// <summary>
+    /// The invariant <c>ChronicleHub</c> already pins twice: a publisher must never mint a per-session
+    /// hub. A hub is removed only when its last subscriber leaves, so one created by a publisher has no
+    /// removal path at all and lives for the lifetime of the singleton — and the overwhelmingly common
+    /// turn (<c>arcanum run</c>, <c>/v1/chat/completions</c>, a daemon job, an Apprentice step) has no SSE
+    /// client on <c>GET /api/sessions/{id}/stream</c> at all.
+    /// </summary>
+    [Fact]
+    public void Publish_WithoutASubscriber_StrandsNoPerSessionHub()
     {
 
-        await foreach (Entry item in hub.SubscribeAsync(sessionId, ct))
+        SessionEventHub hub = new(NullLogger<SessionEventHub>.Instance);
+
+        Guid sessionId = Guid.NewGuid();
+
+        hub.Publish(sessionId, MakeEntry(sessionId, "first"));
+
+        hub.Publish(sessionId, MakeEntry(sessionId, "second"));
+
+        Assert.Equal(0, hub.TrackedSessionCount);
+
+    }
+
+    [Fact]
+    public async Task Publish_AfterTheLastSubscriberDisconnects_StrandsNoPerSessionHub()
+    {
+
+        SessionEventHub hub = new(NullLogger<SessionEventHub>.Instance);
+
+        Guid sessionId = Guid.NewGuid();
+
+        using CancellationTokenSource cts = new();
+
+        await using (IAsyncEnumerator<Entry> entries = hub
+            .SubscribeAsync(sessionId, cts.Token)
+            .GetAsyncEnumerator(cts.Token))
         {
 
-            return item;
+            Task<bool> first = entries.MoveNextAsync().AsTask();
+
+            hub.Publish(sessionId, MakeEntry(sessionId, "live"));
+
+            Assert.True(await first.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.Equal(1, hub.TrackedSessionCount);
 
         }
 
-        return null;
+        Assert.Equal(0, hub.TrackedSessionCount);
+
+        hub.Publish(sessionId, MakeEntry(sessionId, "after the operator closed the stream"));
+
+        Assert.Equal(0, hub.TrackedSessionCount);
 
     }
 

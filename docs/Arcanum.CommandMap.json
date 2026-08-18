@@ -418,7 +418,8 @@
               "description": "Prompt GUID, exact name, or unique name prefix. Omit for the interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [],
@@ -1563,7 +1564,8 @@
               "description": "Optional campaign GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [
@@ -1594,7 +1596,8 @@
               "description": "Optional campaign GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [],
@@ -1615,7 +1618,8 @@
               "description": "Optional campaign GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [
@@ -1646,7 +1650,8 @@
               "description": "Optional campaign GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [
@@ -1677,7 +1682,8 @@
               "description": "Optional campaign GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [
@@ -1728,7 +1734,8 @@
               "description": "Optional campaign GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [
@@ -1770,7 +1777,8 @@
               "description": "Optional campaign GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [
@@ -1838,7 +1846,8 @@
                   "description": "Optional campaign GUID or name; omit for an interactive picker.",
                   "required": false,
                   "variadic": false,
-                  "values": []
+                  "values": [],
+                  "completion": "campaign"
                 }
               ],
               "options": [],
@@ -1859,7 +1868,8 @@
                   "description": "Optional campaign GUID or name; omit for an interactive picker.",
                   "required": false,
                   "variadic": false,
-                  "values": []
+                  "values": [],
+                  "completion": "campaign"
                 }
               ],
               "options": [
@@ -1890,7 +1900,8 @@
                   "description": "Optional campaign GUID or name; omit for an interactive picker.",
                   "required": false,
                   "variadic": false,
-                  "values": []
+                  "values": [],
+                  "completion": "campaign"
                 }
               ],
               "options": [],
@@ -2909,7 +2920,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -2959,7 +2971,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -3053,7 +3066,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -3085,7 +3099,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -3135,7 +3150,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -3167,7 +3183,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -3241,7 +3258,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -3293,7 +3311,8 @@
               "description": "Exact spell name or unique name prefix.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "spell"
             }
           ],
           "options": [
@@ -3344,7 +3363,8 @@
                   "description": "Exact spell name or unique name prefix.",
                   "required": true,
                   "variadic": false,
-                  "values": []
+                  "values": [],
+                  "completion": "spell"
                 }
               ],
               "options": [
@@ -3394,7 +3414,8 @@
                   "description": "Exact spell name or unique name prefix.",
                   "required": true,
                   "variadic": false,
-                  "values": []
+                  "values": [],
+                  "completion": "spell"
                 }
               ],
               "options": [
@@ -3444,7 +3465,8 @@
                   "description": "Exact spell name or unique name prefix.",
                   "required": true,
                   "variadic": false,
-                  "values": []
+                  "values": [],
+                  "completion": "spell"
                 }
               ],
               "options": [
@@ -3564,7 +3586,8 @@
               "description": "Prompt name.",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [
@@ -3663,7 +3686,8 @@
               "description": "Optional prompt GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [
@@ -3703,7 +3727,8 @@
               "description": "Optional prompt GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [],
@@ -3724,7 +3749,8 @@
               "description": "Optional prompt GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [
@@ -3755,7 +3781,8 @@
               "description": "Optional prompt GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [],
@@ -3776,7 +3803,8 @@
               "description": "Optional prompt GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [
@@ -3825,7 +3853,8 @@
               "description": "Optional prompt GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [
@@ -3875,7 +3904,8 @@
               "description": "Optional prompt GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "prompt"
             }
           ],
           "options": [
@@ -4250,7 +4280,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [],
@@ -4271,7 +4302,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [],
@@ -4292,7 +4324,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [],
@@ -4313,7 +4346,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [],
@@ -4334,7 +4368,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [],
@@ -4355,7 +4390,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [
@@ -4386,7 +4422,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [
@@ -4417,7 +4454,8 @@
               "description": "Optional Apprentice GUID or name; omit for an interactive picker.",
               "required": false,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "apprentice"
             }
           ],
           "options": [
@@ -7351,7 +7389,8 @@
               "description": "campaign ID or name",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "options": [],
@@ -7372,7 +7411,8 @@
               "description": "workspace ID or path",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "workspace"
             }
           ],
           "options": [],
@@ -7393,7 +7433,8 @@
               "description": "model name",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "model"
             }
           ],
           "options": [],
@@ -7414,7 +7455,8 @@
               "description": "session ID",
               "required": true,
               "variadic": false,
-              "values": []
+              "values": [],
+              "completion": "session"
             }
           ],
           "options": [],

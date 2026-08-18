@@ -78,7 +78,7 @@ public sealed class CovenantDiagnosticTagger(ICovenantDiagnosticKeySource keys) 
 
             Span<byte> mac = stackalloc byte[32];
 
-            _ = HMACSHA256.HashData(key, contentIdentityDigest.Bytes, mac);
+            _ = HMACSHA256.HashData(key, contentIdentityDigest.Span, mac);
 
             return new CovenantDiagnosticTag(version, mac[..CovenantDiagnosticTag.TagBytes]);
 

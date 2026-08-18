@@ -678,6 +678,211 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     /// <summary>
+    /// The staging parent, the index entry, the staging root, the journal and the captured secrets are
+    /// all built before the phase loop, and a failure in any of them has to arrive the way every other
+    /// restore failure does: as a typed blocker with a plan and phase records attached. Escaping as an
+    /// exception costs the operator everything that matters here — the reason, the path, and the one
+    /// sentence that says the current installation was never touched.
+    /// </summary>
+    [Fact]
+    public async Task A_staging_root_that_cannot_be_created_is_a_typed_refusal_rather_than_an_exception()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unwritable-profile.arcbackup");
+
+        string sealedParent = Path.Combine(_root, "sealed");
+
+        Directory.CreateDirectory(sealedParent);
+
+        File.SetUnixFileMode(sealedParent, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        try
+        {
+
+            if (CanCreateDirectoryIn(sealedParent))
+            {
+
+                // A process that outranks the mode — root in a container, most often — cannot observe
+                // the refusal at all, so there is nothing here to assert.
+                return;
+
+            }
+
+            BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.NewProfileRoot,
+                    Path.Combine(sealedParent, "profile", "arcanum"),
+                    Confirmed: true,
+                    CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+            Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+            Assert.Contains(result.Issues, static issue => issue.Code == "backup.restore_failed");
+
+            Assert.Equal(
+                "# the archived codex",
+                await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+
+        }
+        finally
+        {
+
+            File.SetUnixFileMode(
+                sealedParent,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+
+    }
+
+    /// <summary>
+    /// A staging root the failed preparation could not delete has to be left journal-less, so the startup
+    /// sweep treats it as someone else's directory rather than adopting it.
+    /// </summary>
+    /// <remarks>
+    /// <c>BackupRestoreJournal.Discover</c> lists only staging roots that still hold a readable journal —
+    /// a directory that merely looks like staging without one is not ours to touch. The long-standing
+    /// cleanup in the outer <c>finally</c> therefore deletes the journal before it deletes the directory,
+    /// and the preparation catch has to do the same: it is reached with the journal already written, and
+    /// if the directory removal then fails, an intact Stage-phase journal is exactly what the next start
+    /// picks up and resumes — for a restore that never touched the installation.
+    /// </remarks>
+    [Fact]
+    public async Task An_undeletable_staging_root_is_left_without_a_journal_for_the_startup_sweep()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("undeletable-staging.arcbackup");
+
+        string stagingParent = Path.GetDirectoryName(_installation)!;
+
+        SealingSecretStore store = new(stagingParent);
+
+        try
+        {
+
+            BackupRestoreResult result = await Restore(store).RestoreAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.ReplaceInstallation,
+                    Confirmed: true,
+                    CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+            Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+            Assert.Contains(result.Issues, static issue => issue.Code == "backup.restore_failed");
+
+            Assert.True(store.Sealed, "The preparation never reached the post-journal capture.");
+
+            if (!Directory.Exists(store.SealedStagingRoot!))
+            {
+
+                // A process that outranks the mode — root in a container, most often — deletes the
+                // staging root anyway, and there is no surviving directory to assert about.
+                return;
+
+            }
+
+            // The surviving directory is the whole point: it is the only state in which the journal's
+            // presence still decides anything.
+            Assert.Empty(BackupRestoreJournal.Discover(stagingParent));
+
+        }
+        finally
+        {
+
+            File.SetUnixFileMode(
+                stagingParent,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Only a replace-installation restore rebuilds local secret protection, so it is the only mode
+    /// that can adopt the archived key. Accepted anywhere else the option promises an adoption in the
+    /// plan and then performs none — the one variant of this that produces no report at all.
+    /// </summary>
+    [Fact]
+    public async Task Adopting_the_archived_master_api_key_outside_a_replacement_is_refused()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync(
+            "master-key-mode.arcbackup",
+            include: [BackupComponent.MasterApiKey]);
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(
+                archive,
+                BackupRestoreConflictMode.NewProfileRoot,
+                Path.Combine(_root, "adopting-profile"),
+                Confirmed: true,
+                CreateSafetyBackup: false,
+                RestoreMasterApiKey: true),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(
+            result.Issues,
+            static issue => issue.Code == "backup.restore_master_api_key_not_applicable");
+
+        Assert.False(Directory.Exists(Path.Combine(_root, "adopting-profile")));
+
+    }
+
+    private static bool CanCreateDirectoryIn(string parent)
+    {
+
+        try
+        {
+
+            string probe = Path.Combine(parent, "probe-" + Guid.NewGuid().ToString("N"));
+
+            Directory.CreateDirectory(probe);
+
+            Directory.Delete(probe);
+
+            return true;
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+
+            return false;
+
+        }
+
+    }
+
+    /// <summary>
     /// A new-profile restore must stage beside its destination so commit stays a same-volume rename,
     /// which is somewhere startup recovery's sweep of the live root's parent can never reach. The
     /// staging index is the trail back, so a process death does not strand decrypted archive
@@ -1739,6 +1944,65 @@ public sealed class BackupRestoreServiceTests : IDisposable
             string? directory,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+    }
+
+    /// <summary>
+    /// Fails the secret capture at the one moment the staging journal exists and the staging root does
+    /// not yet, and makes that root undeletable on the way out.
+    /// </summary>
+    /// <remarks>
+    /// <c>BackupSecretRewrapper.CaptureAsync</c> is the last step of staging preparation, and the
+    /// Grimoire read is its first call — so a throw here lands in the preparation catch with the journal
+    /// already on disk. Sealing the staging <em>parent</em> read-only is what makes the directory removal
+    /// fail while the journal deletion inside it still succeeds, which is precisely the asymmetric window
+    /// under test. The parent is sealed rather than the staging root itself because removing a directory
+    /// needs write permission on its container, and deleting the journal needs it on the staging root.
+    /// </remarks>
+    private sealed class SealingSecretStore(string stagingParent) : ISecretStore
+    {
+
+        public bool Sealed { get; private set; }
+
+        public string? SealedStagingRoot { get; private set; }
+
+        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Missing());
+
+        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync()
+        {
+
+            IReadOnlyList<string> staged = BackupRestoreJournal.Discover(stagingParent);
+
+            if (staged.Count == 0)
+            {
+
+                // Earlier reads run before the journal exists; those must succeed or the restore never
+                // reaches the window this double exists to open.
+                return Task.FromResult<string?>("the current machine secret");
+
+            }
+
+            SealedStagingRoot = staged[0];
+
+            Sealed = true;
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                File.SetUnixFileMode(stagingParent, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+            }
+
+            throw new IOException("The staging parent became unwritable mid-preparation.");
+
+        }
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
 
     }
 

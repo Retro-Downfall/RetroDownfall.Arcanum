@@ -1297,6 +1297,87 @@ public sealed class ConfigurationValidatorTests
 
 
 
+    [Fact]
+    public void Validate_MaxBudgetWithOmittedDialect_ReturnsFailure()
+    {
+
+        Result result = _validator.Validate(SettingsWithReasoning(null, 32768));
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
+
+    }
+
+    [Fact]
+    public void Validate_NullProviderElement_ReturnsPointerBearingFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [null!],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "providers[0]");
+
+    }
+
+    [Fact]
+    public void Validate_NullModelEntry_ReturnsPointerBearingFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = [null!],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "providers[0].models[0]");
+
+    }
+
+    [Fact]
+    public void Validate_NullA2ASkillElement_ReturnsPointerBearingFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Integrations = new IntegrationSettings
+            {
+                A2A = new A2AIntegrationSettings
+                {
+                    Skills = [null!],
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "integrations.a2A.skills[0]");
+
+    }
+
     [Theory]
     [InlineData(ReasoningWireDialect.OpenRouter)]
     [InlineData(ReasoningWireDialect.TopLevelReasoningBudget)]

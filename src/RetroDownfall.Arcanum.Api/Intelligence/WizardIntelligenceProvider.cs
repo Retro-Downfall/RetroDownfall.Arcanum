@@ -687,114 +687,121 @@ public sealed partial class WizardIntelligenceProvider(
         // Built once for the whole logical run and shared by every candidate (DESIGN §10.7.2).
         TurnContextSeed seed = new();
 
-        for (int attemptIndex = 0; attemptIndex < candidates.Count; attemptIndex++)
+        try
         {
-            (ProviderSettings provider, string resolvedModel) = candidates[attemptIndex];
-
-            bool isLastAttempt = attemptIndex == candidates.Count - 1;
-
-            Result reasoningValidation = ValidateReasoningForCandidate(
-                request,
-                provider,
-                resolvedModel,
-                settings.Value.Features.Reasoning);
-
-            if (reasoningValidation.IsFailure)
+            for (int attemptIndex = 0; attemptIndex < candidates.Count; attemptIndex++)
             {
-                return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
-            }
+                (ProviderSettings provider, string resolvedModel) = candidates[attemptIndex];
 
-            ChatClientLease lease;
+                bool isLastAttempt = attemptIndex == candidates.Count - 1;
 
-            try
-            {
-                lease = await chatClientFactory.ResolveClientAsync(provider, resolvedModel, inferenceToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                // Only mark the provider unhealthy for a genuine connectivity failure — matching
-                // the inference-failure handling below (attempt.IsConnectivityFailure). A lease
-                // construction error can also be a local misconfiguration or transient overload,
-                // neither of which means the provider itself is down; marking it failed regardless
-                // would incorrectly drain its health status and could take it out of rotation for
-                // unrelated reasons.
-                bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
+                Result reasoningValidation = ValidateReasoningForCandidate(
+                    request,
+                    provider,
+                    resolvedModel,
+                    settings.Value.Features.Reasoning);
 
-                if (isConnectivityFailure)
+                if (reasoningValidation.IsFailure)
                 {
-                    healthTracker!.MarkFailed(provider.Name);
+                    return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
                 }
 
-                logger.LogWarning(
-                    "Provider {ProviderName} unavailable while resolving client (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                    provider.Name,
-                    attemptIndex + 1,
-                    candidates.Count,
-                    ex.GetType().FullName);
+                ChatClientLease lease;
 
-                lastFailure = Result<PromptTurnResult>.Failure(new Error(
-                    ErrorCodes.Hub.Error,
-                    BuildInferenceFailureMessage(provider, ex)));
-
-                if (!isConnectivityFailure || isLastAttempt)
+                try
                 {
-                    return lastFailure;
+                    lease = await chatClientFactory.ResolveClientAsync(provider, resolvedModel, inferenceToken).ConfigureAwait(false);
                 }
-
-                continue;
-            }
-
-            using (lease)
-            {
-                InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(
-                        lease,
-                        request,
-                        invocationContext,
-                        inferenceToken,
-                        callerToken,
-                        auditContext,
-                        eventSink,
-                        seed,
-                        canFallBack: !isLastAttempt)
-                    .ConfigureAwait(false);
-
-                if (attempt.IsConnectivityFailure)
+                catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                 {
-                    healthTracker!.MarkFailed(provider.Name);
+                    throw;
                 }
-
-                if (attempt.Result.IsSuccess)
+                catch (Exception ex)
                 {
-                    if (!attempt.IsConnectivityFailure)
+                    // Only mark the provider unhealthy for a genuine connectivity failure — matching
+                    // the inference-failure handling below (attempt.IsConnectivityFailure). A lease
+                    // construction error can also be a local misconfiguration or transient overload,
+                    // neither of which means the provider itself is down; marking it failed regardless
+                    // would incorrectly drain its health status and could take it out of rotation for
+                    // unrelated reasons.
+                    bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
+
+                    if (isConnectivityFailure)
                     {
-                        healthTracker!.MarkHealthy(provider.Name);
+                        healthTracker!.MarkFailed(provider.Name);
                     }
 
-                    return attempt.Result;
+                    logger.LogWarning(
+                        "Provider {ProviderName} unavailable while resolving client (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
+                        provider.Name,
+                        attemptIndex + 1,
+                        candidates.Count,
+                        ex.GetType().FullName);
+
+                    lastFailure = Result<PromptTurnResult>.Failure(new Error(
+                        ErrorCodes.Hub.Error,
+                        BuildInferenceFailureMessage(provider, ex)));
+
+                    if (!isConnectivityFailure || isLastAttempt)
+                    {
+                        return lastFailure;
+                    }
+
+                    continue;
                 }
 
-                lastFailure = attempt.Result;
-
-                bool eligibleForFallback = attempt.IsConnectivityFailure
-                    && !attempt.ProviderCommitted
-                    && !isLastAttempt;
-                if (!eligibleForFallback)
+                using (lease)
                 {
-                    return lastFailure;
-                }
+                    InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(
+                            lease,
+                            request,
+                            invocationContext,
+                            inferenceToken,
+                            callerToken,
+                            auditContext,
+                            eventSink,
+                            seed,
+                            canFallBack: !isLastAttempt)
+                        .ConfigureAwait(false);
 
-                logger.LogWarning(
-                    "Provider {ProviderName} inference failed with a connectivity error (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
-                    provider.Name,
-                    attemptIndex + 1,
-                    candidates.Count);
+                    if (attempt.IsConnectivityFailure)
+                    {
+                        healthTracker!.MarkFailed(provider.Name);
+                    }
+
+                    if (attempt.Result.IsSuccess)
+                    {
+                        if (!attempt.IsConnectivityFailure)
+                        {
+                            healthTracker!.MarkHealthy(provider.Name);
+                        }
+
+                        return attempt.Result;
+                    }
+
+                    lastFailure = attempt.Result;
+
+                    bool eligibleForFallback = attempt.IsConnectivityFailure
+                        && !attempt.ProviderCommitted
+                        && !isLastAttempt;
+                    if (!eligibleForFallback)
+                    {
+                        return lastFailure;
+                    }
+
+                    logger.LogWarning(
+                        "Provider {ProviderName} inference failed with a connectivity error (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
+                        provider.Name,
+                        attemptIndex + 1,
+                        candidates.Count);
+
+                }
 
             }
-
+        }
+        finally
+        {
+            await ResolveDeferredTurnAsync(seed).ConfigureAwait(false);
         }
 
         return lastFailure;
@@ -1056,180 +1063,103 @@ public sealed partial class WizardIntelligenceProvider(
         // Built once for the whole logical run and shared by every candidate (DESIGN §10.7.2).
         TurnContextSeed streamSeed = new();
 
-        for (int attemptIndex = 0; attemptIndex < streamCandidates.Count; attemptIndex++)
+        try
         {
-            (ProviderSettings candidateProvider, string candidateModel) = streamCandidates[attemptIndex];
-
-            bool isLastAttempt = attemptIndex == streamCandidates.Count - 1;
-
-            Result reasoningValidation = ValidateReasoningForCandidate(
-                request,
-                candidateProvider,
-                candidateModel,
-                settings.Value.Features.Reasoning);
-
-            if (reasoningValidation.IsFailure)
+            for (int attemptIndex = 0; attemptIndex < streamCandidates.Count; attemptIndex++)
             {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    reasoningValidation.Error.Message,
-                    reasoningValidation.Error.Code);
+                (ProviderSettings candidateProvider, string candidateModel) = streamCandidates[attemptIndex];
 
-                yield break;
-            }
+                bool isLastAttempt = attemptIndex == streamCandidates.Count - 1;
 
-            ChatClientLease? candidateLease = null;
+                Result reasoningValidation = ValidateReasoningForCandidate(
+                    request,
+                    candidateProvider,
+                    candidateModel,
+                    settings.Value.Features.Reasoning);
 
-            Exception? leaseBuildFailure = null;
-
-            try
-            {
-                candidateLease = await chatClientFactory.ResolveClientAsync(candidateProvider, candidateModel, inferenceToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                leaseBuildFailure = ex;
-            }
-
-            if (leaseBuildFailure is not null)
-            {
-                // Only mark the provider unhealthy for a genuine connectivity failure — a local
-                // misconfiguration or transient overload does not mean the provider itself is down.
-                bool buildFailureIsConnectivity = IsConnectivityFailure(leaseBuildFailure, callerToken);
-
-                if (buildFailureIsConnectivity)
+                if (reasoningValidation.IsFailure)
                 {
-                    healthTracker!.MarkFailed(candidateProvider.Name);
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        reasoningValidation.Error.Message,
+                        reasoningValidation.Error.Code);
+
+                    yield break;
                 }
 
-                bool retryableBuildFailure = buildFailureIsConnectivity && !isLastAttempt;
+                ChatClientLease? candidateLease = null;
 
-                logger.LogWarning(
-                    "Provider {ProviderName} unavailable while resolving streaming client (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                    candidateProvider.Name,
-                    attemptIndex + 1,
-                    streamCandidates.Count,
-                    leaseBuildFailure.GetType().FullName);
-
-                if (retryableBuildFailure)
-                {
-                    continue;
-                }
-
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure));
-
-                yield break;
-            }
-
-            ChatClientLease lease = candidateLease!;
-
-            StreamFailureClassification classification = new();
-
-            IAsyncEnumerator<IntelligenceEvent> enumerator = RunInferenceAttemptAsync(
-                lease,
-                request,
-                invocationContext,
-                prompt,
-                TurnResponseMode.Streaming,
-                classification,
-                inferenceToken,
-                callerToken,
-                auditContext,
-                streamSeed,
-                canFallBack: !isLastAttempt).GetAsyncEnumerator();
-
-            Exception? moveNextFailure = null;
-
-            bool hasFirst = false;
-
-            try
-            {
-                hasFirst = await enumerator.MoveNextAsync().ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-            {
-                await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                lease.Dispose();
-
-                throw;
-            }
-            catch (Exception ex)
-            {
-                moveNextFailure = ex;
-            }
-
-            if (moveNextFailure is not null)
-            {
-                // Only mark the provider unhealthy for a genuine connectivity failure — matches
-                // the lease-build-failure handling above and the buffered inference path.
-                bool moveFailureIsConnectivity = IsConnectivityFailure(moveNextFailure, callerToken);
-
-                if (moveFailureIsConnectivity)
-                {
-                    healthTracker!.MarkFailed(candidateProvider.Name);
-                }
-
-                bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt;
-
-                logger.LogWarning(
-                    "Provider {ProviderName} failed to start streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                    candidateProvider.Name,
-                    attemptIndex + 1,
-                    streamCandidates.Count,
-                    moveNextFailure.GetType().FullName);
-
-                await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                lease.Dispose();
-
-                if (retryableMoveFailure)
-                {
-                    continue;
-                }
-
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
-
-                yield break;
-            }
-
-            if (!hasFirst)
-            {
-                await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                lease.Dispose();
-
-                yield break;
-            }
-
-            IntelligenceEvent firstEvent = enumerator.Current;
-
-            // Pre-commit events (Status / SessionBound / ConversationBound / Context) must not close
-            // the fallback window (ADR 0004: commit from ModelCallUpdate / tool proposal / empty
-            // success — tracked on classification.ProviderCommitted).
-            List<IntelligenceEvent> preCommitBuffer = [];
-
-            IntelligenceEvent? commitGateEvent = firstEvent;
-
-            while (commitGateEvent is not null
-                   && !classification.ProviderCommitted
-                   && IsPreCommitStreamingEvent(commitGateEvent))
-            {
-                preCommitBuffer.Add(commitGateEvent);
-
-                bool movedPre;
+                Exception? leaseBuildFailure = null;
 
                 try
                 {
-                    movedPre = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    candidateLease = await chatClientFactory.ResolveClientAsync(candidateProvider, candidateModel, inferenceToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    leaseBuildFailure = ex;
+                }
+
+                if (leaseBuildFailure is not null)
+                {
+                    // Only mark the provider unhealthy for a genuine connectivity failure — a local
+                    // misconfiguration or transient overload does not mean the provider itself is down.
+                    bool buildFailureIsConnectivity = IsConnectivityFailure(leaseBuildFailure, callerToken);
+
+                    if (buildFailureIsConnectivity)
+                    {
+                        healthTracker!.MarkFailed(candidateProvider.Name);
+                    }
+
+                    bool retryableBuildFailure = buildFailureIsConnectivity && !isLastAttempt;
+
+                    logger.LogWarning(
+                        "Provider {ProviderName} unavailable while resolving streaming client (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
+                        candidateProvider.Name,
+                        attemptIndex + 1,
+                        streamCandidates.Count,
+                        leaseBuildFailure.GetType().FullName);
+
+                    if (retryableBuildFailure)
+                    {
+                        continue;
+                    }
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure));
+
+                    yield break;
+                }
+
+                ChatClientLease lease = candidateLease!;
+
+                StreamFailureClassification classification = new();
+
+                IAsyncEnumerator<IntelligenceEvent> enumerator = RunInferenceAttemptAsync(
+                    lease,
+                    request,
+                    invocationContext,
+                    prompt,
+                    TurnResponseMode.Streaming,
+                    classification,
+                    inferenceToken,
+                    callerToken,
+                    auditContext,
+                    streamSeed,
+                    canFallBack: !isLastAttempt).GetAsyncEnumerator();
+
+                Exception? moveNextFailure = null;
+
+                bool hasFirst = false;
+
+                try
+                {
+                    hasFirst = await enumerator.MoveNextAsync().ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                 {
@@ -1242,166 +1172,272 @@ public sealed partial class WizardIntelligenceProvider(
                 catch (Exception ex)
                 {
                     moveNextFailure = ex;
-
-                    movedPre = false;
                 }
 
                 if (moveNextFailure is not null)
                 {
-                    break;
+                    // Only mark the provider unhealthy for a genuine connectivity failure — matches
+                    // the lease-build-failure handling above and the buffered inference path.
+                    bool moveFailureIsConnectivity = IsConnectivityFailure(moveNextFailure, callerToken);
+
+                    if (moveFailureIsConnectivity)
+                    {
+                        healthTracker!.MarkFailed(candidateProvider.Name);
+                    }
+
+                    bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt;
+
+                    logger.LogWarning(
+                        "Provider {ProviderName} failed to start streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
+                        candidateProvider.Name,
+                        attemptIndex + 1,
+                        streamCandidates.Count,
+                        moveNextFailure.GetType().FullName);
+
+                    await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                    lease.Dispose();
+
+                    if (retryableMoveFailure)
+                    {
+                        continue;
+                    }
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
+
+                    yield break;
                 }
 
-                commitGateEvent = movedPre ? enumerator.Current : null;
-            }
-
-            if (moveNextFailure is not null)
-            {
-                bool moveFailureIsConnectivity = IsConnectivityFailure(moveNextFailure, callerToken);
-
-                if (moveFailureIsConnectivity)
+                if (!hasFirst)
                 {
-                    healthTracker!.MarkFailed(candidateProvider.Name);
+                    await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                    lease.Dispose();
+
+                    yield break;
                 }
 
-                bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt && !classification.ProviderCommitted;
+                IntelligenceEvent firstEvent = enumerator.Current;
 
-                logger.LogWarning(
-                    "Provider {ProviderName} failed during pre-commit streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                    candidateProvider.Name,
-                    attemptIndex + 1,
-                    streamCandidates.Count,
-                    moveNextFailure.GetType().FullName);
+                // Pre-commit events (Status / SessionBound / ConversationBound / Context) must not close
+                // the fallback window (ADR 0004: commit from ModelCallUpdate / tool proposal / empty
+                // success — tracked on classification.ProviderCommitted).
+                List<IntelligenceEvent> preCommitBuffer = [];
 
-                await enumerator.DisposeAsync().ConfigureAwait(false);
+                IntelligenceEvent? commitGateEvent = firstEvent;
 
-                lease.Dispose();
-
-                if (retryableMoveFailure)
+                while (commitGateEvent is not null
+                       && !classification.ProviderCommitted
+                       && IsPreCommitStreamingEvent(commitGateEvent))
                 {
-                    continue;
-                }
+                    preCommitBuffer.Add(commitGateEvent);
 
-                foreach (IntelligenceEvent buffered in preCommitBuffer)
-                {
-                    yield return buffered;
-                }
-
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
-
-                yield break;
-            }
-
-            IntelligenceEvent? gateEvent = commitGateEvent;
-
-            bool gateIsConnectivityError = gateEvent is { Type: IntelligenceEventType.Error }
-                && classification.IsConnectivityFailure;
-            bool providerMarkedFailed = false;
-            bool gateIsRetryableConnectivityError = gateIsConnectivityError
-                && !classification.ProviderCommitted
-                && !isLastAttempt;
-
-            if (gateIsConnectivityError)
-            {
-                healthTracker!.MarkFailed(candidateProvider.Name);
-                providerMarkedFailed = true;
-            }
-
-            if (gateIsRetryableConnectivityError)
-            {
-                logger.LogWarning(
-                    "Provider {ProviderName} streaming connection failed (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
-                    candidateProvider.Name,
-                    attemptIndex + 1,
-                    streamCandidates.Count);
-
-                await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                lease.Dispose();
-
-                continue;
-            }
-
-            Exception? midStreamFailure = null;
-
-            try
-            {
-                foreach (IntelligenceEvent buffered in preCommitBuffer)
-                {
-                    yield return buffered;
-                }
-
-                if (gateEvent is not null)
-                {
-                    yield return gateEvent;
-                }
-
-                while (true)
-                {
-                    bool moved;
+                    bool movedPre;
 
                     try
                     {
-                        moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                        movedPre = await enumerator.MoveNextAsync().ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
+                        await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                        lease.Dispose();
+
                         throw;
                     }
                     catch (Exception ex)
                     {
-                        midStreamFailure = ex;
-                        break;
+                        moveNextFailure = ex;
+
+                        movedPre = false;
                     }
 
-                    if (!moved)
+                    if (moveNextFailure is not null)
                     {
                         break;
                     }
 
-                    yield return enumerator.Current;
+                    commitGateEvent = movedPre ? enumerator.Current : null;
                 }
-            }
-            finally
-            {
-                await enumerator.DisposeAsync().ConfigureAwait(false);
 
-                lease.Dispose();
-            }
+                if (moveNextFailure is not null)
+                {
+                    bool moveFailureIsConnectivity = IsConnectivityFailure(moveNextFailure, callerToken);
 
-            if (midStreamFailure is not null)
-            {
-                bool midStreamConnectivityFailure = IsConnectivityFailure(midStreamFailure, callerToken);
-                if (midStreamConnectivityFailure && !providerMarkedFailed)
+                    if (moveFailureIsConnectivity)
+                    {
+                        healthTracker!.MarkFailed(candidateProvider.Name);
+                    }
+
+                    bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt && !classification.ProviderCommitted;
+
+                    logger.LogWarning(
+                        "Provider {ProviderName} failed during pre-commit streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
+                        candidateProvider.Name,
+                        attemptIndex + 1,
+                        streamCandidates.Count,
+                        moveNextFailure.GetType().FullName);
+
+                    await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                    lease.Dispose();
+
+                    if (retryableMoveFailure)
+                    {
+                        continue;
+                    }
+
+                    foreach (IntelligenceEvent buffered in preCommitBuffer)
+                    {
+                        yield return buffered;
+                    }
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
+
+                    yield break;
+                }
+
+                IntelligenceEvent? gateEvent = commitGateEvent;
+
+                bool gateIsConnectivityError = gateEvent is { Type: IntelligenceEventType.Error }
+                    && classification.IsConnectivityFailure;
+                bool providerMarkedFailed = false;
+                bool gateIsRetryableConnectivityError = gateIsConnectivityError
+                    && !classification.ProviderCommitted
+                    && !isLastAttempt;
+
+                if (gateIsConnectivityError)
                 {
                     healthTracker!.MarkFailed(candidateProvider.Name);
                     providerMarkedFailed = true;
                 }
 
-                logger.LogError(
-                    "Streaming inference threw mid-stream for provider {ProviderName}; exception type {ExceptionType}.",
-                    candidateProvider.Name,
-                    midStreamFailure.GetType().FullName);
+                if (gateIsRetryableConnectivityError)
+                {
+                    logger.LogWarning(
+                        "Provider {ProviderName} streaming connection failed (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
+                        candidateProvider.Name,
+                        attemptIndex + 1,
+                        streamCandidates.Count);
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    PublicInferenceFailureMessage);
+                    await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                    lease.Dispose();
+
+                    continue;
+                }
+
+                Exception? midStreamFailure = null;
+
+                try
+                {
+                    foreach (IntelligenceEvent buffered in preCommitBuffer)
+                    {
+                        yield return buffered;
+                    }
+
+                    if (gateEvent is not null)
+                    {
+                        yield return gateEvent;
+                    }
+
+                    while (true)
+                    {
+                        bool moved;
+
+                        try
+                        {
+                            moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            midStreamFailure = ex;
+                            break;
+                        }
+
+                        if (!moved)
+                        {
+                            break;
+                        }
+
+                        yield return enumerator.Current;
+                    }
+                }
+                finally
+                {
+                    await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                    lease.Dispose();
+                }
+
+                if (midStreamFailure is not null)
+                {
+                    bool midStreamConnectivityFailure = IsConnectivityFailure(midStreamFailure, callerToken);
+                    if (midStreamConnectivityFailure && !providerMarkedFailed)
+                    {
+                        healthTracker!.MarkFailed(candidateProvider.Name);
+                        providerMarkedFailed = true;
+                    }
+
+                    logger.LogError(
+                        "Streaming inference threw mid-stream for provider {ProviderName}; exception type {ExceptionType}.",
+                        candidateProvider.Name,
+                        midStreamFailure.GetType().FullName);
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        PublicInferenceFailureMessage);
+                }
+
+                if (classification.IsConnectivityFailure && !providerMarkedFailed)
+                {
+                    healthTracker!.MarkFailed(candidateProvider.Name);
+                    providerMarkedFailed = true;
+                }
+
+                if (!providerMarkedFailed)
+                {
+                    healthTracker!.MarkHealthy(candidateProvider.Name);
+                }
+
+                yield break;
             }
-
-            if (classification.IsConnectivityFailure && !providerMarkedFailed)
-            {
-                healthTracker!.MarkFailed(candidateProvider.Name);
-                providerMarkedFailed = true;
-            }
-
-            if (!providerMarkedFailed)
-            {
-                healthTracker!.MarkHealthy(candidateProvider.Name);
-            }
-
-            yield break;
         }
+        finally
+        {
+            await ResolveDeferredTurnAsync(streamSeed).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Backstop owner for the run's shared Grimoire handle, run from the <c>finally</c> around both
+    /// fallback loops. <see cref="ShouldDeferTurnToNextCandidate"/> hands an uncommitted turn to the
+    /// next candidate instead of discarding it, which assumes a later candidate reaches inference —
+    /// but the per-candidate reasoning gate and a non-connectivity lease-build failure both leave the
+    /// loop before that happens, and a deferred handle then keeps a Session and an empty assistant
+    /// <c>Entry</c> in flight with nobody left to resolve them. A handle a candidate already resolved
+    /// is untouched: the writer no-ops on <c>IsFinalized</c> and on a null assistant entry, and it
+    /// swallows its own failures so this can never mask the run's terminal error.
+    /// </summary>
+    private async Task ResolveDeferredTurnAsync(TurnContextSeed seed)
+    {
+        if (seed.Turn is not { } deferred)
+        {
+            return;
+        }
+
+        await grimoireTurnWriter
+            .TryResolveInterruptedOnStreamExitAsync(deferred, null)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1409,7 +1445,8 @@ public sealed partial class WizardIntelligenceProvider(
     /// on a connectivity error before committing any output, and another candidate is still to be
     /// tried. Discarding the empty assistant row here would force the next candidate to seed the
     /// turn again — a second user <c>Entry</c>, and a second Session for a session-less request
-    /// (DESIGN §10.7.2). The last candidate always resolves the turn, so nothing is left dangling.
+    /// (DESIGN §10.7.2). <see cref="ResolveDeferredTurnAsync"/> owns whatever the last candidate
+    /// leaves behind, so a run that exits the loop before any later candidate runs still resolves it.
     /// </summary>
     private static bool ShouldDeferTurnToNextCandidate(
         TurnContextSeed? seed,
@@ -6065,6 +6102,14 @@ public sealed partial class WizardIntelligenceProvider(
             long outputCap = ArcanumSettingClamps.ToolOutputCapBytes(
                 settings.Value.ResolveIntelligence().ToolOutputCapBytes);
 
+            // The SpellScript profile's ARCANUM_ prefix scrub only covers the derived default names.
+            // Every credential variable an operator can rename — a provider key at MY_OPENAI_KEY, the
+            // Comm Link webhook URL at TEAM_WEBHOOK_URL — has to travel with the tool by name, or the
+            // spell script reads it straight out of its own environment. execute_command sources the
+            // same list at its call site (ArcanumInternalToolServer.ExecuteCommand).
+            IReadOnlyList<string> operatorDeclaredSecrets =
+                FamiliarSecretEnvironmentNames.Collect(settings.Value);
+
             tools.Add(new ArcanumSpellScriptTool(
                 scriptRoots,
                 outputCap,
@@ -6073,7 +6118,8 @@ public sealed partial class WizardIntelligenceProvider(
                 processResourceLimiter,
                 workingDirectory,
                 settings.Value.Security.AllowUnsandboxedToolChildren,
-                settings.Value.Edition));
+                settings.Value.Edition,
+                operatorDeclaredSecrets));
         }
 
         IReadOnlyList<string>? declaredTools = activeSpell?.SkillMetadata?.DeclaredTools;
@@ -6282,44 +6328,40 @@ public sealed partial class WizardIntelligenceProvider(
         return roots;
     }
 
-    private static bool ShouldDisableMcpTools(PingRequest request)
-    {
-        if (request.ToolPolicy is ToolPolicy.NoTools)
+    /// <summary>
+    /// <c>toolPolicy</c> and <c>disableMcpTools</c> are both narrowing instructions, so the answer to
+    /// both is their intersection. The filtering policies no longer supersede the flag, which used to
+    /// leave a caller that asked for no MCP tools with a filtered MCP toolset anyway.
+    ///
+    /// <para>The <c>_</c> arm treats an unrecognized policy as <c>noTools</c>. The wire converter
+    /// refuses undefined values, so one can only arrive from in-process construction — and an unknown
+    /// restriction must never be the arm that widens advertisement.</para>
+    /// </summary>
+    private static bool ShouldDisableMcpTools(PingRequest request) =>
+        request.ToolPolicy switch
         {
-            return true;
-        }
+            ToolPolicy.NoTools => true,
+            null
+                or ToolPolicy.AllTools
+                or ToolPolicy.ReadOnlyTools
+                or ToolPolicy.NoForbiddenArts => request.DisableMcpTools,
+            _ => true,
+        };
 
-        if (request.ToolPolicy is null or ToolPolicy.AllTools)
+    /// <summary>
+    /// The advertisement filter for a resolved policy. Its <c>_</c> arm advertises nothing, for the same
+    /// reason <see cref="ShouldDisableMcpTools"/>'s does: an undefined policy is not a licence.
+    /// </summary>
+    private IReadOnlyList<AITool> ApplyToolPolicyFilters(PingRequest request, IReadOnlyList<AITool> tools) =>
+        request.ToolPolicy switch
         {
-            return request.DisableMcpTools;
-        }
-
-        return false;
-    }
-
-    private IReadOnlyList<AITool> ApplyToolPolicyFilters(PingRequest request, IReadOnlyList<AITool> tools)
-    {
-        if (request.ToolPolicy is null or ToolPolicy.AllTools or ToolPolicy.NoTools)
-        {
-            return tools;
-        }
-
-        if (request.ToolPolicy is ToolPolicy.ReadOnlyTools)
-        {
-            return FilterToolsToAllowlist(tools, ReadOnlyToolNames);
-        }
-
-        if (request.ToolPolicy is ToolPolicy.NoForbiddenArts)
-        {
-            WardSettings wardSettings = settings.Value.ResolveWard();
-
-            return FilterToolsExcludingNames(
+            null or ToolPolicy.AllTools or ToolPolicy.NoTools => tools,
+            ToolPolicy.ReadOnlyTools => FilterToolsToAllowlist(tools, ReadOnlyToolNames),
+            ToolPolicy.NoForbiddenArts => FilterToolsExcludingNames(
                 tools,
-                ToolRiskClassifier.BuildForbiddenToolNames(wardSettings.ForbiddenArts));
-        }
-
-        return tools;
-    }
+                ToolRiskClassifier.BuildForbiddenToolNames(settings.Value.ResolveWard().ForbiddenArts)),
+            _ => [],
+        };
 
     private static readonly HashSet<string> ReadOnlyToolNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -6583,6 +6625,46 @@ public sealed partial class WizardIntelligenceProvider(
             onSemanticDropped: null,
             out breakdown);
 
+    /// <summary>
+    /// Evicts semantic materializations, lowest priority first, until the payload fits the model's
+    /// context window or the ledger has no semantic entry left.
+    /// </summary>
+    /// <remarks>
+    /// A ledger entry whose counterpart the rendered prompt does not hold frees nothing when it is
+    /// surrendered. Two things follow. Its drop is rescinded, so the turn's reported <c>Dropped*</c>
+    /// counts never claim relief the payload never got. And the cascade continues past it rather than
+    /// abandoning admission — the ledger has already given the entry up, so the next iteration
+    /// considers the next-lowest, which may well be the entry actually holding the payload over budget.
+    /// <paramref name="isOverBudget"/> is a full tokenizer pass over the whole payload, so it is
+    /// re-evaluated only after an eviction that changed something.
+    /// </remarks>
+    internal static void CascadeSemanticDrops(
+        ContextMaterializationLedger ledger,
+        Func<ContextMaterializationEntry, bool> onSemanticDropped,
+        Func<bool> isOverBudget)
+    {
+        bool overBudget = isOverBudget();
+
+        while (overBudget)
+        {
+            ContextMaterializationEntry? removed = ledger.DropLowestPrioritySemantic();
+
+            if (removed is null)
+            {
+                break;
+            }
+
+            if (!onSemanticDropped(removed))
+            {
+                ledger.RescindContextPressureDrop(removed);
+
+                continue;
+            }
+
+            overBudget = isOverBudget();
+        }
+    }
+
     private Result EnsureContextBudgetWithMaterializations(
         List<MeAiChatMessage> chatMessages,
         ChatOptions chatOptions,
@@ -6606,20 +6688,12 @@ public sealed partial class WizardIntelligenceProvider(
                     context.ReservedReasoningTokens))
                 .TotalTokens;
 
-        while (ledger is not null
-            && onSemanticDropped is not null
-            && Count(chatMessages) > contextWindowLimit)
+        if (ledger is not null && onSemanticDropped is not null)
         {
-
-            ContextMaterializationEntry? removed = ledger.DropLowestPrioritySemantic();
-
-            if (removed is null || !onSemanticDropped(removed))
-            {
-
-                break;
-
-            }
-
+            CascadeSemanticDrops(
+                ledger,
+                onSemanticDropped,
+                () => Count(chatMessages) > contextWindowLimit);
         }
 
         _ = TurnContextGuards.TryTrimOldestToolExchanges(

@@ -122,6 +122,17 @@ internal sealed class ShellCommandParser
                 : Denied(raw, "Usage: /unpin <pin-id>");
         }
 
+        if (head is "context")
+        {
+            // `/context list|pin|unpin` are removed spellings. Accepting the head and ignoring the
+            // trailing tokens would silently run the token readout instead of the pin verb asked for.
+            return parts.Length == 1
+                ? new ParsedShellCommand(ShellCommandKind.Context, raw)
+                : Denied(
+                    raw,
+                    "Usage: /context (token readout). Pins are /pins, /pin <kind> <target>, /unpin <pin-id>.");
+        }
+
         if (head.StartsWith("attach", StringComparison.Ordinal))
         {
             return Denied(
@@ -195,7 +206,6 @@ internal sealed class ShellCommandParser
             "clear" => new ParsedShellCommand(ShellCommandKind.Clear, raw),
             "compact" => new ParsedShellCommand(ShellCommandKind.Compact, raw),
             "config" => new ParsedShellCommand(ShellCommandKind.Config, raw),
-            "context" => new ParsedShellCommand(ShellCommandKind.Context, raw),
             "cost" => new ParsedShellCommand(ShellCommandKind.Cost, raw),
             "memory" => new ParsedShellCommand(ShellCommandKind.Memory, raw),
             "look" => new ParsedShellCommand(ShellCommandKind.Look, raw),

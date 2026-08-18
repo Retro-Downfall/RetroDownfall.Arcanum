@@ -309,6 +309,22 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         }
 
+        // Refused rather than ignored. Adoption happens inside the re-wrap, and only a replacement
+        // rebuilds local secret protection at all — so anywhere else the option produced a plan
+        // warning promising the archived key would replace this machine's, and then did nothing and
+        // said nothing.
+        if (request.RestoreMasterApiKey
+            && request.ConflictMode != BackupRestoreConflictMode.ReplaceInstallation)
+        {
+
+            blockers.Add(new BackupVerifyIssue(
+                "backup.restore_master_api_key_not_applicable",
+                "Adopting the archived master API key applies only to the replace-installation "
+                + "conflict mode, which is the only one that rebuilds local secret protection.",
+                BackupArchivePaths.MasterApiKey));
+
+        }
+
         BackupPathRemapValidation mapping = BackupPathRemapper.Create(
             request.PathMappings ?? []);
 
@@ -637,37 +653,109 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 : liveRoot)
             ?? throw new InvalidOperationException("The restore destination has no parent directory.");
 
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagingParent);
+        OwnedTemporaryDirectory staging;
 
-        string stagingPath = Path.Combine(stagingParent, BackupRestoreJournal.CreateStagingName());
+        string stagedRoot;
 
-        // Recorded before the root exists, and beside the live installation rather than inside it: a
-        // new-profile restore stages beside its destination, where the startup sweep of the live
-        // root's parent would never look for it.
-        BackupRestoreStagingIndex.Add(liveRoot, stagingPath);
+        string displacedRoot;
 
-        OwnedTemporaryDirectory staging = OwnedTemporaryDirectory.Create(stagingPath);
+        string workRoot;
 
-        string stagedRoot = Path.Combine(staging.Path, BackupRestoreJournal.StagedDirectoryName);
+        BackupRestoreJournalRecord journal;
 
-        string displacedRoot = Path.Combine(staging.Path, BackupRestoreJournal.DisplacedDirectoryName);
+        BackupSecretRewrapper rewrapper = new(_secretStore);
 
-        string workRoot = Path.Combine(staging.Path, BackupRestoreJournal.WorkDirectoryName);
+        BackupSecretSnapshot priorSecrets;
 
-        BackupRestoreJournalRecord journal = BackupRestoreJournal.Write(
-            staging.Path,
-            new BackupRestoreJournalRecord(
-                BackupRestoreJournal.CurrentVersion,
+        // Everything the phase loop needs before it can run, under a refusal of its own. None of it
+        // is covered by the try below, and an IO or permission failure here — an unwritable
+        // new-profile parent, a quota the capacity plan could not model — used to leave RestoreAsync
+        // by throwing, which strips the plan, the phase records, and the statement that the current
+        // installation is untouched down to a generic CLI error.
+        string? indexedStagingPath = null;
+
+        OwnedTemporaryDirectory? createdStaging = null;
+
+        try
+        {
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagingParent);
+
+            string stagingPath = Path.Combine(stagingParent, BackupRestoreJournal.CreateStagingName());
+
+            // Recorded before the root exists, and beside the live installation rather than inside
+            // it: a new-profile restore stages beside its destination, where the startup sweep of the
+            // live root's parent would never look for it.
+            BackupRestoreStagingIndex.Add(liveRoot, stagingPath);
+
+            indexedStagingPath = stagingPath;
+
+            createdStaging = OwnedTemporaryDirectory.Create(stagingPath);
+
+            staging = createdStaging;
+
+            stagedRoot = Path.Combine(staging.Path, BackupRestoreJournal.StagedDirectoryName);
+
+            displacedRoot = Path.Combine(staging.Path, BackupRestoreJournal.DisplacedDirectoryName);
+
+            workRoot = Path.Combine(staging.Path, BackupRestoreJournal.WorkDirectoryName);
+
+            journal = BackupRestoreJournal.Write(
+                staging.Path,
+                new BackupRestoreJournalRecord(
+                    BackupRestoreJournal.CurrentVersion,
+                    operationId,
+                    request.ConflictMode,
+                    BackupRestorePhase.Stage,
+                    liveRoot,
+                    stagedRoot,
+                    displacedRoot,
+                    SafetyBackupPath: null,
+                    plan.ArchivePath,
+                    staging.VolumeId,
+                    staging.FileId));
+
+            priorSecrets = await rewrapper.CaptureAsync().ConfigureAwait(false);
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+
+            if (createdStaging is not null)
+            {
+
+                // Journal first, exactly as the outer finally does. This catch is reachable with the
+                // journal already written, and BackupRestoreJournal.Discover adopts a staging root only
+                // while it still holds one — so a TryDelete that fails would otherwise leave the startup
+                // sweep a Stage-phase journal to resume, for a restore that touched nothing.
+                BackupRestoreJournal.Delete(createdStaging.Path);
+
+                _ = createdStaging.TryDelete();
+
+            }
+
+            if (indexedStagingPath is not null)
+            {
+
+                BackupRestoreStagingIndex.Remove(liveRoot, indexedStagingPath);
+
+            }
+
+            return Rejected(
                 operationId,
-                request.ConflictMode,
-                BackupRestorePhase.Stage,
-                liveRoot,
-                stagedRoot,
-                displacedRoot,
-                SafetyBackupPath: null,
-                plan.ArchivePath,
-                staging.VolumeId,
-                staging.FileId));
+                plan,
+                phases,
+                [
+                    new BackupVerifyIssue(
+                        "backup.restore_failed",
+                        "The restore could not prepare its staging root, so it stopped before any "
+                        + "destructive step; the current installation is unchanged. Diagnostics: "
+                        + exception.GetType().Name,
+                        stagingParent),
+                ]);
+
+        }
 
         CommitOutcome? commit = null;
 
@@ -693,10 +781,6 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             plan.ArchivePath);
 
         bool durablyDisplaced = false;
-
-        BackupSecretRewrapper rewrapper = new(_secretStore);
-
-        BackupSecretSnapshot priorSecrets = await rewrapper.CaptureAsync().ConfigureAwait(false);
 
         try
         {

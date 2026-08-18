@@ -677,39 +677,26 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
         return new LongRunningOperationLeaseResult(acquired, operation);
     }
 
+    /// <summary>
+    /// Renews a held lease. Always from a connection this store owns, never the caller's scoped one.
+    /// </summary>
+    /// <remarks>
+    /// Every heartbeat in the repo fires from a background timer while the owner's handler is still
+    /// working. Running the UPDATE on the workload's own scoped <c>ArcanumDbContext</c> connection
+    /// put two writers on one <see cref="SqliteConnection"/>, whose live-command list is not
+    /// synchronized, and folded the renewal into whatever transaction the workload had open — so a
+    /// rolled-back unit of work silently took the lease renewal with it and the reconciler could
+    /// steal an operation whose owner was still running. <see cref="RenewLeaseAsync"/> already
+    /// opened its own connection for this reason; the two are now one path, and the scoped
+    /// connection is used only when the context is not backed by SQLite at all.
+    /// </remarks>
     public Task<bool> HeartbeatAsync(
         Guid operationId,
         string ownerId,
         DateTimeOffset utcNow,
         DateTimeOffset leaseExpiresAt,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
-        if (leaseExpiresAt <= utcNow)
-        {
-            throw new ArgumentOutOfRangeException(nameof(leaseExpiresAt));
-        }
-
-        return ExecuteUpdateAsync(
-            """
-            UPDATE "LongRunningOperations"
-            SET "HeartbeatAt" = @now, "LeaseExpiresAt" = @lease, "Revision" = "Revision" + 1
-            WHERE "Id" = @id AND "LeaseOwner" = @owner
-              AND "State" IN (@running, @waiting, @cancelling)
-              AND "LeaseExpiresAt" > @now
-            """,
-            cmd =>
-            {
-                Add(cmd, "@id", Format(operationId));
-                Add(cmd, "@owner", Bound(ownerId, MaxOwnerLength));
-                Add(cmd, "@now", Format(utcNow));
-                Add(cmd, "@lease", Format(leaseExpiresAt));
-                Add(cmd, "@running", (int)LongRunningOperationState.Running);
-                Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
-                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
-            },
-            cancellationToken);
-    }
+        CancellationToken cancellationToken = default) =>
+        RenewLeaseAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
 
     public Task<bool> RenewLeaseAsync(
         Guid operationId,
@@ -735,7 +722,7 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 if (_sqliteConnectionString is null)
                 {
 
-                    return await HeartbeatAsync(
+                    return await RenewOverScopedConnectionAsync(
                         operationId,
                         ownerId,
                         utcNow,
@@ -747,6 +734,14 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 await using SqliteConnection connection = new(_sqliteConnectionString);
 
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+                // A handle EF never opened gets no interceptor, so policy has to be applied here.
+                // Without it the heartbeat writes at SQLite defaults — secure_delete off, no
+                // busy_timeout, no cipher_version verification, and none of the authorization
+                // functions the schema's guard triggers resolve at prepare time.
+                await SqliteConnectionPragmas
+                    .ApplyAsync(connection, cancellationToken)
+                    .ConfigureAwait(false);
 
                 await using SqliteCommand command = connection.CreateCommand();
 
@@ -780,6 +775,40 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
             cancellationToken);
 
     }
+
+    /// <summary>
+    /// The renewal over the context's own connection, for a provider this store cannot open itself.
+    /// </summary>
+    /// <remarks>
+    /// Reached only when the context is not backed by SQLite, so there is no connection string to
+    /// open a second handle from. It carries the scoped connection's hazards by necessity, not by
+    /// choice, and no shipping composition takes this path.
+    /// </remarks>
+    private Task<bool> RenewOverScopedConnectionAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken) =>
+        ExecuteUpdateAsync(
+            """
+            UPDATE "LongRunningOperations"
+            SET "HeartbeatAt" = @now, "LeaseExpiresAt" = @lease, "Revision" = "Revision" + 1
+            WHERE "Id" = @id AND "LeaseOwner" = @owner
+              AND "State" IN (@running, @waiting, @cancelling)
+              AND "LeaseExpiresAt" > @now
+            """,
+            cmd =>
+            {
+                Add(cmd, "@id", Format(operationId));
+                Add(cmd, "@owner", Bound(ownerId, MaxOwnerLength));
+                Add(cmd, "@now", Format(utcNow));
+                Add(cmd, "@lease", Format(leaseExpiresAt));
+                Add(cmd, "@running", (int)LongRunningOperationState.Running);
+                Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
+                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
+            },
+            cancellationToken);
 
     public Task<bool> SaveCheckpointAsync(
         Guid operationId,

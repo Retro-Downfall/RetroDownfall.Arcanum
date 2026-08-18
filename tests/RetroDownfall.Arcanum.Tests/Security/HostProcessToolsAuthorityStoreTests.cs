@@ -186,6 +186,43 @@ public sealed class HostProcessToolsAuthorityStoreTests
 
     }
 
+    /// <summary>
+    /// The digest columns are declared BLOB, which in a non-STRICT table is SQLite's "no affinity" — a
+    /// TEXT value is stored as TEXT and still satisfies <c>length(...) = 32</c>. Reading one back as
+    /// <c>byte[]</c> then throws, so the startup gate has to see a malformed-row failure it can turn
+    /// into a blocked disposition rather than an exception that escapes past it.
+    /// </summary>
+    [Theory]
+    [InlineData("CurrentMasterKeyFingerprint")]
+    [InlineData("TaintFingerprint")]
+    public async Task A_digest_column_stored_as_text_reads_back_as_a_malformed_row(string column)
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        HostProcessToolsAuthorityStore store = new(database.Connection);
+
+        // TaintFingerprint is NULL while the row is clean, so take the transition pending first.
+        HostProcessToolsAuthorityRow clean = (await store.ReadAsync(CancellationToken.None)).Value;
+
+        Assert.True((await store.CommitPendingAsync(clean, Transition, CancellationToken.None)).IsSuccess);
+
+        await using SqliteCommand damage = database.Connection.CreateCommand();
+
+        damage.CommandText = $"UPDATE covenant_authority_state SET {column} = $text WHERE StateKey = 1;";
+
+        _ = damage.Parameters.AddWithValue("$text", "0123456789abcdef0123456789abcdef");
+
+        _ = await damage.ExecuteNonQueryAsync(CancellationToken.None);
+
+        Result<HostProcessToolsAuthorityRow> row = await store.ReadAsync(CancellationToken.None);
+
+        Assert.True(row.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, row.Error.Code);
+
+    }
+
     private static async Task<CovenantSchemaScratchDatabase> CreateAsync()
     {
 

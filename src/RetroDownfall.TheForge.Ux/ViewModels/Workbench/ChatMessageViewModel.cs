@@ -1,5 +1,6 @@
 using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 
@@ -48,7 +49,7 @@ public sealed partial class ChatMessageViewModel : ObservableObject
         if (_content.Length > _maxContentChars)
         {
             int contentLimit = _maxContentChars - _truncationMarker.Length;
-            _content = _content[..contentLimit] + _truncationMarker;
+            _content = _content[..Utf8Truncation.SafeCharSliceLength(_content, contentLimit)] + _truncationMarker;
             _contentTruncated = true;
         }
 
@@ -177,7 +178,15 @@ public sealed partial class ChatMessageViewModel : ObservableObject
         int available = contentLimit - contentBuilder.Length;
         if (available > 0)
         {
-            _ = contentBuilder.Append(data.AsSpan(0, Math.Min(available, data.Length)));
+            _ = contentBuilder.Append(data.AsSpan(0, Utf8Truncation.SafeCharSliceLength(data, available)));
+        }
+
+        // Both cuts above land on a raw UTF-16 code unit, which can fall between the halves of a
+        // surrogate pair. Drop an orphaned high surrogate so the astral-plane glyph is dropped whole
+        // rather than rendering as a replacement character before the marker (DESIGN §16.7).
+        if (contentBuilder.Length > 0 && char.IsHighSurrogate(contentBuilder[^1]))
+        {
+            contentBuilder.Length--;
         }
 
         _ = contentBuilder.Append(_truncationMarker);
