@@ -544,7 +544,7 @@ internal static class CliApplicationFactory
                 // or subclass cannot preserve the exit-0-under---help contract for commands with
                 // required arguments. Writing to config.Output keeps examples inside the same
                 // captured stream as the rest of help, so `--help --json` stays one document.
-                CliHelpExamples.Append(root, parseResult, args, config.Output);
+                CliHelpExamples.Append(root, parseResult, config.Output);
 
                 int normalizedExitCode = parseResult.Errors.Count > 0
                     ? (int)CliExitCode.ConfigurationError
