@@ -215,7 +215,12 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
         previous.AutoConnect == next.AutoConnect
         && string.Equals(previous.BaseUrl, next.BaseUrl, StringComparison.Ordinal);
 
-    /// <summary>Auth failures should flip The Anvil to Error immediately (not after three seeks).</summary>
+    /// <summary>
+    /// Auth failures should flip The Anvil to Error immediately (not after three seeks). They are also the
+    /// only errors that cannot clear themselves — the resolved key is cached for the process lifetime, so
+    /// further polls only repeat the rejection — which is why a waiter may treat this class, and only this
+    /// class, as a final answer rather than waiting for a recovery that will never come.
+    /// </summary>
     internal static bool IsImmediateError(string? errorCode) =>
         string.Equals(errorCode, "Security.MissingApiKey", StringComparison.Ordinal)
         || string.Equals(errorCode, "Auth.Unauthorized", StringComparison.Ordinal);

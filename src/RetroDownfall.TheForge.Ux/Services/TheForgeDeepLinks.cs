@@ -290,17 +290,20 @@ public sealed class TheForgeDeepLinkCoordinator
             or ApplicationResourceKind.Apprentice;
 
     /// <summary>
-    /// Defers routing until the connection reports Connected (docs/Arcanum.DESIGN.md), but treats Error as
-    /// a terminal answer instead of waiting forever: an auth failure caches the bad key for the process
-    /// lifetime, so the wait would never complete and the caller's rejection whisper would never fire.
+    /// Defers routing until the connection reports Connected (docs/Arcanum.DESIGN.md) without inventing a
+    /// timeout. The single terminal answer is an auth-class failure: the resolved key is cached for the
+    /// process lifetime, so re-polling can only repeat the rejection, the wait would never complete, and the
+    /// caller's rejection whisper would never fire. Every other Error keeps waiting — the health poller
+    /// settles on Error after three consecutive missed polls yet goes on polling, so a link that arrives
+    /// while Arcanum is restarting or still booting still routes once the connection recovers.
     /// </summary>
     private async Task<bool> WaitForConnectedAsync(CancellationToken cancellationToken)
     {
 
-        if (_connection.State is ConnectionState.Connected or ConnectionState.Error)
+        if (TrySettle(out bool settled))
         {
 
-            return _connection.State == ConnectionState.Connected;
+            return settled;
 
         }
 
@@ -310,23 +313,21 @@ public sealed class TheForgeDeepLinkCoordinator
         PropertyChangedEventHandler handler = (_, args) =>
         {
 
-            if (args.PropertyName != nameof(IArcanumConnection.State))
+            // LastErrorCode has to be watched in its own right: once State has settled on Error a later
+            // auth failure changes only the code, so a State-only observer would wait on a key that the
+            // provider has already cached and can never clear.
+            if (args.PropertyName is not (nameof(IArcanumConnection.State)
+                or nameof(IArcanumConnection.LastErrorCode)))
             {
 
                 return;
 
             }
 
-            if (_connection.State == ConnectionState.Connected)
+            if (TrySettle(out bool observed))
             {
 
-                connected.TrySetResult(true);
-
-            }
-            else if (_connection.State == ConnectionState.Error)
-            {
-
-                connected.TrySetResult(false);
+                connected.TrySetResult(observed);
 
             }
 
@@ -337,10 +338,10 @@ public sealed class TheForgeDeepLinkCoordinator
         try
         {
 
-            if (_connection.State is ConnectionState.Connected or ConnectionState.Error)
+            if (TrySettle(out bool current))
             {
 
-                connected.TrySetResult(_connection.State == ConnectionState.Connected);
+                connected.TrySetResult(current);
 
             }
 
@@ -353,6 +354,30 @@ public sealed class TheForgeDeepLinkCoordinator
             _connection.PropertyChanged -= handler;
 
         }
+
+    }
+
+    /// <summary>
+    /// True when the connection has reached an answer the router can act on — Connected, or an Error the
+    /// poller cannot recover from on its own. A transient Error (missed health polls while Arcanum
+    /// restarts) is not an answer: the caller keeps waiting for the next successful poll.
+    /// </summary>
+    private bool TrySettle(out bool isConnected)
+    {
+
+        if (_connection.State == ConnectionState.Connected)
+        {
+
+            isConnected = true;
+
+            return true;
+
+        }
+
+        isConnected = false;
+
+        return _connection.State == ConnectionState.Error
+            && ArcanumConnectionService.IsImmediateError(_connection.LastErrorCode);
 
     }
 
