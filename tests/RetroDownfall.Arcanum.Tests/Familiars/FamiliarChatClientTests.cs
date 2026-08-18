@@ -927,6 +927,62 @@ public sealed class FamiliarChatClientTests
 
     }
 
+    /// <summary>
+    /// One <see cref="IChatClient"/> serves every model call in a turn, and the structured-output
+    /// correction loop re-invokes that same instance with the same <c>ResponseFormat</c>. The schema
+    /// file therefore has to be per call: a fixed name opened <c>CreateNew</c> throws on the second
+    /// write, and the swallowed failure silently drops <c>--output-schema</c> on exactly the retry
+    /// that exists to make the answer well-formed.
+    /// </summary>
+    [Fact]
+    public async Task Codex_writes_a_fresh_output_schema_for_every_call_on_one_client()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        ChatOptions options = new() { ResponseFormat = SchemaFormat() };
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            options,
+            CancellationToken.None);
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "that was not valid JSON; try again")],
+            options,
+            CancellationToken.None);
+
+        Assert.Equal(2, runner.Requests.Count);
+
+        List<string> first = [.. runner.Requests[0].Arguments];
+
+        List<string> second = [.. runner.Requests[1].Arguments];
+
+        int firstIndex = first.IndexOf("--output-schema");
+
+        int secondIndex = second.IndexOf("--output-schema");
+
+        Assert.True(firstIndex >= 0, "the first call lost --output-schema");
+
+        Assert.True(secondIndex >= 0, "the correction call lost --output-schema");
+
+        // Distinct paths, not a reused one: handing the child a name that already exists is the
+        // symlink-following hazard `CreateNew` is there to refuse.
+        Assert.NotEqual(first[firstIndex + 1], second[secondIndex + 1]);
+
+        Assert.Contains(
+            "\"answer\"",
+            File.ReadAllText(second[secondIndex + 1]),
+            StringComparison.Ordinal);
+
+    }
+
     private static ChatResponseFormat SchemaFormat() =>
         ChatResponseFormat.ForJsonSchema(
             JsonSerializer.Deserialize<JsonElement>(
