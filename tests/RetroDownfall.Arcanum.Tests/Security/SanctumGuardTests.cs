@@ -210,13 +210,12 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ValidatePathAsync_AllowedPathSymlinkEntry_AllowsNestedFile()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         Guid campaignId = Guid.NewGuid();
 

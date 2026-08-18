@@ -47,51 +47,90 @@ public sealed class SessionWriteLockTests
 
     }
 
+    /// <summary>
+    /// The second session must acquire while the first still holds its lock. This used to await
+    /// <c>Task.WhenAll</c> over two 25 ms bodies and then assert <c>IsCompleted</c> on both, which is
+    /// true by definition of having awaited them — a <c>KeyedLock</c> collapsed to one global gate
+    /// would simply run the two bodies back to back and the test would still pass.
+    /// </summary>
     [Fact]
 
     public async Task AcquireAsync_DistinctSessions_DoNotBlockEachOther()
     {
 
-        Task a = Task.Run(async () =>
-        {
+        Guid held = Guid.NewGuid();
 
-            using IDisposable releaser = await SessionWriteLock.AcquireAsync(Guid.NewGuid()).ConfigureAwait(false);
+        Guid other = Guid.NewGuid();
 
-            await Task.Delay(25).ConfigureAwait(false);
+        using IDisposable heldReleaser = await SessionWriteLock.AcquireAsync(held);
 
-        });
+        Assert.True(SessionWriteLock.IsHeldForTesting(held));
 
-        Task b = Task.Run(async () =>
-        {
+        using IDisposable otherReleaser = await SessionWriteLock
+            .AcquireAsync(other)
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
-            using IDisposable releaser = await SessionWriteLock.AcquireAsync(Guid.NewGuid()).ConfigureAwait(false);
+        Assert.True(SessionWriteLock.IsHeldForTesting(other));
 
-            await Task.Delay(25).ConfigureAwait(false);
-
-        });
-
-        await Task.WhenAll(a, b);
-
-        Assert.True(a.IsCompleted);
-
-        Assert.True(b.IsCompleted);
+        Assert.True(SessionWriteLock.IsHeldForTesting(held));
 
     }
 
+    /// <summary>
+    /// A second dispose must not return a second permit. This used to dispose twice and then acquire a
+    /// <em>fresh</em> <see cref="Guid"/>, ending in a literal <c>Assert.True(true)</c>, so it never
+    /// observed the session whose releaser it had double-disposed. An over-released semaphore lets two
+    /// writers hold one session's write lock at once, which is what the lock exists to prevent.
+    /// </summary>
     [Fact]
 
     public async Task AcquireAsync_ReleaserDoubleDispose_IsIdempotent()
     {
 
-        IDisposable releaser = await SessionWriteLock.AcquireAsync(Guid.NewGuid());
+        Guid sessionId = Guid.NewGuid();
+
+        IDisposable releaser = await SessionWriteLock.AcquireAsync(sessionId);
+
+        Assert.True(SessionWriteLock.IsHeldForTesting(sessionId));
 
         releaser.Dispose();
 
+        Assert.False(SessionWriteLock.IsHeldForTesting(sessionId));
+
         releaser.Dispose();
 
-        using IDisposable next = await SessionWriteLock.AcquireAsync(Guid.NewGuid());
+        IDisposable reacquired = await SessionWriteLock
+            .AcquireAsync(sessionId)
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.True(true);
+        try
+        {
+
+            Assert.True(SessionWriteLock.IsHeldForTesting(sessionId));
+
+            Task<IDisposable> contender = SessionWriteLock.AcquireAsync(sessionId);
+
+            Task winner = await Task.WhenAny(contender, Task.Delay(TimeSpan.FromMilliseconds(250)));
+
+            Assert.False(
+                ReferenceEquals(winner, contender),
+                "The second dispose released a spare permit, so two writers hold the same session's write lock.");
+
+            reacquired.Dispose();
+
+            using IDisposable settled = await contender.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(SessionWriteLock.IsHeldForTesting(sessionId));
+
+        }
+        catch
+        {
+
+            reacquired.Dispose();
+
+            throw;
+
+        }
 
     }
 

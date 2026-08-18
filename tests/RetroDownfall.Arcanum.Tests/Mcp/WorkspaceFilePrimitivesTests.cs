@@ -68,16 +68,13 @@ public sealed class WorkspaceFilePrimitivesTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Fingerprint_rejects_hard_links_even_when_alias_is_outside_workspace()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows(),
+            "Unsupported operating system.");
 
         string target = _workspace.WriteFile("linked.txt", "linked");
 
@@ -128,16 +125,13 @@ public sealed class WorkspaceFilePrimitivesTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Fingerprint_rejects_mutation_through_contained_directory_symlink()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realDirectory = _workspace.CreateSubdir("real");
 

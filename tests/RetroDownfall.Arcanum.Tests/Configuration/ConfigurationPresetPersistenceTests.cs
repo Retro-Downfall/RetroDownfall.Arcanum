@@ -762,17 +762,14 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
 
     public async Task Read_rejects_a_symbolic_link_sidecar()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "This asserts POSIX behaviour that Windows does not model.");
 
         ConfigurationWriter writer = CreateWriter();
 

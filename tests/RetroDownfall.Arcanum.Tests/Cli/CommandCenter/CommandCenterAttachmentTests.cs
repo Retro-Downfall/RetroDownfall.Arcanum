@@ -214,14 +214,12 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
     /// submit time, so the turn has to reach its first yield before touching the filesystem — otherwise
     /// the TUI is wedged with no cancel path.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public async Task A_turn_yields_before_it_reads_a_staged_attachment()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            // mkfifo is POSIX-only; the blocking-read hazard this pins is a Unix file type.
-            return;
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "mkfifo is POSIX-only; the blocking-read hazard this pins is a Unix file type.");
 
         string fifo = Path.Combine(_root, "trace.log");
         Assert.True(TryMakeFifo(fifo), "mkfifo did not create the FIFO.");

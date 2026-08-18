@@ -1000,17 +1000,13 @@ public sealed class CappedChildProcessRunnerTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RunAsync_SigKillExit_NotClassifiedAsMemory_WhenNoOomEvidence()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            // No POSIX signal-exit-code semantics on Windows; nothing to verify on this host.
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "No POSIX signal-exit-code semantics on Windows; nothing to verify on this host.");
 
         ProcessStartInfo psi = CreateSelfSigKillProcessStartInfo();
 
@@ -1031,17 +1027,13 @@ public sealed class CappedChildProcessRunnerTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RunAsync_SigKillExit_ClassifiedAsMemory_WhenOomEvidenceConfirmed()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            // No POSIX signal-exit-code semantics on Windows; nothing to verify on this host.
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "No POSIX signal-exit-code semantics on Windows; nothing to verify on this host.");
 
         ProcessStartInfo psi = CreateSelfSigKillProcessStartInfo();
 

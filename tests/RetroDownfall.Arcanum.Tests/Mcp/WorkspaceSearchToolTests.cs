@@ -1098,14 +1098,13 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
         Assert.True(observer.MatchingCheckpointCount >= 2);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Search_skips_directory_symlink_cycles_rejects_escapes_and_deduplicates_file_identity()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string target = _workspace.WriteFile("z-target.txt", "needle");
         File.CreateSymbolicLink(Path.Combine(_workspace.Root, "a-alias.txt"), target);
@@ -1175,16 +1174,13 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Search_rejects_fifo_before_opening_it()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string fifo = Path.Combine(_workspace.Root, "blocked.fifo");
 
@@ -1204,16 +1200,13 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Search_rejects_link_count_change_after_open_and_read()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string target = _workspace.WriteFile("link-race.txt", "needle");
 

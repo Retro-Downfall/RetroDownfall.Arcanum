@@ -360,16 +360,13 @@ public sealed class BackupPassphraseReaderTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task File_descriptor_reader_reads_one_utf8_line_without_closing_the_callers_descriptor()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "This asserts POSIX behaviour that Windows does not model.");
 
         string path = Path.GetTempFileName();
 
@@ -415,16 +412,13 @@ public sealed class BackupPassphraseReaderTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task File_descriptor_reader_rejects_an_oversized_utf8_line_without_closing_the_callers_descriptor()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "This asserts POSIX behaviour that Windows does not model.");
 
         const string marker = "private-fd-marker";
 

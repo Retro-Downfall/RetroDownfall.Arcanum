@@ -58,17 +58,13 @@ public sealed class ProcessResourceLimiterTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Apply_returns_assign_after_start_on_windows()
     {
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            // Windows Job Object path; nothing to verify on this host.
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows Job Object path; nothing to verify on this host.");
 
         ProcessStartInfo psi = new() { FileName = "cmd.exe" };
 
@@ -90,17 +86,13 @@ public sealed class ProcessResourceLimiterTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void Apply_rewrites_startinfo_with_ulimit_prelude_on_unix()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            // Unix-only behavior (setrlimit via the ulimit shell prelude); nothing to verify here.
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix-only behavior (setrlimit via the ulimit shell prelude); nothing to verify here.");
 
         ProcessStartInfo psi = new() { FileName = "/bin/echo" };
 
@@ -139,17 +131,60 @@ public sealed class ProcessResourceLimiterTests
 
     }
 
-    [Fact]
+    /// <summary>
+    /// <c>ulimit -v</c> takes kilobytes, <see cref="ResourceLimits.MaxMemoryMb"/> is megabytes, and
+    /// <c>ApplyOnMacOs</c> always requests the memory clause — so on macOS this is the shipping
+    /// memory-enforcement path for every <c>run_spell_script</c> and <c>execute_command</c> child.
+    /// The only executed assertion that mentioned <c>-v</c> was a <c>DoesNotContain</c> in the
+    /// <c>MaxMemoryMb == 0</c> case, so the clause and its MB→KB conversion were pinned nowhere:
+    /// dropping the <c>* 1024L</c> caps every macOS spell script at half a megabyte of address space —
+    /// nothing execs — and the suite stayed green.
+    /// </summary>
+    [SkippableFact]
+    public void Apply_emits_the_memory_limit_in_kilobytes_on_unix()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix-only behavior (setrlimit via the ulimit shell prelude); nothing to verify here.");
+
+        ProcessStartInfo psi = new() { FileName = "/bin/echo" };
+
+        ResourceLimits limits = new() { MaxCpuSeconds = 0, MaxMemoryMb = 512, MaxFileDescriptors = 0 };
+
+        ProcessResourceLimiterResult result = _limiter.Apply(psi, limits);
+
+        Assert.Null(result.Error);
+
+        string script = psi.ArgumentList[1];
+
+        // Linux prefers a cgroups v2 scope for memory and only falls back to the prelude when the
+        // scope could not be created, so the -v clause is asserted where it is unconditional.
+        if (OperatingSystem.IsMacOS())
+        {
+
+            Assert.Contains("ulimit -v 524288; ", script, StringComparison.Ordinal);
+
+        }
+        else
+        {
+
+            Assert.True(
+                script.Contains("ulimit -v 524288; ", StringComparison.Ordinal)
+                || script.Contains("cgroup.procs", StringComparison.Ordinal),
+                $"Expected either the kilobyte ulimit clause or a cgroups v2 scope, got: {script}");
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task Apply_writes_cgroup_files_on_linux()
     {
 
-        if (!OperatingSystem.IsLinux())
-        {
-
-            // cgroups v2 is Linux-only; nothing to verify on this host.
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsLinux(),
+            "cgroups v2 is Linux-only; nothing to verify on this host.");
 
         ProcessStartInfo psi = new() { FileName = "/bin/echo" };
 
@@ -206,17 +241,13 @@ public sealed class ProcessResourceLimiterTests
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Apply_ExposesWasOomKilledAsync_WhenCgroupIsAvailable()
     {
 
-        if (!OperatingSystem.IsLinux())
-        {
-
-            // cgroups v2 is Linux-only; nothing to verify on this host.
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsLinux(),
+            "cgroups v2 is Linux-only; nothing to verify on this host.");
 
         ProcessStartInfo psi = new() { FileName = "/bin/echo" };
 

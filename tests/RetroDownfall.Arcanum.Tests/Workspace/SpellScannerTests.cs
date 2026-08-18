@@ -210,9 +210,108 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         // Same rationale as ScanMetadataAsync_concurrent_misses_share_one_scan: single-flight
         // coalesces the miss onto one parse, but a caller released after the leader may hit the
-        // LRU cache or, if evicted, start a fresh content-equal parse. ParsedSpell is a record,
-        // so value equality is the correct stable invariant.
-        Assert.All(results, r => Assert.Equal(first, r));
+        // LRU cache or, if evicted, start a fresh content-equal parse. Record equality is NOT the
+        // stable invariant here — ParsedSpell carries an IReadOnlyList<string> and string[] members,
+        // whose compiler-generated equality is reference equality, so a fresh parse of the same file
+        // is never Equal to the leader's instance. Compare the content instead.
+        Assert.All(results, r => AssertSameSpellContent(first, r));
+
+    }
+
+    /// <summary>
+    /// Content equality for two independently produced <see cref="ParsedSpell"/> instances.
+    /// The compiler-generated record equality compares <see cref="ParsedSpell.AvailableScripts"/>,
+    /// <see cref="ParsedSpell.Tags"/>, <see cref="ParsedSpell.Tools"/> and
+    /// <see cref="ParsedSpell.RequiredMcpServers"/> by reference, so it holds only while every caller
+    /// happens to receive the same cached instance. That made
+    /// <c>LoadFullAsync_concurrent_misses_share_one_parse</c> pass in isolation and fail under load,
+    /// where a follower released after the wave closed re-parsed and got fresh collections.
+    /// </summary>
+    private static void AssertSameSpellContent(ParsedSpell? expected, ParsedSpell? actual)
+    {
+
+        Assert.NotNull(expected);
+
+        Assert.NotNull(actual);
+
+        Assert.Equal(expected!.Name, actual!.Name);
+
+        Assert.Equal(expected.Description, actual.Description);
+
+        Assert.Equal(expected.FilePath, actual.FilePath);
+
+        Assert.Equal(expected.FullContent, actual.FullContent);
+
+        Assert.Equal(expected.DirectoryPath, actual.DirectoryPath);
+
+        Assert.Equal(expected.Body, actual.Body);
+
+        Assert.Equal(expected.SystemPrompt, actual.SystemPrompt);
+
+        Assert.Equal(expected.Template, actual.Template);
+
+        Assert.Equal(expected.Model, actual.Model);
+
+        Assert.Equal(expected.Provider, actual.Provider);
+
+        Assert.Equal(expected.AvailableScripts, actual.AvailableScripts);
+
+        Assert.Equal(expected.Tags, actual.Tags);
+
+        Assert.Equal(expected.Tools, actual.Tools);
+
+        Assert.Equal(expected.RequiredMcpServers, actual.RequiredMcpServers);
+
+        Assert.Equal(expected.SkillMetadata, actual.SkillMetadata);
+
+    }
+
+    /// <summary>
+    /// The deterministic form of the load-flake in <c>LoadFullAsync_concurrent_misses_share_one_parse</c>:
+    /// bumping the file's last-write time changes the <c>$"{fullPath}|{mtimeTicks}"</c> cache key, so the
+    /// second call re-parses from disk exactly as a follower released after a closed single-flight wave
+    /// does. The two instances are content-identical, and that — not record equality — is what a
+    /// concurrent caller may rely on.
+    /// </summary>
+    [Fact]
+    public async Task LoadFullAsync_reparse_after_a_cache_miss_returns_a_content_equal_spell()
+    {
+
+        string spellDir = Path.Combine(_workspace.Root, "spells", "reparse-full");
+
+        Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
+
+        _workspace.WriteFile(
+            "spells/reparse-full/SPELL.md",
+            """
+            ---
+            name: reparse-full
+            description: reparse test
+            tags: [alpha]
+            tools: [read_file]
+            ---
+            body
+            """);
+
+        _workspace.WriteFile("spells/reparse-full/scripts/a.sh", "#!/bin/sh\necho a\n");
+
+        _workspace.WriteFile("spells/reparse-full/scripts/b.sh", "#!/bin/sh\necho b\n");
+
+        string spellPath = Path.Combine(spellDir, "SPELL.md");
+
+        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(first);
+
+        File.SetLastWriteTimeUtc(spellPath, File.GetLastWriteTimeUtc(spellPath).AddSeconds(1));
+
+        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(second);
+
+        Assert.NotSame(first, second);
+
+        AssertSameSpellContent(first, second);
 
     }
 
@@ -292,10 +391,19 @@ public sealed class SpellScannerTests : IAsyncLifetime
             body
             """);
 
-        const int ttl = 1;
+        // Two TTLs rather than one. The "serves stale" leg used to run under the same 1 second TTL as
+        // the refresh leg, so it silently required the first scan, the SPELL.md rewrite and the second
+        // scan — two real directory walks over a temp workspace plus frontmatter parsing — to finish
+        // inside 1000 ms. A cold, loaded or virus-scanned filesystem blew that budget and the entry had
+        // already expired, so the second scan re-read the file and the assertion failed with "mutated".
+        // The stale leg now has a 300 second budget (the ArcanumSettingClamps ceiling); only the refresh
+        // leg is timed, and it waits *longer* than the TTL, which no amount of load can invalidate.
+        const int staleTtl = 300;
+
+        const int refreshTtl = 1;
 
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> first =
-            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: staleTtl);
 
         Core.Intelligence.Spells.SpellSummary firstSummary = Assert.Single(first, s => s.Name == "ttl-spell");
 
@@ -313,18 +421,19 @@ public sealed class SpellScannerTests : IAsyncLifetime
             """);
 
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> second =
-            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: staleTtl);
 
         Core.Intelligence.Spells.SpellSummary secondSummary = Assert.Single(second, s => s.Name == "ttl-spell");
 
         // Within the TTL the cached (stale) description is served, proving the TTL is threaded through.
         Assert.Equal("original", secondSummary.Description);
 
-        // After the TTL expires the next call re-scans and picks up the mutation.
-        await Task.Delay(TimeSpan.FromSeconds(ttl + 1));
+        // The entry was stamped by the first scan, so sleeping past refreshTtl guarantees expiry however
+        // long the scans themselves took.
+        await Task.Delay(TimeSpan.FromSeconds(refreshTtl + 1));
 
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> third =
-            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: refreshTtl);
 
         Core.Intelligence.Spells.SpellSummary thirdSummary = Assert.Single(third, s => s.Name == "ttl-spell");
 

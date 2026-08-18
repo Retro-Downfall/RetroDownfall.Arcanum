@@ -5,6 +5,8 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
@@ -18,9 +20,29 @@ namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
 public sealed class ProviderTestEndpointTests : IAsyncLifetime
 {
 
+    private const string UnresolvableHostName = "no-such-host.invalid";
+
     private readonly ArcanumWebApplicationFactory _factory;
 
+    private readonly RecordingDnsResolver _dns = new();
+
     private HttpListener? _listener;
+
+    private IDnsResolver? _originalResolver;
+
+    private volatile bool _tearingDown;
+
+    private Exception? _acceptFailure;
+
+    /// <summary>
+    /// Detail appended to the failure message of every assertion that depends on the fake provider
+    /// having served the request. Without it a listener that never accepted anything surfaced only as
+    /// "unreachable" or "no size-cap message", with nothing pointing at the listener.
+    /// </summary>
+    private string ServingDetail =>
+        _acceptFailure is null
+            ? string.Empty
+            : $" The fake provider listener never accepted the request: {_acceptFailure}";
 
     public ProviderTestEndpointTests(ArcanumWebApplicationFactory factory)
     {
@@ -29,10 +51,34 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
     }
 
-    public Task InitializeAsync() => Task.CompletedTask;
+    /// <summary>
+    /// Installs the hermetic resolver for the duration of one test. <c>OutboundUrlGuard.DnsResolver</c>
+    /// is a process-global seam, and this class cannot join the <c>OutboundUrlGuardDns</c> collection
+    /// because it needs <c>ApiHost</c> for its factory fixture — but both collections declare
+    /// <c>DisableParallelization</c>, so xUnit never runs another class while this one holds the swap.
+    /// </summary>
+    public Task InitializeAsync()
+    {
+
+        _originalResolver = OutboundUrlGuard.DnsResolver;
+
+        OutboundUrlGuard.DnsResolver = _dns;
+
+        return Task.CompletedTask;
+
+    }
 
     public Task DisposeAsync()
     {
+
+        if (_originalResolver is not null)
+        {
+
+            OutboundUrlGuard.DnsResolver = _originalResolver;
+
+        }
+
+        _tearingDown = true;
 
         _listener?.Stop();
 
@@ -75,9 +121,11 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
         Assert.True(body!.IsSuccess);
 
-        Assert.False(body.Data!.IsReachable);
+        Assert.False(body.Data!.IsReachable, $"Expected the size cap to reject the probe.{ServingDetail}");
 
-        Assert.Contains("exceeded the maximum allowed size", body.Data.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.True(
+            body.Data.Error?.Contains("exceeded the maximum allowed size", StringComparison.OrdinalIgnoreCase) == true,
+            $"Expected a size-cap rejection, got: {body.Data.Error}.{ServingDetail}");
 
     }
 
@@ -110,9 +158,11 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
         Assert.True(body!.IsSuccess);
 
-        Assert.True(body.Data!.IsReachable);
+        Assert.True(body.Data!.IsReachable, $"Expected the fake provider to be reachable.{ServingDetail}");
 
-        Assert.Contains("gpt-test", body.Data.ModelsFound);
+        Assert.True(
+            body.Data.ModelsFound.Contains("gpt-test", StringComparer.Ordinal),
+            $"Expected the parsed models to contain gpt-test, got: [{string.Join(", ", body.Data.ModelsFound)}].{ServingDetail}");
 
     }
 
@@ -124,7 +174,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
         HttpClient client = _factory.CreateAuthenticatedClient();
 
-        const string unresolvableHost = "https://this-host-does-not-resolve.invalid.arcanum-test/v1";
+        const string unresolvableHost = $"https://{UnresolvableHostName}/v1";
 
         ProviderTestRequest request = new(unresolvableHost, null, AiProviderKind.OpenAICompatible);
 
@@ -149,7 +199,98 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         // resolved hosts/IPs); the detailed reason is logged server-side only.
         Assert.Contains("failed validation", body.Error?.Message, StringComparison.OrdinalIgnoreCase);
 
-        Assert.DoesNotContain("this-host-does-not-resolve", body.Error?.Message ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain(UnresolvableHostName, body.Error?.Message ?? string.Empty, StringComparison.Ordinal);
+
+        // The 400 must come from the guard's own policy decision, not from whatever the runner's
+        // resolver happens to answer. A network that wildcards NXDOMAIN to a parking or search IP
+        // resolves the name, the guard passes, and the endpoint issues a real outbound request from
+        // the CI machine.
+        Assert.Contains(UnresolvableHostName, _dns.Queries);
+
+    }
+
+    /// <summary>
+    /// Deterministic form of the ephemeral-port TOCTOU in <see cref="GetFreeTcpPort"/>: the probe binds
+    /// port 0, reads the port the kernel assigned and releases it again, so between that release and
+    /// <see cref="HttpListener.Start"/> any process on the machine can take it. Binding must retry on a
+    /// fresh port instead of failing the test with an address-already-in-use error that has nothing to
+    /// do with the response-size cap under test.
+    /// </summary>
+    [Fact]
+    public void BindLoopbackListener_retries_when_the_probed_port_was_already_taken()
+    {
+
+        TcpListener squatter = new(IPAddress.Loopback, 0);
+
+        squatter.Start();
+
+        int takenPort = ((IPEndPoint)squatter.LocalEndpoint).Port;
+
+        HttpListener? listener = null;
+
+        try
+        {
+
+            int freePort = GetFreeTcpPort();
+
+            Queue<int> ports = new([takenPort, takenPort, freePort]);
+
+            int bound;
+
+            (listener, bound) = BindLoopbackListener(ports.Dequeue, attempts: 3);
+
+            Assert.Equal(freePort, bound);
+
+            Assert.True(listener.IsListening);
+
+        }
+        finally
+        {
+
+            listener?.Close();
+
+            squatter.Stop();
+
+        }
+
+    }
+
+    /// <summary>
+    /// Binds a loopback <see cref="HttpListener"/> to a port taken from <paramref name="portSource"/>,
+    /// retrying on a fresh port when the probed one was claimed in the meantime, and returns the
+    /// listening instance together with the port it actually bound. A failed <c>Start</c> disposes the
+    /// listener, so each attempt needs its own.
+    /// </summary>
+    private static (HttpListener Listener, int Port) BindLoopbackListener(Func<int> portSource, int attempts)
+    {
+
+        for (int attempt = 1; ; attempt++)
+        {
+
+            int port = portSource();
+
+            HttpListener listener = new();
+
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+
+            try
+            {
+
+                listener.Start();
+
+                return (listener, port);
+
+            }
+            catch (HttpListenerException) when (attempt < attempts)
+            {
+
+                // Something claimed the probed port between the probe's release and this bind.
+
+                listener.Close();
+
+            }
+
+        }
 
     }
 
@@ -157,21 +298,40 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     private string StartListener(string responseBody)
     {
 
-        int port = GetFreeTcpPort();
+        (HttpListener listener, int port) = BindLoopbackListener(GetFreeTcpPort, attempts: 5);
 
-        _listener = new HttpListener();
-
-        _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-
-        _listener.Start();
+        _listener = listener;
 
         _ = Task.Run(async () =>
         {
 
+            HttpListenerContext ctx;
+
             try
             {
 
-                HttpListenerContext ctx = await _listener.GetContextAsync().ConfigureAwait(false);
+                ctx = await listener.GetContextAsync().ConfigureAwait(false);
+
+            }
+            catch (Exception ex)
+            {
+
+                // Failing to accept at all means the endpoint talked to nobody, which every assertion
+                // below would otherwise report as a plain "unreachable". Teardown stops the listener
+                // deliberately, so only a failure before then is diagnostic.
+                if (!_tearingDown)
+                {
+
+                    _acceptFailure = ex;
+
+                }
+
+                return;
+
+            }
+
+            try
+            {
 
                 byte[] bytes = Encoding.UTF8.GetBytes(responseBody);
 
@@ -189,13 +349,50 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
             catch (Exception)
             {
 
-                // Listener stopped/disposed during teardown — nothing to serve.
+                // The client aborts the read once the response passes the cap, so a write failure
+                // after the request arrived is the expected path of the oversized-response test.
 
             }
 
         });
 
         return $"http://127.0.0.1:{port}/v1";
+
+    }
+
+    /// <summary>
+    /// Records every hostname it is asked to resolve and answers only from its own map, so a lookup this
+    /// class did not register fails with <see cref="SocketError.HostNotFound"/> exactly as an NXDOMAIN
+    /// would.
+    /// </summary>
+    private sealed class RecordingDnsResolver : IDnsResolver
+    {
+
+        private readonly Dictionary<string, IPAddress[]> _map =
+            new(StringComparer.OrdinalIgnoreCase) { ["127.0.0.1"] = [IPAddress.Loopback] };
+
+        public List<string> Queries { get; } = new();
+
+        public Task<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken = default)
+        {
+
+            lock (Queries)
+            {
+
+                Queries.Add(host);
+
+            }
+
+            if (_map.TryGetValue(host, out IPAddress[]? addresses))
+            {
+
+                return Task.FromResult(addresses);
+
+            }
+
+            throw new SocketException((int)SocketError.HostNotFound);
+
+        }
 
     }
 

@@ -167,16 +167,13 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void EnforceAllowedRoots_SymlinkEscapingRoot_Denies()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -209,16 +206,13 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void EnforceAllowedRoots_SymlinkOnIntermediateComponent_Denies()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -251,16 +245,13 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsStrictChildPath_SymlinkOnIntermediateComponent_ReturnsFalse()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
@@ -289,16 +280,13 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void IsUnderAnyAllowedRoot_SymlinkOnIntermediateComponentPointingBackInside_Allows()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realDir = _workspace.CreateSubdir("intermediate-real-target");
 
@@ -328,16 +316,13 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void EnforceAllowedRoots_SymlinkInsideRoot_Allows()
     {
 
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
         string realDir = _workspace.CreateSubdir("real-target");
 

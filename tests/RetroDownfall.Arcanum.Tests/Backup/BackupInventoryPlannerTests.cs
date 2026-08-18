@@ -452,16 +452,13 @@ public sealed class BackupInventoryPlannerTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Database_backed_file_under_symlinked_parent_is_rejected()
     {
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "This asserts POSIX behaviour that Windows does not model.");
 
         await CreateInventoryDatabaseAsync(
             """
