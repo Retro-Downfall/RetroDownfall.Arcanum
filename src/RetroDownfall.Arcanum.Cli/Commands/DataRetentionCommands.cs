@@ -10,7 +10,11 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
@@ -22,7 +26,8 @@ internal sealed class DataRetentionCommands(
     ArcanumApiClient apiClient,
     IConsoleDispatcher dispatcher,
     ICliInvocationContext invocationContext,
-    IConfirmationPrompt confirmationPrompt)
+    IConfirmationPrompt confirmationPrompt,
+    IOptions<ArcanumSettings> settings)
 {
 
     public async Task<int> Status(CancellationToken cancellationToken)
@@ -219,6 +224,15 @@ internal sealed class DataRetentionCommands(
 
         }
 
+        // Written before the prompt, and before any operation starts. The order is the contract: an
+        // operator has to be told what local erasure cannot revoke while they can still decline, and a
+        // refusal after the disclosure must leave nothing started (§10.20.2).
+        await WriteDestructiveDisclosureAsync(
+            new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: parsedScope),
+            cancellationToken).ConfigureAwait(false);
+
         return await ConfirmAndApply(
                 $"Reset the {scope} memory scope?",
                 "Memory reset cancelled.",
@@ -229,6 +243,77 @@ internal sealed class DataRetentionCommands(
             .ConfigureAwait(false);
 
     }
+
+    /// <summary>
+    /// Writes the shared destructive-operation copy, the receipt-backed possible-attempt count, and every
+    /// resolved provider help target — in that exact order, before any prompt or operation.
+    /// </summary>
+    /// <remarks>
+    /// The copy is the shared constant written byte-for-byte rather than paraphrased. Four surfaces have
+    /// to tell an operator the same true thing about what leaves the machine, and four sentences is four
+    /// subtly different promises — one of which will drift toward reassurance (§10.18).
+    ///
+    /// <para>Nothing is written when the plan carries no Covenant inventory. An installation with no
+    /// Covenant arm has no protected state for this reset to disclose, and printing the paragraph anyway
+    /// would tell an operator their ordinary embedding reset might have leaked something.</para>
+    ///
+    /// <para>The disclosure goes to the diagnostic stream, like every other question an operator answers:
+    /// under <c>--output-format json</c> a payload write would be replayed ahead of the JSON document and
+    /// break the one-document guarantee, and under <c>--yes</c> it is still written so an unattended run
+    /// records what it was told.</para>
+    /// </remarks>
+    private async Task WriteDestructiveDisclosureAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        Result<DataRetentionPlan> plan = await apiClient
+            .PlanDataPruneAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (plan.IsFailure || plan.Value.Covenant is not { } covenant)
+        {
+
+            return;
+
+        }
+
+        dispatcher.WriteDiagnostic(CovenantExternalRetentionDisclosure.DestructiveOperationText);
+
+        dispatcher.WriteDiagnostic(DescribeExposure(covenant));
+
+        foreach (CovenantRetentionHelpTarget target in
+                 CovenantExternalRetentionDisclosure.ResolveHelpTargets(settings.Value.Providers ?? []))
+        {
+
+            dispatcher.WriteDiagnostic(
+                target.Provider.Length == 0
+                    ? $"  Retention guidance: {target.Uri}"
+                    : $"  Retention guidance ({target.Provider}): {target.Uri}");
+
+        }
+
+    }
+
+    /// <summary>
+    /// States how many physical attempts could already have carried content out of this installation.
+    /// </summary>
+    /// <remarks>
+    /// The count kind is spelled out rather than shown as a bare number, exactly as the restore surface
+    /// does it. A joined lower bound and an exact count are different claims, and an operator deciding
+    /// whether to erase is entitled to know which one they are reading.
+    /// </remarks>
+    private static string DescribeExposure(DataRetentionCovenantInventory covenant) =>
+        covenant.PossibleDisclosures > 0
+            ? "This installation's own receipts record "
+                + (covenant.DisclosureCountKind is CovenantDisclosureCountKind.LowerBound
+                    ? "at least "
+                    : "exactly ")
+                + covenant.PossibleDisclosures.ToString(CultureInfo.InvariantCulture)
+                + (covenant.PossibleDisclosures == 1 ? " physical attempt" : " physical attempts")
+                + " that could have carried protected content out of it. Nothing this reset does can "
+                + "revoke any of them."
+            : "This installation's own receipts record no nonrevocable disclosure leaving it.";
 
     private async Task<int> ConfirmAndApply(
         string question,

@@ -2,6 +2,9 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -42,12 +45,15 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
     private readonly ILogger<ContextCompressionService> _logger;
 
+    private readonly ICovenantSensitiveArtifactPurger? _purger;
+
     public ContextCompressionService(
         IGrimoireRepository grimoire,
         IOptionsSnapshot<ArcanumSettings> settings,
         InferenceTokenizerResolver inferenceTokenizerResolver,
         ILogger<ContextCompressionService> logger,
-        IModelTokenEstimator? modelTokenEstimator = null)
+        IModelTokenEstimator? modelTokenEstimator = null,
+        ICovenantSensitiveArtifactPurger? purger = null)
     {
 
         _grimoire = grimoire;
@@ -58,6 +64,62 @@ internal sealed class ContextCompressionService : IContextCompressionService
             ?? new ModelTokenEstimator(inferenceTokenizerResolver);
 
         _logger = logger;
+
+        _purger = purger;
+
+    }
+
+    /// <summary>
+    /// Dispatches the selected Entries through the sensitivity purge boundary, in bounded pages.
+    /// </summary>
+    /// <remarks>
+    /// Paged rather than sent whole, because the boundary is bounded and a long Session's compaction can
+    /// select more Entries than one page carries. Each page is a stable identity list read before the
+    /// purge, so no unexamined labelled Entry can leave through a set-based call.
+    /// </remarks>
+    private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeSelectedEntriesAsync(
+        IReadOnlyCollection<Guid> entryIds,
+        CancellationToken cancellationToken)
+    {
+
+        List<CovenantSensitivePurgeResult> results = [];
+
+        CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
+
+        foreach (Guid[] page in entryIds.Chunk(ICovenantSensitiveArtifactPurger.MaxTargets))
+        {
+
+            Result<CovenantSensitivePurgeOutcome> purged = await _purger!
+                .PurgeAsync(
+                    [.. page.Select(static id =>
+                        new CovenantSensitivePurgeTarget(SensitiveArtifactKind.AssistantEntry, id))],
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (purged.IsFailure)
+            {
+
+                return purged.Error;
+
+            }
+
+            if (purged.Value.IsBlocked)
+            {
+
+                return new Error(
+                    ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                    "A protected Entry selected by compaction could not be erased and was left unchanged.");
+
+            }
+
+            results.AddRange(purged.Value.Results);
+
+            progress = progress.Add(purged.Value.Progress);
+
+        }
+
+        return Result<CovenantSensitivePurgeOutcome>.Success(
+            new CovenantSensitivePurgeOutcome(results, progress));
 
     }
 
@@ -159,8 +221,45 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             HashSet<Guid> groupSafeDeletes = TurnContextGuards.ExpandDeletionToCompleteToolGroups(ordered, entryIdsToDelete);
 
+            // The complete tool-group-safe set is dispatched, not the subset the token budget picked.
+            // Expanding first and purging second is what keeps a partially deleted tool group from
+            // existing at any point: a labelled Entry that left through the shared kernel and an
+            // unlabelled sibling that left through the ordinary delete are still one group (§10.20.2).
+            Result<CovenantSensitivePurgeOutcome>? purged = _purger is null
+                ? null
+                : await PurgeSelectedEntriesAsync(groupSafeDeletes, cancellationToken).ConfigureAwait(false);
+
+            if (purged is { } attempted && attempted.IsFailure)
+            {
+
+                // A refused purge stops compaction rather than falling back to the ordinary delete.
+                // Removing the unlabelled remainder would leave the Session compacted around protected
+                // Entries that are still there, which is worse than not compacting at all.
+                _logger.LogWarning(
+                    "Compaction of session {SessionId} stopped: a protected Entry could not be erased ({Code}).",
+                    sessionId,
+                    attempted.Error.Code);
+
+                return new CompactResult(tokensBefore, tokensBefore, 0);
+
+            }
+
             foreach (Guid entryId in groupSafeDeletes)
             {
+
+                if (purged is { } outcome && !outcome.Value.RequiresOrdinaryDelete(entryId))
+                {
+
+                    if (outcome.Value.WasPurged(entryId))
+                    {
+
+                        removed++;
+
+                    }
+
+                    continue;
+
+                }
 
                 await _grimoire
                     .DeleteEntryAsync(sessionId, entryId, cancellationToken)

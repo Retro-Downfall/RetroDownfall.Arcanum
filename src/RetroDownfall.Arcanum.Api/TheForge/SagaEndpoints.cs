@@ -4,8 +4,11 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 
@@ -202,8 +205,46 @@ internal static class SagaEndpoints
 
         apiGroup.MapDelete(
             "/saga/{id}",
-            async (string id, ISagaMemoryStore store, HttpContext ctx) =>
+            async (
+                string id,
+                ISagaMemoryStore store,
+                ICovenantSensitiveArtifactPurger purger,
+                HttpContext ctx) =>
             {
+
+                // A Saga id that is not a Guid cannot carry a label — the label table keys on Guid
+                // identities — so it takes the ordinary path unchanged rather than being refused here.
+                if (Guid.TryParse(id, out Guid memoryId))
+                {
+
+                    Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
+                        .DispatchAsync(purger, SensitiveArtifactKind.Saga, memoryId, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
+                    if (purged.IsFailure)
+                    {
+
+                        return SagaPurgeRefusal(ctx, purged.Error);
+
+                    }
+
+                    CovenantSensitiveDeletion.MarkProtectedWhenPurged(ctx, purged.Value);
+
+                    if (purged.Value.IsBlocked)
+                    {
+
+                        return SagaPurgeRefusal(ctx, CovenantSensitiveDeletion.BlockedError(purged.Value));
+
+                    }
+
+                    if (purged.Value.WasPurged(memoryId))
+                    {
+
+                        return Results.NoContent();
+
+                    }
+
+                }
 
                 bool deleted = await store.DeleteAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
@@ -224,11 +265,16 @@ internal static class SagaEndpoints
                 return Results.NoContent();
 
             })
+        .RequireConditionalSensitivityRetentionPurge()
         .WithName("DeleteSagaMemory");
 
         apiGroup.MapDelete(
             "/saga",
-            async (bool? confirm, ISagaMemoryStore store, HttpContext ctx) =>
+            async (
+                bool? confirm,
+                ISagaMemoryStore store,
+                ICovenantSensitiveArtifactPurger purger,
+                HttpContext ctx) =>
             {
 
                 if (confirm != true)
@@ -246,11 +292,36 @@ internal static class SagaEndpoints
 
                 }
 
+                // Bounded stable identity pages, dispatched before the set-based delete runs. A bulk
+                // `DELETE FROM saga_memories` would remove labelled rows nothing ever examined, which is
+                // exactly the legacy path this boundary exists to close (§10.20.2).
+                Result<CovenantSensitivePurgeOutcome> purgedAll = await PurgeEveryLabeledSagaAsync(
+                    store,
+                    purger,
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (purgedAll.IsFailure)
+                {
+
+                    return SagaPurgeRefusal(ctx, purgedAll.Error);
+
+                }
+
+                CovenantSensitiveDeletion.MarkProtectedWhenPurged(ctx, purgedAll.Value);
+
+                if (purgedAll.Value.IsBlocked)
+                {
+
+                    return SagaPurgeRefusal(ctx, CovenantSensitiveDeletion.BlockedError(purgedAll.Value));
+
+                }
+
                 await store.DeleteAllAsync(ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.NoContent();
 
             })
+        .RequireConditionalSensitivityRetentionPurge()
         .WithName("DeleteAllSagaMemories");
 
         apiGroup.MapGet(
@@ -276,5 +347,102 @@ internal static class SagaEndpoints
             ApiResponse<SagaSearchResult>.FromResult(Result<SagaSearchResult>.Failure(error), traceId),
             ArcanumJsonContext.Default.ApiResponseSagaSearchResult,
             statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
+
+    /// <summary>
+    /// Walks every Saga memory in bounded identity pages and dispatches each page through the purge
+    /// boundary.
+    /// </summary>
+    /// <remarks>
+    /// The offset walk is deliberately re-read per page rather than snapshotted whole: a bulk delete on
+    /// a large Saga would otherwise hold a list in memory whose size the operator never bounded. Each
+    /// page is a stable list of identities that were examined before anything was removed, which is the
+    /// property that makes "no unexamined labelled row leaves through a set-based call" true rather than
+    /// intended (§10.20.2).
+    /// </remarks>
+    private static async Task<Result<CovenantSensitivePurgeOutcome>> PurgeEveryLabeledSagaAsync(
+        ISagaMemoryStore store,
+        ICovenantSensitiveArtifactPurger purger,
+        CancellationToken cancellationToken)
+    {
+
+        const int PageSize = 128;
+
+        List<CovenantSensitivePurgeResult> results = [];
+
+        CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
+
+        int offset = 0;
+
+        while (true)
+        {
+
+            SagaMemoryDto[] page = await store
+                .ListAsync(null, null, PageSize, offset, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.Length == 0)
+            {
+
+                break;
+
+            }
+
+            Guid[] identities =
+            [
+                .. page
+                    .Select(static memory => Guid.TryParse(memory.Id, out Guid parsed) ? parsed : Guid.Empty)
+                    .Where(static parsed => parsed != Guid.Empty),
+            ];
+
+            if (identities.Length > 0)
+            {
+
+                Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
+                    .DispatchAsync(purger, SensitiveArtifactKind.Saga, identities, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (purged.IsFailure)
+                {
+
+                    return purged.Error;
+
+                }
+
+                results.AddRange(purged.Value.Results);
+
+                progress = progress.Add(purged.Value.Progress);
+
+                if (purged.Value.IsBlocked)
+                {
+
+                    return Result<CovenantSensitivePurgeOutcome>.Success(
+                        new CovenantSensitivePurgeOutcome(results, progress));
+
+                }
+
+            }
+
+            // The cursor advances by the page it read rather than by what it purged: a purged row is
+            // gone, so advancing by the purged count would skip the rows that slid into its place.
+            offset += page.Length;
+
+        }
+
+        return Result<CovenantSensitivePurgeOutcome>.Success(
+            new CovenantSensitivePurgeOutcome(results, progress));
+
+    }
+
+    private static IResult SagaPurgeRefusal(HttpContext context, Error error)
+    {
+
+        string traceId = Activity.Current?.Id ?? context.TraceIdentifier;
+
+        return Results.Json(
+            ApiResponse<string>.FromResult(Result<string>.Failure(error), traceId),
+            ArcanumJsonContext.Default.ApiResponseString,
+            statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
+
+    }
 
 }

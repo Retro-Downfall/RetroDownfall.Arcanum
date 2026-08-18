@@ -397,11 +397,22 @@ public sealed class DataRetentionCommandTests
 
         _ = RunCommand(handler, Split(commandLine));
 
-        RecordedRequest request = Assert.Single(handler.Requests);
+        // Exactly one *mutating* request. `data reset-memory` also reads the plan first, because the
+        // destructive-disclosure contract requires an operator to see the receipt-backed
+        // possible-attempt count before they answer, and that count can only come from the server
+        // (§10.20.2). A read-only preview is not a mutation; what matters here is that there is no
+        // second write and that the write lands where it is supposed to.
+        RecordedRequest request = Assert.Single(
+            handler.Requests,
+            static recorded => recorded.Path != "/api/data/prune/plan");
 
         Assert.Equal(new HttpMethod(method), request.Method);
 
         Assert.Equal(path, request.Path);
+
+        Assert.All(
+            handler.Requests.Where(static recorded => recorded.Path == "/api/data/prune/plan"),
+            static preview => Assert.Equal(HttpMethod.Post, preview.Method));
 
         if (path == "/api/data/retention")
         {
@@ -436,6 +447,14 @@ public sealed class DataRetentionCommandTests
 
     [InlineData("data reset-memory --scope entry")]
 
+    /// <remarks>
+    /// Narrowed from "no HTTP at all" to "no mutating HTTP" when issue #117 added the destructive
+    /// disclosure. The property that protects an operator is that nothing is *changed* before they
+    /// answer; reading the plan is how the count they are being asked to weigh is obtained at all, and
+    /// the restore surface has done exactly this since issue #113. The read-only preview is asserted
+    /// positively below rather than merely tolerated, so a mutation slipping into the pre-confirmation
+    /// window still fails here.
+    /// </remarks>
     public void Data_mutations_require_confirmation_before_http(
         string commandLine)
     {
@@ -446,7 +465,9 @@ public sealed class DataRetentionCommandTests
 
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
-        Assert.Empty(handler.Requests);
+        Assert.All(
+            handler.Requests,
+            static request => Assert.Equal("/api/data/prune/plan", request.Path));
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
 

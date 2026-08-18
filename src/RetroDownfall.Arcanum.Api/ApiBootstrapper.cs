@@ -713,6 +713,8 @@ public static class ApiBootstrapper
             { } requirementMetadata)
         {
 
+            IssueConditionalSensitivityPurgeAuthority(context, endpoint);
+
             return false;
 
         }
@@ -755,6 +757,57 @@ public static class ApiBootstrapper
                 issued.Value.AuthorityEpoch));
 
         return false;
+
+    }
+
+    /// <summary>
+    /// Issues a retention-purge authority for a route that <em>may</em> delete a labelled artifact.
+    /// </summary>
+    /// <remarks>
+    /// Best-effort on purpose, and never a refusal. These are pre-existing deletion routes: on an
+    /// installation with no Covenant arm there is no issuer, nothing is issued, and the request behaves
+    /// exactly as it did before this boundary existed. When a label is actually found without an
+    /// authority behind it, the purger refuses — so the failure lands on the one request that would
+    /// have removed protected state rather than on every request that would not (§10.20.2).
+    ///
+    /// <para>The response is marked protected only when a context is actually issued, so a route that
+    /// issued nothing keeps its previous headers byte-for-byte.</para>
+    /// </remarks>
+    private static void IssueConditionalSensitivityPurgeAuthority(HttpContext context, Endpoint? endpoint)
+    {
+
+        if (endpoint?.Metadata.GetMetadata<CovenantConditionalSensitivityPurgeMetadata>() is null)
+        {
+
+            return;
+
+        }
+
+        if (context.RequestServices.GetService<IOperatorAuthorityContextIssuer>() is not { } issuer)
+        {
+
+            return;
+
+        }
+
+        Result<OperatorAuthorityContext> issued =
+            issuer.Issue(CovenantAuthorityRequirement.SensitivityRetentionPurge);
+
+        if (issued.IsFailure)
+        {
+
+            return;
+
+        }
+
+        CovenantRequestFeatures.MarkProtectedResponse(context);
+
+        CovenantRequestFeatures.RecordAuthority(
+            context,
+            new CovenantAuthorityFeature(
+                issued.Value,
+                CovenantAuthorityRequirement.SensitivityRetentionPurge,
+                issued.Value.AuthorityEpoch));
 
     }
 

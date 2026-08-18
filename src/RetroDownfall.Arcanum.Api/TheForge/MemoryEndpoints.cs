@@ -14,6 +14,8 @@ using Microsoft.EntityFrameworkCore;
 
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Api.Security;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -21,6 +23,8 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Lexicon;
 
@@ -131,6 +135,7 @@ internal static class MemoryEndpoints
         apiGroup.MapDelete(
             "/memory/lexicon/{**name}",
             HandleLexiconDeleteAsync)
+        .RequireConditionalSensitivityRetentionPurge()
         .WithName("DeleteLexiconEntry");
 
         return apiGroup;
@@ -661,8 +666,58 @@ internal static class MemoryEndpoints
     private static async Task<IResult> HandleLexiconDeleteAsync(
         string name,
         ILexiconService lexicon,
+        ICovenantSensitiveArtifactPurger purger,
         HttpContext context)
     {
+
+        // Resolved to an identity first, because the purge boundary keys on the artifact's own id and
+        // the route names an entity. A name lookup that finds nothing simply leaves the ordinary path to
+        // produce its existing 404.
+        Result<LexiconEntryDto?> existing = await lexicon
+            .GetByNameAsync(name, context.RequestAborted)
+            .ConfigureAwait(false);
+
+        if (existing.IsSuccess && existing.Value is { } entity)
+        {
+
+            Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
+                .DispatchAsync(purger, SensitiveArtifactKind.Lexicon, entity.Id, context.RequestAborted)
+                .ConfigureAwait(false);
+
+            if (purged.IsFailure)
+            {
+
+                return Results.Json(
+                    ApiResponse<string>.FromResult(
+                        Result<string>.Failure(purged.Error),
+                        TraceId(context)),
+                    ArcanumJsonContext.Default.ApiResponseString,
+                    statusCode: ArcanumErrorMapper.ResolveStatusCode(purged.Error.Code));
+
+            }
+
+            CovenantSensitiveDeletion.MarkProtectedWhenPurged(context, purged.Value);
+
+            if (purged.Value.IsBlocked)
+            {
+
+                Error blocked = CovenantSensitiveDeletion.BlockedError(purged.Value);
+
+                return Results.Json(
+                    ApiResponse<string>.FromResult(Result<string>.Failure(blocked), TraceId(context)),
+                    ArcanumJsonContext.Default.ApiResponseString,
+                    statusCode: ArcanumErrorMapper.ResolveStatusCode(blocked.Code));
+
+            }
+
+            if (purged.Value.WasPurged(entity.Id))
+            {
+
+                return Results.NoContent();
+
+            }
+
+        }
 
         Result<bool> deleted = await lexicon
             .DeleteByNameAsync(name, context.RequestAborted)

@@ -112,6 +112,32 @@ internal static class CovenantContextPolicyParser
 }
 
 /// <summary>
+/// Marks a route that may delete a Covenant-labelled artifact, so the authenticated boundary issues a
+/// retention-purge authority for it before binding.
+/// </summary>
+/// <remarks>
+/// Conditional rather than required, because whether an artifact is labelled is a fact about data and
+/// not about the URL. `DELETE /api/saga/{id}` is an ordinary delete on an installation with no
+/// Covenant arm and a protected erasure on one that has it, and a hard requirement would make the
+/// first case fail for want of a context nothing ever issues.
+///
+/// <para>Issuance being best-effort is not the same as the check being optional. When a label is
+/// actually found and no authority was issued, the purger refuses — so the failure lands on the exact
+/// request that would have removed protected state, rather than on every request that would not
+/// (§10.20.2).</para>
+/// </remarks>
+public sealed record CovenantConditionalSensitivityPurgeMetadata
+{
+
+    private CovenantConditionalSensitivityPurgeMetadata()
+    {
+    }
+
+    public static CovenantConditionalSensitivityPurgeMetadata Instance { get; } = new();
+
+}
+
+/// <summary>
 /// The two irrevocable facts the authenticated boundary records about one request.
 /// </summary>
 /// <remarks>

@@ -2,6 +2,8 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -52,15 +54,41 @@ internal static class EmbeddingsResetEndpoints
                         statusCode: StatusCodes.Status400BadRequest);
                 }
 
-                EmbeddingsResetResult result = await resetService
-                    .ResetAsync(parsedScope.Value, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                EmbeddingsResetResult result;
+
+                try
+                {
+
+                    result = await resetService
+                        .ResetAsync(parsedScope.Value, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
+                }
+                catch (InvalidOperationException blocked)
+                {
+
+                    // A protected artifact the shared kernel refused to erase. Reported rather than
+                    // swallowed: the ordinary truncation did not run, so the operator's embeddings are
+                    // still there and telling them the reset succeeded would be false.
+                    return Results.Json(
+                        ApiResponse<EmbeddingsResetResult>.FromResult(
+                            Result<EmbeddingsResetResult>.Failure(
+                                new Error(
+                                    ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                                    blocked.Message)),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(
+                            ErrorCodes.Covenant.ManualArtifactErasureRequired));
+
+                }
 
                 return Results.Ok(
                     ApiResponse<EmbeddingsResetResult>.FromResult(
                         Result<EmbeddingsResetResult>.Success(result),
                         traceId));
             })
+            .RequireConditionalSensitivityRetentionPurge()
             .WithName("EmbeddingsReset");
 
         return apiGroup;

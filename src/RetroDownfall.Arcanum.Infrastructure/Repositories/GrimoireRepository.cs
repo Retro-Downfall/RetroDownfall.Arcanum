@@ -8,6 +8,8 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -44,6 +46,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     /// </remarks>
     private readonly CovenantMutationKernel? _covenantKernel;
 
+    private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard;
+
     /// <summary>
     /// The durable finalization-guard capacity ledger.
     /// </summary>
@@ -67,8 +71,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ISessionAttachmentStore attachments,
         ILogger<GrimoireRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions,
-        ISessionAttachmentIndexMaintenance? attachmentIndex = null)
-        : this(db, attachments, logger, arcOptions, attachmentIndex, covenantKernel: null)
+        ISessionAttachmentIndexMaintenance? attachmentIndex = null,
+        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
+        : this(db, attachments, logger, arcOptions, attachmentIndex, covenantKernel: null, labeledArtifactGuard)
     {
     }
 
@@ -83,7 +88,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ILogger<GrimoireRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions,
         ISessionAttachmentIndexMaintenance? attachmentIndex,
-        CovenantMutationKernel? covenantKernel)
+        CovenantMutationKernel? covenantKernel,
+        ICovenantLabeledArtifactGuard? labeledArtifactGuard = null)
     {
         _db = db;
 
@@ -98,6 +104,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         _attachmentIndex = attachmentIndex;
 
         _covenantKernel = covenantKernel;
+
+        _labeledArtifactGuard = labeledArtifactGuard;
 
         _finalizationCapacity = new CovenantQuotaGuard();
     }
@@ -782,6 +790,26 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default)
     {
+        // The guard, not the purge. This method is reachable from anywhere in the process, and a caller
+        // that skipped the sensitivity purge boundary would remove a labelled Entry without appending
+        // its erasure receipt — leaving a finalization guard pointing at nothing, which is the one
+        // integrity state that cannot be told apart from data loss (§10.20.2).
+        if (_labeledArtifactGuard is { } guard)
+        {
+
+            Result unlabeled = await guard
+                .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
+            {
+
+                throw new InvalidOperationException(unlabeled.Error.Message);
+
+            }
+
+        }
+
         using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         using IDisposable attachmentGate = await _attachments
