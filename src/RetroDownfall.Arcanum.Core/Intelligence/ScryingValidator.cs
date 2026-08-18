@@ -1,3 +1,4 @@
+using System.Buffers.Text;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -217,14 +218,14 @@ public static class ScryingValidator
                 $"Image exceeds the maximum size of {maxBytes} bytes."));
         }
 
-        // Well-formedness is checked here, after the size cap has bounded the buffer: a decode is
-        // the very next thing that happens to this payload, and a caller mistake deserves a Scrying
-        // validation error rather than a FormatException escaping the turn as a provider failure.
+        // Well-formedness is checked here because a decode is the very next thing that happens to
+        // this payload, and a caller mistake deserves a Scrying validation error rather than a
+        // FormatException escaping the turn as a provider failure. Base64.IsValid answers the same
+        // question as a trial decode — whitespace included — without allocating the scratch buffer:
+        // the payload is decoded for real downstream, so a per-focus large-object-heap array here
+        // would be pure garbage on the hottest authenticated path.
         if (!string.IsNullOrEmpty(base64Data)
-            && !Convert.TryFromBase64String(
-                base64Data,
-                new byte[Math.Max(decodedBytes, 0L) + 3L],
-                out _))
+            && !Base64.IsValid(base64Data.AsSpan()))
         {
             return Result.Failure(new Error(
                 ErrorCodes.Scrying.InvalidImageData,
