@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
@@ -6,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Telemetry;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -52,7 +55,8 @@ public sealed class SubagentRunnerTests
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             telemetry,
-            TimeProvider.System);
+            TimeProvider.System,
+            NullLogger<SubagentRunner>.Instance);
         AttachedFileDto explicitFile = new("src/A.cs", "sealed class A {}");
 
         SubagentRunResult result = await runner.RunAsync(
@@ -135,7 +139,8 @@ public sealed class SubagentRunnerTests
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             telemetry,
-            TimeProvider.System);
+            TimeProvider.System,
+            NullLogger<SubagentRunner>.Instance);
 
         SubagentRunResult result = await runner.RunAsync(
             new SubagentRunRequest(
@@ -180,7 +185,8 @@ public sealed class SubagentRunnerTests
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             telemetry,
-            time);
+            time,
+            NullLogger<SubagentRunner>.Instance);
 
         Task<SubagentRunResult> run = runner.RunAsync(
             new SubagentRunRequest(
@@ -221,6 +227,143 @@ public sealed class SubagentRunnerTests
     }
 
     /// <summary>
+    /// The renewal loop is a lease keeper, not a result carrier. The child turn and its renewal share
+    /// one DI scope — and therefore one <c>DbContext</c> connection — so a heartbeat can escape with
+    /// something other than <see cref="OperationCanceledException"/>. That Task is awaited from the
+    /// inner <c>finally</c>, after the child has already produced its answer, so a faulted renewal
+    /// would replace a completed run with ChildFailed once every delegated token had been billed and
+    /// with nothing left to retry.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_WhenALeaseHeartbeatThrows_KeepsTheChildAnswerAndCompletesTheOperation()
+    {
+        ManualTimeProvider time = new();
+        TaskCompletionSource childGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(
+                new PromptTurnResult("child summary", null)))
+        {
+            Gate = childGate.Task,
+        };
+        FakeOperationCoordinator operations = new()
+        {
+            HeartbeatFailure = new InvalidOperationException(
+                "A second operation was started on this context instance before a previous operation completed."),
+        };
+        CapturingTelemetry telemetry = new();
+        TestCapturingLogger<SubagentRunner> logger = new();
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            operations,
+            telemetry,
+            time,
+            logger);
+
+        Task<SubagentRunResult> run = runner.RunAsync(
+            new SubagentRunRequest(
+                "Long child task.",
+                null,
+                [],
+                MaxTokens: 1_000,
+                MaxCostUsd: null),
+            CancellationToken.None);
+
+        await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(
+            await WaitForAsync(
+                () =>
+                {
+                    time.Advance(TimeSpan.FromMinutes(1));
+
+                    return operations.HeartbeatAttempts >= 1;
+                },
+                TimeSpan.FromSeconds(10)),
+            "expected the renewal loop to attempt at least one heartbeat");
+
+        childGate.SetResult();
+
+        SubagentRunResult result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(result.Success);
+        Assert.Equal("child summary", result.Summary);
+        Assert.Equal(0, operations.HeartbeatCalls);
+        Assert.Equal(1, operations.CompleteCalls);
+        Assert.Equal(0, operations.FailCalls);
+
+        // A heartbeat that threw committed nothing, so the row is still on the revision the last
+        // accepted transition left it at and the terminal transition must address that one.
+        Assert.Equal(1L, operations.LastCompleteRevision);
+        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
+
+        // Renewal stopping early is a diagnosable event, not a silent one.
+        Assert.Contains(
+            logger.Entries,
+            static entry => entry.Level == LogLevel.Warning
+                && entry.Exception is InvalidOperationException);
+    }
+
+    /// <summary>
+    /// A faulted renewal awaited in the inner <c>finally</c> also replaces the caller's
+    /// <see cref="OperationCanceledException"/>, which bypasses the cancellation filter and reports a
+    /// cancelled run as ChildFailed — losing the 130 exit code the CLI contract depends on.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_WhenCancelledWhileALeaseHeartbeatIsFaulting_StillReportsCancellation()
+    {
+        ManualTimeProvider time = new();
+        using CancellationTokenSource cancellation = new();
+        TaskCompletionSource childGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(
+                new PromptTurnResult("never returned", null)))
+        {
+            Gate = childGate.Task,
+        };
+        FakeOperationCoordinator operations = new()
+        {
+            HeartbeatFailure = new InvalidOperationException("connection is already open"),
+        };
+        CapturingTelemetry telemetry = new();
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            operations,
+            telemetry,
+            time,
+            NullLogger<SubagentRunner>.Instance);
+
+        Task<SubagentRunResult> run = runner.RunAsync(
+            new SubagentRunRequest(
+                "Long child task.",
+                null,
+                [],
+                MaxTokens: 1_000,
+                MaxCostUsd: null),
+            cancellation.Token);
+
+        await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(
+            await WaitForAsync(
+                () =>
+                {
+                    time.Advance(TimeSpan.FromMinutes(1));
+
+                    return operations.HeartbeatAttempts >= 1;
+                },
+                TimeSpan.FromSeconds(10)),
+            "expected the renewal loop to attempt at least one heartbeat");
+
+        await cancellation.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => run.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.Equal(SubagentRunOutcome.Cancelled, telemetry.Event?.Outcome);
+        Assert.Equal(SubagentFailureCodes.Cancelled, operations.FailureCode);
+    }
+
+    /// <summary>
     /// A refused <c>CompleteAsync</c> means another owner already moved the row. The runner still owes
     /// the ledger a terminal transition attempt rather than walking away silently.
     /// </summary>
@@ -236,7 +379,8 @@ public sealed class SubagentRunnerTests
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             telemetry,
-            TimeProvider.System);
+            TimeProvider.System,
+            NullLogger<SubagentRunner>.Instance);
 
         SubagentRunResult result = await runner.RunAsync(
             new SubagentRunRequest(
@@ -305,7 +449,7 @@ public sealed class SubagentRunnerTests
 
             if (Gate is not null)
             {
-                await Gate.ConfigureAwait(false);
+                await Gate.WaitAsync(executionToken).ConfigureAwait(false);
             }
 
             return result;
@@ -334,6 +478,8 @@ public sealed class SubagentRunnerTests
     {
         private int _heartbeatCalls;
 
+        private int _heartbeatAttempts;
+
         public LongRunningOperationCreateRequest? StartRequest { get; private set; }
 
         public int CompleteCalls { get; private set; }
@@ -346,12 +492,21 @@ public sealed class SubagentRunnerTests
 
         public int HeartbeatCalls => Volatile.Read(ref _heartbeatCalls);
 
+        public int HeartbeatAttempts => Volatile.Read(ref _heartbeatAttempts);
+
         public long? LastCompleteRevision { get; private set; }
 
         public long? LastFailRevision { get; private set; }
 
         /// <summary>Models a row another owner already claimed and moved.</summary>
         public bool RefuseComplete { get; init; }
+
+        /// <summary>
+        /// Models a heartbeat that faults rather than being refused — the renewal loop shares the
+        /// child turn's DI scope and DbContext connection, so a concurrent-use
+        /// <see cref="InvalidOperationException"/> or a non-busy Sqlite error can escape the store.
+        /// </summary>
+        public Exception? HeartbeatFailure { get; init; }
 
         public Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
             LongRunningOperationCreateRequest request,
@@ -458,6 +613,12 @@ public sealed class SubagentRunnerTests
             _ = operationId;
             _ = ownerId;
             cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _heartbeatAttempts);
+
+            if (HeartbeatFailure is not null)
+            {
+                throw HeartbeatFailure;
+            }
 
             if (leaseDuration < TimeSpan.FromSeconds(5) || leaseDuration > TimeSpan.FromMinutes(15))
             {

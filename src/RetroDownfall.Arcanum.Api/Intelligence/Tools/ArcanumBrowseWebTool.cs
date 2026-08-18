@@ -49,19 +49,55 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         """);
 
+    /// <summary>
+    /// Element names whose subtrees are never part of a page's visible prose or link set.
+    /// </summary>
+    private static readonly string[] NonRenderedElements =
+    [
+        "script",
+        "style",
+        "noscript",
+        "nav",
+        "header",
+        "footer",
+    ];
+
+    /// <summary>
+    /// Deepest element nesting this tool will parse. HtmlAgilityPack's parser is superlinear in
+    /// nesting depth and this tool is fed arbitrary third-party markup, so a page of nothing but
+    /// unclosed tags would otherwise hold a worker for minutes. Instance-scoped on the document,
+    /// unlike the static <c>HtmlDocument.MaxDepthLevel</c>, so the bound cannot leak into any other
+    /// HtmlAgilityPack consumer in the host. Real documents nest an order of magnitude less.
+    /// </summary>
+    private const int MaxNestedChildNodes = 512;
+
+    /// <summary>
+    /// Nodes visited between cancellation checks. Extraction is CPU-bound and holds the request's
+    /// worker for its whole duration, so the caller's token has to be observable inside the walk.
+    /// </summary>
+    private const int CancellationCheckInterval = 4_096;
+
     private readonly IHttpClientFactory _httpClientFactory;
 
     private readonly IOptionsSnapshot<ArcanumSettings> _options;
 
     private readonly ILogger? _logger;
 
-    public ArcanumBrowseWebTool(IHttpClientFactory httpClientFactory, IOptionsSnapshot<ArcanumSettings> options, ILogger? logger)
+    private readonly TimeProvider _timeProvider;
+
+    public ArcanumBrowseWebTool(
+        IHttpClientFactory httpClientFactory,
+        IOptionsSnapshot<ArcanumSettings> options,
+        ILogger? logger,
+        TimeProvider? timeProvider = null)
     {
         _httpClientFactory = httpClientFactory;
 
         _options = options;
 
         _logger = logger;
+
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public override string Name => ToolName;
@@ -121,10 +157,23 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         HttpClient client = _httpClientFactory.CreateClient(ArcanumBrowseWebConstants.HttpClientName);
 
+        TimeSpan idleTimeout = TimeSpan.FromSeconds(
+            ArcanumSettingClamps.WebBrowsingIdleTimeoutSeconds(settings.IdleTimeoutSeconds));
+
+        // The named client is registered with an infinite HttpClient.Timeout, and the egress guard
+        // installs a ConnectCallback that makes SocketsHttpHandler.ConnectTimeout inert, so this is
+        // the only bound on a host that accepts the connection and then stalls. It covers connect,
+        // the wait for headers, and each body segment; progress resets it, the shape read_url uses.
+        using CancellationTokenSource idleDeadline = new(idleTimeout, _timeProvider);
+
+        using CancellationTokenSource attempt = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            idleDeadline.Token);
+
         try
         {
             using HttpResponseMessage response = await client
-                .GetAsync(targetUri, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .GetAsync(targetUri, HttpCompletionOption.ResponseHeadersRead, attempt.Token)
                 .ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
@@ -153,19 +202,31 @@ public sealed class ArcanumBrowseWebTool : AIFunction
             }
 
             await using Stream stream = await response.Content
-                .ReadAsStreamAsync(cancellationToken)
+                .ReadAsStreamAsync(attempt.Token)
                 .ConfigureAwait(false);
 
             Encoding encoding = GetEncodingFromContentType(response.Content.Headers.ContentType);
 
-            string html = await ReadCappedStringAsync(stream, maxContentBytes, encoding, cancellationToken).ConfigureAwait(false);
+            string html = await ReadCappedStringAsync(
+                    stream,
+                    maxContentBytes,
+                    encoding,
+                    idleDeadline,
+                    idleTimeout,
+                    attempt.Token)
+                .ConfigureAwait(false);
 
-            BrowseWebResult result = Extract(html, targetUri, maxLinks);
+            BrowseWebResult result = Extract(html, targetUri, maxLinks, cancellationToken);
 
             return WebToolResultSerializer.Serialize(result);
         }
-        catch (OperationCanceledException ex) when (ex.InnerException is TimeoutException)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            // Nothing but this tool's own idle deadline can have fired: the caller is still waiting.
+            _logger?.LogWarning(
+                "browse_web abandoned a request that made no progress for {IdleTimeoutSeconds}s.",
+                idleTimeout.TotalSeconds);
+
             return WebToolResultSerializer.Serialize(
                 new BrowseWebResult
                 {
@@ -204,19 +265,38 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         }
     }
 
-    private static BrowseWebResult Extract(string html, Uri baseUri, int maxLinks)
+    internal static BrowseWebResult Extract(string html, Uri baseUri, int maxLinks, CancellationToken cancellationToken)
     {
-        HtmlDocument doc = new();
+        HtmlDocument doc = new()
+        {
+            OptionMaxNestedChildNodes = MaxNestedChildNodes,
+        };
 
-        doc.LoadHtml(html);
+        try
+        {
+            doc.LoadHtml(html);
+        }
+        catch (Exception)
+        {
+            // HtmlAgilityPack signals the nesting bound with a bare Exception during the load. A
+            // page Arcanum refuses to parse is reported as such rather than as a tool fault.
+            return new BrowseWebResult
+            {
+                Title = string.Empty,
+                Content =
+                    $"[{ErrorCodes.WebBrowsing.TooLarge}] The page nests HTML elements more than "
+                    + $"{MaxNestedChildNodes} levels deep and was not parsed.",
+                Links = [],
+            };
+        }
 
         string title = doc.DocumentNode.SelectSingleNode("//title")?.InnerText?.Trim() ?? string.Empty;
 
         HtmlNode? body = doc.DocumentNode.SelectSingleNode("//body");
 
-        string content = body is not null ? ExtractVisibleText(body) : ExtractVisibleText(doc.DocumentNode);
+        string content = ExtractVisibleText(body ?? doc.DocumentNode, cancellationToken);
 
-        List<string> links = ExtractLinks(doc, baseUri, maxLinks);
+        List<string> links = ExtractLinks(doc, baseUri, maxLinks, cancellationToken);
 
         return new BrowseWebResult
         {
@@ -244,13 +324,31 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
     }
 
-    private static string ExtractVisibleText(HtmlNode root)
+    /// <summary>
+    /// Walks the tree once, top-down, and never descends into a non-rendered element. Skipping a
+    /// subtree at its root is the whole ancestor test, paid once per node instead of once per node
+    /// per level, and the explicit stack keeps a pathologically nested page off the call stack.
+    /// </summary>
+    private static string ExtractVisibleText(HtmlNode root, CancellationToken cancellationToken)
     {
         StringWriter writer = new();
 
-        foreach (HtmlNode node in root.DescendantsAndSelf())
+        Stack<HtmlNode> pending = new();
+
+        pending.Push(root);
+
+        int visited = 0;
+
+        while (pending.Count > 0)
         {
-            if (!ShouldRenderNode(node))
+            HtmlNode node = pending.Pop();
+
+            if (++visited % CancellationCheckInterval == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (node.NodeType == HtmlNodeType.Comment || IsNonRenderedElement(node))
             {
                 continue;
             }
@@ -266,6 +364,8 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                     writer.Write(' ');
                 }
             }
+
+            PushChildren(pending, node);
         }
 
         string joined = writer.ToString();
@@ -275,32 +375,38 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         return string.Join(" ", parts);
     }
 
-    private static bool ShouldRenderNode(HtmlNode node)
+    private static bool IsNonRenderedElement(HtmlNode node)
     {
-        if (node.NodeType == HtmlNodeType.Comment)
+        if (node.NodeType != HtmlNodeType.Element)
         {
             return false;
         }
 
-        for (HtmlNode? current = node; current is not null; current = current.ParentNode)
+        // Compared, not lowercased: HtmlAgilityPack already normalises Name, and an ordinal
+        // case-insensitive compare cannot be surprised by a name that it did not.
+        foreach (string name in NonRenderedElements)
         {
-            if (current.NodeType != HtmlNodeType.Element)
+            if (string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase))
             {
-                continue;
-            }
-
-            string name = current.Name.ToLowerInvariant();
-
-            if (name is "script" or "style" or "noscript" or "nav" or "header" or "footer")
-            {
-                return false;
+                return true;
             }
         }
 
-        return true;
+        return false;
     }
 
-    private static List<string> ExtractLinks(HtmlDocument doc, Uri baseUri, int maxLinks)
+    /// <summary>Queues a node's children so the stack pops them back in document order.</summary>
+    private static void PushChildren(Stack<HtmlNode> pending, HtmlNode node)
+    {
+        HtmlNodeCollection children = node.ChildNodes;
+
+        for (int i = children.Count - 1; i >= 0; i--)
+        {
+            pending.Push(children[i]);
+        }
+    }
+
+    private static List<string> ExtractLinks(HtmlDocument doc, Uri baseUri, int maxLinks, CancellationToken cancellationToken)
     {
         if (maxLinks <= 0)
         {
@@ -311,9 +417,30 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         List<string> links = new(maxLinks);
 
-        foreach (HtmlNode anchor in doc.DocumentNode.SelectNodes("//a[@href]") ?? Enumerable.Empty<HtmlNode>())
+        Stack<HtmlNode> pending = new();
+
+        pending.Push(doc.DocumentNode);
+
+        int visited = 0;
+
+        while (pending.Count > 0)
         {
-            if (!ShouldRenderNode(anchor))
+            HtmlNode anchor = pending.Pop();
+
+            if (++visited % CancellationCheckInterval == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (anchor.NodeType == HtmlNodeType.Comment || IsNonRenderedElement(anchor))
+            {
+                continue;
+            }
+
+            PushChildren(pending, anchor);
+
+            if (anchor.NodeType != HtmlNodeType.Element
+                || !string.Equals(anchor.Name, "a", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -370,7 +497,13 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         return Encoding.UTF8;
     }
 
-    private static async Task<string> ReadCappedStringAsync(Stream stream, int maxBytes, Encoding encoding, CancellationToken cancellationToken)
+    private static async Task<string> ReadCappedStringAsync(
+        Stream stream,
+        int maxBytes,
+        Encoding encoding,
+        CancellationTokenSource idleDeadline,
+        TimeSpan idleTimeout,
+        CancellationToken cancellationToken)
     {
         byte[] buffer = new byte[8192];
 
@@ -392,6 +525,10 @@ public sealed class ArcanumBrowseWebTool : AIFunction
             {
                 break;
             }
+
+            // A segment arrived, so the connection is not idle. Every reset buys another interval,
+            // which bounds a server that drips bytes without ever bounding a healthy slow one.
+            idleDeadline.CancelAfter(idleTimeout);
 
             await memory.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -9,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence.Tools;
@@ -233,9 +235,159 @@ public sealed class ArcanumBrowseWebToolTests
         Assert.Contains("https://example.com/absolute", dto.Links);
     }
 
+    /// <summary>
+    /// Text extraction re-walked every node's entire ancestor chain, so the traversal cost was
+    /// O(nodes x depth) on top of a parser that is itself superlinear in nesting depth — and nothing
+    /// in the walk ever checked the caller's token. A page of nothing but unclosed tags, which any
+    /// hostile or merely broken site produces for free, therefore pinned an API worker for as long
+    /// as it took. Nesting past what the tool will parse has to be refused, cheaply.
+    /// </summary>
+    [Fact]
+    public void Extract_NestingBeyondTheParserBound_IsRefusedInsteadOfParsed()
+    {
+        const int Depth = 4_000;
+        const int Leaves = 100_000;
+
+        StringBuilder html = new();
+        html.Append("<html><title>Deep</title><body>");
+
+        for (int i = 0; i < Depth; i++)
+        {
+            html.Append("<div>");
+        }
+
+        for (int i = 0; i < Leaves; i++)
+        {
+            html.Append("<b>x</b>");
+        }
+
+        html.Append("</body></html>");
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+
+        BrowseWebResult result = ArcanumBrowseWebTool.Extract(
+            html.ToString(),
+            new Uri("https://example.com/deep"),
+            maxLinks: 10,
+            CancellationToken.None);
+
+        stopwatch.Stop();
+
+        Assert.Contains(ErrorCodes.WebBrowsing.TooLarge, result.Content, StringComparison.Ordinal);
+        Assert.Empty(result.Links);
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+            $"refusing {Leaves:N0} leaves at depth {Depth:N0} took {stopwatch.Elapsed}");
+    }
+
+    /// <summary>
+    /// Extraction is CPU-bound and runs on the request's own worker, so a caller who has gone away
+    /// must be able to stop it. Nothing inside the traversal used to look at the token at all.
+    /// </summary>
+    [Fact]
+    public void Extract_WhenTheCallerHasCancelled_StopsInsideTheTraversal()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        StringBuilder html = new();
+        html.Append("<html><title>Wide</title><body>");
+
+        for (int i = 0; i < 20_000; i++)
+        {
+            html.Append("<b>x</b>");
+        }
+
+        html.Append("</body></html>");
+
+        cancellation.Cancel();
+
+        _ = Assert.Throws<OperationCanceledException>(
+            () => ArcanumBrowseWebTool.Extract(
+                html.ToString(),
+                new Uri("https://example.com/wide"),
+                maxLinks: 10,
+                cancellation.Token));
+    }
+
+    /// <summary>
+    /// The single-pass walk has to suppress the same subtrees the per-node ancestor check did:
+    /// everything beneath a script/style/noscript/nav/header/footer element, at any depth, and
+    /// regardless of how the source cased the tag.
+    /// </summary>
+    [Fact]
+    public void Extract_SuppressesEverythingBeneathANonRenderedElement()
+    {
+        BrowseWebResult result = ArcanumBrowseWebTool.Extract(
+            """
+            <html><title>T</title><body>
+            <nav><div><span>navtext</span><a href="/nav">Nav link</a></div></nav>
+            <FOOTER><p><em>foottext</em></p></FOOTER>
+            <main><p>keeptext</p><a href="/keep">Keep link</a></main>
+            </body></html>
+            """,
+            new Uri("https://example.com/"),
+            maxLinks: 10,
+            CancellationToken.None);
+
+        Assert.Contains("keeptext", result.Content);
+        Assert.DoesNotContain("navtext", result.Content);
+        Assert.DoesNotContain("foottext", result.Content);
+        Assert.Contains("https://example.com/keep", result.Links);
+        Assert.DoesNotContain("https://example.com/nav", result.Links);
+    }
+
+    /// <summary>
+    /// The named client is registered with <c>Timeout.InfiniteTimeSpan</c> and an egress
+    /// <c>ConnectCallback</c> that makes <c>SocketsHttpHandler.ConnectTimeout</c> inert, and the read
+    /// loop bounds only total bytes. A host that accepts the connection and then never answers
+    /// therefore had no deadline at all, which also left the tool's own
+    /// <c>WebBrowsing.Timeout</c> result unreachable. The configured idle timeout has to be the bound.
+    /// </summary>
+    [Fact]
+    public async Task InvokeAsync_ResponseNeverArrives_ReportsTimeoutOnTheConfiguredIdleBound()
+    {
+        ManualClock clock = new();
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        ArcanumBrowseWebTool tool = CreateTool(
+            async (message, token) =>
+            {
+                _ = message;
+
+                _ = entered.TrySetResult();
+
+                await Task.Delay(Timeout.Infinite, token);
+
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            },
+            timeProvider: clock);
+
+        AIFunctionArguments args = new(new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["url"] = "https://example.com/stalled",
+        });
+
+        Task<object?> invoke = tool.InvokeAsync(args, CancellationToken.None).AsTask();
+
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        int idleTimeoutSeconds = ArcanumSettingClamps.WebBrowsingIdleTimeoutSeconds(
+            ArcanumRuntimeDefaults.WebBrowsing.IdleTimeoutSeconds);
+
+        clock.Advance(TimeSpan.FromSeconds(idleTimeoutSeconds + 1));
+
+        object? result = await invoke.WaitAsync(TimeSpan.FromSeconds(10));
+
+        BrowseWebResult? dto = Deserialize(result);
+
+        Assert.NotNull(dto);
+        Assert.Contains(ErrorCodes.WebBrowsing.Timeout, dto.Content, StringComparison.Ordinal);
+    }
+
     private static ArcanumBrowseWebTool CreateTool(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler,
-        ArcanumSettings? settings = null)
+        ArcanumSettings? settings = null,
+        TimeProvider? timeProvider = null)
     {
         HttpMessageHandlerStub stub = new(handler);
         FakeHttpClientFactory factory = new(stub);
@@ -244,7 +396,7 @@ public sealed class ArcanumBrowseWebToolTests
             Features = new FeatureSettings { WebBrowsing = true },
         });
 
-        return new ArcanumBrowseWebTool(factory, options, NullLogger.Instance);
+        return new ArcanumBrowseWebTool(factory, options, NullLogger.Instance, timeProvider);
     }
 
     private static BrowseWebResult? Deserialize(object? result)
@@ -257,6 +409,137 @@ public sealed class ArcanumBrowseWebToolTests
         }
 
         return JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.BrowseWebResult);
+    }
+
+    /// <summary>
+    /// A clock whose timers fire only when the test advances it, so the tool's idle deadline can be
+    /// exercised without spending the configured interval in real time.
+    /// </summary>
+    private sealed class ManualClock : TimeProvider
+    {
+
+        private readonly Lock _gate = new();
+
+        private readonly List<ManualTimer> _timers = [];
+
+        private DateTimeOffset _now = DateTimeOffset.UnixEpoch;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_gate)
+            {
+                return _now;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            _ = period;
+
+            ManualTimer timer = new(this, callback, state, dueTime);
+
+            lock (_gate)
+            {
+                _timers.Add(timer);
+            }
+
+            return timer;
+        }
+
+        public void Advance(TimeSpan delta)
+        {
+            ManualTimer[] due;
+
+            lock (_gate)
+            {
+                _now = _now.Add(delta);
+                due = [.. _timers];
+            }
+
+            foreach (ManualTimer timer in due)
+            {
+                timer.Advance(delta);
+            }
+        }
+
+        private void Remove(ManualTimer timer)
+        {
+            lock (_gate)
+            {
+                _ = _timers.Remove(timer);
+            }
+        }
+
+        private sealed class ManualTimer(
+            ManualClock owner,
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime) : ITimer
+        {
+
+            private readonly Lock _gate = new();
+
+            private TimeSpan _remaining = dueTime;
+
+            private bool _disposed;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                _ = period;
+
+                lock (_gate)
+                {
+                    _remaining = dueTime;
+                }
+
+                return true;
+            }
+
+            public void Advance(TimeSpan delta)
+            {
+                lock (_gate)
+                {
+                    if (_disposed || _remaining == Timeout.InfiniteTimeSpan)
+                    {
+                        return;
+                    }
+
+                    _remaining -= delta;
+
+                    if (_remaining > TimeSpan.Zero)
+                    {
+                        return;
+                    }
+
+                    _remaining = Timeout.InfiniteTimeSpan;
+                }
+
+                callback(state);
+            }
+
+            public void Dispose()
+            {
+                lock (_gate)
+                {
+                    _disposed = true;
+                }
+
+                owner.Remove(this);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+
+                return ValueTask.CompletedTask;
+            }
+
+        }
+
     }
 
     private sealed class HttpMessageHandlerStub : HttpMessageHandler

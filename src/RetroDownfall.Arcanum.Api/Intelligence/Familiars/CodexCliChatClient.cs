@@ -23,6 +23,12 @@ internal sealed class CodexCliChatClient(
 {
 
     /// <summary>
+    /// Distinguishes one turn's schema files from each other. The working directory is per client,
+    /// so it is the model call — not the directory — that has to supply the unique part.
+    /// </summary>
+    private int _schemaOrdinal;
+
+    /// <summary>
     /// Codex feature flags that carry a tool the vendor's own agent loop can call.
     /// </summary>
     /// <remarks>
@@ -289,17 +295,24 @@ internal sealed class CodexCliChatClient(
 
     }
 
-    private static bool TryWriteSchema(string workingDirectory, string jsonSchema, out string? path)
+    private bool TryWriteSchema(string workingDirectory, string jsonSchema, out string? path)
     {
 
-        path = Path.Combine(workingDirectory, "output-schema.json");
+        // Per model call, not per turn: one client serves every call a turn makes, and the
+        // structured-output correction loop re-invokes it with the same ResponseFormat. A fixed name
+        // would already exist by the second call, and the swallowed CreateNew failure would drop
+        // --output-schema on exactly the retry that exists to make the answer well-formed.
+        int ordinal = Interlocked.Increment(ref _schemaOrdinal);
+
+        path = Path.Combine(workingDirectory, $"output-schema-{ordinal}.json");
 
         try
         {
 
             // CreateNew, not WriteAllText: a plain write follows an existing symlink. The working
-            // directory is owner-only and fresh per turn, so this can only ever be a fresh file —
-            // failing instead of following anything already at that path keeps it that way.
+            // directory is owner-only and this name has not been used before, so this can only ever
+            // be a fresh file — failing instead of following anything already at that path keeps it
+            // that way.
             using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
 
