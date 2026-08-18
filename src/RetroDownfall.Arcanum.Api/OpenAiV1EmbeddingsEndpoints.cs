@@ -308,6 +308,25 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
+        // The two guards above each police one round trip: the short-input batch, and the chunk batch
+        // behind a single long input. A request spans several of those — one for the short inputs plus
+        // one per long input — so a load-balanced or mid-rollout pool can answer every batch at a
+        // consistent width and still leave this response ragged (a 1,536-wide short vector beside a
+        // 3,072-wide mean-pooled long one). Nothing downstream would notice: each vector lands in its
+        // own data[] slot, so the request answers 200 carrying rows of two widths, which is the same
+        // contract violation the per-batch guards exist to prevent. The response is only well-formed
+        // once every vector in it is the same width, so that is where the assertion belongs.
+        int responseWidth = resultVectors[0]!.Length;
+
+        if (Array.Exists(resultVectors, vector => vector!.Length != responseWidth))
+        {
+
+            return WeaveErrorToOpenAiResult(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider returned vectors of inconsistent dimensions."));
+
+        }
+
         List<OpenAiEmbeddingData> data = new(inputs.Length);
 
         for (int i = 0; i < inputs.Length; i++)

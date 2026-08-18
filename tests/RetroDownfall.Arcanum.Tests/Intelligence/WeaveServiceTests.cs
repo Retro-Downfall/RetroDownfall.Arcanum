@@ -542,6 +542,53 @@ public sealed class WeaveServiceTests
 
     }
 
+    /// <summary>
+    /// The bound can only move a chunk boundary for a size/overlap pair that some configuration can
+    /// actually produce, and the chunk pair is code-owned rather than operator-owned:
+    /// <c>EmbeddingIntegrationSettings</c> — the whole of <c>Arcanum:Integrations:Embeddings</c> — carries
+    /// no chunk keys, <c>ArcanumSettings</c> has no embeddings section of its own, and
+    /// <c>ResolveEmbeddings</c> rebuilds both values from <see cref="ArcanumRuntimeDefaults.Embeddings"/>
+    /// on every call regardless of what the operator set. The only reachable pair is the shipped
+    /// 1,000/100, whose step the bound leaves at 900 — the same step the unbounded subtraction produced.
+    /// </summary>
+    [Fact]
+    public void ResolveChunkStep_ForTheOnlyReachableConfiguration_MatchesTheUnboundedStep()
+    {
+
+        // Everything an operator can say about embeddings, said at once.
+        EmbeddingSettings resolved = new ArcanumSettings
+        {
+            Features = new FeatureSettings
+            {
+                Embeddings = true,
+                CodebaseRetrieval = true,
+                Tapestry = true,
+            },
+            Integrations = new IntegrationSettings
+            {
+                Embeddings = new EmbeddingIntegrationSettings
+                {
+                    Provider = "local",
+                    Model = "nomic-embed-text",
+                    Dimensions = 1_536,
+                },
+            },
+        }.ResolveEmbeddings();
+
+        Assert.Equal(ArcanumRuntimeDefaults.Embeddings.ChunkSizeChars, resolved.ChunkSizeChars);
+
+        Assert.Equal(ArcanumRuntimeDefaults.Embeddings.ChunkOverlapChars, resolved.ChunkOverlapChars);
+
+        int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(resolved.ChunkSizeChars);
+
+        int chunkOverlapChars = ArcanumSettingClamps.EmbeddingsChunkOverlapChars(resolved.ChunkOverlapChars);
+
+        Assert.Equal(
+            chunkSizeChars - chunkOverlapChars,
+            WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars));
+
+    }
+
     private static ArcanumSettings EnabledSettings() =>
         new()
         {
