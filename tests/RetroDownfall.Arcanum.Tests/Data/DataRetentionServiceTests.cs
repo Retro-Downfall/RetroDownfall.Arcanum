@@ -6,6 +6,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Logging.Abstractions;
 
 using Microsoft.Extensions.Options;
@@ -3421,7 +3423,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         ArcanumSettings? settings = null,
         IDataRetentionPolicyStore? policyStore = null,
         TimeProvider? timeProvider = null,
-        ILongRunningOperationStore? operationStore = null)
+        ILongRunningOperationStore? operationStore = null,
+        ILogger<DataRetentionService>? logger = null)
     {
 
         ILongRunningOperationStore operations = operationStore
@@ -3432,7 +3435,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
             operations,
             timeProvider ?? TimeProvider.System,
-            NullLogger<DataRetentionService>.Instance,
+            logger ?? NullLogger<DataRetentionService>.Instance,
             _attachmentsRoot,
             _filesRoot,
             _logsRoot,
@@ -4348,6 +4351,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Guid operationId,
             CancellationToken cancellationToken = default) =>
             inner.GetAsync(operationId, cancellationToken);
+
+        public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
+            Guid operationId,
+            CancellationToken cancellationToken = default) =>
+            inner.FindRequestIdentityAsync(operationId, cancellationToken);
 
         public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
             LongRunningOperationQuery query,

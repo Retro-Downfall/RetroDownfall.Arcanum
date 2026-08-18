@@ -6,6 +6,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Daemons;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -547,6 +549,26 @@ internal sealed partial class DataRetentionService
 
         }
 
+        // Version 0 is the documented legacy arm: no payload, nothing to resume from, restarted
+        // idempotently from durable quarantine state below. Version 1 is a healthy-catalog Covenant
+        // erasure, which cannot be restarted — a factory erasure that already applied its canonical
+        // deletion cannot prove that by inspecting the result, so it is resumed from the exact phase
+        // its checkpoint recorded (§10.20.3).
+        if (operation.CheckpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion)
+        {
+
+            return RecoverCovenantFactoryErasure(operation);
+
+        }
+
+        if (operation.CheckpointVersion != 0)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
+
+        }
+
         try
         {
 
@@ -613,6 +635,62 @@ internal sealed partial class DataRetentionService
                 ErrorCodes.Data.ReconciliationFailed);
 
         }
+
+    }
+
+    /// <summary>
+    /// Reconciles a version-1 healthy-catalog factory erasure.
+    /// </summary>
+    /// <remarks>
+    /// Rebuilds the identical exclusive owner from the checkpoint alone and parks the operation.
+    /// This build has no erasure coordinator to resume it with, and restarting it down the ordinary
+    /// idempotent path would run the factory contract's deletion over a family whose canonical arm
+    /// an interrupted erasure may already have replaced — while every reader that erasure closed
+    /// admission against is still waiting (§10.20.3).
+    /// </remarks>
+    private LongRunningOperationRecoveryResult RecoverCovenantFactoryErasure(
+        LongRunningOperation operation)
+    {
+
+        if (operation.CheckpointPayload is null)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
+
+        }
+
+        Result<DataRetentionFactoryResetCheckpointV1> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(
+                operation.CheckpointPayload);
+
+        if (decoded.IsFailure)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
+
+        }
+
+        Result<CovenantExclusiveRecoveryOwner> owner =
+            CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value);
+
+        if (owner.IsFailure || owner.Value.OperationId != operation.Id)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
+
+        }
+
+        logger.LogWarning(
+            "A healthy-catalog Covenant factory erasure was interrupted at phase {ResetPhase} for "
+            + "durable operation {OperationId}; admission stays closed until it is resumed.",
+            decoded.Value.Phase,
+            operation.Id);
+
+        return LongRunningOperationRecoveryResult.RequiresAttention(
+            ErrorCodes.Covenant.ManualRecoveryRequired);
 
     }
 

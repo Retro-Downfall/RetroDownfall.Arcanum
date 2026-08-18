@@ -1,4 +1,7 @@
+using System.Text.Json.Serialization;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Covenant;
 
@@ -223,6 +226,7 @@ public enum CovenantLeaseKind : byte
 /// Campaign-exclusive acquisition, <see cref="ProtectedSessionTransfer"/> only for the compound
 /// transfer acquisition, and the remaining five only for a global exclusive acquisition.
 /// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantExclusiveOperation>))]
 public enum CovenantExclusiveOperation : byte
 {
 

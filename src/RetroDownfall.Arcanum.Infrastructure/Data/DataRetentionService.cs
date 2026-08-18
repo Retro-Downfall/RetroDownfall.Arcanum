@@ -5629,12 +5629,31 @@ internal sealed partial class DataRetentionService(
 
         }
 
-        if (operation.CheckpointVersion != 2
-            || operation.CheckpointPayload is null
+        if (operation.CheckpointPayload is null
             || !string.Equals(
                 operation.CheckpointReference,
                 "retention-mutation:" + operation.Id.ToString("N"),
                 StringComparison.Ordinal))
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Data.ReconciliationFailed);
+
+        }
+
+        // A version-3 row is the only one that can carry a Covenant arm, and it is decoded by its own
+        // source-generated codec rather than by the version-2 text journal. Version 2 is untouched:
+        // an ordinary retention mutation still writes and resumes exactly the payload it always did,
+        // so a checkpoint written before this build reconciles without a second dataset replacement
+        // (§10.20.3).
+        if (operation.CheckpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion)
+        {
+
+            return RecoverCovenantResetMutation(operation);
+
+        }
+
+        if (operation.CheckpointVersion != 2)
         {
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
@@ -5749,6 +5768,70 @@ internal sealed partial class DataRetentionService(
             ? LongRunningOperationRecoveryResult.Failed(
                 ErrorCodes.Data.ReconciliationFailed)
             : LongRunningOperationRecoveryResult.Completed();
+
+    }
+
+    /// <summary>
+    /// Reconciles a version-3 data-retention mutation.
+    /// </summary>
+    /// <remarks>
+    /// The owner is rebuilt from the checkpoint alone — the operation id, the canonical effect
+    /// digest, and the exact operation code it recorded — and never from a live plan, a request
+    /// body, or the request-identity row, because a retry with a changed plan would otherwise
+    /// reconstruct an owner that matched a closed scope it has no right to adopt.
+    ///
+    /// <para>This build has no erasure coordinator to hand that owner to, so an interrupted reset is
+    /// parked rather than resumed: <see cref="LongRunningOperationState.ReconciliationRequired"/>
+    /// keeps the checkpoint active and admission closed, which is the same outcome a manual blocker
+    /// produces once the coordinator exists. Repeating the pass is therefore idempotent from every
+    /// one of the ten phases — it rebuilds the identical owner, writes nothing, and replaces no
+    /// dataset. Abandoning it instead would discard the only durable record of a half-erased family
+    /// (§10.20.3).</para>
+    /// </remarks>
+    private LongRunningOperationRecoveryResult RecoverCovenantResetMutation(
+        LongRunningOperation operation)
+    {
+
+        Result<DataRetentionMutationCheckpointV3> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(operation.CheckpointPayload!);
+
+        if (decoded.IsFailure)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
+
+        }
+
+        if (decoded.Value.Covenant is not { } arm)
+        {
+
+            // A version-3 row with no arm describes a mutation that closed nothing. There is no
+            // exclusive scope to adopt and no storage effect this build can attribute to it.
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Data.ReconciliationFailed);
+
+        }
+
+        Result<CovenantExclusiveRecoveryOwner> owner =
+            CovenantRecoveryCheckpointCodec.RecoveryOwner(arm);
+
+        if (owner.IsFailure || owner.Value.OperationId != operation.Id)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
+
+        }
+
+        logger.LogWarning(
+            "A Covenant reset was interrupted at phase {ResetPhase} for durable operation "
+            + "{OperationId}; admission stays closed until it is resumed.",
+            arm.Phase,
+            operation.Id);
+
+        return LongRunningOperationRecoveryResult.RequiresAttention(
+            ErrorCodes.Covenant.ManualRecoveryRequired);
 
     }
 

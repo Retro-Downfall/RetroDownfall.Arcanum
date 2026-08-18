@@ -10,7 +10,7 @@
 
 **Document status:** current as of **2026-08-17**, reconciled against the `long-term-memory` branch at `e55a586b`, the approved Covenant specification and Plans 01–05, and GitHub issues #73–#115.
 
-**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.20.3), and the specification and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
+**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.20.4), and the specification and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
 
 ---
 
@@ -73,6 +73,7 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#115** | Landed | `--protected-state` and `--map-campaign` on `arcanum backup restore`, the pure-Core `BackupRestoreCampaignMappingPolicy`, plan-time validation of every mapping against this installation's own Campaigns, and an import refusal that names the archived Campaign. |
 | **#116** | Landed | `RetentionDataClass.Covenant` and `MemoryResetScope.Covenant` with every code in both enums written literally, a settings catalog and policy store that refuse to give the class a rule and say why, the content-free `DataRetentionCovenantInventory`, one read capability per planning call acquired in `PlanAsync` itself, and a Covenant memory reset that plans and then refuses with `Data.CovenantResetRequiresErasureCoordinator`. |
 | **#117** | Landed | `ICovenantSensitiveArtifactPurger` and its coordinator over the shared erasure kernels, `RequireConditionalSensitivityRetentionPurge` with its write-once request-scoped authority, all six deletion routes dispatching through it, page-walking bulk Saga and embeddings-reset paths, `ICovenantLabeledArtifactGuard` on the three legacy raw deletes, and the destructive-disclosure ordering on `data reset-memory`. |
+| **#118** | Landed | `CovenantResetPhase` and `CovenantResetPhaseMachine` — ten literal codes declared once, failing closed on unknown, zero, skipped, and regressed — `DataRetentionMutationCheckpointV3` with its bounded optional Covenant arm, `DataRetentionFactoryResetCheckpointV1` over the same phases, the data-retention mutation descriptor moved to `BeforeStateWrites` with a bootstrap barrier, `CovenantResetCheckpointInitiator` making gate acquisition unreachable before `InventoryPrepared` commits, and `CovenantErasureEffectDigestCalculator` under two pinned domains. |
 
 Everything above is registered in both host compositions. As of this document there is still **no Covenant route mapped, no Covenant *command* registered, no MCP capability minted by a live turn**, and `Arcanum:Features:Covenant` remains **off by default**. Two places are where a Covenant decision reaches an already-shipped surface: #114's two plaintext export endpoints declare a conditional Covenant read and refuse or report under it, and #115's `--protected-state` and `--map-campaign` are options on the already-shipped `arcanum backup restore` rather than a new command. With the feature off all three behave exactly as they did.
 
@@ -80,8 +81,7 @@ Everything above is registered in both host compositions. As of this document th
 
 | Issue | Size | Role |
 |---|---|---|
-| **#94** | XL | Covenant retention, reset, and full installation erasure. Split into #116–#123; #116 and #117 are green. |
-| **#118** | L | The Covenant reset phase machine and V3 retention checkpoints. |
+| **#94** | XL | Covenant retention, reset, and full installation erasure. Split into #116–#123; #116, #117, and #118 are green. |
 | **#119** | XL | `CovenantErasureCoordinator` — reset and healthy-catalog factory erasure. |
 | **#120** | L | The authenticated V2 installation-reset active record and its anti-rollback anchor. |
 | **#121** | L | Verified external remediation attestation for full installation reset. |
@@ -106,7 +106,7 @@ Everything above is registered in both host compositions. As of this document th
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.20.3 own the Covenant slices.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.20.4 own the Covenant slices.
 3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation authority.
@@ -899,6 +899,12 @@ The exact receipt — including the frozen zero-child vector — publishes throu
 
 Reset inventories every local `CovenantDerived` artifact regardless of source generation. Under the exclusive gate it purges protected derivatives and labels, repairs counters and references, and then erases canonical and accelerator state.
 
+The durable phase vocabulary that recovery reads back is now frozen. `CovenantResetPhase` names ten ordered storage phases from `InventoryPrepared` to `ReopenedVerified`, declared once and shared by both Covenant reset and healthy-catalog factory erasure, and an unknown, zero, skipped, or regressed phase fails closed rather than resuming from a step nobody proved. `DataRetentionMutationCheckpointV3` and `DataRetentionFactoryResetCheckpointV1` carry the immutable server operation identity, the canonical 32-byte effect digest, and the exact operation code, which is all recovery rebuilds an exclusive owner from — never a live plan, a request body, or the request-identity row. Both kinds reconcile at `BeforeStateWrites`, ahead of every ordinary durable writer, optional initializer, worker, and ready-state publication, and the earlier checkpoint versions of both are unchanged and still recover exactly as before.
+
+An erasure cannot close admission before its first checkpoint commits. The owning planner derives the effect digest from the authenticated canonical plan under its own pinned domain, verifies it against the normalized request-identity row when the caller named one, commits `InventoryPrepared`, and only then obtains the owner the gate requires. When the caller named nothing there is no identity row and the checkpoint is the sole durable effect-digest source, so none is read.
+
+**Still owed.** `CovenantErasureCoordinator` does not exist, so nothing writes those checkpoints yet. An interrupted erasure would park with `Covenant.ManualRecoveryRequired`, keeping the checkpoint active and admission closed, and `MemoryResetScope.Covenant` still refuses with `Data.CovenantResetRequiresErasureCoordinator` rather than partially running (#119).
+
 Full installation reset additionally reconciles managed-file write and local-erasure journals, Campaign markers, OS credential evidence, host-tools taint evidence, disclosure state, and the database itself under an authenticated stopped-host journal, and requires independently verified remediation attestation (#94).
 
 Covenant has **no time-based retention rule**. Ordinary pruning never removes immutable versions, heads, provenance, tombstones, or disclosure receipts.
@@ -1262,7 +1268,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` when that branch merges. This document and [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are the two that are deliberately kept identical on both branches.
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.20.3 **(branch)**:
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.20.4 **(branch)**:
   - §10.10 Core protocol foundation
   - §10.11 Canonical persistence and inspection search
   - §10.12 Invocation authority and Campaign binding
@@ -1273,7 +1279,7 @@ The following documents own or explain the detailed contracts summarized here. D
   - §10.17 Maintenance and protected-erasure recovery
   - §10.18 Operator surfaces, configuration, and the pre-binding authority boundary
   - §10.19.1–§10.19.13 Backup, restore, and protected transfer
-  - §10.20.1–§10.20.3 Retention, reset, and full erasure
+  - §10.20.1–§10.20.4 Retention, reset, and full erasure
 - [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
 - `docs/superpowers/specs/2026-08-13-covenant-design.md`: approved target semantics, authority firewall, persistence, runtime, surfaces, lifecycle, and acceptance contract **(branch)**.

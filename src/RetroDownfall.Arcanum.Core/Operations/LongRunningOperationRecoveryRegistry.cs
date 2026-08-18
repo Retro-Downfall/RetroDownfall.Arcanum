@@ -213,28 +213,42 @@ public static class LongRunningOperationRecoveryRegistry
                 RecoveryIntent: "Restart idempotently from the durable prune cursor; pruned rows are already gone.",
                 ManualRepairGuidance: "Re-run 'arcanum retention prune'; the cursor makes repetition safe."),
 
+            // BeforeStateWrites since #118. The priority belongs to the kind rather than to a
+            // checkpoint version, so the legacy version-0 and version-2 arms move with it and stay
+            // compatible; what forces the move is version 3, whose optional Covenant arm means the
+            // interrupted mutation may be a reset caught between canonical erasure and its verified
+            // reopen. That is exactly the tree an ordinary durable writer would append to.
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.DataRetentionMutation,
                 LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
                 Owner: "DataRetentionService",
                 MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 2,
-                LongRunningOperationStartupPriority.Readiness,
+                MaxCheckpointVersion: 3,
+                LongRunningOperationStartupPriority.BeforeStateWrites,
                 RecoveryIntent:
                     "Reconcile a partially applied retention mutation against its durable journal; a row still at "
-                    + "version 0 never reached that journal, so it is abandoned rather than parked.",
+                    + "version 0 never reached that journal, so it is abandoned rather than parked. A version-3 "
+                    + "row carrying a Covenant arm is an interrupted erasure: its exclusive owner is rebuilt from "
+                    + "the checkpoint alone and admission stays closed until the reset is resumed or an operator "
+                    + "resolves it.",
                 ManualRepairGuidance: "Inspect 'arcanum retention status' before re-applying the policy change."),
 
+            // Version 0 is the documented legacy arm and stays admitted: those rows carry no payload
+            // at all and are restarted idempotently from durable quarantine state. Version 1 is the
+            // healthy-catalog erasure checkpoint added by #118, which is resumed from its recorded
+            // phase rather than restarted, because a factory erasure that already applied its
+            // canonical deletion cannot prove that by inspecting the result.
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.DataRetentionFactoryReset,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 Owner: "DataRetentionService",
                 MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 0,
+                MaxCheckpointVersion: 1,
                 LongRunningOperationStartupPriority.BeforeStateWrites,
                 RecoveryIntent:
                     "Restart the reset from its durable quarantine state so a half-erased state root is never "
-                    + "presented as a working installation.",
+                    + "presented as a working installation. A version-1 row is a healthy-catalog Covenant erasure "
+                    + "and is resumed from its recorded phase under the owner its checkpoint names.",
                 ManualRepairGuidance:
                     "Re-run the factory reset; quarantined trees are listed by 'arcanum doctor' until removed."),
 

@@ -883,6 +883,14 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionFactoryResetRecoveryHandler>();
 
+        // Issue #118. One producer of a Covenant erasure's effect digest, and one seam that makes
+        // exclusive-gate acquisition unreachable before the InventoryPrepared checkpoint commits.
+        // Registered and reached by nothing yet: the erasure coordinator that consumes them is #119,
+        // and until it exists MemoryResetScope.Covenant still refuses rather than partially running.
+        services.AddSingleton<ICovenantErasureEffectDigestCalculator, CovenantErasureEffectDigestCalculator>();
+
+        services.AddScoped<CovenantResetCheckpointInitiator>();
+
         services.AddHostedService<DataRetentionSweepHostedService>();
 
         services.AddScoped<LongRunningOperationReconciler>();

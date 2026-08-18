@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -518,6 +519,41 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
                     ? Read(reader)
+                    : null;
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Reads back the normalized identity row an operation was created under.
+    /// </summary>
+    /// <remarks>
+    /// Keyed by the durable server operation id rather than by the caller's requested name, because
+    /// that is the direction recovery and the erasure planners need: they already hold the operation
+    /// and are asking what, if anything, was promised about it. A server-generated operation has no
+    /// row and returns null.
+    /// </remarks>
+    public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                await using DbCommand cmd = connection.CreateCommand();
+                cmd.CommandText =
+                    """
+                    SELECT "RequestedOperationId", "ApplyRequestDigest", "EffectDigest"
+                    FROM long_running_operation_request_identities
+                    WHERE "OperationId" = @id
+                    LIMIT 1
+                    """;
+                Add(cmd, "@id", Format(operationId));
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                    ? new LongRunningOperationRequestIdentity(
+                        ParseGuid(reader.GetString(0)),
+                        new CovenantDigest((byte[])reader.GetValue(1)),
+                        new CovenantDigest((byte[])reader.GetValue(2)))
                     : null;
             },
             cancellationToken);

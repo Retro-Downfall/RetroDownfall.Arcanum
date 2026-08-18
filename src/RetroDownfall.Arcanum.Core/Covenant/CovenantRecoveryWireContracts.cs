@@ -110,6 +110,114 @@ public enum CovenantFamilyReinitializePhase : byte
 }
 
 /// <summary>
+/// The closed phases a Covenant reset and a healthy-catalog factory erasure recover from.
+/// </summary>
+/// <remarks>
+/// Ordered, closed, and persisted in the durable retention checkpoints, so the literal codes are
+/// part of what a later build reads back. There is exactly one declaration of this vocabulary and no
+/// route DTO owns a second: two enums that agreed on the day they were written would, at the first
+/// divergence, let a response describe a step the checkpoint never recorded.
+///
+/// <para>Zero is absent on purpose. A default-initialized phase would read as "before the first
+/// step" on a checkpoint that only exists because a step already ran, and the erasure this vocabulary
+/// describes cannot be safely restarted from a phase nobody proved (§10.20.3).</para>
+/// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantResetPhase>))]
+public enum CovenantResetPhase : byte
+{
+
+    InventoryPrepared = 1,
+
+    CanonicalApplied = 2,
+
+    ManagedArtifactsProcessed = 3,
+
+    HandlesClosed = 4,
+
+    WalTruncated = 5,
+
+    DatabaseCompacted = 6,
+
+    AcceleratorInitialized = 7,
+
+    FinalWalTruncated = 8,
+
+    SidecarsVerified = 9,
+
+    ReopenedVerified = 10,
+
+}
+
+/// <summary>
+/// The only reader of <see cref="CovenantResetPhase"/> ordering.
+/// </summary>
+/// <remarks>
+/// A phase machine rather than a comparison at each call site, because "is this the next phase" has
+/// exactly three wrong answers and all three are silent: an unknown code resumes work this build
+/// cannot describe, a skipped code claims a storage-health proof nobody ran, and a regressed code
+/// re-enters a step whose external effect already happened. Every one of them fails closed under the
+/// single <c>Covenant.ManualRecoveryRequired</c> code, because an operator told "skipped" and one
+/// told "regressed" does the same thing: look at the operation, not at the bytes.
+/// </remarks>
+public static class CovenantResetPhaseMachine
+{
+
+    /// <summary>The phase the owning planner commits before it may acquire the exclusive gate.</summary>
+    public const CovenantResetPhase First = CovenantResetPhase.InventoryPrepared;
+
+    /// <summary>The terminal phase, after which the erasure has nothing left to prove.</summary>
+    public const CovenantResetPhase Last = CovenantResetPhase.ReopenedVerified;
+
+    private static readonly CovenantResetPhase[] Declared =
+    [
+        CovenantResetPhase.InventoryPrepared,
+        CovenantResetPhase.CanonicalApplied,
+        CovenantResetPhase.ManagedArtifactsProcessed,
+        CovenantResetPhase.HandlesClosed,
+        CovenantResetPhase.WalTruncated,
+        CovenantResetPhase.DatabaseCompacted,
+        CovenantResetPhase.AcceleratorInitialized,
+        CovenantResetPhase.FinalWalTruncated,
+        CovenantResetPhase.SidecarsVerified,
+        CovenantResetPhase.ReopenedVerified,
+    ];
+
+    /// <summary>The ten declared phases in ascending code order.</summary>
+    public static IReadOnlyList<CovenantResetPhase> Ordered { get; } = Array.AsReadOnly(Declared);
+
+    /// <summary>Whether this value is one of the ten phases this build can resume from.</summary>
+    public static bool IsDeclared(CovenantResetPhase phase) =>
+        phase is >= First and <= Last;
+
+    public static Result RequireDeclared(CovenantResetPhase phase) =>
+        IsDeclared(phase) ? Result.Success() : Unresumable();
+
+    /// <summary>
+    /// Whether <paramref name="to"/> is the one phase that may follow <paramref name="from"/>.
+    /// </summary>
+    /// <remarks>
+    /// Exactly the successor. Re-saving the recorded phase is not an advance either: a pass that
+    /// rewrote the phase it already held would be indistinguishable from one that ran the step twice.
+    /// </remarks>
+    public static Result RequireAdvance(CovenantResetPhase from, CovenantResetPhase to) =>
+        IsDeclared(from) && IsDeclared(to) && (byte)to == (byte)from + 1
+            ? Result.Success()
+            : Unresumable();
+
+    /// <summary>Every phase still owed after <paramref name="from"/>.</summary>
+    public static IReadOnlyList<CovenantResetPhase> Remaining(CovenantResetPhase from) =>
+        IsDeclared(from)
+            ? Array.AsReadOnly(Declared[((byte)from)..])
+            : Ordered;
+
+    private static Result Unresumable() =>
+        new Error(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            "This Covenant reset phase cannot be resumed by this build.");
+
+}
+
+/// <summary>
 /// One catalog defect a reinitialize plan found, named without disclosing anything about content.
 /// </summary>
 public sealed record CovenantCatalogDefectDto(

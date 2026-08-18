@@ -370,6 +370,19 @@ public interface ILongRunningOperationStore
         Guid operationId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// The normalized request-identity row an operation was created under, or null when it was
+    /// created without one.
+    /// </summary>
+    /// <remarks>
+    /// Null is an ordinary answer rather than a failure. A server-generated operation has no
+    /// identity row at all, and a caller that treated absence as corruption would turn every
+    /// unnamed operation into a recovery escalation.
+    /// </remarks>
+    Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,
         CancellationToken cancellationToken = default);

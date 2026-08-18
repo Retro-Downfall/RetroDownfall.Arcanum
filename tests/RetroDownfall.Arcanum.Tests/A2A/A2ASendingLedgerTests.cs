@@ -436,6 +436,11 @@ internal sealed class CountingOperationStore(ILongRunningOperationStore inner) :
     public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default) =>
         inner.GetAsync(operationId, cancellationToken);
 
+    public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        inner.FindRequestIdentityAsync(operationId, cancellationToken);
+
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
         DateTimeOffset utcNow,
         int limit,
