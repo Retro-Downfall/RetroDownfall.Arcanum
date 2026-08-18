@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -1768,7 +1769,13 @@ internal static class SessionEndpoints
 
         apiGroup.MapDelete(
             "/sessions/{id:guid}/entries/{entryId:guid}",
-            async (Guid id, Guid entryId, IGrimoireRepository grimoire, IOptionsMonitor<ArcanumSettings> options, HttpContext ctx) =>
+            async (
+                Guid id,
+                Guid entryId,
+                IGrimoireRepository grimoire,
+                ICovenantSensitiveArtifactPurger purger,
+                IOptionsMonitor<ArcanumSettings> options,
+                HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -1797,10 +1804,43 @@ internal static class SessionEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                await grimoire.DeleteEntryAsync(id, entryId, ctx.RequestAborted).ConfigureAwait(false);
+                // Dispatched before the ordinary delete, never after. A labelled assistant Entry has to
+                // leave through the shared kernel so its erasure receipt is appended and its
+                // finalization guard and turn claim survive; deleting the row here first would strand a
+                // guard pointing at nothing, which is the one integrity state indistinguishable from
+                // data loss (§10.20.2).
+                Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
+                    .DispatchAsync(purger, SensitiveArtifactKind.AssistantEntry, entryId, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (purged.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(Result<bool>.Failure(purged.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(purged.Error.Code));
+                }
+
+                CovenantSensitiveDeletion.MarkProtectedWhenPurged(ctx, purged.Value);
+
+                if (purged.Value.IsBlocked)
+                {
+                    Error blocked = CovenantSensitiveDeletion.BlockedError(purged.Value);
+
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(Result<bool>.Failure(blocked), traceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(blocked.Code));
+                }
+
+                if (purged.Value.RequiresOrdinaryDelete(entryId))
+                {
+                    await grimoire.DeleteEntryAsync(id, entryId, ctx.RequestAborted).ConfigureAwait(false);
+                }
 
                 return Results.NoContent();
             })
+        .RequireConditionalSensitivityRetentionPurge()
         .WithName("DeleteSessionEntry");
 
         apiGroup.MapPost(
@@ -1903,6 +1943,7 @@ internal static class SessionEndpoints
                 return Results.Ok(
                     ApiResponse<CompactResult>.FromResult(Result<CompactResult>.Success(result), traceId));
             })
+        .RequireConditionalSensitivityRetentionPurge()
         .WithName("CompactSession");
 
         apiGroup.MapDelete(

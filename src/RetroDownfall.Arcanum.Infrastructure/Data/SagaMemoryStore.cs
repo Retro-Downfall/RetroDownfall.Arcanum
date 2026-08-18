@@ -5,6 +5,8 @@ using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -23,7 +25,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class SagaMemoryStore(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
-    IOptionsMonitor<ArcanumSettings> options) : ISagaMemoryStore
+    IOptionsMonitor<ArcanumSettings> options,
+    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ISagaMemoryStore
 {
 
     public Task InsertAsync(
@@ -385,6 +388,25 @@ internal sealed class SagaMemoryStore(
     public async Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
     {
 
+        // The guard, not the purge. A caller that reached this method without going through the
+        // sensitivity purge boundary would remove a labelled Saga fact and leave its label behind,
+        // pointing at content nothing admits is tainted (§10.20.2).
+        if (labeledArtifactGuard is { } guard && Guid.TryParse(id, out Guid memoryId))
+        {
+
+            Result unlabeled = await guard
+                .EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, memoryId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
+            {
+
+                throw new InvalidOperationException(unlabeled.Error.Message);
+
+            }
+
+        }
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -457,10 +479,29 @@ internal sealed class SagaMemoryStore(
 
     }
 
-    public Task DeleteAllAsync(CancellationToken cancellationToken)
+    public async Task DeleteAllAsync(CancellationToken cancellationToken)
     {
 
-        return SqliteBusyRetry.ExecuteAsync(
+        // A set-based delete examines no identity at all, so there is no single artifact to ask about.
+        // The only honest question is whether the kind still has a labelled member anywhere, and the
+        // only safe answer for "yes" is to refuse rather than remove rows nothing ever examined.
+        if (labeledArtifactGuard is { } guard)
+        {
+
+            Result none = await guard
+                .EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (none.IsFailure)
+            {
+
+                throw new InvalidOperationException(none.Error.Message);
+
+            }
+
+        }
+
+        await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
 

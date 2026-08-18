@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.Security;
@@ -68,6 +70,28 @@ internal static class CovenantEndpointConventionBuilderExtensions
     }
 
     /// <summary>
+    /// Declares a route that may delete a Covenant-labelled artifact.
+    /// </summary>
+    /// <remarks>
+    /// Attaches both halves, like every other helper here: the metadata the pre-binding middleware
+    /// reads so it can issue a retention-purge authority before the body is bound, and the filter that
+    /// publishes the already-issued context into the request's purge scope. A route cannot carry one
+    /// without the other, and nothing between them can substitute a context of its own — the value has
+    /// no public constructor and the scope accepts exactly one publication (§10.20.2).
+    /// </remarks>
+    internal static TBuilder RequireConditionalSensitivityRetentionPurge<TBuilder>(this TBuilder builder)
+        where TBuilder : IEndpointConventionBuilder
+    {
+
+        builder.WithMetadata(CovenantConditionalSensitivityPurgeMetadata.Instance);
+
+        builder.AddEndpointFilter(new CovenantSensitivePurgeEndpointFilter());
+
+        return builder;
+
+    }
+
+    /// <summary>
     /// Declares a route that mutates under one exact operator requirement.
     /// </summary>
     /// <remarks>
@@ -113,6 +137,57 @@ internal static class CovenantEndpointConventionBuilderExtensions
         builder.AddEndpointFilter(new CovenantAuthorityEndpointFilter(requirement));
 
         return builder;
+
+    }
+
+}
+
+/// <summary>
+/// Publishes the retention-purge authority the pre-binding middleware issued into the request scope the
+/// purger reads.
+/// </summary>
+/// <remarks>
+/// A filter rather than a handler parameter, because the routes this runs on reach the purger through
+/// three different repositories and a service, none of which has an <c>HttpContext</c>. Publishing here
+/// keeps the transfer inside the authenticated boundary: the value crosses from the request pipeline to
+/// the request's own DI scope and nothing on the way can forge, replace, or widen it.
+///
+/// <para>An absent feature is not an error. On an installation with no Covenant arm the middleware
+/// issues nothing, the scope stays empty, and the purger reports every artifact unlabelled — which is
+/// the truth there. The refusal belongs where a label is actually found.</para>
+/// </remarks>
+internal sealed class CovenantSensitivePurgeEndpointFilter : IEndpointFilter
+{
+
+    public async ValueTask<object?> InvokeAsync(
+        EndpointFilterInvocationContext context,
+        EndpointFilterDelegate next)
+    {
+
+        ArgumentNullException.ThrowIfNull(context);
+
+        ArgumentNullException.ThrowIfNull(next);
+
+        HttpContext httpContext = context.HttpContext;
+
+        if (CovenantRequestFeatures.Authority(httpContext) is
+            { Requirement: CovenantAuthorityRequirement.SensitivityRetentionPurge } feature)
+        {
+
+            CovenantSensitivePurgeAuthorityScope? scope =
+                httpContext.RequestServices.GetService(typeof(CovenantSensitivePurgeAuthorityScope))
+                    as CovenantSensitivePurgeAuthorityScope;
+
+            if (scope is not null && scope.Publish(feature.Context).IsFailure)
+            {
+
+                return CovenantAuthorityRefusal.Forbidden(httpContext);
+
+            }
+
+        }
+
+        return await next(context).ConfigureAwait(false);
 
     }
 

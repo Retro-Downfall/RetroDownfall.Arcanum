@@ -786,7 +786,11 @@ public static class ServiceCollectionExtensions
         services.AddCovenantPersistence();
 
         services.AddScoped<IDivinationService, DivinationService>();
-        services.AddScoped<EmbeddingsResetService>();
+        services.AddScoped(
+            static sp => new EmbeddingsResetService(
+                sp.GetRequiredService<ArcanumDbContext>(),
+                sp.GetRequiredService<WeaveIndexAvailability>(),
+                sp.GetRequiredService<ICovenantSensitiveArtifactPurger>()));
         services.AddScoped<ITapestryStore, TapestryStore>();
         services.AddScoped<SessionAttachmentIndexRepository>();
         services.AddScoped<ISessionAttachmentIndexMaintenance>(
@@ -1457,6 +1461,26 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IManagedFileCapabilityOpener>(),
                 sp.GetRequiredService<IManagedFileOwnershipVerifier>(),
                 sp.GetRequiredService<TimeProvider>()));
+
+        // One scope per request, so the object a filter publishes into is the same one the purger reads
+        // and there is nothing process-wide two requests could race on.
+        services.AddScoped<ICovenantLabeledArtifactGuard>(
+            static sp => new CovenantLabeledArtifactGuard(
+                sp.GetRequiredService<IArtifactSensitivityLedger>(),
+                sp.GetRequiredService<ICovenantConnectionSource>()));
+
+        services.AddScoped<CovenantSensitivePurgeAuthorityScope>();
+
+        services.AddScoped<ICovenantSensitiveArtifactPurger>(
+            static sp => new CovenantSensitiveRetentionPurgeCoordinator(
+                sp.GetRequiredService<IArtifactSensitivityLedger>(),
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<IOperatorAuthorityContextIssuer>(),
+                sp.GetRequiredService<ICovenantAvailability>(),
+                sp.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
+                sp.GetRequiredService<ICovenantManagedFileErasureKernel>(),
+                sp.GetRequiredService<CovenantSensitivePurgeAuthorityScope>()));
 
         services.AddScoped<ICovenantProtectedArtifactErasureKernel>(
             static sp => new CovenantProtectedArtifactErasureKernel(

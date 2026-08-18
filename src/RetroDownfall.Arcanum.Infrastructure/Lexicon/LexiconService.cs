@@ -7,6 +7,8 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -25,8 +27,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 /// </summary>
 internal sealed class LexiconService(
     ArcanumDbContext db,
-    ILogger<LexiconService> logger) : ILexiconService
+    ILogger<LexiconService> logger,
+    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ILexiconService
 {
+
+    private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
 
     private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt";
 
@@ -178,6 +183,32 @@ internal sealed class LexiconService(
         }
 
         string normalized = NormalizeName(trimmedName);
+
+        // The guard, not the purge. Reached without the sensitivity purge boundary, this method would
+        // remove a labelled Lexicon entity and strand its label (§10.20.2).
+        if (_labeledArtifactGuard is { } guard)
+        {
+
+            Result<LexiconEntryDto?> existing = await GetByNameAsync(trimmedName, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (existing.IsSuccess && existing.Value is { } entity)
+            {
+
+                Result unlabeled = await guard
+                    .EnsureUnlabeledAsync(SensitiveArtifactKind.Lexicon, entity.Id, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (unlabeled.IsFailure)
+                {
+
+                    return unlabeled.Error;
+
+                }
+
+            }
+
+        }
 
         try
         {
