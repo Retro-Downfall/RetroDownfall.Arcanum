@@ -30,6 +30,13 @@ public enum HealthProbeState
 
     Timeout,
 
+    /// <summary>
+    /// Something accepted the connection and then answered in a way no Arcanum host would: a
+    /// truncated or malformed response, a protocol or version-negotiation failure, or a reset after
+    /// the handshake. The port is occupied, so auto-serve must never spawn a second host against it.
+    /// </summary>
+    UnexpectedResponder,
+
 }
 
 public sealed record HealthProbeResult(
@@ -43,8 +50,14 @@ public sealed record HealthProbeResult(
 /// <summary>
 /// Authenticated probe of <c>GET /api/health</c>. Distinguishes auth failure from
 /// definite no-listener (connection refused / network unreachable / DNS) from
-/// "something answered" cases (TLS failure, timeout) so auto-serve never spawns
-/// a colliding second server.
+/// "something answered" cases (TLS failure, timeout, unexpected responder) so
+/// auto-serve never spawns a colliding second server.
+///
+/// <para>"Something answered" is decided from <see cref="HttpRequestException.HttpRequestError" />
+/// as well as the inner <see cref="SocketException" />: a peer that accepts the connection and then
+/// speaks a protocol Arcanum does not raises no socket error at all, and the default port is the
+/// classic ASP.NET Core dev port, so a foreign listener is a routine collision rather than an
+/// exotic one.</para>
 /// </summary>
 internal static class ArcanumHealthProbe
 {
@@ -174,9 +187,29 @@ internal static class ArcanumHealthProbe
     private static HealthProbeState ClassifyHttpRequestException(HttpRequestException ex)
     {
 
-        if (IsTlsFailure(ex))
+        if (IsTlsFailure(ex) || ex.HttpRequestError == HttpRequestError.SecureConnectionError)
         {
             return HealthProbeState.TlsFailure;
+        }
+
+        // A post-connection error names a peer that accepted the connection and then answered as no
+        // Arcanum host would: a truncated or malformed response, a protocol or version-negotiation
+        // failure, a limit the handler refused. The port is held by something, so the caller must be
+        // told that rather than being allowed to spawn a host that cannot bind it.
+        if (ex.HttpRequestError is HttpRequestError.InvalidResponse
+            or HttpRequestError.ResponseEnded
+            or HttpRequestError.HttpProtocolError
+            or HttpRequestError.VersionNegotiationError
+            or HttpRequestError.ExtendedConnectNotSupported
+            or HttpRequestError.ConfigurationLimitExceeded)
+        {
+            return HealthProbeState.UnexpectedResponder;
+        }
+
+        // Resolution can fail without an inner SocketException the ladder below could read.
+        if (ex.HttpRequestError == HttpRequestError.NameResolutionError)
+        {
+            return HealthProbeState.DnsFailure;
         }
 
         SocketError? socketError = FindSocketError(ex);
@@ -198,9 +231,17 @@ internal static class ArcanumHealthProbe
             return HealthProbeState.NetworkUnreachable;
         }
 
-        // Conservative default: treat as no-listener so auto-serve can recover a down host.
-        // Prefer not spawning when the inner exception looks TLS-related (already handled)
-        // or when status code hints at an HTTP response (not present on HttpRequestException).
+        // A reset, abort or shutdown is a peer that accepted the connection before tearing it down —
+        // "something answered", not "nothing is listening".
+        if (socketError is SocketError.ConnectionReset
+            or SocketError.ConnectionAborted
+            or SocketError.Shutdown)
+        {
+            return HealthProbeState.UnexpectedResponder;
+        }
+
+        // Conservative default: an unclassifiable transport failure with nothing to suggest a peer
+        // answered stays a no-listener verdict, so auto-serve can still recover a host that died.
         return HealthProbeState.NetworkUnreachable;
 
     }

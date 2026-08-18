@@ -236,6 +236,111 @@ public sealed class ConsoleAskHumanCoordinatorTests
         Assert.Null(submittedAnswer);
     }
 
+    /// <summary>
+    /// Issue #33 — the shipped reader wraps <c>Console.ReadKey</c>, which no cancellation token can
+    /// interrupt, so a dismissed prompt that waits for its abandoned read is waiting for the operator
+    /// to type. By then the answer is already on stdout and the command is trying to exit, so the
+    /// prompt must settle on its own.
+    /// </summary>
+    [Fact]
+    public async Task Dismiss_settles_without_waiting_for_a_read_that_ignores_cancellation()
+    {
+        TaskCompletionSource blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<string?> parkedRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int submitCount = 0;
+        ArcanumApiClient client = CreateApiClient((_, _, _) =>
+        {
+            submitCount++;
+            return true;
+        });
+
+        ConsoleAskHumanCoordinator coordinator = new(
+            client,
+            new FakePalette(),
+            UncancellableRead(blocked, parkedRead));
+
+        Assert.Equal(
+            AskHumanResult.PendingInput,
+            await coordinator.TryBeginAsync(
+                AskHumanToolCall("call-1", "prompt-1", "Who?"),
+                unattended: false,
+                isInteractive: true,
+                CancellationToken.None));
+
+        // The read must be past its one pre-flight token check before the prompt is dismissed, or the
+        // token it cannot observe is never the thing the drain is waiting on.
+        await blocked.Task.WaitAsync(DrainBudget);
+
+        coordinator.ObserveStreamEvent(
+            new IntelligenceEvent(IntelligenceEventType.Result, "done", null));
+
+        AskHumanResult? settled = await coordinator.DrainAsync().WaitAsync(DrainBudget);
+        Assert.Equal(AskHumanResult.Handled, settled);
+
+        // The disowned read completing later must still never submit.
+        parkedRead.TrySetResult("typed much later");
+        await Task.Yield();
+        Assert.Equal(0, submitCount);
+    }
+
+    /// <summary>
+    /// The cancellation arm of <see cref="ConsoleAskHumanCoordinator.DrainAsync"/> dismisses the
+    /// prompt and then waits on the race with no token of its own, so the same uninterruptible read
+    /// wedges even a caller that supplied a live token.
+    /// </summary>
+    [Fact]
+    public async Task DrainAsync_returns_when_its_own_token_is_cancelled_and_the_read_ignores_it()
+    {
+        TaskCompletionSource blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<string?> parkedRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        ArcanumApiClient client = CreateApiClient((_, _, _) => true);
+
+        ConsoleAskHumanCoordinator coordinator = new(
+            client,
+            new FakePalette(),
+            UncancellableRead(blocked, parkedRead));
+
+        Assert.Equal(
+            AskHumanResult.PendingInput,
+            await coordinator.TryBeginAsync(
+                AskHumanToolCall("call-1", "prompt-1", "Who?"),
+                unattended: false,
+                isInteractive: true,
+                CancellationToken.None));
+
+        await blocked.Task.WaitAsync(DrainBudget);
+
+        using CancellationTokenSource cts = new();
+        await cts.CancelAsync();
+
+        _ = await coordinator.DrainAsync(cts.Token).WaitAsync(DrainBudget);
+
+        parkedRead.TrySetResult("typed much later");
+    }
+
+    /// <summary>
+    /// The wall-clock ceiling a drain must beat. Generous enough that a loaded CI agent never trips
+    /// it, and far below the "until the operator types" the defect imposed.
+    /// </summary>
+    private static readonly TimeSpan DrainBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// The production reader's shape: a blocking read that checks the token once, before it blocks,
+    /// and never again. Every other fake in this file honours the token throughout — precisely the
+    /// capability <c>CliLineReader</c> does not have.
+    /// </summary>
+    private static Func<string, bool, CancellationToken, Task<string?>> UncancellableRead(
+        TaskCompletionSource blocked,
+        TaskCompletionSource<string?> gate) =>
+        (_, _, ct) => Task.Run(
+            () =>
+            {
+                ct.ThrowIfCancellationRequested();
+                blocked.TrySetResult();
+                return gate.Task.GetAwaiter().GetResult();
+            },
+            CancellationToken.None);
+
     private static Func<string, bool, CancellationToken, Task<string?>> CancellableRead(
         TaskCompletionSource<string?> gate) =>
         async (_, _, ct) =>

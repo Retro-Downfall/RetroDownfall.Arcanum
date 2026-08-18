@@ -561,6 +561,105 @@ public sealed class ArcanumServeLauncherTests
 
     }
 
+    /// <summary>
+    /// A foreign service on the port — the default 5001 is the classic ASP.NET Core dev port — fails
+    /// the header phase with an <see cref="HttpRequestException" /> that carries a post-connection
+    /// <see cref="HttpRequestError" /> and no inner <see cref="SocketException" />. Something is
+    /// holding the port, so a second host cannot bind it and must never be spawned.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpRequestError.InvalidResponse)]
+    [InlineData(HttpRequestError.ResponseEnded)]
+    [InlineData(HttpRequestError.HttpProtocolError)]
+    [InlineData(HttpRequestError.VersionNegotiationError)]
+    [InlineData(HttpRequestError.ConfigurationLimitExceeded)]
+    public async Task Something_answered_but_not_as_arcanum_does_not_spawn(HttpRequestError error)
+    {
+
+        SequencedHandler handler = new(_ =>
+            throw new HttpRequestException(error, "The response ended prematurely."));
+
+        FakeServeProcessLauncher processLauncher = new();
+
+        ArcanumServeLauncher launcher = CreateLauncher(
+            handler,
+            processLauncher,
+            apiKey: "test-key");
+
+        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
+
+        Assert.Equal(HealthProbeState.UnexpectedResponder, result.Health);
+
+        Assert.Equal(0, processLauncher.StartCount);
+
+    }
+
+    /// <summary>
+    /// A reset or abort names a peer that accepted the connection and then tore it down. The socket
+    /// ladder only recognised the never-connected codes, so these fell through to the no-listener
+    /// default and spawned into an occupied port too.
+    /// </summary>
+    [Theory]
+    [InlineData(SocketError.ConnectionReset)]
+    [InlineData(SocketError.ConnectionAborted)]
+    [InlineData(SocketError.Shutdown)]
+    public async Task A_peer_that_accepted_then_tore_down_does_not_spawn(SocketError socketError)
+    {
+
+        SequencedHandler handler = new(_ =>
+            throw new HttpRequestException(
+                HttpRequestError.Unknown,
+                "An error occurred while sending the request.",
+                new SocketException((int)socketError)));
+
+        FakeServeProcessLauncher processLauncher = new();
+
+        ArcanumServeLauncher launcher = CreateLauncher(
+            handler,
+            processLauncher,
+            apiKey: "test-key");
+
+        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
+
+        Assert.Equal(HealthProbeState.UnexpectedResponder, result.Health);
+
+        Assert.Equal(0, processLauncher.StartCount);
+
+    }
+
+    /// <summary>
+    /// The other half of the contract: an unrecognised transport failure with nothing to suggest a
+    /// peer answered stays a no-listener verdict, so auto-serve still recovers a host that died.
+    /// </summary>
+    [Fact]
+    public async Task An_unclassifiable_transport_failure_still_spawns()
+    {
+
+        SequencedHandler handler = new(
+            _ => throw new HttpRequestException(
+                HttpRequestError.Unknown,
+                "An error occurred while sending the request."),
+            _ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        FakeServeProcessLauncher processLauncher = new();
+
+        ArcanumServeLauncher launcher = CreateLauncher(
+            handler,
+            processLauncher,
+            apiKey: "test-key");
+
+        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.Started, result.Status);
+
+        Assert.Equal(1, processLauncher.StartCount);
+
+    }
+
     private static ArcanumServeLauncher CreateLauncher(
         HttpMessageHandler handler,
         FakeServeProcessLauncher processLauncher,

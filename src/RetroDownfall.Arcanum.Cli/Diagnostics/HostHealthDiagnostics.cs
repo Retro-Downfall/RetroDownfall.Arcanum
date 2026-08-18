@@ -102,6 +102,26 @@ public sealed class HostHealthComponentsCheck(
 
         }
 
+        // Something is holding the port and answering as no Arcanum host would. "Start the host" is
+        // the one remedy that cannot work here — a second host cannot bind a port another process
+        // already owns — so this state gets its own finding rather than the no-answer one.
+        if (probe.State == HealthProbeState.UnexpectedResponder)
+        {
+
+            return new DoctorFinding(
+                DoctorOutcome.Unhealthy,
+                "Something is listening at the host address but answered as no Arcanum host would "
+                + $"({probe.Error ?? "no detail"}). A foreign service is likely holding the port.",
+                [
+                    new DoctorRemedy(
+                        "host.free_port",
+                        null,
+                        DoctorRemedyCommands.ConfigEdit,
+                        "Free the configured port, or point 'Arcanum:Host:Port' at one nothing else is using."),
+                ]);
+
+        }
+
         if (probe.State != HealthProbeState.Healthy)
         {
 
