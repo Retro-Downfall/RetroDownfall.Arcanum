@@ -358,6 +358,8 @@ internal static class CampaignEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
+                bool hasClientFilters = !string.IsNullOrWhiteSpace(q) || !string.IsNullOrWhiteSpace(tag);
+
                 ListPageResult<Prompt> page = await promptRepo
                     .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
                     .ConfigureAwait(false);
@@ -381,7 +383,14 @@ internal static class CampaignEndpoints
 
                 PromptSummaryDto[] result = filtered.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToArray();
 
-                ListPageResult<PromptSummaryDto> response = new(result, false);
+                // Same shape as ListPrompts (PromptEndpoints): the repository really does compute
+                // HasMore/NextOffset against the 10,000-row ceiling, so hard-coding false told a
+                // caller with more prompts than that it had the whole set. A client-side q/tag filter
+                // reorders and thins the page, so its offsets no longer address the underlying
+                // sequence — that case keeps the honest false, exactly as the sibling route does.
+                ListPageResult<PromptSummaryDto> response = hasClientFilters
+                    ? new ListPageResult<PromptSummaryDto>(result, false)
+                    : new ListPageResult<PromptSummaryDto>(result, page.HasMore, page.NextOffset);
 
                 return Results.Ok(
                     ApiResponse<ListPageResult<PromptSummaryDto>>.FromResult(
@@ -472,24 +481,70 @@ internal static class CampaignEndpoints
 
                     if (!File.Exists(diskPath))
                     {
-                        return Results.BadRequest(
-                            ApiResponse<CampaignImportResultDto>.FromResult(
-                                Result<CampaignImportResultDto>.Failure(
-                                    new Error(ErrorCodes.Campaign.ImportFailed, "No import payload and no campaign.json on disk.")),
-                                traceId));
+                        return ImportFailed(traceId, "No import payload and no campaign.json on disk.");
                     }
 
                     string json = await File.ReadAllTextAsync(diskPath, ctx.RequestAborted).ConfigureAwait(false);
 
-                    payload = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.CampaignExportDto);
+                    try
+                    {
+                        payload = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.CampaignExportDto);
+                    }
+                    catch (JsonException)
+                    {
+                        // The request body parsed fine; it is the on-disk bundle that did not. Saying
+                        // so here keeps the generic "request body could not be parsed" handler from
+                        // blaming the caller for a file it never sent.
+                        return ImportFailed(traceId, "Could not parse campaign.json.");
+                    }
 
                     if (payload is null)
                     {
-                        return Results.BadRequest(
-                            ApiResponse<CampaignImportResultDto>.FromResult(
-                                Result<CampaignImportResultDto>.Failure(
-                                    new Error(ErrorCodes.Campaign.ImportFailed, "Could not parse campaign.json.")),
-                                traceId));
+                        return ImportFailed(traceId, "Could not parse campaign.json.");
+                    }
+                }
+
+                // System.Text.Json does not enforce constructor-parameter nullability, so a bundle
+                // that omits `campaign`, `spells` or `prompts` deserializes to a non-null
+                // CampaignExportDto whose members are null. Every one of these checks has to run
+                // BEFORE the "replace" sweep below: validating where the members are first read
+                // would return a tidy 400 only after every prompt in the Campaign was deleted.
+                if (payload.Campaign is null)
+                {
+                    return ImportFailed(traceId, "Import payload must include a campaign object.");
+                }
+
+                IReadOnlyList<CampaignExportSpellDto> spells = payload.Spells ?? [];
+
+                IReadOnlyList<PromptExportDto> prompts = payload.Prompts ?? [];
+
+                if (spells.Any(static s => s is null) || prompts.Any(static p => p is null))
+                {
+                    return ImportFailed(traceId, "Import payload must not contain null spell or prompt entries.");
+                }
+
+                // Parse every embedded spell metadata string up front for the same reason: a bundle
+                // whose spell metadata is unparsable is a bad bundle, and discovering that partway
+                // through would leave the Campaign half-replaced behind a 400.
+                List<SkillMetadata?> spellMetadata = new(spells.Count);
+
+                foreach (CampaignExportSpellDto spell in spells)
+                {
+                    if (string.IsNullOrWhiteSpace(spell.ResolvedSpellJson))
+                    {
+                        spellMetadata.Add(null);
+
+                        continue;
+                    }
+
+                    try
+                    {
+                        spellMetadata.Add(
+                            JsonSerializer.Deserialize(spell.ResolvedSpellJson, TheForgeJsonContext.Default.SkillMetadata));
+                    }
+                    catch (JsonException)
+                    {
+                        return ImportFailed(traceId, $"Spell '{spell.Name}' carries metadata that is not valid JSON.");
                     }
                 }
 
@@ -518,17 +573,13 @@ internal static class CampaignEndpoints
                     await repo.UpdateAsync(campaign, ctx.RequestAborted).ConfigureAwait(false);
                 }
 
-                foreach (CampaignExportSpellDto spell in payload.Spells)
+                for (int i = 0; i < spells.Count; i++)
                 {
-                    SkillMetadata? metadata = null;
-
-                    if (!string.IsNullOrWhiteSpace(spell.ResolvedSpellJson))
-                    {
-                        metadata = JsonSerializer.Deserialize(spell.ResolvedSpellJson, TheForgeJsonContext.Default.SkillMetadata);
-                    }
+                    CampaignExportSpellDto spell = spells[i];
 
                     SpellImportRequest importReq = new(
-                        new SpellExportDto(metadata, spell.FullContent, spell.Scripts
+                        new SpellExportDto(spellMetadata[i], spell.FullContent, (spell.Scripts ?? [])
+                            .Where(static s => s is not null)
                             .Select(s => new SpellExportScriptDto(s.FileName, s.Base64Content))
                             .ToList()),
                         campaign.Path,
@@ -546,7 +597,7 @@ internal static class CampaignEndpoints
                     }
                 }
 
-                foreach (PromptExportDto promptExport in payload.Prompts)
+                foreach (PromptExportDto promptExport in prompts)
                 {
                     Result<PromptSummaryDto> importResult = await PromptImportHelper
                         .ImportAsync(promptRepo, new PromptImportRequest(promptExport, id), ctx.RequestAborted)
@@ -572,6 +623,16 @@ internal static class CampaignEndpoints
 
         return apiGroup;
     }
+
+    /// <summary>
+    /// The one 400 shape <c>POST /api/campaigns/{id}/import</c> answers with when the bundle itself
+    /// is unusable, so a malformed bundle never reaches the generic unhandled-exception handler.
+    /// </summary>
+    private static IResult ImportFailed(string traceId, string message) =>
+        Results.BadRequest(
+            ApiResponse<CampaignImportResultDto>.FromResult(
+                Result<CampaignImportResultDto>.Failure(new Error(ErrorCodes.Campaign.ImportFailed, message)),
+                traceId));
 
     /// <summary>
     /// Exports one Campaign's spells, prompts, and settings, and reports what it left behind.
