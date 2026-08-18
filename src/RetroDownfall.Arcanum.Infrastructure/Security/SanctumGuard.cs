@@ -466,6 +466,21 @@ public sealed class SanctumGuard(
         };
     }
 
+    /// <summary>
+    /// Decides one request host against the campaign's configured allow-list.
+    /// </summary>
+    /// <remarks>
+    /// A named request host is decided by name alone. Resolved-address equality is not evidence of
+    /// domain identity: shared hosting and CDN address space put unrelated names on one address, and an
+    /// attacker who controls DNS for their own name can simply publish an allowed domain's address in
+    /// their own zone. Either way the request still carries its own Host header and lands on its own
+    /// virtual host, so admitting on address overlap would silently widen the operator's containment
+    /// boundary to "any name sharing an address with an allowed one".
+    ///
+    /// <para>Resolution therefore serves one direction only — an allowed <em>name</em> covering a request
+    /// written as an IP literal, which a purely textual match would miss. An allowed literal covers only
+    /// literal requests, for the same reason.</para>
+    /// </remarks>
     private async Task<bool> IsHostAllowedAsync(
         string host,
         IReadOnlyList<string> allowedDomains,
@@ -481,15 +496,8 @@ public sealed class SanctumGuard(
             return true;
         }
 
-        IPAddress[] requestAddresses;
-
-        try
-        {
-            requestAddresses = await _dnsResolver
-                .GetHostAddressesAsync(host, ct)
-                .ConfigureAwait(false);
-        }
-        catch (SocketException)
+        // Uri.Host brackets IPv6 literals; IPAddress.TryParse does not accept the brackets.
+        if (!IPAddress.TryParse(host.Trim('[', ']'), out IPAddress? requestAddress))
         {
             return false;
         }
@@ -505,12 +513,9 @@ public sealed class SanctumGuard(
 
             if (IPAddress.TryParse(normalized, out IPAddress? allowedIp))
             {
-                foreach (IPAddress requestAddress in requestAddresses)
+                if (requestAddress.Equals(allowedIp))
                 {
-                    if (requestAddress.Equals(allowedIp))
-                    {
-                        return true;
-                    }
+                    return true;
                 }
 
                 continue;
@@ -529,14 +534,11 @@ public sealed class SanctumGuard(
                 continue;
             }
 
-            foreach (IPAddress requestAddress in requestAddresses)
+            foreach (IPAddress allowedAddress in allowedAddresses)
             {
-                foreach (IPAddress allowedAddress in allowedAddresses)
+                if (requestAddress.Equals(allowedAddress))
                 {
-                    if (requestAddress.Equals(allowedAddress))
-                    {
-                        return true;
-                    }
+                    return true;
                 }
             }
         }

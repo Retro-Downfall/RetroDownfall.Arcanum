@@ -137,10 +137,16 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 
             }
 
-            if (os.Status == OsCredentialStoreStatus.Unavailable)
+            // A read that FAILED leaves the credential's existence unknown, so it must not collapse to
+            // Missing: Missing is the one status that authorises minting a replacement, and minting
+            // overwrites — or, when the write fails too, deletes — whatever credential is still there.
+            // Unavailable is different: the backend is absent, so nothing of ours can be living in it.
+            if (os.Status == OsCredentialStoreStatus.Failed)
             {
 
-                return SecretStoreReadResult.Missing();
+                return SecretStoreReadResult.Corrupted(
+                    "OS key storage failed while reading the master API key. "
+                    + (os.Message ?? "Restore the credential before retrying."));
 
             }
 

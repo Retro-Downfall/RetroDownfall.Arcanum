@@ -63,6 +63,16 @@ public static class ArcanumMasterKeyBootstrapper
 
             }
 
+            // Regenerating over corruption is only safe when OS key storage is known to hold nothing of
+            // ours. The read that produced Corrupted may itself have been the OS failure, in which case
+            // the live credential's existence is unknown — and SaveApiKeyAsync would overwrite it, or on
+            // a failed write delete it outright. Probe once and fail closed unless the answer is clear.
+            OsCredentialStoreResult probe = provider.GetRequiredService<IOsCredentialStore>().TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MasterApiKeyAccount);
+
+            ThrowIfOsKeyStorageMayHoldTheLiveKey(probe);
+
             Log.Warning("Master API key store is corrupt with no Grimoire database; generating a new key.");
 
         }
@@ -99,6 +109,40 @@ public static class ArcanumMasterKeyBootstrapper
             throw new MasterApiKeyUnavailableException();
 
         }
+
+    }
+
+    /// <summary>
+    /// Refuses regeneration unless OS key storage is known to hold no master credential.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="OsCredentialStoreStatus.NotFound"/> and <see cref="OsCredentialStoreStatus.Unavailable"/>
+    /// are the only two answers that clear a mint: nothing of ours is stored, or there is no backend to
+    /// store it in. <see cref="OsCredentialStoreStatus.Ok"/> proves a live credential is present, and
+    /// <see cref="OsCredentialStoreStatus.Failed"/> leaves its existence unknown — the probe is exactly
+    /// what broke — so both fail closed. Unlike the existing-Grimoire refusal this does not depend on
+    /// what is on disk: overwriting the surviving key silently 401s every client that holds it, and the
+    /// old value is unrecoverable.
+    /// </remarks>
+    internal static void ThrowIfOsKeyStorageMayHoldTheLiveKey(OsCredentialStoreResult probe)
+    {
+
+        if (probe.Status is OsCredentialStoreStatus.NotFound or OsCredentialStoreStatus.Unavailable)
+        {
+
+            return;
+
+        }
+
+        Log.Fatal(
+            "OS key storage may still hold the master API key ({Status}); refusing to generate a replacement. "
+            + "Repair the OS credential before restart.",
+            probe.Status);
+
+        throw new MasterApiKeyUnavailableException(
+            "The master API key store is corrupt and OS key storage could not confirm that the existing "
+            + "credential is gone. Repair the OS credential and the Data Protection key ring before "
+            + "restarting Arcanum, so a replacement key is not minted over the live one.");
 
     }
 

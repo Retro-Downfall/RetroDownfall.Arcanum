@@ -135,6 +135,28 @@ public sealed class FileEncryptionKeyProviderTests
         Assert.Equal(prior.KeyId, (await restored.GetForReadAsync(prior.KeyId)).KeyId);
     }
 
+    // A reader leaves the ring's gate holding the shared material and only then reads MasterKey.Span to
+    // derive its purpose key. Retirement runs inside the live host (the rotation-recovery handler,
+    // driven by startup reconciliation or POST /operations/reconcile), so it can land between those two
+    // steps. Zeroizing the buffer in place would leave that reader deriving from 32 zero bytes and
+    // reporting a tag mismatch — a corruption signal — for a blob that reads fine with the live key.
+    [Fact]
+    public async Task Retirement_does_not_zeroize_material_a_reader_already_holds()
+    {
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
+        FileEncryptionKeyProvider provider = new(secrets);
+        FileEncryptionKeyMaterial prior = await provider.GetForWriteAsync();
+        _ = await provider.RotateAsync();
+
+        FileEncryptionKeyMaterial held = await provider.GetForReadAsync(prior.KeyId);
+        byte[] observed = held.MasterKey.ToArray();
+        await provider.RetireAsync(prior.KeyId);
+
+        Assert.Equal(observed, held.MasterKey.ToArray());
+        Assert.NotEqual(-1, held.MasterKey.Span.IndexOfAnyExcept((byte)0));
+    }
+
     [Fact]
     public async Task Active_write_key_cannot_be_retired()
     {
