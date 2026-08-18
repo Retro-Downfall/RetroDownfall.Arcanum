@@ -17,7 +17,13 @@ public sealed class Campaign
 
     public string? Description { get; set; }
 
-    public string Settings { get; set; } = string.Empty;
+    /// <summary>
+    /// The campaign's serialized <see cref="CampaignSettings"/>. Defaults to an empty JSON object, the
+    /// way <see cref="SanctumConfigJson"/> does, rather than an empty string: a row nobody ever wrote
+    /// settings for still has to deserialize through the record's own defaults, because an absence must
+    /// never derive an un-warded campaign.
+    /// </summary>
+    public string Settings { get; set; } = "{}";
 
     public string SanctumConfigJson { get; set; } = "{}";
 

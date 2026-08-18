@@ -178,6 +178,44 @@ public sealed class ApprenticeExecutionPolicyTests
     }
 
     [Fact]
+    public void SanitizeOperatorMessage_does_not_split_a_surrogate_pair_at_the_cap()
+    {
+
+        // The sanitized text is persisted to Apprentice.ErrorMessage, into the plan's step result, into
+        // the escalation checkpoint, and written to the Chronicle SSE stream. A boundary that lands
+        // between the halves of an astral character would leave a lone surrogate that every one of those
+        // writers silently replaces with U+FFFD, so the stored error stops round-tripping.
+        string message = new string('x', 511) + "\U0001F600";
+
+        string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(message);
+
+        Assert.Equal(512, sanitized.Length);
+
+        Assert.EndsWith("…", sanitized, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(sanitized, char.IsSurrogate);
+
+        Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
+
+    }
+
+    [Fact]
+    public void SanitizeOperatorMessage_keeps_a_whole_surrogate_pair_that_fits_under_the_cap()
+    {
+
+        string message = new string('x', 510) + "\U0001F600" + new string('y', 40);
+
+        string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(message);
+
+        Assert.Equal(513, sanitized.Length);
+
+        Assert.EndsWith("\U0001F600…", sanitized, StringComparison.Ordinal);
+
+        Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
+
+    }
+
+    [Fact]
     public void ValidateReweaveSteps_RejectsNullOrEmpty()
     {
 

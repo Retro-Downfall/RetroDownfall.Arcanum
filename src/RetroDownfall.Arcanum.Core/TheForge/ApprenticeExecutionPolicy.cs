@@ -95,7 +95,10 @@ public static class ApprenticeExecutionPolicy
 
         }
 
-        return trimmed[..maxLength] + "…";
+        // Nudged back one char when the cap would land between the halves of a surrogate pair: this text
+        // is persisted to the apprentice row, the plan JSON and the escalation checkpoint, and a lone
+        // surrogate becomes U+FFFD in every writer it passes through.
+        return trimmed[..Utf8Truncation.SafeCharSliceLength(trimmed, maxLength)] + "…";
 
     }
 
