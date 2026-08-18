@@ -789,19 +789,7 @@ internal sealed partial class DataRetentionService(
             // with an "already active" error naming no owner. ReconciliationRequired carrying the
             // retention recovery code releases the lease and is exactly what FindExpiredAsync adopts
             // on its next pass.
-            LongRunningOperation cancelled = await operations.GetAsync(
-                operation.Id,
-                CancellationToken.None).ConfigureAwait(false)
-                ?? lease.Operation;
-
-            _ = await operations.TryTransitionAsync(
-                operation.Id,
-                cancelled.Revision,
-                ownerId,
-                LongRunningOperationState.ReconciliationRequired,
-                timeProvider.GetUtcNow(),
-                ErrorCodes.Data.ReconciliationFailed,
-                CancellationToken.None).ConfigureAwait(false);
+            await TrySurrenderLeaseForReconciliationAsync(operation, lease, ownerId).ConfigureAwait(false);
 
             throw;
 
@@ -863,6 +851,61 @@ internal sealed partial class DataRetentionService(
                 new Error(
                     ErrorCodes.Data.ReconciliationFailed,
                     "The retention operation failed; its durable history requires operator review."));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Surrenders a cancelled apply's lease to <see cref="LongRunningOperationState.ReconciliationRequired"/>,
+    /// best-effort.
+    /// </summary>
+    /// <remarks>
+    /// Called from inside <c>catch (OperationCanceledException) { …; throw; }</c>, so it must not raise:
+    /// an exception thrown in a catch block discards the one being handled, and callers filter on
+    /// <c>ex is not OperationCanceledException</c> — a locked Grimoire would otherwise turn an
+    /// operator-initiated abort into a generic retention failure while also losing the lease surrender.
+    ///
+    /// <para>The catch is deliberately for every failure kind rather than the <c>SqliteException</c> and
+    /// <c>InvalidOperationException</c> this realistically carries. Narrowing it lets anything else escape
+    /// and take the cancellation's right of way, which is the whole hazard. The Warning is the diagnostic,
+    /// and an unsurrendered lease is recovered by <c>FindExpiredAsync</c> on its next pass anyway. Same
+    /// shape, and the same reasoning, as <c>LexiconService.TryRollbackAsync</c>.</para>
+    ///
+    /// <para>Both writes run on <see cref="CancellationToken.None"/>: cancellation is the only reason this
+    /// path runs, so passing the caller's token would skip the surrender on exactly the path it exists for.</para>
+    /// </remarks>
+    private async Task TrySurrenderLeaseForReconciliationAsync(
+        LongRunningOperation operation,
+        LongRunningOperationLeaseResult lease,
+        string ownerId)
+    {
+
+        try
+        {
+
+            LongRunningOperation cancelled = await operations.GetAsync(
+                operation.Id,
+                CancellationToken.None).ConfigureAwait(false)
+                ?? lease.Operation;
+
+            _ = await operations.TryTransitionAsync(
+                operation.Id,
+                cancelled.Revision,
+                ownerId,
+                LongRunningOperationState.ReconciliationRequired,
+                timeProvider.GetUtcNow(),
+                ErrorCodes.Data.ReconciliationFailed,
+                CancellationToken.None).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Data-retention operation {OperationId} was cancelled, but its lease could not be surrendered; durable recovery will reclaim it.",
+                operation.Id);
 
         }
 

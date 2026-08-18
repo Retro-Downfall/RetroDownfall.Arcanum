@@ -437,6 +437,44 @@ public sealed class FamiliarProcessRunnerTests
     }
 
     /// <summary>
+    /// A caller that cancels its own token gets the cancellation, never this turn's timeout
+    /// classification — the <c>when</c> filter on the probe's timeout arm deliberately excludes caller
+    /// cancellation, so the read loop's exception propagates instead of being reported as a Familiar that
+    /// never answered. That propagating exit is the one neither explicit await covered before the prompt
+    /// write moved into a <c>finally</c>, so it is pinned here with a prompt large enough that the write
+    /// is genuinely overlapped with the read rather than long finished.
+    /// </summary>
+    [Fact]
+    public async Task Run_to_completion_surfaces_caller_cancellation_rather_than_a_timeout()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(
+            ["one", "two", "three", "four", "five"],
+            perLineDelayMilliseconds: 1000);
+
+        using CancellationTokenSource cts = new();
+
+        cts.CancelAfter(TimeSpan.FromMilliseconds(250));
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _runner.RunToCompletionAsync(
+                new FamiliarProcessRequest
+                {
+
+                    FileName = stub.FileName,
+
+                    Arguments = stub.Arguments,
+
+                    StandardInput = new string('p', 512 * 1024),
+
+                    Timeout = TimeSpan.FromMinutes(2),
+
+                },
+                cts.Token));
+
+    }
+
+    /// <summary>
     /// The resolver is the one auditable place a Familiar's name becomes a path. Spawning the bare
     /// name when PATH has no answer hands resolution back to the OS, whose search order — CreateProcess
     /// on Windows, and .NET's deliberately matching walk on Unix — reaches the application directory

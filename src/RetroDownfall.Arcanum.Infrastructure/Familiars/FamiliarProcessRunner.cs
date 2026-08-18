@@ -241,11 +241,17 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
 
+            await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
+
+            return new FamiliarProcessOutput(
+                process.ExitCode == 0 ? FamiliarProcessFailure.None : FamiliarProcessFailure.NonZeroExit,
+                process.ExitCode,
+                standardOutput.ToString(),
+                ReadTail(standardError));
+
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-
-            await AwaitStandardInputWriteAsync(standardInputWrite).ConfigureAwait(false);
 
             return new FamiliarProcessOutput(
                 FamiliarProcessFailure.TimedOut,
@@ -254,16 +260,18 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 ReadTail(standardError));
 
         }
+        finally
+        {
 
-        await AwaitStandardInputWriteAsync(standardInputWrite).ConfigureAwait(false);
+            // In the finally rather than on each exit, exactly as the streaming path does it. The two
+            // returns above are not the only ways out: a caller that cancels its own token fails the
+            // `when` filter, so the read loop's OperationCanceledException propagates instead — and the
+            // prompt write, whose pipe the teardown registration has just killed the process under,
+            // would be left to surface later as an unobserved faulted task rather than as this turn's
+            // outcome. Cheap on the ordinary path, where the write has long since completed.
+            await AwaitStandardInputWriteAsync(standardInputWrite).ConfigureAwait(false);
 
-        await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
-
-        return new FamiliarProcessOutput(
-            process.ExitCode == 0 ? FamiliarProcessFailure.None : FamiliarProcessFailure.NonZeroExit,
-            process.ExitCode,
-            standardOutput.ToString(),
-            ReadTail(standardError));
+        }
 
     }
 
