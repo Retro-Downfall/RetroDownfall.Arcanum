@@ -178,6 +178,57 @@ public sealed class DaemonRunnerTests
 
     }
 
+    /// <summary>
+    /// An out-of-band cancel (POST /api/executions/{id}/cancel) records the execution terminal while the
+    /// job body is still unwinding — an agentic tool call or MCP round-trip inside ExecutePromptAsync can
+    /// ignore the token for a long time. The per-daemon single-flight reservation must therefore survive
+    /// until the body actually returns, or the operator's natural cancel-then-rerun puts two headless
+    /// inference turns against the same target spell and the same Lexicon daemon-state entity in flight.
+    /// </summary>
+    [Fact]
+    public async Task Out_of_band_cancel_does_not_admit_a_second_run_while_the_job_body_drains()
+    {
+
+        FakeDaemonJob job = new("job-drain", "Job Drain", canRunOnDemand: true)
+        {
+            RunUntilSignal = true,
+            IgnoresCancellation = true,
+        };
+
+        DaemonRunner runner = CreateRunner([job], null, out InMemoryDaemonExecutionRepository repository);
+
+        Task<Result<DaemonExecutionSummary>> run = runner.RunAsync("job-drain", force: false, CancellationToken.None);
+
+        await job.StartedTask;
+
+        DaemonExecutionSummary[] history = await repository.GetHistoryAsync("job-drain", CancellationToken.None);
+
+        string executionId = Assert.Single(history).Id;
+
+        DaemonExecutionSummary cancelled = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, cancelled.Status);
+
+        Assert.True(repository.HasRunningExecution("job-drain"));
+
+        Result<DaemonExecutionSummary> second = await runner.RunAsync("job-drain", force: true, CancellationToken.None);
+
+        Assert.True(second.IsFailure);
+
+        Assert.Equal("Daemon.AlreadyRunning", second.Error.Code);
+
+        job.SignalCompletion();
+
+        _ = await run;
+
+        Assert.False(repository.HasRunningExecution("job-drain"));
+
+        Result<DaemonExecutionSummary> afterDrain = await runner.RunAsync("job-drain", force: true, CancellationToken.None);
+
+        Assert.True(afterDrain.IsSuccess);
+
+    }
+
     private static DaemonRunner CreateRunner(
         IEnumerable<IDaemonJob> jobs,
         CapturingEventBus? bus,
@@ -228,6 +279,12 @@ public sealed class DaemonRunnerTests
 
         public bool RunUntilSignal { get; init; }
 
+        /// <summary>
+        /// Stands in for the work that genuinely outlives a cancel — an agentic tool call or MCP stdio
+        /// round-trip inside <c>ExecutePromptAsync</c> that never observes the token.
+        /// </summary>
+        public bool IgnoresCancellation { get; init; }
+
         public Task StartedTask => _started.Task;
 
         public void SignalCompletion() => _completionSignal.TrySetResult();
@@ -239,6 +296,15 @@ public sealed class DaemonRunnerTests
 
             if (RunUntilSignal)
             {
+
+                if (IgnoresCancellation)
+                {
+
+                    await _completionSignal.Task.ConfigureAwait(false);
+
+                    return;
+
+                }
 
                 await _completionSignal.Task.WaitAsync(ct).ConfigureAwait(false);
 

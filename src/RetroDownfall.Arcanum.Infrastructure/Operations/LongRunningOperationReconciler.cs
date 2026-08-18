@@ -116,11 +116,20 @@ public sealed class LongRunningOperationReconciler(
             CancellationToken ct)
         {
 
+            // Read the clock here rather than reusing the pass-start `utcNow`. That timestamp is the
+            // discovery predicate for the whole pass, and a pass over a real backlog easily outruns the
+            // two-minute lease, so stamping from it writes leases that are already expired the moment they
+            // are taken: `DurableOperationDiagnostics` then counts operations being actively and correctly
+            // recovered as "expired leases nobody claimed" and degrades `GET /api/health`, and an
+            // overlapping manual reconcile can steal the row and duplicate the handler's work. DESIGN
+            // §10.8.2 requires a *fresh* recovery lease per operation.
+            DateTimeOffset leaseTakenAt = timeProvider.GetUtcNow();
+
             LongRunningOperationLeaseResult lease = await operationStore.TryAcquireLeaseAsync(
                 operation.Id,
                 ownerId,
-                utcNow,
-                utcNow.Add(RecoveryLease),
+                leaseTakenAt,
+                leaseTakenAt.Add(RecoveryLease),
                 ct).ConfigureAwait(false);
 
             if (!lease.Acquired)

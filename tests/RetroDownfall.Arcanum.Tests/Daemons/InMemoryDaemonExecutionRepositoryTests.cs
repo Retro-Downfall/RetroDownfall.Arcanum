@@ -343,6 +343,123 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.True(final!.Status is DaemonJobStatus.Failed or DaemonJobStatus.Cancelled);
     }
 
+    /// <summary>
+    /// Cancellation is cooperative, so <c>CancelAsync</c> returning proves only that the request was
+    /// recorded — the job body is still unwinding. The in-flight reservation is the sole per-daemon
+    /// single-flight mechanism, so releasing it at cancel-request time would let a second headless run
+    /// start against the same target spell while the first is still executing.
+    /// </summary>
+    [Fact]
+    public async Task CancelAsync_HoldsTheSingleFlightSlotUntilTheDrainIsReported()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        string executionId = await repository.StartAsync("daemon-drain", "Daemon Drain", CancellationToken.None);
+
+        DaemonExecutionSummary cancelled = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, cancelled.Status);
+
+        Assert.True(repository.HasRunningExecution("daemon-drain"));
+
+        Assert.False(await repository.TryStartAsync(
+            "daemon-drain",
+            "Daemon Drain",
+            Guid.NewGuid().ToString("N"),
+            CancellationToken.None));
+
+        // DaemonRunner reports the drain by re-entering the terminal transition once job.RunAsync returns.
+        DaemonExecutionSummary drained = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, drained.Status);
+
+        Assert.False(repository.HasRunningExecution("daemon-drain"));
+
+        Assert.True(await repository.TryStartAsync(
+            "daemon-drain",
+            "Daemon Drain",
+            Guid.NewGuid().ToString("N"),
+            CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A job that swallows its cancellation token and returns normally drains through
+    /// <c>CompleteAsync</c> instead. That already-terminal transition must still release the slot, or the
+    /// daemon is wedged for the life of the host.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_Then_Complete_ReleasesTheSingleFlightSlot()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        string executionId = await repository.StartAsync("daemon-drain-complete", "Daemon Drain Complete", CancellationToken.None);
+
+        _ = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.True(repository.HasRunningExecution("daemon-drain-complete"));
+
+        DaemonExecutionSummary afterComplete = await repository.CompleteAsync(executionId, CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, afterComplete.Status);
+
+        Assert.False(repository.HasRunningExecution("daemon-drain-complete"));
+
+    }
+
+    /// <summary>
+    /// The same holds for a job that throws on the way out: <c>FailAsync</c> keeps the recorded Cancelled
+    /// status but must release the reservation.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_Then_Fail_ReleasesTheSingleFlightSlot()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        string executionId = await repository.StartAsync("daemon-drain-fail", "Daemon Drain Fail", CancellationToken.None);
+
+        _ = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.True(repository.HasRunningExecution("daemon-drain-fail"));
+
+        DaemonExecutionSummary afterFail = await repository.FailAsync(executionId, "boom", CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, afterFail.Status);
+
+        Assert.False(repository.HasRunningExecution("daemon-drain-fail"));
+
+    }
+
+    /// <summary>
+    /// Cancel-not-dispose: the token handed to the still-running job must stay usable until the drain,
+    /// matching the Apprentice runtime convention in DESIGN §5.7.
+    /// </summary>
+    [Fact]
+    public async Task CancelAsync_DoesNotDisposeTheTokenSourceTheJobIsStillUsing()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        string executionId = await repository.StartAsync("daemon-drain-cts", "Daemon Drain CTS", CancellationToken.None);
+
+        CancellationTokenSource? cts = repository.GetCancellationTokenSource(executionId);
+
+        Assert.NotNull(cts);
+
+        _ = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.True(cts!.Token.IsCancellationRequested);
+
+        // WaitHandle is the one member that throws on a disposed source.
+        Assert.True(cts.Token.WaitHandle.WaitOne(0));
+
+        _ = await repository.CompleteAsync(executionId, CancellationToken.None);
+
+    }
+
     private static InMemoryDaemonExecutionRepository CreateRepository()
     {
         return new InMemoryDaemonExecutionRepository(CreateLogBuffer());

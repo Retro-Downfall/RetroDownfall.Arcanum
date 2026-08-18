@@ -22,6 +22,57 @@ public sealed class LongRunningOperationReconcilerTests
             NullLogger<LongRunningOperationReconciler>.Instance);
 
     /// <summary>
+    /// DESIGN §10.8.2: the reconciler acquires a <em>fresh</em> two-minute recovery lease. Stamping every
+    /// operation in a pass from the timestamp the caller captured before the pass began means that once
+    /// the pass outruns the lease — trivially reached by a real recovery handler such as the attachment
+    /// promotion sweep — every later lease is written already expired. `FindExpiredAsync` then matches
+    /// those rows immediately, so `DurableOperationDiagnostics` counts operations being actively and
+    /// correctly recovered as "expired leases nobody claimed" and `GET /api/health` degrades, with no
+    /// second actor involved; an overlapping manual `POST /api/operations/reconcile` can also steal the
+    /// row outright and duplicate the handler's work.
+    /// </summary>
+    [Fact]
+    public async Task Each_recovery_lease_is_stamped_from_the_clock_at_acquisition_not_at_pass_start()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+
+        // Stands in for a handler whose work outruns the two-minute recovery lease.
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.Batch,
+            supportedCheckpointVersion: 0,
+            _ =>
+            {
+                time.Advance(TimeSpan.FromMinutes(5));
+
+                return LongRunningOperationRecoveryResult.Completed();
+            });
+
+        _ = store.Seed(LongRunningOperationKinds.Batch, LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        _ = store.Seed(LongRunningOperationKinds.Batch, LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        LongRunningOperationReconciler reconciler = CreateReconciler(store, time, handler);
+
+        _ = await reconciler.ReconcileNowAsync("test-owner");
+
+        Assert.Equal(2, store.LeaseAcquisitions.Count);
+
+        Assert.All(
+            store.LeaseAcquisitions,
+            acquisition =>
+            {
+
+                Assert.Equal(acquisition.ObservedNow, acquisition.SuppliedUtcNow);
+
+                Assert.True(
+                    acquisition.SuppliedExpiresAt > acquisition.ObservedNow,
+                    $"Lease stamped {acquisition.SuppliedExpiresAt:O} was already expired at {acquisition.ObservedNow:O}.");
+
+            });
+    }
+
+    /// <summary>
     /// An A2A Sending row exists at checkpoint version 0 between being registered and being
     /// checkpointed, so a kill in that window leaves a genuine row below the ledger's format
     /// version. It must reach the handler, whose own "no readable record" path abandons it with a

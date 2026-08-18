@@ -64,6 +64,13 @@ internal sealed class WorkspaceIndexingService(
         "build",
     };
 
+    /// <summary>
+    /// Path comparison for the visited canonical-directory set that terminates symlink cycles, matching
+    /// <c>EyeOfTheWorldService.ScanWorkspace</c> and <c>SpellScanner</c>.
+    /// </summary>
+    private static readonly StringComparer CanonicalDirectoryComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
     private const int MaxPendingPathsPerWorkspace = 4_096;
 
     private readonly ConcurrentDictionary<string, byte> _knownWorkspaces = new(StringComparer.Ordinal);
@@ -1127,12 +1134,21 @@ internal sealed class WorkspaceIndexingService(
     /// descending into them — unlike <see cref="Directory.EnumerateFiles(string, string, EnumerationOptions)"/>
     /// with <c>RecurseSubdirectories = true</c>, which would still visit every entry under a huge
     /// ignored directory (for example <c>node_modules</c>) only to discard them one by one. The walk
-    /// continues until every reachable candidate has been visited or the caller cancels.
+    /// continues until every reachable candidate has been visited or the caller cancels, and terminates
+    /// symlink cycles via a canonical visited set (the same guard <c>EyeOfTheWorldService.ScanWorkspace</c>
+    /// and <c>SpellScanner</c> carry): containment accepts a directory link whose target resolves back
+    /// under the root, so without the set a link such as <c>docs/latest -&gt; ..</c> re-reaches the whole
+    /// tree at every depth. This is cycle termination, <b>not</b> a total-entry ceiling.
     /// </summary>
     private static IEnumerable<string> EnumerateCandidateFiles(
         string workspacePath,
         HashSet<string> extensions)
     {
+        HashSet<string> visitedCanonicalDirs = new(CanonicalDirectoryComparer)
+        {
+            ResolveCanonicalDirectory(workspacePath),
+        };
+
         Queue<string> pendingDirectories = new();
 
         pendingDirectories.Enqueue(workspacePath);
@@ -1189,6 +1205,14 @@ internal sealed class WorkspaceIndexingService(
 
                     }
 
+                    if (!visitedCanonicalDirs.Add(ResolveCanonicalDirectory(fullPath)))
+                    {
+
+                        // Symlink cycle — already visited this canonical directory.
+                        continue;
+
+                    }
+
                     pendingDirectories.Enqueue(fullPath);
 
                 }
@@ -1198,6 +1222,42 @@ internal sealed class WorkspaceIndexingService(
                     yield return fullPath;
 
                 }
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// The identity a directory is remembered by in the visited set: its fully resolved final target, so
+    /// two aliases of one physical directory collapse to a single entry. A directory that cannot be
+    /// resolved falls back to its absolute path and finally to the path as given, which keeps the walk
+    /// going rather than failing the whole tick.
+    /// </summary>
+    private static string ResolveCanonicalDirectory(string directory)
+    {
+
+        try
+        {
+
+            return Directory.ResolveLinkTarget(directory, returnFinalTarget: true)?.FullName
+                ?? Path.GetFullPath(directory);
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
+        {
+
+            try
+            {
+
+                return Path.GetFullPath(directory);
+
+            }
+            catch (Exception inner) when (inner is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
+            {
+
+                return directory;
 
             }
 
