@@ -112,6 +112,8 @@ public partial class ChipsEditor : UserControl
 
         InitializeComponent();
 
+        NewItemEntry.PropertyChanged += OnNewItemPropertyChanged;
+
         RenderChips();
 
     }
@@ -138,6 +140,43 @@ public partial class ChipsEditor : UserControl
         AddCurrentItem();
 
     }
+
+    /// <summary>
+    /// Leaving the entry commits whatever is in it. Enter and Add are easy to miss on a box that looks
+    /// like every other one in the editor, and without this the value is thrown away by the very
+    /// actions an operator takes to finish: pressing Save (which moves focus first), opening another
+    /// section, or closing the window.
+    /// </summary>
+    private void OnNewItemLostFocus(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        CommitPendingInput();
+
+    /// <summary>
+    /// Announces that the uncommitted entry changed. Text sitting there is an operator edit even
+    /// before it becomes a chip, and the editor has to treat it as one or Save stays disabled
+    /// underneath the typing and the close confirmation never asks. Observed through the property
+    /// rather than the control's <c>TextChanged</c> event so that programmatic assignments — the ones
+    /// a test drives, and the clear that follows a commit — are seen too.
+    /// </summary>
+    private void OnNewItemPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs args)
+    {
+
+        if (args.Property == TextBox.TextProperty)
+        {
+
+            PendingInputChanged?.Invoke(this, EventArgs.Empty);
+
+        }
+
+    }
+
+    /// <summary>Raised whenever the uncommitted entry's text changes.</summary>
+    public event EventHandler? PendingInputChanged;
+
+    /// <summary>
+    /// Commits whatever is typed in the entry but not yet added. Safe to call at any time: an empty or
+    /// whitespace-only entry, or one holding a value the list already has, changes nothing.
+    /// </summary>
+    public void CommitPendingInput() => AddCurrentItem();
 
     private void AddCurrentItem()
     {

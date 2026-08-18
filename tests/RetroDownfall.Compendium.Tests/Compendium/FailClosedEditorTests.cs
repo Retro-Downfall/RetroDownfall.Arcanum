@@ -1,9 +1,13 @@
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.LogicalTree;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Compendium.Ux.Models;
 using RetroDownfall.Compendium.Ux.Services;
 using RetroDownfall.Compendium.Ux.ViewModels;
+using RetroDownfall.Compendium.Ux.Views;
 using RetroDownfall.Compendium.Ux.Views.Controls;
 using Xunit;
 
@@ -160,6 +164,57 @@ public sealed class FailClosedEditorTests
         Assert.Contains("changed on disk", vm.LastErrorMessage);
 
         Assert.True(vm.IsDirty);
+
+    }
+
+    /// <summary>
+    /// A save that committed but could not be hardened is a success, and treating it as one is the
+    /// point — the edits are on disk, so Save must clear the dirty state rather than tell the operator
+    /// to try again. The unmet security objective still has to reach them, because nothing else in
+    /// Compendium will ever mention it: the app logs only to the debugger.
+    /// </summary>
+    [Fact]
+    public async Task Save_that_committed_without_hardening_clears_dirty_and_still_warns_the_operator()
+    {
+
+        FakeConfigurationStore store = new(
+            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+        {
+            NextWriteResult = new ConfigurationWriteResult(
+                true,
+                [],
+                null,
+                "Saved arcanum.json, but its owner-only permissions could not be applied, so other accounts on this machine may be able to read it."),
+        };
+
+        RecordingDialogService dialogs = new();
+
+        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
+
+        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+
+        vm.Host.Port = 5100;
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Single(store.Writes);
+
+        Assert.False(vm.IsDirty);
+
+        Assert.Null(vm.LastErrorMessage);
+
+        Assert.Contains(
+            "owner-only permissions could not be applied",
+            vm.StatusMessage,
+            StringComparison.Ordinal);
+
+        Assert.Contains(dialogs.Alerts, alert => alert.Title == "Saved with a warning");
+
+        Assert.Contains(
+            dialogs.Alerts,
+            alert => alert.Message.Contains("owner-only permissions", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(dialogs.Alerts, alert => alert.Title == "Save failed");
 
     }
 
@@ -340,6 +395,86 @@ public sealed class FailClosedEditorTests
         bar.LastErrorMessage = null;
 
         Assert.Equal("Unsaved changes", status.Text);
+
+    }
+
+    /// <summary>
+    /// A rejected value that the operator then corrects must stop being reported as rejected. The last
+    /// write attempt's verdict describes a settings snapshot that no longer exists, so an edit retires
+    /// it — otherwise the red message survives every keystroke, the SaveBar keeps showing the old
+    /// failure instead of "Unsaved changes", and a corrected field is indistinguishable from a
+    /// still-broken one until another round-trip save.
+    /// </summary>
+    [Fact]
+    public async Task Editing_after_a_rejected_save_retires_the_previous_verdict()
+    {
+
+        FakeConfigurationStore store = new(
+            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+        {
+            NextWriteResult = new ConfigurationWriteResult(
+                false,
+                [new ConfigurationValidationError(
+                    "defaultModel",
+                    "DefaultModel 'no-such-model' does not match any configured provider model.")],
+                "The configuration is not valid."),
+        };
+
+        ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
+
+        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+
+        vm.Providers.DefaultModel = "no-such-model";
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.True(vm.ValidationErrorsByPointer.ContainsKey("defaultModel"));
+
+        Assert.NotNull(vm.LastErrorMessage);
+
+        vm.Providers.DefaultModel = "gpt-4o";
+
+        Assert.False(vm.ValidationErrorsByPointer.ContainsKey("defaultModel"));
+
+        Assert.Null(vm.LastErrorMessage);
+
+    }
+
+    /// <summary>
+    /// The polished Host page hosts the same chips control, and its pending entry has to behave the
+    /// same way: a CORS origin typed but never added is an edit that must mark the editor dirty and
+    /// land in the settings when the operator leaves the box, not vanish on the next Save.
+    /// </summary>
+    [Fact]
+    public async Task Pending_cors_origin_marks_the_editor_dirty_and_commits_on_focus_loss()
+    {
+
+        FakeConfigurationStore store = new(
+            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
+
+        ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
+
+        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+
+        HostPage page = new()
+        {
+            DataContext = vm,
+        };
+
+        ChipsEditor chips = Assert.Single(page.GetLogicalDescendants().OfType<ChipsEditor>());
+
+        TextBox entry = Assert.IsType<TextBox>(chips.FindControl<TextBox>("NewItemEntry"));
+
+        entry.Text = "https://studio.example";
+
+        Assert.True(vm.IsDirty);
+
+        entry.RaiseEvent(new RoutedEventArgs(InputElement.LostFocusEvent));
+
+        Assert.Contains(
+            "https://studio.example",
+            vm.Host.CorsAllowedOrigins,
+            StringComparison.Ordinal);
 
     }
 
