@@ -157,16 +157,12 @@ public sealed partial class WarTableViewModel : ViewModelBase, IDisposable
 
         ApprenticeDetailViewModel detail = new(summary.Id, _dataSource);
 
+        // OnSelectedApprenticeChanged owns activation while the panel is visible. Activating again
+        // here would cancel the Chronicle stream that assignment just opened and reopen a second one,
+        // replaying the server's lifecycle preamble on top of the frames the first stream delivered.
         SelectedApprentice = detail;
 
         await detail.LoadAsync(cancellationToken).ConfigureAwait(true);
-
-        if (IsVisible)
-        {
-
-            detail.Activate();
-
-        }
 
     }
 

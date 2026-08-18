@@ -275,6 +275,61 @@ public sealed class TheForgeApiKeyProviderTests
     }
 
     [Fact]
+    public async Task ResolveAsync_DoesNotPersistShellOutOutputThatIsNotAPlausibleKey()
+    {
+
+        InMemoryOsCredentialStore store = new();
+
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            _ => null,
+            _ => Task.FromResult<string?>("fatal: could not open the credential store"));
+
+        ApiKeyResolution resolution = await resolver.ResolveAsync(new TheForgeSettings(), CancellationToken.None);
+
+        Assert.Null(resolution.Key);
+
+        OsCredentialStoreResult stored = store.TryGet(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount);
+
+        Assert.NotEqual(OsCredentialStoreStatus.Ok, stored.Status);
+
+    }
+
+    [Fact]
+    public void ResolveCliExecutablePath_ReturnsAnAbsolutePathFromPath()
+    {
+
+        string directory = OperatingSystem.IsWindows() ? @"C:\tools\arcanum" : "/opt/arcanum/bin";
+
+        string expected = Path.Combine(directory, OperatingSystem.IsWindows() ? "arcanum.exe" : "arcanum");
+
+        string? resolved = ApiKeyResolver.ResolveCliExecutablePath(
+            _ => directory,
+            candidate => string.Equals(candidate, expected, StringComparison.Ordinal));
+
+        Assert.Equal(expected, resolved);
+
+    }
+
+    [Fact]
+    public void ResolveCliExecutablePath_RejectsRelativePathEntriesSoAPlantedBinaryInTheWorkingDirectoryIsNeverLaunched()
+    {
+
+        string relativeEntry = "." + Path.DirectorySeparatorChar + "hostile";
+
+        string? resolved = ApiKeyResolver.ResolveCliExecutablePath(
+            _ => string.Join(Path.PathSeparator, ["", ".", relativeEntry]),
+            _ => true);
+
+        Assert.Null(resolved);
+
+    }
+
+    [Fact]
     public async Task GetApiKeyAsync_KeepsSessionOnlyKeyWhenOsPersistFails()
     {
 

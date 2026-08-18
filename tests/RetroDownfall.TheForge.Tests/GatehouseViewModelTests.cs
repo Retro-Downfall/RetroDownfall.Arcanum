@@ -151,6 +151,46 @@ public class GatehouseViewModelTests
 
     }
 
+    [Fact]
+    public void ArgumentsSummary_IsFormattedOnceAndReusedAcrossReads()
+    {
+
+        WardCardViewModel card = new(
+            NewWard("ward-1", "hammer", """{"force":1}""", DateTimeOffset.UtcNow.AddMinutes(2)),
+            static (_, _, _, _) => Task.CompletedTask);
+
+        string first = card.ArgumentsSummary;
+
+        Assert.Same(first, card.ArgumentsSummary);
+
+        Assert.Contains('\n', first);
+
+        Assert.Contains("\"force\": 1", first, StringComparison.Ordinal);
+
+        card.Update(NewWard("ward-1", "anvil", """{"force":9}""", DateTimeOffset.UtcNow.AddMinutes(5)));
+
+        Assert.Contains("\"force\": 9", card.ArgumentsSummary, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void ArgumentsSummary_TruncatesLongArgumentPayloads()
+    {
+
+        string padded = new('a', 900);
+
+        WardCardViewModel card = new(
+            NewWard("ward-1", "hammer", $$"""{"note":"{{padded}}"}""", DateTimeOffset.UtcNow.AddMinutes(2)),
+            static (_, _, _, _) => Task.CompletedTask);
+
+        string summary = card.ArgumentsSummary;
+
+        Assert.EndsWith("…", summary, StringComparison.Ordinal);
+
+        Assert.True(summary.Length <= 401);
+
+    }
+
     private static WardDto NewWard(string id, string tool, string argsJson, DateTimeOffset expiresAt)
     {
 
