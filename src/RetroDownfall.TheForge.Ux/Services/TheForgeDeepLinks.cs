@@ -267,7 +267,12 @@ public sealed class TheForgeDeepLinkCoordinator
 
         }
 
-        await WaitForConnectedAsync(cancellationToken).ConfigureAwait(false);
+        if (!await WaitForConnectedAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            return TheForgeDeepLinkRouteResult.Rejected;
+
+        }
 
         return await _router
             .RouteAsync(deepLink, cancellationToken)
@@ -284,27 +289,44 @@ public sealed class TheForgeDeepLinkCoordinator
             or ApplicationResourceKind.Prompt
             or ApplicationResourceKind.Apprentice;
 
-    private async Task WaitForConnectedAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Defers routing until the connection reports Connected (docs/Arcanum.DESIGN.md), but treats Error as
+    /// a terminal answer instead of waiting forever: an auth failure caches the bad key for the process
+    /// lifetime, so the wait would never complete and the caller's rejection whisper would never fire.
+    /// </summary>
+    private async Task<bool> WaitForConnectedAsync(CancellationToken cancellationToken)
     {
 
-        if (_connection.State == ConnectionState.Connected)
+        if (_connection.State is ConnectionState.Connected or ConnectionState.Error)
         {
 
-            return;
+            return _connection.State == ConnectionState.Connected;
 
         }
 
-        TaskCompletionSource connected = new(
+        TaskCompletionSource<bool> connected = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         PropertyChangedEventHandler handler = (_, args) =>
         {
 
-            if (args.PropertyName == nameof(IArcanumConnection.State)
-                && _connection.State == ConnectionState.Connected)
+            if (args.PropertyName != nameof(IArcanumConnection.State))
             {
 
-                connected.TrySetResult();
+                return;
+
+            }
+
+            if (_connection.State == ConnectionState.Connected)
+            {
+
+                connected.TrySetResult(true);
+
+            }
+            else if (_connection.State == ConnectionState.Error)
+            {
+
+                connected.TrySetResult(false);
 
             }
 
@@ -315,14 +337,14 @@ public sealed class TheForgeDeepLinkCoordinator
         try
         {
 
-            if (_connection.State == ConnectionState.Connected)
+            if (_connection.State is ConnectionState.Connected or ConnectionState.Error)
             {
 
-                connected.TrySetResult();
+                connected.TrySetResult(_connection.State == ConnectionState.Connected);
 
             }
 
-            await connected.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return await connected.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         }
         finally

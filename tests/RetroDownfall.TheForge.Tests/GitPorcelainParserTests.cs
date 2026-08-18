@@ -100,6 +100,61 @@ public class GitPorcelainParserTests
     }
 
     [Fact]
+    public void Parse_OctalEscapedPath_DecodesUtf8Bytes()
+    {
+
+        // core.quotePath defaults to true, so git C-quotes every non-ASCII path as three-digit octal
+        // escapes, one per UTF-8 byte.
+        IReadOnlyList<GitPorcelainEntry> entries = GitPorcelainParser.Parse("?? \"caf\\303\\251.txt\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("café.txt", entry.Path);
+
+    }
+
+    [Fact]
+    public void Parse_OctalEscapedPath_DecodesMultiByteRuns()
+    {
+
+        IReadOnlyList<GitPorcelainEntry> entries =
+            GitPorcelainParser.Parse(" M \"\\346\\274\\242\\345\\255\\227/\\360\\237\\232\\200.md\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("漢字/🚀.md", entry.Path);
+
+    }
+
+    [Fact]
+    public void Parse_OctalEscapedRename_DecodesBothPaths()
+    {
+
+        IReadOnlyList<GitPorcelainEntry> entries =
+            GitPorcelainParser.Parse("R  \"caf\\303\\251.txt\" -> \"th\\303\\251.txt\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("thé.txt", entry.Path);
+
+        Assert.Equal("café.txt", entry.OriginalPath);
+
+    }
+
+    [Fact]
+    public void Parse_QuotedPath_UnescapesRemainingCEscapes()
+    {
+
+        IReadOnlyList<GitPorcelainEntry> entries =
+            GitPorcelainParser.Parse("?? \"tab\\there\\\\back\\\"quote\\a.txt\"\n");
+
+        GitPorcelainEntry entry = Assert.Single(entries);
+
+        Assert.Equal("tab\there\\back\"quote\a.txt", entry.Path);
+
+    }
+
+    [Fact]
     public void Parse_QuotedRename_UnescapesBoth()
     {
 

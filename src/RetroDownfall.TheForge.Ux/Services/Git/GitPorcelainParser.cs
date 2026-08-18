@@ -159,7 +159,14 @@ public static class GitPorcelainParser
 
         StringBuilder builder = new(trimmed.Length);
 
-        for (int i = 1; i < trimmed.Length; i++)
+        // core.quotePath defaults to true, so git C-quotes any byte outside printable ASCII as a
+        // three-digit octal escape — one escape per UTF-8 byte. Escapes must therefore be gathered into a
+        // byte run and decoded together, not mapped one character at a time.
+        List<byte> pendingBytes = [];
+
+        int i = 1;
+
+        while (i < trimmed.Length)
         {
 
             char c = trimmed[i];
@@ -174,27 +181,110 @@ public static class GitPorcelainParser
             if (c == '\\' && i + 1 < trimmed.Length)
             {
 
-                char next = trimmed[++i];
+                if (TryReadOctalEscape(trimmed, i, out byte octalByte))
+                {
 
-                builder.Append(next switch
+                    pendingBytes.Add(octalByte);
+
+                    i += 4;
+
+                    continue;
+
+                }
+
+                AppendPendingBytes(builder, pendingBytes);
+
+                builder.Append(trimmed[i + 1] switch
                 {
                     'n' => '\n',
                     't' => '\t',
                     'r' => '\r',
+                    'a' => '\a',
+                    'b' => '\b',
+                    'f' => '\f',
+                    'v' => '\v',
                     '"' => '"',
                     '\\' => '\\',
-                    _ => next,
+                    char other => other,
                 });
+
+                i += 2;
 
                 continue;
 
             }
 
+            AppendPendingBytes(builder, pendingBytes);
+
             builder.Append(c);
+
+            i++;
 
         }
 
+        AppendPendingBytes(builder, pendingBytes);
+
         return builder.ToString();
+
+    }
+
+    /// <summary>True when <paramref name="index"/> starts a <c>\NNN</c> three-digit octal escape.</summary>
+    private static bool TryReadOctalEscape(string text, int index, out byte value)
+    {
+
+        value = 0;
+
+        if (index + 3 >= text.Length)
+        {
+
+            return false;
+
+        }
+
+        int result = 0;
+
+        for (int offset = 1; offset <= 3; offset++)
+        {
+
+            char digit = text[index + offset];
+
+            if (digit is < '0' or > '7')
+            {
+
+                return false;
+
+            }
+
+            result = (result * 8) + (digit - '0');
+
+        }
+
+        if (result > byte.MaxValue)
+        {
+
+            return false;
+
+        }
+
+        value = (byte)result;
+
+        return true;
+
+    }
+
+    private static void AppendPendingBytes(StringBuilder builder, List<byte> pendingBytes)
+    {
+
+        if (pendingBytes.Count == 0)
+        {
+
+            return;
+
+        }
+
+        builder.Append(Encoding.UTF8.GetString(pendingBytes.ToArray()));
+
+        pendingBytes.Clear();
 
     }
 
