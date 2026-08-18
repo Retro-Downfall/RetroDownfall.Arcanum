@@ -804,6 +804,64 @@ public sealed class CovenantMutationKernelTests
 
     }
 
+    [Fact]
+    public async Task An_approved_agent_retirement_the_factory_built_persists_its_ward_evidence()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(CovenantTask6Fixture.CampaignId, "one", Token);
+
+        _ = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(
+                fixture,
+                Token,
+                CovenantMutationFixture.AgentPropose(
+                    CovenantTask6Fixture.CampaignId,
+                    "campaign.a",
+                    "Prefer repo-root builds.",
+                    0,
+                    0)),
+            Token);
+
+        await using CovenantAgentRetirementCapability capability = new(targetLaneRevision: 1, keyEpoch: 1);
+
+        Result<CovenantMutationIntent> intent = CovenantAgentMutationFactory.Retire(
+            capability.Context,
+            CovenantTask6Fixture.D(90));
+
+        Assert.True(intent.IsSuccess, intent.Error.Message);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> retired = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(fixture, Token, intent.Value),
+            Token);
+
+        Assert.True(retired.IsSuccess, retired.IsFailure ? retired.Error.Message : string.Empty);
+
+        Assert.Equal(CovenantMutationOutcome.Applied, Assert.Single(retired.Value).Outcome);
+
+        // covenant_versions permits a Ward digest only under OriginCode 3, and demands a Ward mode
+        // with it. Any other origin makes the tombstone insert a raw CHECK failure at commit time.
+        Assert.Equal(
+            (long)CovenantOrigin.AgentApproved,
+            await ScalarAsync(fixture, "SELECT OriginCode FROM covenant_versions WHERE OperationCode = 2;"));
+
+        Assert.Equal(
+            1,
+            await ScalarAsync(
+                fixture,
+                "SELECT COUNT(*) FROM covenant_versions WHERE OperationCode = 2 AND WardReceiptDigest IS NOT NULL;"));
+
+        Assert.Equal(
+            (long)CovenantAuthorizationMode.WardInteractive,
+            await ScalarAsync(
+                fixture,
+                "SELECT AuthorizationModeCode FROM covenant_versions WHERE OperationCode = 2;"));
+
+    }
+
     private static async Task<long> ScalarAsync(CovenantCanonicalFixture fixture, string sql)
     {
 
@@ -814,6 +872,55 @@ public sealed class CovenantMutationKernelTests
         object? value = await command.ExecuteScalarAsync(Token);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// A live retirement capability aimed at an already-staged Proposed head, so the persistence path
+    /// runs against the intent the factory actually mints rather than a hand-written one.
+    /// </summary>
+    private sealed class CovenantAgentRetirementCapability : IAsyncDisposable
+    {
+
+        private readonly CancellationTokenSource _turn = new();
+
+        public CovenantAgentRetirementCapability(long targetLaneRevision, long keyEpoch)
+        {
+
+            CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
+
+            CovenantMutationCollector collector = new(
+                Guid.CreateVersion7(),
+                plan.Digest,
+                CovenantTask6Fixture.BranchId);
+
+            Context = new CovenantToolInvocationContext(
+                collector,
+                CovenantCapabilityFixtures.Campaign(),
+                CovenantCapabilityFixtures.Admission(plan),
+                CovenantCapabilityFixtures.Materialization(sourceCount: 0),
+                new CovenantCapabilityFixtures.StubHeadProbe(),
+                CovenantToolCapabilityNonce.Create(),
+                CovenantToolNames.RetireCovenant,
+                "call-1",
+                CovenantCapabilityFixtures.RetirementPreflight(
+                    targetLaneRevision: targetLaneRevision,
+                    keyEpoch: keyEpoch),
+                CovenantCapabilityFixtures.WardReceipt(CovenantWardDecision.Approved),
+                _turn.Token);
+
+        }
+
+        public CovenantToolInvocationContext Context { get; }
+
+        public async ValueTask DisposeAsync()
+        {
+
+            await Context.DisposeAsync();
+
+            _turn.Dispose();
+
+        }
 
     }
 

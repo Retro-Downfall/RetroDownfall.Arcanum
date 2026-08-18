@@ -1141,6 +1141,50 @@ public sealed class CovenantDigestVectorTests
         Assert.Throws<ArgumentException>(() => new CovenantDisclosureDraft(G1, CovenantDisclosureSubjectKind.Turn, G2, default, CovenantEgressDestination.Network, CovenantDisclosureRevocability.Nonrevocable, D(2), Sensitivity(), null, null, null, 1));
     }
 
+    [Fact]
+    public void A_full_snapshot_reaches_the_canonical_writer_without_copying_its_digests()
+    {
+        SnapshotCandidateDigestInput template = CreateSnapshot().Candidates[0];
+        SnapshotDigestInput snapshot = CreateSnapshot(
+            [.. Enumerable.Repeat(template, CovenantLimits.MaxActiveSnapshotRows)]);
+
+        _ = CovenantDigests.Snapshot(snapshot);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        _ = CovenantDigests.Snapshot(snapshot);
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // Three digest fields per row reach the writer, and a byte[32] costs 56 bytes on 64-bit, so
+        // a copying read is ~168 bytes of Gen0 garbage per row on the generation-bound turn path.
+        Assert.True(
+            allocated < CovenantLimits.MaxActiveSnapshotRows * 100,
+            $"Snapshot hashing allocated {allocated} bytes across {CovenantLimits.MaxActiveSnapshotRows} rows.");
+    }
+
+    [Fact]
+    public void Pairing_two_digests_reads_both_operands_in_place()
+    {
+        CovenantDigest first = D(1);
+        CovenantDigest second = D(2);
+
+        _ = CovenantDigestPair.Combine(first, second);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        for (int index = 0; index < 1_000; index++)
+        {
+            _ = CovenantDigestPair.Combine(first, second);
+        }
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // The hash result and the digest it becomes are the only arrays a pairing needs; reading the
+        // two operands through the copying accessor doubles that for no caller's benefit.
+        Assert.True(allocated < 1_000 * 168, $"Pairing 1,000 digests allocated {allocated} bytes.");
+    }
+
     private static MutationRequestDigestInput CreateMutationRequest() =>
         new(CovenantMutationKind.AgentPropose, G1, CovenantScope.Campaign, G2, new CovenantKey("response.style"), CovenantLane.Proposed, CovenantOperation.Set, 7, true, CovenantOrigin.AgentProposed, D(1), D(2), 1, D(3), D(4), [D(5), D(6)]);
 

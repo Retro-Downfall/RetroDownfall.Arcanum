@@ -106,6 +106,25 @@ public sealed class CovenantMutationIntent
             ? origin
             : throw new ArgumentOutOfRangeException(nameof(origin));
 
+        // One kind admits exactly one origin. Leaving the two fields free would let an approved
+        // retirement claim an agent proposal's lineage, which covenant_versions rejects only at
+        // commit time — inside the single transaction that also carries the turn's answer.
+        CovenantOrigin requiredOrigin = kind switch
+        {
+            CovenantMutationKind.OperatorSet or CovenantMutationKind.OperatorRetire => CovenantOrigin.Operator,
+            CovenantMutationKind.AgentPropose => CovenantOrigin.AgentProposed,
+            _ => CovenantOrigin.AgentApproved,
+        };
+
+        if (origin != requiredOrigin)
+        {
+
+            throw new ArgumentException(
+                $"A {kind} mutation is authored by {requiredOrigin} and by nothing else.",
+                nameof(origin));
+
+        }
+
         Target = target;
 
         if (expectedLaneRevision < 0)
@@ -157,12 +176,50 @@ public sealed class CovenantMutationIntent
 
         Authorization = authorization;
 
+        // Ward evidence belongs to the approved retirement and to nothing else, exactly as
+        // covenant_versions requires: OriginCode 3 with a receipt and a Ward mode, every other
+        // origin with neither.
+        if (origin == CovenantOrigin.AgentApproved)
+        {
+
+            if (authorization.WardReceiptDigest is null
+                || authorization.Mode is not (CovenantAuthorizationMode.WardInteractive
+                    or CovenantAuthorizationMode.WardConfiguredAutoApproval))
+            {
+
+                throw new ArgumentException(
+                    "An approved agent retirement carries its Ward receipt digest and the Ward mode it was approved under.",
+                    nameof(authorization));
+
+            }
+
+        }
+        else if (authorization.WardReceiptDigest is not null)
+        {
+
+            throw new ArgumentException(
+                "Only an approved agent retirement carries Ward evidence.",
+                nameof(authorization));
+
+        }
+
         // Global Proposed is unrepresentable by construction rather than by a database CHECK the
         // caller might learn about only at commit time.
         if (target.Scope.Kind == CovenantScope.Global && target.Lane == CovenantLane.Proposed)
         {
 
             throw new ArgumentException("Global Covenant content cannot use the Proposed lane.", nameof(target));
+
+        }
+
+        // The same lane-to-origin rule CovenantSnapshotCandidate applies on the way back out: a
+        // Confirmed head an agent merely proposed is a row the projection refuses to construct.
+        if (target.Lane == CovenantLane.Confirmed && origin == CovenantOrigin.AgentProposed)
+        {
+
+            throw new ArgumentException(
+                "An agent proposal belongs to the Proposed lane.",
+                nameof(target));
 
         }
 

@@ -58,7 +58,8 @@ internal static class CovenantCapabilityFixtures
 
     public static CovenantRetirementPreflight RetirementPreflight(
         string normalizedKey = "campaign.a",
-        long targetLaneRevision = 4) =>
+        long targetLaneRevision = 4,
+        long keyEpoch = 0) =>
         new(
             CovenantTask6Fixture.G5,
             CovenantTask6Fixture.G6,
@@ -68,7 +69,7 @@ internal static class CovenantCapabilityFixtures
             "- campaign.a: \"the operator prefers repo-root builds\"",
             CovenantTask6Fixture.D(77),
             globalFallbackApplies: false,
-            keyEpoch: 0,
+            keyEpoch,
             CovenantTask6Fixture.D(78));
 
     /// <summary>

@@ -1599,7 +1599,7 @@ public static class CovenantDigests
     }
 
     private static void WriteDigest(CovenantCanonicalHashWriter writer, CovenantDigest digest) =>
-        writer.WriteFixed32(digest.Bytes);
+        writer.WriteFixed32(digest.Span);
 
     private static void WriteOptionalDigest(CovenantCanonicalHashWriter writer, CovenantDigest? digest)
     {

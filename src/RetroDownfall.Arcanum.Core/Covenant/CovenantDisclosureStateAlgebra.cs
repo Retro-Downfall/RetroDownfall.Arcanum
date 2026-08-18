@@ -11,7 +11,7 @@ public static class CovenantDisclosureStateAlgebra
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         hash.AppendData("Arcanum.Covenant.DisclosureBloom.v1\0"u8);
-        hash.AppendData(receiptDigest.Bytes);
+        hash.AppendData(receiptDigest.Span);
 
         byte[] evidence = hash.GetHashAndReset();
         byte[] bloom = new byte[CovenantLimits.DisclosureEvidenceBloomBytes];
