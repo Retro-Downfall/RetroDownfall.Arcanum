@@ -327,6 +327,23 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
 
         }
 
+        // A Saga memory is not recoverable from this surface — unlike a Lore key/value the operator
+        // can retype, deleting it here is the only copy gone.
+        bool confirmed = await _confirmationDialog
+            .ConfirmAsync(
+                "Delete Saga memory",
+                "This permanently deletes the selected Saga memory. This cannot be undone. Continue?",
+                cancellationToken,
+                confirmIsDefault: false)
+            .ConfigureAwait(true);
+
+        if (!confirmed)
+        {
+
+            return;
+
+        }
+
         IsBusy = true;
 
         LastError = null;

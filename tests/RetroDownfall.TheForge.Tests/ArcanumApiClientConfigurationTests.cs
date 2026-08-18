@@ -65,9 +65,11 @@ public sealed class ArcanumApiClientConfigurationTests
     {
         ArcanumApiClient client = CreateClient(baseUrl: string.Empty);
 
-        bool result = await client.DeleteNoContentAsync("/api/campaigns/test", CancellationToken.None);
+        DeleteOutcome result = await client.DeleteNoContentAsync("/api/campaigns/test", CancellationToken.None);
 
-        Assert.False(result);
+        Assert.False(result.Success);
+
+        Assert.Equal("Config.InvalidBaseUrl", result.ErrorCode);
     }
 
     [Fact]

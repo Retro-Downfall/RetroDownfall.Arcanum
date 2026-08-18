@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -124,7 +125,10 @@ public class CodexViewModelTests
 
         };
 
-        CodexViewModel viewModel = NewViewModel(CampaignId, dataSource);
+        CodexViewModel viewModel = NewViewModel(
+            CampaignId,
+            dataSource,
+            confirmation: new ScriptedConfirmationDialogService(confirm: true));
 
         await viewModel.DeleteAsync(CancellationToken.None);
 
@@ -138,8 +142,43 @@ public class CodexViewModelTests
 
     }
 
-    private static CodexViewModel NewViewModel(Guid? campaignId, FakeCodexDataSource dataSource) =>
-        new(campaignId, dataSource, new FoundryFloorViewModel(new NullLogService()));
+    [Fact]
+    public async Task Delete_WhenDeclined_DoesNotDelete()
+    {
+
+        FakeCodexDataSource dataSource = new()
+        {
+
+            CampaignDeleteResult = new DataSourceResult<bool>(true, true, null, null),
+
+        };
+
+        ScriptedConfirmationDialogService confirmation = new(confirm: false);
+
+        CodexViewModel viewModel = NewViewModel(CampaignId, dataSource, confirmation: confirmation);
+
+        viewModel.Content = "# Hand-written campaign codex";
+
+        // Deleting a whole CODEX.md destroys the operator's authored guidance; it must be confirmed.
+        await viewModel.DeleteAsync(CancellationToken.None);
+
+        Assert.False(dataSource.CampaignDeleteCalled);
+
+        Assert.Single(confirmation.Prompts);
+
+        Assert.Equal("# Hand-written campaign codex", viewModel.Content);
+
+    }
+
+    private static CodexViewModel NewViewModel(
+        Guid? campaignId,
+        FakeCodexDataSource dataSource,
+        IConfirmationDialogService? confirmation = null) =>
+        new(
+            campaignId,
+            dataSource,
+            new FoundryFloorViewModel(new NullLogService()),
+            confirmation ?? new ScriptedConfirmationDialogService(confirm: true));
 
     private sealed class FakeCodexDataSource : ICodexDataSource
     {

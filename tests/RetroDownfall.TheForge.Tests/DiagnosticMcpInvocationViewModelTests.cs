@@ -327,18 +327,37 @@ public sealed class DiagnosticMcpInvocationViewModelTests
 
     }
 
+    [Fact]
+    public async Task ExportResultAsync_WhenTheWriteFails_ReportsInsteadOfEscaping()
+    {
+
+        DiagnosticMcpInvocationViewModel vm = CreateViewModel(
+            new FakeArsenalDataSource(),
+            fileDialog: new FixedPathArtifactFileDialogService(FixedPathArtifactFileDialogService.UnwritablePath()));
+
+        vm.ResultText = "{\"ok\":true}";
+
+        await vm.ExportResultAsync(CancellationToken.None);
+
+        Assert.NotEqual("Result exported.", vm.StatusText);
+
+        Assert.Contains("export", vm.StatusText, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     private static DiagnosticMcpInvocationViewModel CreateViewModel(
         FakeArsenalDataSource dataSource,
         ConfirmingDialogService? confirmation = null,
         InMemoryDiagnosticMcpFixtureStore? store = null,
-        FixedAnswerTextInput? textInput = null) =>
+        FixedAnswerTextInput? textInput = null,
+        IArtifactFileDialogService? fileDialog = null) =>
         new(
             dataSource,
             store ?? new InMemoryDiagnosticMcpFixtureStore(),
             new FoundryFloorViewModel(new NullLogService()),
             new FakeWhispersService(),
             confirmation ?? new ConfirmingDialogService(confirm: true),
-            new NullArtifactFileDialogService(),
+            fileDialog ?? new NullArtifactFileDialogService(),
             textInput ?? new FixedAnswerTextInput(null));
 
     private sealed class FakeArsenalDataSource : IArsenalDataSource

@@ -340,10 +340,12 @@ public sealed partial class ProvingGroundsViewModel
 
         }
 
+        string? writeError;
+
         try
         {
 
-            await ArtifactImportExportHelper
+            writeError = await ArtifactImportExportHelper
                 .WriteJsonAsync(path, SelectedSuite, TheForgeTrialSuitesJsonContext.Default.TrialSuiteRecord, cancellationToken)
                 .ConfigureAwait(true);
 
@@ -356,12 +358,13 @@ public sealed partial class ProvingGroundsViewModel
             return;
 
         }
-        catch (Exception ex)
+
+        if (writeError is not null)
         {
 
             SuiteStatusText = "Suite export failed.";
 
-            _foundryFloor.AppendLine($"Suite export error: {ex.Message}");
+            _foundryFloor.AppendLine($"Suite export error: {writeError}");
 
             _whispers.Show(WhisperSeverity.Error, "Suite export failed.");
 

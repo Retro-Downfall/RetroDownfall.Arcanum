@@ -58,6 +58,66 @@ public class LedgerViewModelTests
     }
 
     [Fact]
+    public async Task Refresh_WhenStatusOutputWasTruncated_MarksTheChangeListIncomplete()
+    {
+
+        FakeGitProcessRunner git = new();
+
+        git.When(
+            args => args is ["rev-parse", "--abbrev-ref", "HEAD"],
+            GitProcessResult.Completed(0, "main\n", string.Empty, ["rev-parse", "--abbrev-ref", "HEAD"]));
+
+        git.When(
+            args => args is ["status", "--porcelain=v1"],
+            GitProcessResult.Completed(
+                0,
+                "M  staged.txt\n M unstaged.txt\n",
+                string.Empty,
+                ["status", "--porcelain=v1"],
+                stdoutTruncated: true));
+
+        LedgerViewModel viewModel = NewViewModel(git);
+
+        viewModel.ManualRepositoryPath = "/repo";
+
+        viewModel.UseManualPath();
+
+        await WaitForIdleAsync(viewModel);
+
+        // The parsed rows still render, but the operator must not read them as the whole story.
+        Assert.True(viewModel.IsChangeListIncomplete);
+
+        Assert.Equal(LedgerViewModel.TruncatedStatusMessage, viewModel.LastError);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public async Task Refresh_WhenStatusOutputWasComplete_LeavesTheChangeListAuthoritative()
+    {
+
+        FakeGitProcessRunner git = new();
+
+        ConfigureCleanRefresh(git, porcelain: "M  staged.txt\n");
+
+        LedgerViewModel viewModel = NewViewModel(git);
+
+        viewModel.ManualRepositoryPath = "/repo";
+
+        viewModel.UseManualPath();
+
+        await WaitForIdleAsync(viewModel);
+
+        Assert.False(viewModel.IsChangeListIncomplete);
+
+        Assert.Null(viewModel.LastError);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
     public async Task StageSelected_CallsAddWithArgumentList()
     {
 

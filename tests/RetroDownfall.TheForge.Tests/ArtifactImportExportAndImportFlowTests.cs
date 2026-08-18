@@ -361,8 +361,8 @@ public class SpellPromptImportFlowTests
 
         }
 
-        public Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) =>
-            Task.FromResult(false);
+        public Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) =>
+            Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
 
         public Task<IReadOnlyList<string>> ListSpellNamesAsync(string? workspace, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<string>>([]);
@@ -422,8 +422,8 @@ public class SpellPromptImportFlowTests
 
         }
 
-        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
-            Task.FromResult(false);
+        public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
 
     }
 

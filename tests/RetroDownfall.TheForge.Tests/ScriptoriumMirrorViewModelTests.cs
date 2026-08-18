@@ -225,8 +225,8 @@ public class ScriptoriumMirrorViewModelTests
         public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new DataSourceResult<PromptSummaryDto>(null, false, "test", "unused"));
 
-        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
-            Task.FromResult(false);
+        public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
 
     }
 

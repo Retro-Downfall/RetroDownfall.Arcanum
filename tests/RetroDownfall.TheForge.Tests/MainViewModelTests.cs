@@ -785,7 +785,8 @@ internal sealed class NullSpellEditorDataSource : RetroDownfall.TheForge.Ux.View
     public Task<DataSourceResult<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<SpellSummary>(null, false, "test", "not used"));
 
-    public Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) => Task.FromResult(false);
+    public Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) =>
+        Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
 
     public Task<SpellCastResult?> CastAsync(string name, SpellCastRequest request, CancellationToken cancellationToken) => Task.FromResult<SpellCastResult?>(null);
 
@@ -875,8 +876,8 @@ internal sealed class NullPromptEditorDataSource : RetroDownfall.TheForge.Ux.Vie
     public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<PromptSummaryDto>(null, false, "test", "not used"));
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
-        Task.FromResult(false);
+    public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
 
 }
 

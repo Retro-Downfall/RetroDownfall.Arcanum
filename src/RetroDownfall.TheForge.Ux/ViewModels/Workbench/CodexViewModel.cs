@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Models;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -18,6 +19,8 @@ public sealed partial class CodexViewModel : ViewModelBase
     private readonly ICodexDataSource _dataSource;
 
     private readonly FoundryFloorViewModel _foundryFloor;
+
+    private readonly IConfirmationDialogService _confirmationDialog;
 
     [ObservableProperty]
     private string _content = string.Empty;
@@ -55,7 +58,8 @@ public sealed partial class CodexViewModel : ViewModelBase
     public CodexViewModel(
         Guid? campaignId,
         ICodexDataSource dataSource,
-        FoundryFloorViewModel foundryFloor)
+        FoundryFloorViewModel foundryFloor,
+        IConfirmationDialogService confirmationDialog)
     {
 
         CampaignId = campaignId;
@@ -63,6 +67,8 @@ public sealed partial class CodexViewModel : ViewModelBase
         _dataSource = dataSource;
 
         _foundryFloor = foundryFloor;
+
+        _confirmationDialog = confirmationDialog;
 
         Title = campaignId is { } id
             ? $"Codex: {id:D}"
@@ -220,6 +226,25 @@ public sealed partial class CodexViewModel : ViewModelBase
     [RelayCommand]
     public async Task DeleteAsync(CancellationToken cancellationToken)
     {
+
+        // Deleting CODEX.md throws away hand-authored campaign guidance that this editor cannot
+        // restore, so it is confirmed like every other destructive Workbench action.
+        bool confirmed = await _confirmationDialog
+            .ConfirmAsync(
+                "Delete Codex",
+                CampaignId is { } id
+                    ? $"Delete CODEX.md for campaign {id:D}? This cannot be undone."
+                    : "Delete the global CODEX.md? This cannot be undone.",
+                cancellationToken,
+                confirmIsDefault: false)
+            .ConfigureAwait(true);
+
+        if (!confirmed)
+        {
+
+            return;
+
+        }
 
         IsBusy = true;
 

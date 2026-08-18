@@ -219,9 +219,26 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
         }
 
-        DataSourceResult<bool> result = await _management
-            .DeleteAsync(_campaign.Id, cancellationToken)
-            .ConfigureAwait(true);
+        DataSourceResult<bool> result;
+
+        try
+        {
+
+            result = await _management
+                .DeleteAsync(_campaign.Id, cancellationToken)
+                .ConfigureAwait(true);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // Closing the Atelier mid-unregister cancels the caller's token. Unhandled it escapes
+            // onto the dispatcher from a fire-and-forget command instead of ending the operation.
+            StatusText = "Campaign unregister cancelled.";
+
+            return;
+
+        }
 
         if (!result.Success)
         {
@@ -289,30 +306,28 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
         }
 
-        try
+        string? writeError = await ArtifactImportExportHelper
+            .WriteJsonAsync(path, result.Data, TheForgeJsonContext.Default.CampaignExportDto, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (writeError is not null)
         {
 
-            await ArtifactImportExportHelper
-                .WriteJsonAsync(path, result.Data, TheForgeJsonContext.Default.CampaignExportDto, cancellationToken)
-                .ConfigureAwait(true);
+            LastError = writeError;
 
-            StatusText = "Campaign exported.";
-
-            _foundryFloor.AppendLine($"Campaign exported: {_campaign.Name} → {path}.");
-
-            _whispers.Show(WhisperSeverity.Success, "Campaign exported.");
-
-        }
-        catch (Exception ex)
-        {
-
-            LastError = ex.Message;
-
-            _foundryFloor.AppendLine($"Campaign export write error: {ex.Message}");
+            _foundryFloor.AppendLine($"Campaign export write error: {writeError}");
 
             _whispers.Show(WhisperSeverity.Error, "Campaign export failed.");
 
+            return;
+
         }
+
+        StatusText = "Campaign exported.";
+
+        _foundryFloor.AppendLine($"Campaign exported: {_campaign.Name} → {path}.");
+
+        _whispers.Show(WhisperSeverity.Success, "Campaign exported.");
 
     }
 

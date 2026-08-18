@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -155,7 +156,7 @@ public sealed class SpellEditorDataSource : ISpellEditorDataSource
 
     }
 
-    public Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) =>
+    public Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) =>
         _spellService.DeleteAsync(name, workspace, cancellationToken);
 
     public async Task<IReadOnlyList<string>> ListSpellNamesAsync(string? workspace, CancellationToken cancellationToken)

@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -213,6 +214,112 @@ public class SpellEditorViewModelTests
     }
 
     [Fact]
+    public async Task DeleteAsync_WhenTheCallerCancels_EndsQuietlyInsteadOfEscaping()
+    {
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            DeleteFailure = new OperationCanceledException(),
+        };
+
+        SpellEditorViewModel viewModel = NewViewModel(
+            "mend-armor",
+            dataSource,
+            workspace: "/campaigns/sweep",
+            confirmation: new AlwaysConfirmDialogService());
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        // Closing the window mid-delete cancels the caller's token; that must not reach the dispatcher.
+        await viewModel.DeleteAsync(CancellationToken.None);
+
+        Assert.False(viewModel.IsBusy);
+
+        Assert.Equal("Delete cancelled.", viewModel.StatusText);
+
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WhenTheServerRefuses_ReportsTheActualReason()
+    {
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            DeleteResult = DeleteOutcome.Fail("Http.403", "Forbidden"),
+        };
+
+        SpellEditorViewModel viewModel = NewViewModel(
+            "mend-armor",
+            dataSource,
+            workspace: "/campaigns/sweep",
+            confirmation: new AlwaysConfirmDialogService());
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.DeleteAsync(CancellationToken.None);
+
+        Assert.Contains("Http.403", viewModel.LastError ?? string.Empty, StringComparison.Ordinal);
+
+        Assert.Contains("Forbidden", viewModel.LastError ?? string.Empty, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ActivateVersionAsync_WhenTheTransportFails_ReportsInsteadOfEscaping()
+    {
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            Versions = [new SpellVersionDto("v2", false, DateTimeOffset.UtcNow, "Second")],
+            ActivateFailure = new HttpRequestException("connection refused"),
+        };
+
+        SpellEditorViewModel viewModel = NewViewModel("mend-armor", dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.ActivateVersionAsync(viewModel.Versions.Single(), CancellationToken.None);
+
+        Assert.Contains("connection refused", viewModel.LastError ?? string.Empty, StringComparison.Ordinal);
+
+        Assert.False(viewModel.IsBusy);
+
+    }
+
+    [Fact]
+    public async Task ActivateVersionAsync_KeepsTheEditorBusyAcrossTheRoundTrip()
+    {
+
+        TaskCompletionSource gate = new();
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            Versions = [new SpellVersionDto("v2", false, DateTimeOffset.UtcNow, "Second")],
+        };
+
+        SpellEditorViewModel viewModel = NewViewModel("mend-armor", dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        dataSource.ActivateGate = gate.Task;
+
+        Task activate = viewModel.ActivateVersionAsync(viewModel.Versions.Single(), CancellationToken.None);
+
+        Assert.True(viewModel.IsBusy);
+
+        gate.SetResult();
+
+        await activate;
+
+        Assert.False(viewModel.IsBusy);
+
+    }
+
+    [Fact]
     public async Task ActivateVersionAsync_WithUnsavedEdits_RefusesInsteadOfDiscardingThem()
     {
 
@@ -371,6 +478,48 @@ public class SpellEditorViewModelTests
         Assert.Contains(viewModel.DiffLines, static line => line.Text.Contains("BBB-unique-beta", StringComparison.Ordinal));
 
         Assert.DoesNotContain(viewModel.DiffLines, static line => line.Text.Contains("AAA-unique-alpha", StringComparison.Ordinal));
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public async Task Mirror_PublishesTheWholeDiffInOneCollectionNotification()
+    {
+
+        // 400 differing lines: item-by-item Add would raise 400+ CollectionChanged events into a bound
+        // ListBox on the UI thread, which is the freeze the bulk reset exists to prevent.
+        string left = string.Join("\n", Enumerable.Range(0, 400).Select(i => $"left-{i}"));
+
+        string right = string.Join("\n", Enumerable.Range(0, 400).Select(i => $"right-{i}"));
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor", body: left),
+            Versions = [new SpellVersionDto("v2", false, DateTimeOffset.UtcNow, "Second")],
+            VersionDetails =
+            {
+                ["v2"] = new SpellVersionDetailDto("v2", false, DateTimeOffset.UtcNow, "Second", right),
+            },
+        };
+
+        SpellEditorViewModel viewModel = NewViewModel("mend-armor", dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.SelectedVersion = viewModel.Versions[0];
+
+        List<NotifyCollectionChangedAction> actions = [];
+
+        ((INotifyCollectionChanged)viewModel.DiffLines).CollectionChanged += (_, e) => actions.Add(e.Action);
+
+        await viewModel.RefreshMirrorDiffAsync(CancellationToken.None);
+
+        Assert.NotEmpty(viewModel.DiffLines);
+
+        Assert.All(actions, static action => Assert.Equal(NotifyCollectionChangedAction.Reset, action));
+
+        Assert.True(actions.Count <= 2, $"Expected at most a clear plus one bulk reset, saw {actions.Count} notifications.");
 
         viewModel.Dispose();
 
@@ -878,6 +1027,14 @@ public class SpellEditorViewModelTests
 
     }
 
+    private sealed class AlwaysConfirmDialogService : IConfirmationDialogService
+    {
+
+        public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true) =>
+            Task.FromResult(true);
+
+    }
+
     private static SpellEditorViewModel NewViewModel(
         string spellName,
         ISpellEditorDataSource dataSource,
@@ -904,15 +1061,16 @@ public class SpellEditorViewModelTests
         string? version = null,
         string[]? declaredTools = null,
         string[]? dependencies = null,
-        string? activeVersion = null) =>
+        string? activeVersion = null,
+        string body = "# Mend Armor") =>
         new(
             name,
             "Repairs armor",
             source,
             ["repair", "armor"],
-            "# Mend Armor",
+            body,
             null,
-            "# Mend Armor",
+            body,
             "gpt-4o",
             "openai",
             ["tool-a"],
@@ -1000,6 +1158,18 @@ public class SpellEditorViewModelTests
         public SpellVersionDto? UpdateVersionResult { get; init; }
 
         public SpellVersionDto? ActivateResult { get; init; }
+
+        /// <summary>Holds the activate round trip open so the busy state can be observed mid-flight.</summary>
+        public Task? ActivateGate { get; set; }
+
+        /// <summary>Transport-level failure raised out of the activate call, as HttpClient would.</summary>
+        public Exception? ActivateFailure { get; set; }
+
+        /// <summary>Delete answer; defaults to a successful 204.</summary>
+        public DeleteOutcome? DeleteResult { get; set; }
+
+        /// <summary>Exception raised out of the delete call — e.g. the caller's own cancellation.</summary>
+        public Exception? DeleteFailure { get; set; }
 
         public bool SaveSucceeds { get; init; } = true;
 
@@ -1112,12 +1282,19 @@ public class SpellEditorViewModelTests
         public Task<DataSourceResult<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new DataSourceResult<SpellSummary>(null, false, "test", "not used"));
 
-        public Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken)
+        public Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken)
         {
 
             DeleteCallCount++;
 
-            return Task.FromResult(true);
+            if (DeleteFailure is { } failure)
+            {
+
+                return Task.FromException<DeleteOutcome>(failure);
+
+            }
+
+            return Task.FromResult(DeleteResult ?? DeleteOutcome.Ok());
 
         }
 
@@ -1160,12 +1337,26 @@ public class SpellEditorViewModelTests
 
         }
 
-        public Task<SpellVersionDto?> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken)
+        public async Task<SpellVersionDto?> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken)
         {
 
             ActivatedVersion = version;
 
-            return Task.FromResult<SpellVersionDto?>(ActivateResult ?? new SpellVersionDto(version, true, DateTimeOffset.UtcNow, null));
+            if (ActivateGate is { } gate)
+            {
+
+                await gate.ConfigureAwait(false);
+
+            }
+
+            if (ActivateFailure is { } failure)
+            {
+
+                throw failure;
+
+            }
+
+            return ActivateResult ?? new SpellVersionDto(version, true, DateTimeOffset.UtcNow, null);
 
         }
 

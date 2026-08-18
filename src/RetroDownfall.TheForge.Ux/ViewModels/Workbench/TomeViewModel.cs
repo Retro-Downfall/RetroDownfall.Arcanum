@@ -29,6 +29,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
     private readonly IClipboardService _clipboard;
 
+    private readonly IConfirmationDialogService _confirmationDialog;
+
     private readonly CancellationTokenSource _lifetimeCts = new();
 
     private CancellationTokenSource? _sendCts;
@@ -85,7 +87,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         ITomeDataSource dataSource,
         INavigationService navigation,
         FoundryFloorViewModel foundryFloor,
-        IClipboardService clipboard)
+        IClipboardService clipboard,
+        IConfirmationDialogService confirmationDialog)
     {
 
         SessionId = sessionId;
@@ -97,6 +100,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         _foundryFloor = foundryFloor;
 
         _clipboard = clipboard;
+
+        _confirmationDialog = confirmationDialog;
 
         Title = $"Tome: {sessionId:D}";
 
@@ -453,6 +458,22 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
     {
 
         if (message?.EntryId is not { } entryId || MemoryManagementDisabled)
+        {
+
+            return;
+
+        }
+
+        // A transcript entry cannot be reconstructed from this surface once the server drops it.
+        bool confirmed = await _confirmationDialog
+            .ConfirmAsync(
+                "Delete transcript entry",
+                "This permanently deletes the selected entry from the session transcript. This cannot be undone. Continue?",
+                cancellationToken,
+                confirmIsDefault: false)
+            .ConfigureAwait(true);
+
+        if (!confirmed)
         {
 
             return;

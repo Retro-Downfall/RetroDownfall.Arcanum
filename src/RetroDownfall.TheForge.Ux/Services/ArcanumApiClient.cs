@@ -73,9 +73,11 @@ public sealed class ArcanumApiClient
 
     /// <summary>
     /// For routes that respond <c>204 No Content</c> / a bare status on success (e.g. <c>DELETE /api/campaigns/{id}</c>).
-    /// Returns <see langword="true"/> on any 2xx, <see langword="false"/> otherwise.
+    /// The response body is deliberately never buffered, so the returned <see cref="DeleteOutcome"/>
+    /// carries the status or transport code rather than a bare flag every caller would have to invent
+    /// a reason for.
     /// </summary>
-    public async Task<bool> DeleteNoContentAsync(string path, CancellationToken cancellationToken)
+    public async Task<DeleteOutcome> DeleteNoContentAsync(string path, CancellationToken cancellationToken)
     {
 
         try
@@ -89,7 +91,18 @@ public sealed class ArcanumApiClient
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
 
-            return response.IsSuccessStatusCode;
+            if (response.IsSuccessStatusCode)
+            {
+
+                return DeleteOutcome.Ok();
+
+            }
+
+            _logger.LogWarning("DELETE {Path} returned {Status}.", path, (int)response.StatusCode);
+
+            return DeleteOutcome.Fail(
+                $"Http.{(int)response.StatusCode}",
+                response.ReasonPhrase ?? "The delete request failed.");
 
         }
         catch (HttpRequestException ex)
@@ -97,7 +110,7 @@ public sealed class ArcanumApiClient
 
             _logger.LogWarning(ex, "DELETE {Path} failed.", path);
 
-            return false;
+            return DeleteOutcome.Fail("Connection.Failed", ex.Message);
 
         }
         catch (ArcanumClientConfigurationException ex)
@@ -105,7 +118,7 @@ public sealed class ArcanumApiClient
 
             _logger.LogError(ex, "DELETE {Path} aborted: {Code}.", path, ex.Code);
 
-            return false;
+            return DeleteOutcome.Fail(ex.Code, ex.Message);
 
         }
         catch (InvalidOperationException ex)
@@ -113,19 +126,18 @@ public sealed class ArcanumApiClient
 
             _logger.LogWarning(ex, "DELETE {Path} aborted: missing API key.", path);
 
-            return false;
+            return DeleteOutcome.Fail("Security.MissingApiKey", ex.Message);
 
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
 
             // A TaskCanceledException that did NOT originate from the caller's token is HttpClient's own
-            // request-timeout signal. Callers of this method have no failure channel other than the
-            // returned bool, so report it as a failed delete rather than letting it escape as if the
-            // caller had cancelled — see the matching clause in SendAsync.
+            // request-timeout signal, so report it as a failed delete rather than letting it escape as
+            // if the caller had cancelled — see the matching clause in SendAsync.
             _logger.LogWarning(ex, "DELETE {Path} timed out.", path);
 
-            return false;
+            return DeleteOutcome.Fail("Connection.Timeout", "The request to Arcanum timed out.");
 
         }
 

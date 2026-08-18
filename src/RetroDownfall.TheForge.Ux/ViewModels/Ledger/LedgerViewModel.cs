@@ -35,6 +35,9 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
     public const string PreCommitEnabledExplanation =
         "Opens Proving Grounds so you can run a saved suite before committing.";
 
+    public const string TruncatedStatusMessage =
+        "git status produced more output than The Ledger captures, so this change list is incomplete — files are missing from it. Commit from a narrower path or use git directly.";
+
     private static readonly HashSet<string> ForbiddenVerbs = new(StringComparer.OrdinalIgnoreCase)
     {
         "push",
@@ -77,6 +80,14 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     private string? _lastError;
+
+    /// <summary>
+    /// Set when the capture cap cut <c>git status</c> short. The change list on screen is then a
+    /// prefix of the real one, so the view banners it rather than letting the operator read it as
+    /// the complete set of changes.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isChangeListIncomplete;
 
     [ObservableProperty]
     private string _statusText = NoPathSelectedMessage;
@@ -289,6 +300,8 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
 
         LastError = null;
 
+        IsChangeListIncomplete = false;
+
         try
         {
 
@@ -373,6 +386,22 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
 
             }
 
+            if (statusResult.StdoutTruncated)
+            {
+
+                // GitProcessRunner deliberately splices no notice into the captured bytes, so this
+                // flag is the only signal that the porcelain stream was cut. A silently short change
+                // list reads as "these are all my changes" and is how work gets left uncommitted.
+                IsChangeListIncomplete = true;
+
+                LastError = TruncatedStatusMessage;
+
+                _foundryFloor.AppendLine("The Ledger: git status output was truncated — the change list is incomplete.");
+
+                _whispers.Show(WhisperSeverity.Warning, "Change list is incomplete.");
+
+            }
+
             IReadOnlyList<GitPorcelainEntry> entries = GitPorcelainParser.Parse(statusResult.Stdout);
 
             StagedEntries.Clear();
@@ -404,7 +433,9 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
 
             OnPropertyChanged(nameof(HasNoEntries));
 
-            StatusText = $"Branch {BranchName} · {StagedEntries.Count} staged · {UnstagedEntries.Count} unstaged";
+            StatusText = IsChangeListIncomplete
+                ? $"Branch {BranchName} · {StagedEntries.Count} staged · {UnstagedEntries.Count} unstaged · INCOMPLETE"
+                : $"Branch {BranchName} · {StagedEntries.Count} staged · {UnstagedEntries.Count} unstaged";
 
             RefreshCommand.NotifyCanExecuteChanged();
 
@@ -779,9 +810,14 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
 
             }
 
-            DiffText = string.IsNullOrWhiteSpace(result.Stdout)
+            string diff = string.IsNullOrWhiteSpace(result.Stdout)
                 ? "(no diff output)"
                 : result.Stdout;
+
+            // Same reasoning as the change list: a diff cut mid-hunk must not read as the whole diff.
+            DiffText = result.StdoutTruncated
+                ? diff + "\n\n(diff truncated — The Ledger captured only the first part of this file's changes)"
+                : diff;
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

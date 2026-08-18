@@ -198,6 +198,45 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
 
+        if (!TryGuardUnsavedEdits("Reloading"))
+        {
+
+            return;
+
+        }
+
+        await LoadCoreAsync(cancellationToken).ConfigureAwait(true);
+
+    }
+
+    /// <summary>
+    /// Refuses a reload that would overwrite unsaved editor work, pointing the operator at save or
+    /// discard rather than silently dropping the buffer. Returns <see langword="false"/> when blocked.
+    /// Matches the Spell editor so the two Workbench surfaces behave identically.
+    /// </summary>
+    private bool TryGuardUnsavedEdits(string action)
+    {
+
+        if (!IsEditorDirty)
+        {
+
+            return true;
+
+        }
+
+        LastError = $"{action} would discard unsaved editor changes — save the prompt or discard them first.";
+
+        StatusText = "Unsaved editor changes.";
+
+        _whispers.Show(WhisperSeverity.Warning, "The prompt editor has unsaved changes.");
+
+        return false;
+
+    }
+
+    private async Task LoadCoreAsync(CancellationToken cancellationToken)
+    {
+
         IsBusy = true;
 
         LastError = null;
@@ -792,14 +831,16 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 cancellationToken,
                 _lifetimeCts.Token);
 
-            bool deleted = await _dataSource.DeleteAsync(Prompt.Id, linked.Token).ConfigureAwait(true);
+            DeleteOutcome outcome = await _dataSource.DeleteAsync(Prompt.Id, linked.Token).ConfigureAwait(true);
 
-            if (!deleted)
+            if (!outcome.Success)
             {
 
-                LastError = "Delete failed — the server rejected the request.";
+                LastError = outcome.ErrorMessage is { Length: > 0 } detail
+                    ? $"Delete failed ({outcome.ErrorCode}): {detail}"
+                    : "Delete failed — the server rejected the request.";
 
-                _foundryFloor.AppendLine($"Scriptorium delete failed for prompt {PromptId:D}.");
+                _foundryFloor.AppendLine($"Scriptorium delete failed for prompt {PromptId:D} — {outcome.ErrorCode}.");
 
                 _whispers.Show(WhisperSeverity.Error, "Prompt delete failed.");
 
@@ -814,6 +855,14 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Deleted prompt {Prompt.Name} {Prompt.Version}.");
 
             _whispers.Show(WhisperSeverity.Success, "Prompt deleted.");
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // Closing the document mid-delete cancels the linked token. That is an ordinary outcome,
+            // not a crash: unhandled it escapes onto the dispatcher from a fire-and-forget command.
+            StatusText = "Delete cancelled.";
 
         }
         finally

@@ -336,7 +336,8 @@ public class CodexMarkdownViewModeTests
         CodexViewModel vm = new(
             null,
             new NullCodexDataSource(),
-            new FoundryFloorViewModel(new NullLogService()));
+            new FoundryFloorViewModel(new NullLogService()),
+            new ScriptedConfirmationDialogService(confirm: true));
 
         Assert.Equal(MarkdownViewMode.Source, vm.ViewMode);
 
