@@ -158,6 +158,102 @@ public sealed class CovenantSchemaRepairTests
     }
 
     [Fact]
+    public async Task Inspection_does_not_mistake_a_core_covenant_table_for_the_canonical_family()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        // The fixture installs Core-tier objects only, and covenant_schema_repair_intents is one of them:
+        // Core owns two tables that happen to start with 'covenant_'. Answering "the canonical family is
+        // present" from a name prefix therefore answers yes on every installation ever created, including
+        // one whose canonical family is genuinely absent — the single catalog InstallAbsentCanonicalFamily
+        // exists to repair, which it would then refuse as ManualRecoveryRequired (§10.17).
+        Result<CovenantSchemaRepairInspection> inspected = await RepairFixture
+            .RealExecutor()
+            .InspectAsync(fixture.Connection, Token);
+
+        Assert.True(inspected.IsSuccess);
+
+        Assert.False(inspected.Value.CanonicalObjectsPresent);
+
+    }
+
+    [Fact]
+    public async Task Recovery_health_checks_the_repaired_catalog_not_the_snapshot_that_justified_the_repair()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        CovenantSchemaRepairIntent prepared = await fixture.CommitAsync();
+
+        using MaintenanceLockScope heldLock = fixture.AcquireLock();
+
+        // The pre-state an active repair intent actually implies: the canonical tier was invalid, which is
+        // the whole reason the repair exists. The resumed repair then succeeds, so the CatalogCommitted
+        // health gate has to read the catalog the repair produced — re-reading the snapshot that justified
+        // the repair can only ever say "still invalid" and keep admission shut for the rest of the process
+        // on a repair that in fact completed (§10.17).
+        StubSchemaRepairExecutor executor = new()
+        {
+            Inspection = fixture.Inspection(prepared.InspectedCatalogDigest, canonicalValid: false),
+
+            PostRepairInspection = fixture.Inspection(prepared.InspectedCatalogDigest, canonicalValid: true),
+
+            Mutated = true,
+        };
+
+        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await fixture
+            .Recovery(executor)
+            .RecoverBeforeReadinessAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+
+        Assert.True(recovered.IsSuccess);
+
+        Assert.Equal(CovenantSchemaRepairStartupRecoveryOutcome.RecoveredReady, recovered.Value);
+
+        Assert.Equal(2, executor.InspectCalls);
+
+        Assert.Equal(
+            (long)CovenantSchemaRepairPhase.Completed,
+            await fixture.ScalarAsync("SELECT PhaseCode FROM covenant_schema_repair_intents;"));
+
+    }
+
+    [Fact]
+    public async Task Recovery_keeps_a_repair_whose_catalog_is_still_invalid_afterwards_closed()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        CovenantSchemaRepairIntent prepared = await fixture.CommitAsync();
+
+        using MaintenanceLockScope heldLock = fixture.AcquireLock();
+
+        // The other half of the same gate: a repair that changed the catalog and left it invalid is
+        // exactly what KeptClosed exists to report, and re-inspecting must not soften that into a reopen.
+        StubSchemaRepairExecutor executor = new()
+        {
+            Inspection = fixture.Inspection(prepared.InspectedCatalogDigest, canonicalValid: false),
+
+            PostRepairInspection = fixture.Inspection(prepared.InspectedCatalogDigest, canonicalValid: false),
+
+            Mutated = true,
+        };
+
+        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await fixture
+            .Recovery(executor)
+            .RecoverBeforeReadinessAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+
+        Assert.True(recovered.IsSuccess);
+
+        Assert.Equal(CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed, recovered.Value);
+
+        Assert.Equal(
+            (long)CovenantSchemaRepairPhase.CatalogCommitted,
+            await fixture.ScalarAsync("SELECT PhaseCode FROM covenant_schema_repair_intents;"));
+
+    }
+
+    [Fact]
     public async Task Recovery_abandons_a_proven_no_mutation_repair_through_a_rollback()
     {
 
@@ -255,20 +351,38 @@ public sealed class CovenantSchemaRepairTests
 
         internal CovenantSchemaRepairInspection? Inspection { get; set; }
 
+        /// <summary>
+        /// What the catalog looks like once the repair has run. Left unset, the stub answers the same
+        /// snapshot every time and so cannot tell a pre-repair catalog from a post-repair one at all.
+        /// </summary>
+        internal CovenantSchemaRepairInspection? PostRepairInspection { get; set; }
+
         internal bool Mutated { get; set; }
 
         internal bool RepairFails { get; set; }
 
         internal int RepairCalls { get; private set; }
 
+        internal int InspectCalls { get; private set; }
+
         public Task<Result<CovenantSchemaRepairInspection>> InspectAsync(
             SqliteConnection connection,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(
-                Inspection is { } inspection
+            CancellationToken cancellationToken)
+        {
+
+            InspectCalls++;
+
+            CovenantSchemaRepairInspection? answer = RepairCalls > 0 && PostRepairInspection is { } repaired
+                ? repaired
+                : Inspection;
+
+            return Task.FromResult(
+                answer is { } inspection
                     ? Result<CovenantSchemaRepairInspection>.Success(inspection)
                     : Result<CovenantSchemaRepairInspection>.Failure(
                         new Error(ErrorCodes.Covenant.MaintenanceFailed, "no inspection")));
+
+        }
 
         public Task<Result<bool>> RepairAsync(
             SqliteConnection connection,
@@ -359,6 +473,36 @@ public sealed class CovenantSchemaRepairTests
 
         internal MaintenanceLockScope AcquireLock() =>
             new(ArcanumMaintenanceLock.TryAcquire(_root)!, _root);
+
+        /// <summary>
+        /// The shipped executor over the shipped manifests — the only way to assert what an inspection
+        /// reads out of a real catalog rather than out of a stub's answer.
+        /// </summary>
+        internal static CovenantSchemaRepairExecutor RealExecutor()
+        {
+
+            GrimoireSchemaManifestInspector inspector = new(GrimoireSchemaTierOwnershipRegistry.CreateDefault());
+
+            return new CovenantSchemaRepairExecutor(
+                inspector,
+                new GrimoireSchemaInstaller(
+                    inspector,
+                    new GrimoireSchemaDataInitializers(
+                    [
+                        new CoreGrimoireSchemaDataInitializer(),
+                        new CovenantCanonicalSchemaDataInitializer(),
+                        new CovenantAcceleratorSchemaDataInitializer(),
+                    ])),
+                new GrimoireSchemaInitializationContext(
+                    "installation",
+                    AuthorityEpoch: 1,
+                    MasterKeyVersion: 1,
+                    MasterKeyFingerprint: [1, 2, 3, 4],
+                    RecoveryEnvelopeEpoch: 1,
+                    DateTimeOffset.UnixEpoch),
+                embeddingDimensions: 64);
+
+        }
 
         internal CovenantSchemaRepairStartupRecovery Recovery(ICovenantSchemaRepairExecutor executor) =>
             new(

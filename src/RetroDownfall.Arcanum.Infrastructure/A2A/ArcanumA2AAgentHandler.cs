@@ -35,6 +35,19 @@ public sealed class ArcanumA2AAgentHandler(
     A2APushNotificationDispatcher? pushDispatcher = null) : IAgentHandler, IAsyncDisposable
 {
 
+    /// <summary>
+    /// How many parked continuations this process keeps on the fast path.
+    /// </summary>
+    /// <remarks>
+    /// Nothing but an answer or a cancel removes an entry, so a peer that escalates and then does
+    /// neither leaves one behind for the life of the process — the one A2A index that was not bounded
+    /// while <see cref="ArcanumA2ATaskStore.RetainedTaskCap"/> and the push-notification registry's
+    /// ceiling both were. Eviction costs the fast path only: the same park is recorded durably through
+    /// <see cref="IA2ASendingLedger"/>, so an evicted task's answer still reaches its Apprentice by the
+    /// route a restart uses (issue #68).
+    /// </remarks>
+    internal const int MaxParkedContinuations = 512;
+
     private readonly ConcurrentDictionary<string, Guid> _taskToApprentice = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -47,7 +60,13 @@ public sealed class ArcanumA2AAgentHandler(
     /// process memory; the same fact is recorded durably through <see cref="IA2ASendingLedger"/> so the
     /// answer also lands after a restart (issue #68).
     /// </remarks>
-    private readonly ConcurrentDictionary<string, A2AParkedSending> _awaitingContinuation = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ParkedContinuation> _awaitingContinuation = new(StringComparer.Ordinal);
+
+    /// <summary>Insertion order, so the ceiling evicts the least recently parked task.</summary>
+    private long _parkSequence;
+
+    /// <summary>A parked Sending plus the arrival order the retention ceiling ranks it by.</summary>
+    private readonly record struct ParkedContinuation(A2AParkedSending Sending, long Sequence);
 
     public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
@@ -100,8 +119,8 @@ public sealed class ArcanumA2AAgentHandler(
         // answers one that arrives after a restart. Without the second lookup the peer's answer falls
         // through to the normal path and mints a fresh Apprentice — the exact failure #64 removed, just
         // displaced past a restart boundary (issue #68).
-        A2AParkedSending? parked = _awaitingContinuation.TryGetValue(context.TaskId, out A2AParkedSending live)
-            ? live
+        A2AParkedSending? parked = _awaitingContinuation.TryGetValue(context.TaskId, out ParkedContinuation live)
+            ? live.Sending
             : await TryRecoverParkedAsync(context.TaskId, cancellationToken).ConfigureAwait(false);
 
         if (parked is { } awaiting)
@@ -235,6 +254,43 @@ public sealed class ArcanumA2AAgentHandler(
             }
 
             await chronicle.DisposeAsync().ConfigureAwait(false);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Holds the parked-continuation index at <see cref="MaxParkedContinuations"/> by dropping the least
+    /// recently parked task.
+    /// </summary>
+    /// <remarks>
+    /// The durable record is deliberately left open: it is what makes an evicted park answerable at all,
+    /// and dropping the fast-path entry only sends the peer's answer through
+    /// <see cref="TryRecoverParkedAsync"/> — the route a restart already uses. Closing it here would turn
+    /// a memory bound into lost work.
+    /// </remarks>
+    private void EvictSurplusParks()
+    {
+
+        while (_awaitingContinuation.Count > MaxParkedContinuations)
+        {
+
+            KeyValuePair<string, ParkedContinuation> oldest = _awaitingContinuation
+                .OrderBy(static entry => entry.Value.Sequence)
+                .FirstOrDefault();
+
+            if (oldest.Key is null || !_awaitingContinuation.TryRemove(oldest.Key, out _))
+            {
+
+                return;
+
+            }
+
+            logger.LogInformation(
+                "A2A: parked task {TaskId} left the in-process continuation index at its {Cap}-entry "
+                + "ceiling; an answer for it now resolves through its durable Sending record.",
+                oldest.Key,
+                MaxParkedContinuations);
 
         }
 
@@ -381,11 +437,16 @@ public sealed class ArcanumA2AAgentHandler(
         CancellationToken cancellationToken)
     {
 
-        _awaitingContinuation.TryRemove(context.TaskId, out _);
-
         Guid apprenticeId = parked.ApprenticeId;
 
+        // Publish the live mapping before retiring the park, never the other way round: CancelAsync reads
+        // the park first and the live index second, so writing them in this order leaves no instant in
+        // which a concurrent cancel sees neither and falls through to the durable lookup — which, for a
+        // Sending whose best-effort ledger write never landed, would answer the peer "Canceled" while
+        // leaving this Apprentice running.
         _taskToApprentice[context.TaskId] = apprenticeId;
+
+        _awaitingContinuation.TryRemove(context.TaskId, out _);
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
@@ -461,26 +522,29 @@ public sealed class ArcanumA2AAgentHandler(
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
+        // A task parked at input-required is still ours to stop: the peer giving up on the question must
+        // cancel the Apprentice waiting for it, not just abandon the mapping (issue #64). This index is
+        // read before the live one because the escalation publishes the park while the relay's live
+        // mapping is still installed — the durable park write and the input-required transition both sit
+        // inside that window. A park in hand therefore always means the relay has already committed to
+        // returning, whatever the live index still says, so this path owes the peer the terminal
+        // transition; reading the two in the order they are written would let a cancel in that window
+        // fall through every branch and answer nothing at all.
+        bool needsTerminalTransition = _awaitingContinuation.TryRemove(context.TaskId, out ParkedContinuation parked);
+
+        Guid apprenticeId = parked.Sending.ApprenticeId;
+
+        if (needsTerminalTransition)
+        {
+
+            await ReleaseInboundAsync(scope.ServiceProvider, parked.Sending.Ledger).ConfigureAwait(false);
+
+        }
+
         // Only the live index means an ExecuteAsync relay is still enumerating this Apprentice's Chronicle
         // and will drive the terminal transition off ApprenticeCancelled. Knowing which Apprentice serves
         // the task is a different fact: every other path below has to emit that transition itself.
-        bool live = _taskToApprentice.TryGetValue(context.TaskId, out Guid apprenticeId);
-
-        bool needsTerminalTransition = false;
-
-        // A task parked at input-required is still ours to stop: the peer giving up on the question must
-        // cancel the Apprentice waiting for it, not just abandon the mapping (issue #64). Its relay ended
-        // when the escalation parked it, so this path owes the peer the terminal transition.
-        if (!live && _awaitingContinuation.TryRemove(context.TaskId, out A2AParkedSending parked))
-        {
-
-            apprenticeId = parked.ApprenticeId;
-
-            needsTerminalTransition = true;
-
-            await ReleaseInboundAsync(scope.ServiceProvider, parked.Ledger).ConfigureAwait(false);
-
-        }
+        bool live = !needsTerminalTransition && _taskToApprentice.TryGetValue(context.TaskId, out apprenticeId);
 
         if (!live && !needsTerminalTransition)
         {
@@ -600,7 +664,11 @@ public sealed class ArcanumA2AAgentHandler(
                     // The task is parked, not finished: the peer can answer it and resume this very
                     // Apprentice (issue #64). Its durable record stays open — the Sending has not settled —
                     // and is stamped parked so the answer still lands after a restart (issue #68).
-                    _awaitingContinuation[taskId] = new A2AParkedSending(apprenticeId, contextId, ledgerEntry);
+                    _awaitingContinuation[taskId] = new ParkedContinuation(
+                        new A2AParkedSending(apprenticeId, contextId, ledgerEntry),
+                        Interlocked.Increment(ref _parkSequence));
+
+                    EvictSurplusParks();
 
                     await MarkParkedAsync(services, ledgerEntry, contextId).ConfigureAwait(false);
 

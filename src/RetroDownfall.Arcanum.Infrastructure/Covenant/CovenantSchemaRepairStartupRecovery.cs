@@ -180,6 +180,29 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             durablyMutated = repaired.Value;
 
+            if (durablyMutated)
+            {
+
+                // The health gate below decides whether admission may reopen, and the snapshot taken
+                // above is the catalog the repair was needed for — it says "invalid" for every repair
+                // that had anything to do. Re-inspect so the gate reads what the repair actually wrote,
+                // exactly as the in-request sibling CovenantMaintenanceService.ExecuteRepairAsync does;
+                // an inspection that cannot be taken is still uncertainty, and uncertainty keeps closed.
+                Result<CovenantSchemaRepairInspection> verified = await _executor
+                    .InspectAsync(connection, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (verified.IsFailure)
+                {
+
+                    return Kept();
+
+                }
+
+                inspected = verified;
+
+            }
+
             Result<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
                 connection,
                 current,
