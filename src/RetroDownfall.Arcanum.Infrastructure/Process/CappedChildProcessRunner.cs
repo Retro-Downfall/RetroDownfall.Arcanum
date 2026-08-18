@@ -139,6 +139,23 @@ internal sealed class CappedChildProcessRunResult
 internal static class CappedChildProcessRunner
 {
 
+    /// <summary>
+    /// How long the runner keeps draining stdout/stderr <em>after</em> the child itself has exited.
+    /// Only a pipe still held open by a surviving descendant can outlast this: the kernel buffer a
+    /// legitimately exited child leaves behind drains in microseconds. It matches the give-up bound
+    /// the cancellation path already applies in <see cref="CompleteStreamReadTasksAsync"/>.
+    /// </summary>
+    private static readonly TimeSpan PostExitOutputDrainGrace =
+        TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Second, deliberately short window granted to a reader after the runner has waited out
+    /// <see cref="PostExitOutputDrainGrace"/> and swept the process group again — just long enough
+    /// for a reader unblocked by that sweep to deliver its output before it is abandoned.
+    /// </summary>
+    private static readonly TimeSpan AbandonedOutputDrainRegrace =
+        TimeSpan.FromMilliseconds(500);
+
     internal static async Task<CappedChildProcessRunResult> RunAsync(
         ProcessStartInfo startInfo,
         ChildProcessEnvironmentProfile environmentProfile,
@@ -151,10 +168,23 @@ internal static class CappedChildProcessRunner
         ILogger? logger = null,
         Func<CappedChildProcessPreStartValidationResult>? preStartValidation = null,
         Func<TimeSpan>? getCleanupTimeRemaining = null,
-        string? outputSpillDirectory = null)
+        string? outputSpillDirectory = null,
+        IReadOnlyCollection<string>? operatorDeclaredSecretEnvironmentVariables = null)
     {
 
-        ChildProcessEnvironmentScrubber.ApplyProfile(startInfo, environmentProfile);
+        ChildProcessEnvironmentScrubber.ApplyProfile(
+            startInfo,
+            environmentProfile,
+            operatorDeclaredSecretEnvironmentVariables);
+
+        // No caller can feed a tool child input — RunAsync has no parameter for it — so fd 0 is
+        // redirected unconditionally rather than left inherited. An unredirected child receives the
+        // host's own stdin handle, and the `arcanum serve` daemon is started attached to the
+        // operator's terminal (ServeProcessLauncher), so a child that reads stdin (`cat`, `git
+        // commit`, `ssh`) would block on that terminal while every production caller passes
+        // Timeout.InfiniteTimeSpan — a wedge with no deadline to break it. The write end is closed
+        // immediately after start (CloseChildStandardInput), turning that hang into an instant EOF.
+        startInfo.RedirectStandardInput = true;
 
         long perStreamCapBytes = totalOutputCapBytes / 2L;
 
@@ -475,6 +505,8 @@ internal static class CappedChildProcessRunner
             // actually need a live pid to clean up correctly.
             startedPid = process.Id;
 
+            CloseChildStandardInput(process, logger);
+
             unixProcessGroupId = processGroupEstablishedByLauncher
                 ? startedPid
                 : UnixProcessGroup.TryCreate(startedPid);
@@ -693,9 +725,73 @@ internal static class CappedChildProcessRunner
                 try
                 {
 
-                    stdout = await stdoutTask.ConfigureAwait(false);
+                    stdout = await stdoutTask
+                        .WaitAsync(PostExitOutputDrainGrace)
+                        .ConfigureAwait(false);
 
-                    stderr = await stderrTask.ConfigureAwait(false);
+                    stderr = await stderrTask
+                        .WaitAsync(PostExitOutputDrainGrace)
+                        .ConfigureAwait(false);
+
+                }
+                catch (TimeoutException)
+                {
+
+                    // The child is gone but something still holds the write end of its pipes, so
+                    // the readers will never see EOF. Every containment sweep above is best-effort
+                    // (DESIGN §11.15), and once WaitForExitAsync has returned neither the timeout
+                    // nor the caller's token reaches these reads — an unbounded await here wedges
+                    // the tool call forever and, because the Job Object release, the AppContainer
+                    // undo-log replay and the sandbox temp cleanup all live past the drain, leaks
+                    // the run's OS resources for the lifetime of the host. Sweep once more to try
+                    // to force EOF, then walk away with whatever arrived.
+                    logger?.LogWarning(
+                        "Child process {ProcessId} exited but its output pipes were still held open after {DrainSeconds}s; the drain was abandoned and the output is reported as truncated.",
+                        startedPid,
+                        PostExitOutputDrainGrace.TotalSeconds);
+
+                    descendantSupervisor?.KillTracked();
+
+                    UnixProcessGroup.TryTerminateAndKill(unixProcessGroupId);
+
+                    (CappedStreamOutput abandonedStdout, CappedStreamOutput abandonedStderr) =
+                        await DrainAbandonedStreamReadTasksAsync(
+                                stdoutTask,
+                                stderrTask)
+                            .ConfigureAwait(false);
+
+                    DeleteOutputSpillsWhenReadersComplete(
+                        stdoutTask,
+                        stdoutSpillPath,
+                        stderrTask,
+                        stderrSpillPath);
+
+                    int abandonedExitCode = process.ExitCode;
+
+                    ResourceLimitKind? abandonedExceededResource = await CheckSignalKillAsync(
+                            abandonedExitCode,
+                            resourceLimits,
+                            limiterResult)
+                        .ConfigureAwait(false);
+
+                    return new CappedChildProcessRunResult
+                    {
+
+                        Outcome = abandonedExceededResource is not null
+                            ? CappedChildProcessOutcome.ResourceLimitExceeded
+                            : CappedChildProcessOutcome.Completed,
+
+                        Stdout = abandonedStdout,
+
+                        Stderr = abandonedStderr,
+
+                        ExitCode = abandonedExitCode,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        ExceededResource = abandonedExceededResource,
+
+                    };
 
                 }
                 catch (ChildProcessOutputPreservationException ex)
@@ -870,6 +966,34 @@ internal static class CappedChildProcessRunner
                 }
 
             }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Closes the write end of the child's redirected stdin pipe so the child observes EOF on its
+    /// very first read instead of waiting for input that will never arrive. Closing can race the
+    /// child's own exit (broken pipe, already-disposed stream); that race is the EOF the close was
+    /// asking for, never a reason to fault an otherwise completed run, so it is swallowed.
+    /// </summary>
+    private static void CloseChildStandardInput(
+        Process process,
+        ILogger? logger)
+    {
+
+        try
+        {
+
+            process.StandardInput.Close();
+
+        }
+        catch (Exception ex)
+        {
+
+            logger?.LogDebug(
+                ex,
+                "Closing the child process stdin pipe raced the child's exit.");
 
         }
 
@@ -1063,6 +1187,54 @@ internal static class CappedChildProcessRunner
         }
 
         return null;
+
+    }
+
+    /// <summary>
+    /// Last look at both output readers once the post-exit drain has already been given up on.
+    /// A reader that still cannot finish is abandoned — its spill file is reclaimed separately by
+    /// <see cref="DeleteOutputSpillWhenReaderCompletes"/> whenever it eventually completes — and
+    /// what it never delivered is reported as truncation rather than handed to the model as the
+    /// command's complete output.
+    /// </summary>
+    private static async Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)>
+        DrainAbandonedStreamReadTasksAsync(
+        Task<CappedStreamOutput> stdoutTask,
+        Task<CappedStreamOutput> stderrTask)
+    {
+
+        CappedStreamOutput stdout = await DrainAbandonedStreamReadTaskAsync(stdoutTask)
+            .ConfigureAwait(false);
+
+        CappedStreamOutput stderr = await DrainAbandonedStreamReadTaskAsync(stderrTask)
+            .ConfigureAwait(false);
+
+        return (stdout, stderr);
+
+    }
+
+    private static async Task<CappedStreamOutput> DrainAbandonedStreamReadTaskAsync(
+        Task<CappedStreamOutput> readerTask)
+    {
+
+        try
+        {
+
+            return await readerTask
+                .WaitAsync(AbandonedOutputDrainRegrace)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            // Timed out, faulted or canceled — either way this reader has no output to hand back,
+            // and the run itself still completed, so the gap is reported as truncation.
+            return new CappedStreamOutput(
+                string.Empty,
+                Truncated: true);
+
+        }
 
     }
 
