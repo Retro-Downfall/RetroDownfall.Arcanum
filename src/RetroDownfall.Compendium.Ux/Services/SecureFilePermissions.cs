@@ -17,6 +17,50 @@ internal static class SecureFilePermissions
 
     }
 
+    /// <summary>
+    /// Creates and restricts <paramref name="path"/>, reporting what it could not do instead of
+    /// throwing. Callers that cannot survive an exception — anything running during construction or
+    /// after a durable write has already committed — must use this rather than
+    /// <see cref="EnsureOwnerOnlyDirectoryExists"/>, and report <paramref name="error"/> on a surface
+    /// the operator can actually read.
+    /// </summary>
+    public static bool TryEnsureOwnerOnlyDirectoryExists(string path, out string? error)
+    {
+
+        error = null;
+
+        try
+        {
+
+            _ = Directory.CreateDirectory(path);
+
+            ApplyOwnerOnlyDirectory(path);
+
+            return true;
+
+        }
+        catch (Exception exception) when (IsPermissionFault(exception))
+        {
+
+            error = $"Could not restrict {path} to the current user: {exception.Message}";
+
+            return false;
+
+        }
+
+    }
+
+    /// <summary>
+    /// The faults a permission attempt can raise on a path the process does not own, on a filesystem
+    /// with no mode or ACL support, or on a Windows session with no resolvable user. Anything else is
+    /// a defect in this code and keeps propagating.
+    /// </summary>
+    public static bool IsPermissionFault(Exception exception) =>
+        exception is IOException
+            or UnauthorizedAccessException
+            or PlatformNotSupportedException
+            or InvalidOperationException;
+
     public static void ApplyOwnerOnlyDirectory(string path)
     {
 

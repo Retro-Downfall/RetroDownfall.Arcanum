@@ -26,7 +26,8 @@
                               Description="Bind externally using HTTPS-only. External binding also enforces rate limiting and metrics authentication."
                               IsOn="{Binding Host.ListenAny, Mode=TwoWay}" />
 
-      <controls:ChipsEditor Label="CORS allowed origins"
+      <controls:ChipsEditor x:Name="CorsAllowedOriginsEditor"
+                            Label="CORS allowed origins"
                             Description="Browser origins permitted to read Arcanum responses."
                             Text="{Binding Host.CorsAllowedOrigins, Mode=TwoWay}" />
 

@@ -299,13 +299,21 @@ public partial class GenericSettingsSectionView : UserControl
 
     }
 
+    /// <summary>
+    /// Resolves the disclosure's help targets from the configured providers. The projection is the
+    /// unvalidated one deliberately: this runs while the section is being constructed, so a projection
+    /// that rejects a row the operator has not asked to save yet throws inside an Avalonia event
+    /// handler with no error surface underneath it, and the offending value can arrive straight from
+    /// <c>arcanum.json</c> before any keystroke. Save still validates.
+    /// </summary>
     private static ImmutableArray<CovenantRetentionHelpTarget> ResolveHelpTargets(
         SettingHelpRoute route,
         ConfigurationViewModel root) =>
         route switch
         {
             SettingHelpRoute.ConfiguredProviderRetention =>
-                CovenantExternalRetentionDisclosure.ResolveHelpTargets(root.Providers.BuildProviders()),
+                CovenantExternalRetentionDisclosure.ResolveHelpTargets(
+                    root.Providers.BuildProvidersUnvalidated()),
             _ => [],
         };
 
@@ -449,6 +457,11 @@ public partial class GenericSettingsSectionView : UserControl
             Key = field.Descriptor.Key,
             DataContext = field,
         };
+
+        // Text typed into the chips entry but not yet committed is still an operator edit. Without
+        // this the Save button stays disabled underneath their own typing, and the close confirmation
+        // — which asks only when the editor is dirty — discards it with no prompt.
+        chips.PendingInputChanged += (_, _) => root.MarkDirty();
 
         chips.Bind(ChipsEditor.TextProperty, new Binding(nameof(GenericSettingFieldViewModel.StringValue)));
 

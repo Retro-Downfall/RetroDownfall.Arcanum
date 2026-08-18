@@ -23,7 +23,8 @@
             <TextBox x:Name="NewItemEntry"
                      Grid.Column="0"
                      PlaceholderText="Add value..."
-                     KeyDown="OnNewItemKeyDown" />
+                     KeyDown="OnNewItemKeyDown"
+                     LostFocus="OnNewItemLostFocus" />
 
             <Button Grid.Column="1"
                     Content="Add"

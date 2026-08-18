@@ -141,6 +141,22 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         IsDirty = true;
 
+        // An edit retires the last write attempt's verdict: it described a settings snapshot that no
+        // longer exists. Keeping it leaves a red message under a value the operator has already
+        // corrected and the SaveBar showing an old failure instead of "Unsaved changes", with no way
+        // to tell a fixed field from a still-broken one until another round-trip save. The whole map
+        // goes, not one key: MarkDirty is raised without a sender, and the server's pointers
+        // ("defaultModel") are a different identifier space from the section property names that
+        // raised it, so there is nothing to match a single entry against.
+        if (_serverValidationErrors.Count > 0)
+        {
+
+            _serverValidationErrors = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        }
+
+        LastErrorMessage = null;
+
         RefreshFieldValidation();
 
         SaveCommand.NotifyCanExecuteChanged();
@@ -514,7 +530,10 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
                     LastErrorMessage = null;
 
-                    StatusMessage = "Saved arcanum.json";
+                    // A warning describes something the write could not finish after the new content
+                    // was already durable, so it must not be routed through LastErrorMessage: that is
+                    // the SaveBar's "this did not persist" channel, and the edits did persist.
+                    StatusMessage = result.WarningMessage ?? "Saved arcanum.json";
 
                     _serverValidationErrors = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -559,6 +578,17 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
                 await _dialogService
                     .ShowAlertAsync(hasValidationErrors ? "Validation Error" : "Save failed", detail)
+                    .ConfigureAwait(false);
+
+            }
+            else if (result.WarningMessage is { Length: > 0 } warning)
+            {
+
+                // The SaveBar prefers the timestamp once a save succeeds, so the status line alone
+                // would bury this. Compendium has no log sink an operator can read either, which
+                // leaves the dialog as the only place an unmet security objective can land.
+                await _dialogService
+                    .ShowAlertAsync("Saved with a warning", warning)
                     .ConfigureAwait(false);
 
             }

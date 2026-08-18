@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Compendium.Ux.Models;
@@ -116,6 +118,89 @@ public sealed class GenericSettingsSectionViewTests
             "The generic editor renders editable controls for paths Save cannot write, so operator input is"
             + $" silently discarded: {string.Join(", ", unsettable.Distinct().Order(StringComparer.Ordinal))}");
     }
+
+    /// <summary>
+    /// A value typed into a chips box but never committed with Enter or Add must not evaporate. The
+    /// commit affordances are easy to miss, and the entry is the ordinary-looking box the operator
+    /// types into, so leaving it — to press Save, to open another section, to close the window — has
+    /// to take the value with it. On a deny list such as <c>security.ward.forbiddenArts</c> the
+    /// dropped entry fails open: the operator believes a command is blocked and it is not.
+    /// </summary>
+    [Fact]
+    public void Pending_chip_text_is_committed_when_the_entry_loses_focus()
+    {
+        using InMemoryConfigurationStore store = new();
+
+        ConfigurationViewModel root = new(
+            store,
+            new NoopDialogService(),
+            new SynchronousUiDispatcher(),
+            NullLogger<ConfigurationViewModel>.Instance);
+
+        GenericSettingsSectionView view = new()
+        {
+            Section = ConfigSection.Security,
+            DataContext = root,
+        };
+
+        ChipsEditor chips = ChipsEditorFor(view, "security.ward.forbiddenArts");
+
+        TextBox entry = PendingEntry(chips);
+
+        entry.Text = "rm -rf";
+
+        entry.RaiseEvent(new RoutedEventArgs(InputElement.LostFocusEvent));
+
+        Assert.Contains("rm -rf", chips.Text, StringComparison.Ordinal);
+
+        GenericSettingFieldViewModel field =
+            Assert.IsType<GenericSettingFieldViewModel>(chips.DataContext);
+
+        Assert.Contains("rm -rf", field.StringValue, StringComparison.Ordinal);
+
+        Assert.Empty(entry.Text);
+
+        Assert.Contains(
+            "rm -rf",
+            root.BuildSettings().Security.Ward.ForbiddenArts);
+    }
+
+    /// <summary>
+    /// Typing into a chips box has to count as an edit even before the value is committed. Otherwise
+    /// Save stays greyed out with the operator's text sitting in front of them, and the close
+    /// confirmation — which asks only when the editor is dirty — throws it away without a prompt.
+    /// </summary>
+    [Fact]
+    public void Typing_into_a_chip_entry_marks_the_editor_dirty()
+    {
+        using InMemoryConfigurationStore store = new();
+
+        ConfigurationViewModel root = new(
+            store,
+            new NoopDialogService(),
+            new SynchronousUiDispatcher(),
+            NullLogger<ConfigurationViewModel>.Instance);
+
+        GenericSettingsSectionView view = new()
+        {
+            Section = ConfigSection.Security,
+            DataContext = root,
+        };
+
+        Assert.False(root.IsDirty);
+
+        PendingEntry(ChipsEditorFor(view, "security.spellWorkspaceRoots")).Text = "/home/me/projects";
+
+        Assert.True(root.IsDirty);
+    }
+
+    private static ChipsEditor ChipsEditorFor(GenericSettingsSectionView view, string key) =>
+        view.GetLogicalDescendants()
+            .OfType<ChipsEditor>()
+            .Single(chips => chips.Key == key);
+
+    private static TextBox PendingEntry(ChipsEditor chips) =>
+        Assert.IsType<TextBox>(chips.FindControl<TextBox>("NewItemEntry"));
 
     private static IEnumerable<GenericSettingFieldViewModel> InputFields(
         GenericSettingsSectionView view) =>
