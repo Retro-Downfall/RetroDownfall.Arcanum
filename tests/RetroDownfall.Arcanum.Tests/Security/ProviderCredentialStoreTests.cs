@@ -314,6 +314,29 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A backend that no longer answers is the headless-Linux case §11.2 item 4 promises still
+    /// works: the encrypted mirror is the operating mode there, not a thrown save.
+    /// </summary>
+    /// <remarks>
+    /// Goes through the real <see cref="OsCredentialStore"/> rather than a bare fake, because the
+    /// defect lived in the wrapper: it reported a backend as reachable on the strength of the
+    /// platform being supported, so the purge's fail-closed branch fired on a host with nothing to
+    /// fail closed against and the credential was stored nowhere at all.
+    /// </remarks>
+    [Fact]
+    public async Task A_backend_that_stops_answering_degrades_to_the_mirror_instead_of_throwing()
+    {
+
+        using ProviderCredentialStore store =
+            CreateStore(new OsCredentialStore(new SilentBackendStore()));
+
+        await store.SaveApiKeyAsync("OpenAI", "sk-new");
+
+        Assert.Equal("sk-new", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
+
+    }
+
     [Fact]
     public async Task Delete_is_safe_when_nothing_is_stored()
     {
@@ -493,6 +516,27 @@ public sealed class ProviderCredentialStoreTests : IDisposable
             deleteFails
                 ? OsCredentialStoreResult.Failed("test delete failure")
                 : inner.Delete(service, account);
+
+    }
+
+    /// <summary>
+    /// A backend whose client library is present — so the platform-support answer is optimistic —
+    /// while nothing on the far side answers anything. The headless Linux shape: libsecret loads and
+    /// no Secret Service is on the bus.
+    /// </summary>
+    private sealed class SilentBackendStore : IOsCredentialStore
+    {
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            OsCredentialStoreResult.Unavailable("no secret service answered");
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Unavailable("no secret service answered");
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.Unavailable("no secret service answered");
 
     }
 

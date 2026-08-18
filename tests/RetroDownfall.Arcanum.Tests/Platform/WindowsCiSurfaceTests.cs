@@ -55,6 +55,13 @@ public sealed class WindowsCiSurfaceTests
     /// The OS credential store must be reachable, because it is the one Windows surface that had no
     /// coverage at all and shipped a defect because of it.
     /// </summary>
+    /// <remarks>
+    /// On Windows <c>IsAvailable</c> is a constant — Credential Manager is part of the OS and has no
+    /// separate service that can be missing — so asserting it alone is an assertion that cannot fail.
+    /// A read of an account nobody has written answers the question the lane actually cares about:
+    /// <c>CredReadW</c> reached the backend and the backend said the account is not there. It stays
+    /// read-only, so unlike the round-trip suite it never touches the runner's stored credentials.
+    /// </remarks>
     [Fact]
     public void Windows_ci_lane_reaches_a_real_credential_backend()
     {
@@ -70,6 +77,13 @@ public sealed class WindowsCiSurfaceTests
             store.IsAvailable,
             "The Windows lane requires a usable Credential Manager backend; without it the credential "
             + "round-trip tests skip and the lane proves nothing about secret storage.");
+
+        OsCredentialStoreResult read = store.TryGet($"arcanum-ci-{Guid.NewGuid():N}", "never-written");
+
+        Assert.True(
+            read.Status == OsCredentialStoreStatus.NotFound,
+            "Credential Manager must answer a read of an unwritten account with NotFound. "
+            + $"It answered {read.Status}: {read.Message}");
 
     }
 

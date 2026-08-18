@@ -8,11 +8,78 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 internal static partial class LinuxOsCredentialStore
 {
 
+    private const int SecretServiceNone = 0;
+
     private static readonly object SchemaGate = new();
 
     private static nint _schema;
 
     private static bool _libMissing;
+
+    /// <summary>
+    /// Whether a Secret Service actually answers on this session's bus.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ProbeAvailable"/> deliberately answers a narrower question: <c>secret_schema_new</c>
+    /// is a client-side allocation that never touches D-Bus, so it succeeds on a headless host with
+    /// no keyring daemon and no session bus at all. Obtaining the service is the first call that has
+    /// to reach the bus, and it is the question every caller of <c>IsAvailable</c> is really asking —
+    /// they use the answer to choose between failing a save closed and degrading it to the encrypted
+    /// mirror. libsecret caches the service it hands back, so a healthy host pays for the connection
+    /// once and every later probe is a reference count.
+    /// <para>
+    /// Only reachability is reported here. Read and write statuses are left exactly as libsecret
+    /// described them, because <c>ArcanumMasterKeyBootstrapper</c> treats <c>Unavailable</c> as proof
+    /// that no credential of ours is living in the backend and mints over it — a conclusion a
+    /// transport error is not entitled to draw.
+    /// </para>
+    /// </remarks>
+    internal static bool ProbeReachable()
+    {
+
+        if (!ProbeAvailable())
+        {
+
+            return false;
+
+        }
+
+        nint errorPtr = nint.Zero;
+
+        nint service;
+
+        try
+        {
+
+            service = secret_service_get_sync(SecretServiceNone, nint.Zero, ref errorPtr);
+
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+
+            return false;
+
+        }
+
+        bool reachable = errorPtr == nint.Zero && service != nint.Zero;
+
+        if (errorPtr != nint.Zero)
+        {
+
+            g_error_free(errorPtr);
+
+        }
+
+        if (service != nint.Zero)
+        {
+
+            Unref(service);
+
+        }
+
+        return reachable;
+
+    }
 
     internal static bool ProbeAvailable()
     {
@@ -262,6 +329,33 @@ internal static partial class LinuxOsCredentialStore
 
     }
 
+    /// <summary>
+    /// Drops the probe's reference to the service without letting a missing GObject runtime turn a
+    /// reachability question into a thrown exception.
+    /// </summary>
+    /// <remarks>
+    /// A host that answered the probe has libgobject loaded already — libsecret cannot have returned
+    /// a GObject without it — so the swallowed case is unreachable in practice. Leaking one cached
+    /// service reference is still the better outcome than a probe that throws.
+    /// </remarks>
+    private static void Unref(nint instance)
+    {
+
+        try
+        {
+
+            g_object_unref(instance);
+
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+
+            // Deliberately ignored; see the remarks above.
+
+        }
+
+    }
+
     private static string ReadGError(nint errorPtr)
     {
 
@@ -319,9 +413,15 @@ internal static partial class LinuxOsCredentialStore
         nint end);
 
     [LibraryImport("libsecret-1.so.0")]
+    private static partial nint secret_service_get_sync(int flags, nint cancellable, ref nint error);
+
+    [LibraryImport("libsecret-1.so.0")]
     private static partial void secret_password_free(nint password);
 
     [LibraryImport("libglib-2.0.so.0")]
     private static partial void g_error_free(nint error);
+
+    [LibraryImport("libgobject-2.0.so.0")]
+    private static partial void g_object_unref(nint instance);
 
 }
