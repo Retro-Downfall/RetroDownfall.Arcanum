@@ -63,15 +63,15 @@ internal static class SpellScanner
     /// <summary>
     /// Per-key single-flight map for in-flight <see cref="ScanMetadataAsync"/> miss waves, so
     /// concurrent misses for the same workspace share one scan task instead of stampeding.
-    /// Entries are cleaned up once the shared task completes (see <see cref="SingleFlight"/>).
+    /// Entries are cleaned up once the last joined caller has left the wave.
     /// </summary>
-    private static readonly ConcurrentDictionary<MetadataScanCacheKey, Lazy<Task<IReadOnlyList<SpellMetadata>>>> MetadataScanInFlight = new();
+    private static readonly ConcurrentDictionary<MetadataScanCacheKey, CoalescedWork<IReadOnlyList<SpellMetadata>>> MetadataScanInFlight = new();
 
     /// <summary>
     /// Per-key single-flight map for in-flight <see cref="LoadFullAsync"/> miss waves, keyed by
     /// the same <c>$"{fullPath}|{mtimeTicks}"</c> string as <see cref="FullSpellCache"/>.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, Lazy<Task<ParsedSpell?>>> FullSpellInFlight = new();
+    private static readonly ConcurrentDictionary<string, CoalescedWork<ParsedSpell?>> FullSpellInFlight = new();
 
     private readonly record struct MetadataScanCacheKey(string GlobalRoot, string WorkspaceRoot);
 
@@ -81,6 +81,200 @@ internal static class SpellScanner
         public IReadOnlyList<SpellMetadata> Metadata { get; } = metadata;
 
         public DateTimeOffset CachedAt { get; } = cachedAt;
+
+    }
+
+    /// <summary>
+    /// One in-flight coalesced wave. Joined callers share a single task, but the shared work runs under
+    /// the wave's own token rather than whichever caller happened to win the miss race, and every caller
+    /// awaits through <c>WaitAsync(callerToken)</c>. A caller that aborts therefore leaves the wave
+    /// without faulting the callers still joined to it, and the shared work is cancelled only once the
+    /// last joiner has left — so a runaway tree walk stays killable instead of becoming an unkillable
+    /// wedge, which is what running the shared factory under <see cref="CancellationToken.None"/> would
+    /// have produced.
+    /// </summary>
+    private sealed class CoalescedWork<TResult>
+    {
+
+        private readonly CancellationTokenSource _cancellation = new();
+
+        private readonly Lock _gate = new();
+
+        private Lazy<Task<TResult>>? _work;
+
+        private int _joiners;
+
+        private bool _closed;
+
+        /// <summary>Joins this wave, returning false when it has already closed and must be replaced.</summary>
+        internal bool TryJoin()
+        {
+
+            lock (_gate)
+            {
+
+                if (_closed)
+                {
+                    return false;
+                }
+
+                _joiners++;
+
+                return true;
+
+            }
+
+        }
+
+        /// <summary>Starts the shared work at most once and returns the task every joiner awaits.</summary>
+        internal Task<TResult> Start(Func<CancellationToken, Task<TResult>> factory)
+        {
+
+            Lazy<Task<TResult>> work;
+
+            lock (_gate)
+            {
+
+                _work ??= new Lazy<Task<TResult>>(
+                    () => factory(_cancellation.Token),
+                    LazyThreadSafetyMode.ExecutionAndPublication);
+
+                work = _work;
+
+            }
+
+            return work.Value;
+
+        }
+
+        /// <summary>Drops one joiner, returning true when that was the last one and the wave has closed.</summary>
+        internal bool Leave()
+        {
+
+            lock (_gate)
+            {
+
+                _joiners--;
+
+                if (_joiners > 0)
+                {
+                    return false;
+                }
+
+                _closed = true;
+
+                return true;
+
+            }
+
+        }
+
+        /// <summary>
+        /// Cancels the shared work now that nobody is waiting for it, then observes its exception and
+        /// releases the token source once it finishes. Cancelling an already-completed wave is a no-op,
+        /// so the ordinary success path pays nothing for this.
+        /// </summary>
+        internal void CancelAndRelease()
+        {
+
+            Lazy<Task<TResult>>? work;
+
+            lock (_gate)
+            {
+                work = _work;
+            }
+
+            _cancellation.Cancel();
+
+            if (work is null || !work.IsValueCreated)
+            {
+
+                _cancellation.Dispose();
+
+                return;
+            }
+
+            _ = work.Value.ContinueWith(
+                static (completed, state) =>
+                {
+
+                    _ = completed.Exception;
+
+                    ((CancellationTokenSource)state!).Dispose();
+
+                },
+                _cancellation,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
+        }
+
+        /// <summary>Releases a wave that lost the publication race and was never joined.</summary>
+        internal void Discard() => _cancellation.Dispose();
+
+    }
+
+    /// <summary>
+    /// Coalesces concurrent misses for <paramref name="key"/> onto one shared task while keeping each
+    /// caller's cancellation to itself. <see cref="SingleFlight.CoalesceAsync"/> hands every joiner the
+    /// same task and lets the factory close over the leader's token, so an aborted leader cancelled
+    /// every joined caller — a follower's own token was healthy, so its foreign OperationCanceledException
+    /// escaped as a 500 rather than a graceful abort. Here the wave owns the token, joiners are counted,
+    /// and the in-flight entry is removed only when the last joiner leaves rather than per awaiter.
+    /// </summary>
+    private static async Task<TResult> CoalesceWithCallerCancellationAsync<TKey, TResult>(
+        ConcurrentDictionary<TKey, CoalescedWork<TResult>> inFlight,
+        TKey key,
+        Func<CancellationToken, Task<TResult>> factory,
+        CancellationToken cancellationToken) where TKey : notnull
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        while (true)
+        {
+
+            CoalescedWork<TResult> candidate = new();
+
+            CoalescedWork<TResult> entry = inFlight.GetOrAdd(key, candidate);
+
+            if (!ReferenceEquals(entry, candidate))
+            {
+                candidate.Discard();
+            }
+
+            if (!entry.TryJoin())
+            {
+
+                // The wave closed between the lookup and the join; drop the dead entry (only if the map
+                // still holds this exact one, so a newer wave is never evicted) and open a fresh one.
+                _ = inFlight.TryRemove(new KeyValuePair<TKey, CoalescedWork<TResult>>(key, entry));
+
+                continue;
+            }
+
+            try
+            {
+
+                return await entry.Start(factory).WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+            finally
+            {
+
+                if (entry.Leave())
+                {
+
+                    _ = inFlight.TryRemove(new KeyValuePair<TKey, CoalescedWork<TResult>>(key, entry));
+
+                    entry.CancelAndRelease();
+
+                }
+
+            }
+
+        }
 
     }
 
@@ -198,11 +392,13 @@ internal static class SpellScanner
         }
 
         // Single-flight the miss path: concurrent misses for the same (global, local) root pair
-        // share one scan task. Only the leader scans and populates the LRU cache.
-        IReadOnlyList<SpellMetadata> merged = await SingleFlight.CoalesceAsync(
+        // share one scan task. Only the leader scans and populates the LRU cache. The shared scan
+        // runs under a token owned by the wave rather than the leader's, so one aborted caller
+        // cannot fault the turn of every caller joined to it.
+        IReadOnlyList<SpellMetadata> merged = await CoalesceWithCallerCancellationAsync(
             MetadataScanInFlight,
             cacheKey,
-            async () =>
+            async scanToken =>
             {
 
                 List<SpellMetadata> globalSpells = [];
@@ -210,8 +406,8 @@ internal static class SpellScanner
                 if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
                 {
                     globalSpells = await Task.Run(
-                        () => ScanMetadataTreeAsync(globalRoot, maxFileSizeBytes, cancellationToken),
-                        cancellationToken).ConfigureAwait(false);
+                        () => ScanMetadataTreeAsync(globalRoot, maxFileSizeBytes, scanToken),
+                        scanToken).ConfigureAwait(false);
                 }
 
                 List<SpellMetadata> localSpells = [];
@@ -219,8 +415,8 @@ internal static class SpellScanner
                 if (localRoot.Length > 0 && Directory.Exists(localRoot))
                 {
                     localSpells = await Task.Run(
-                        () => ScanMetadataTreeAsync(localRoot, maxFileSizeBytes, cancellationToken),
-                        cancellationToken).ConfigureAwait(false);
+                        () => ScanMetadataTreeAsync(localRoot, maxFileSizeBytes, scanToken),
+                        scanToken).ConfigureAwait(false);
                 }
 
                 IReadOnlyList<SpellMetadata> result = MergeSpellMetadata(globalSpells, localSpells);
@@ -232,7 +428,8 @@ internal static class SpellScanner
 
                 return result;
 
-            }).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         return merged;
     }
@@ -323,11 +520,12 @@ internal static class SpellScanner
         }
 
         // Single-flight the miss path: concurrent misses for the same (path, mtime) key share
-        // one parse task. Only the leader parses and populates the LRU cache.
-        ParsedSpell? parsed = await SingleFlight.CoalesceAsync(
+        // one parse task. Only the leader parses and populates the LRU cache. The shared parse runs
+        // under the wave's own token so a cancelled `spell show` cannot fail a concurrent load.
+        ParsedSpell? parsed = await CoalesceWithCallerCancellationAsync(
             FullSpellInFlight,
             cacheKey,
-            async () =>
+            async parseToken =>
             {
 
                 ParsedSpell? result = await TryParseSpellFileAsync(
@@ -335,7 +533,7 @@ internal static class SpellScanner
                     maxFileSizeBytes,
                     maxDeclaredTools,
                     workspaceRootForRevalidation: null,
-                    cancellationToken).ConfigureAwait(false);
+                    parseToken).ConfigureAwait(false);
 
                 if (result is not null)
                 {
@@ -344,7 +542,8 @@ internal static class SpellScanner
 
                 return result;
 
-            }).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         return parsed;
     }
@@ -1148,32 +1347,45 @@ internal static class SpellScanner
         {
             string? sidecarPath = SkillJsonIO.ResolveSidecarPath(spellDirectoryPath);
 
+            // The sidecar gets the same fail-closed read as the SPELL.md body above (DESIGN §11.6). It used to
+            // go through the weak TryGetFileLength gate — a FIFO stats as length 0, so the size check passed —
+            // and then File.ReadAllTextAsync, whose blocking open(2) parks until a writer appears and cannot be
+            // interrupted by any CancellationToken. TryGetRegularFileLength proves the object is an unaliased
+            // regular file, and SecureFileReader re-proves it on the handle (O_NOFOLLOW), which also rejects a
+            // sidecar symlinked out of the workspace on the LoadFullAsync path where no root is threaded in.
             if (sidecarPath is not null
                 && (workspaceRootForRevalidation is null
                     || WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, sidecarPath))
-                && TryGetFileLength(sidecarPath, out long sidecarLength)
+                && TryGetRegularFileLength(sidecarPath, out long sidecarLength)
                 && !ExceedsMaxFileSize(sidecarLength, maxFileSizeBytes))
             {
                 try
                 {
-                    string sidecarText = await File.ReadAllTextAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+                    SecureUtf8FileReadResult sidecarRead = await SecureFileReader
+                        .ReadUtf8TextAsync(sidecarPath, maxBytes, cancellationToken)
+                        .ConfigureAwait(false);
 
-                    skillMetadata = JsonSerializer.Deserialize(sidecarText, TheForgeJsonContext.Default.SkillMetadata);
-
-                    if (skillMetadata is not null
-                        && SkillJsonBoundsValidator.Validate(
-                            skillMetadata,
-                            ArcanumSettingClamps.MaxDeclaredTools(
-                                maxDeclaredTools ?? ArcanumRuntimeDefaults.Spells.MaxDeclaredTools)) is not null)
+                    if (sidecarRead.Status is SecureFileReadStatus.Success && sidecarRead.Text is not null)
                     {
 
-                        skillMetadata = null;
+                        skillMetadata = JsonSerializer.Deserialize(sidecarRead.Text, TheForgeJsonContext.Default.SkillMetadata);
 
-                    }
+                        if (skillMetadata is not null
+                            && SkillJsonBoundsValidator.Validate(
+                                skillMetadata,
+                                ArcanumSettingClamps.MaxDeclaredTools(
+                                    maxDeclaredTools ?? ArcanumRuntimeDefaults.Spells.MaxDeclaredTools)) is not null)
+                        {
 
-                    if (skillMetadata is not null)
-                    {
-                        mergedTags = MergeTags(parsed.Tags, skillMetadata.Tags);
+                            skillMetadata = null;
+
+                        }
+
+                        if (skillMetadata is not null)
+                        {
+                            mergedTags = MergeTags(parsed.Tags, skillMetadata.Tags);
+                        }
+
                     }
                 }
                 catch (IOException)

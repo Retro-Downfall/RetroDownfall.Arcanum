@@ -853,6 +853,155 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The read side strips the BOM before returning FileReadResult.Content and the DTO's encoding field is
+    /// hardcoded to "utf-8", so a read-modify-write through GET then PUT dropped the destination's preamble:
+    /// the file silently lost three leading bytes and git showed a diff the user never made. The sibling
+    /// write path on the same resource, ReplaceTextBlockAsync, has always re-applied it.
+    /// </summary>
+    [Fact]
+    public async Task WriteFileAsync_preserves_an_existing_utf8_bom()
+    {
+
+        string path = Path.Combine(_workspace.Root, "Program.cs");
+
+        await File.WriteAllBytesAsync(path, [.. Utf8Bom, .. "// old"u8]);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileWriteResult> result = await writer.WriteFileAsync(workspace, "Program.cs", "// new", CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        byte[] expected = [.. Utf8Bom, .. "// new"u8];
+
+        Assert.Equal(expected, await File.ReadAllBytesAsync(path));
+
+        Assert.Equal(expected.LongLength, result.Value!.BytesWritten);
+
+    }
+
+    /// <summary>
+    /// Re-applying the preamble unconditionally would double it whenever the caller's own content already
+    /// begins with U+FEFF, because Encoding.UTF8.GetBytes encodes that character as EF BB BF itself.
+    /// </summary>
+    [Fact]
+    public async Task WriteFileAsync_does_not_double_a_bom_the_caller_already_supplied()
+    {
+
+        string path = Path.Combine(_workspace.Root, "Program.cs");
+
+        await File.WriteAllBytesAsync(path, [.. Utf8Bom, .. "// old"u8]);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileWriteResult> result = await writer.WriteFileAsync(workspace, "Program.cs", "﻿// new", CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        byte[] expected = [.. Utf8Bom, .. "// new"u8];
+
+        Assert.Equal(expected, await File.ReadAllBytesAsync(path));
+
+    }
+
+    [Fact]
+    public async Task WriteFileAsync_does_not_add_a_bom_to_a_destination_that_had_none()
+    {
+
+        string path = Path.Combine(_workspace.Root, "plain.txt");
+
+        await File.WriteAllBytesAsync(path, "old"u8.ToArray());
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileWriteResult> result = await writer.WriteFileAsync(workspace, "plain.txt", "new", CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("new"u8.ToArray(), await File.ReadAllBytesAsync(path));
+
+    }
+
+    /// <summary>
+    /// The replace path decoded the target with the replacing UTF-8 decoder, so every byte that is not
+    /// valid UTF-8 became U+FFFD and the atomic rewrite persisted EF BF BD over the original bytes with
+    /// a 200 and no warning. The sibling read paths (PhysicalFileSystemBrowser, SandboxedFileIo) already
+    /// fail closed on invalid UTF-8; only this write path was lossy, and it is the one that persists.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceTextBlockAsync_rejects_a_target_that_is_not_valid_utf8_instead_of_corrupting_it()
+    {
+
+        string path = Path.Combine(_workspace.Root, "legacy.cs");
+
+        byte[] original = [.. "// caf"u8, 0xE9, .. " TODO"u8];
+
+        await File.WriteAllBytesAsync(path, original);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+            workspace,
+            "legacy.cs",
+            "TODO",
+            "DONE",
+            expectedReplacements: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Workspace.PathNotAllowed, result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(path));
+
+    }
+
+    /// <summary>
+    /// A NUL byte marks the target as binary rather than text; the ordinal search can still match an
+    /// ASCII run inside it, so the replace would rewrite a binary file as decoded text. WorkspaceTextFile
+    /// already rejects binary payloads on the MCP coding-tool path; this path now matches it.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceTextBlockAsync_rejects_a_binary_target_instead_of_rewriting_it()
+    {
+
+        string path = Path.Combine(_workspace.Root, "blob.bin");
+
+        byte[] original = [.. "TODO"u8, 0x00, 0x01, 0x02];
+
+        await File.WriteAllBytesAsync(path, original);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+            workspace,
+            "blob.bin",
+            "TODO",
+            "DONE",
+            expectedReplacements: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Workspace.PathNotAllowed, result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(path));
+
+    }
+
+    private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
+
     private static PhysicalFileSystemWriter CreateWriter() =>
         CreateWriter(new ArcanumSettings { Workspaces = new WorkspaceSettings { EnableFileWrite = true } });
 

@@ -1478,6 +1478,67 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
     }
 
+    /// <summary>
+    /// TryVisitRestoreInput used `active` purely as a cycle stack — it dropped each file from the set on the
+    /// way out — so a file reachable through k independent import edges was re-opened, re-parsed, re-SHA-256'd
+    /// and re-appended to the manifest 2^k times. The only bound was the Sanctum write budget, so a
+    /// well-formed workspace burned CPU and filled the manifest with duplicates before the cap tripped.
+    /// </summary>
+    [Fact]
+    public async Task Restore_seed_fingerprints_a_diamond_import_graph_once_per_file()
+    {
+
+        using TestTree tree = new();
+        string workspace = tree.CreateDirectory("workspace");
+        string projectDirectory = tree.CreateDirectory("workspace/App");
+
+        const int levels = 10;
+
+        foreach (int level in Enumerable.Range(0, levels))
+        {
+
+            File.WriteAllText(
+                Path.Combine(projectDirectory, $"d{level}.props"),
+                $"<Project><Import Project=\"a{level}.props\" /><Import Project=\"b{level}.props\" /></Project>");
+            File.WriteAllText(
+                Path.Combine(projectDirectory, $"a{level}.props"),
+                $"<Project><Import Project=\"d{level + 1}.props\" /></Project>");
+            File.WriteAllText(
+                Path.Combine(projectDirectory, $"b{level}.props"),
+                $"<Project><Import Project=\"d{level + 1}.props\" /></Project>");
+
+        }
+
+        File.WriteAllText(
+            Path.Combine(projectDirectory, $"d{levels}.props"),
+            "<Project />");
+        File.WriteAllText(
+            Path.Combine(projectDirectory, "App.csproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"d0.props\" /></Project>");
+        WriteRestoreArtifacts(
+            tree.CreateDirectory("workspace/App/obj"),
+            "App.csproj");
+
+        WorkspaceCheckRestoreSeedResult result =
+            await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
+                workspace,
+                tree.CreateDirectory("run/diamond-inputs"),
+                WorkspaceCheckRestoreSeedOptions.Default,
+                CancellationToken.None);
+
+        Assert.True(result.Success, result.Message);
+
+        // App.csproj, d0..d10, and an a/b pair per level: 32 distinct restore inputs.
+        const int distinctInputs = 1 + levels + 1 + (2 * levels);
+
+        Assert.True(
+            result.InputManifest!.RecordCount <= distinctInputs,
+            $"The import walk appended {result.InputManifest.RecordCount} manifest records for {distinctInputs} "
+            + "distinct files; a file reachable through several import edges must be fingerprinted once per "
+            + "property context, not once per path through the graph.");
+
+    }
+
     [Fact]
     public async Task Restore_seed_streams_restore_input_xml_beyond_former_eight_megabyte_parser_cap()
     {

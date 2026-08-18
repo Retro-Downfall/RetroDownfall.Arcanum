@@ -671,6 +671,8 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                 projectProperties,
                 CapturePath,
                 active,
+                new HashSet<string>(PathComparer),
+                depth: 0,
                 cancellationToken))
         {
 
@@ -710,6 +712,8 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                                 properties,
                                 CapturePath,
                                 active,
+                                new HashSet<string>(PathComparer),
+                                depth: 0,
                                 cancellationToken))
                         {
 
@@ -767,6 +771,16 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         return newest != DateTime.MinValue;
     }
 
+    /// <summary>
+    /// Walks one restore input and everything it imports. <paramref name="active"/> is the cycle stack;
+    /// <paramref name="completed"/> memoises the files already folded into <paramref name="properties"/>.
+    /// The memo is per property context, not global: visiting a file has the side effect of folding its
+    /// PropertyGroup values into the dictionary it was handed, so a file already walked under a *different*
+    /// context must still be walked under this one or a later $(Foo)/x.props import would fail to expand.
+    /// Imports share the caller's dictionary and therefore its memo; a ProjectReference starts a fresh
+    /// dictionary and gets a fresh memo alongside it. Without the memo a file reachable through k import
+    /// edges was re-opened, re-parsed, re-hashed and re-appended to the manifest 2^k times.
+    /// </summary>
     private static bool TryVisitRestoreInput(
         string workspace,
         string rootProject,
@@ -774,18 +788,38 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         Dictionary<string, string> properties,
         Func<string, bool> capture,
         HashSet<string> active,
+        HashSet<string> completed,
+        int depth,
         CancellationToken cancellationToken)
     {
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Every frame holds a live FileStream plus an XmlReader, and the write budget does not bound
+            // recursion: a long linear import chain of tiny files stays far under the byte cap while
+            // recursing deep enough to raise an uncatchable StackOverflowException and take the host down.
+            if (depth > MaxRestoreInputImportDepth)
+            {
+                return false;
+            }
+
             string? canonical = CanonicalizeExistingFile(path);
 
             if (canonical is null
                 || !WorkspaceRootPath.IsWithinOrEqual(
                     canonical,
-                    workspace)
-                || !active.Add(canonical))
+                    workspace))
+            {
+                return false;
+            }
+
+            if (completed.Contains(canonical))
+            {
+                return true;
+            }
+
+            if (!active.Add(canonical))
             {
                 return false;
             }
@@ -971,6 +1005,10 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                         childProperties,
                         capture,
                         active,
+                        projectReference
+                            ? new HashSet<string>(PathComparer)
+                            : completed,
+                        depth + 1,
                         cancellationToken))
                 {
                     return false;
@@ -984,6 +1022,7 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
             }
 
             active.Remove(canonical);
+            _ = completed.Add(canonical);
             return true;
         }
         catch (Exception ex) when (
@@ -1681,6 +1720,12 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
+
+    /// <summary>
+    /// Import-nesting ceiling for the restore-input walk. Real MSBuild graphs nest an order of magnitude
+    /// below this; the bound exists so a pathological chain fails the seed instead of overflowing the stack.
+    /// </summary>
+    private const int MaxRestoreInputImportDepth = 128;
 
     private sealed record SeedFile(
         string Source,
