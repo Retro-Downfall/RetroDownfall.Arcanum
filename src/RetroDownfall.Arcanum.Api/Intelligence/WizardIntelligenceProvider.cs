@@ -6102,6 +6102,14 @@ public sealed partial class WizardIntelligenceProvider(
             long outputCap = ArcanumSettingClamps.ToolOutputCapBytes(
                 settings.Value.ResolveIntelligence().ToolOutputCapBytes);
 
+            // The SpellScript profile's ARCANUM_ prefix scrub only covers the derived default names.
+            // Every credential variable an operator can rename — a provider key at MY_OPENAI_KEY, the
+            // Comm Link webhook URL at TEAM_WEBHOOK_URL — has to travel with the tool by name, or the
+            // spell script reads it straight out of its own environment. execute_command sources the
+            // same list at its call site (ArcanumInternalToolServer.ExecuteCommand).
+            IReadOnlyList<string> operatorDeclaredSecrets =
+                FamiliarSecretEnvironmentNames.Collect(settings.Value);
+
             tools.Add(new ArcanumSpellScriptTool(
                 scriptRoots,
                 outputCap,
@@ -6110,7 +6118,8 @@ public sealed partial class WizardIntelligenceProvider(
                 processResourceLimiter,
                 workingDirectory,
                 settings.Value.Security.AllowUnsandboxedToolChildren,
-                settings.Value.Edition));
+                settings.Value.Edition,
+                operatorDeclaredSecrets));
         }
 
         IReadOnlyList<string>? declaredTools = activeSpell?.SkillMetadata?.DeclaredTools;
