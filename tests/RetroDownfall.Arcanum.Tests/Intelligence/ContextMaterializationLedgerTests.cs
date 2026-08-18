@@ -470,6 +470,111 @@ public sealed class ContextMaterializationLedgerTests
 
     }
 
+    /// <summary>
+    /// A ledger entry whose counterpart cannot be found in the rendered prompt frees nothing when it is
+    /// dropped, so it must not be reported as pressure relief — the turn's <c>DroppedAttachmentRag*</c>
+    /// counters are what the operator and telemetry read to explain a shrunken context.
+    /// </summary>
+    [Fact]
+
+    public void RescindContextPressureDrop_UncountsADropThatFreedNothing()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        ContextMaterializationLedger ledger = CreateLedger(sessionId);
+
+        _ = ledger.Accept(SemanticCandidate(sessionId, "attachment", "attachment-hash", 10, 3, 0), materialized: true);
+
+        ContextMaterializationEntry dropped = ledger.DropLowestPrioritySemantic()!;
+
+        Assert.Equal(1, ledger.DroppedAttachmentRagChunks);
+
+        Assert.Equal(3, ledger.DroppedAttachmentRagTokens);
+
+        ledger.RescindContextPressureDrop(dropped);
+
+        Assert.Equal(0, ledger.DroppedAttachmentRagChunks);
+
+        Assert.Equal(0, ledger.DroppedAttachmentRagTokens);
+
+        // The entry stays surrendered — it is not in the rendered prompt, so it is not context either,
+        // and the cascade has to be able to move past it.
+        Assert.Empty(ledger.Entries);
+
+    }
+
+    /// <summary>
+    /// The eviction cascade must not abandon admission on the first ledger entry with no counterpart in
+    /// the rendered prompt: the payload is still over budget, and the next-lowest semantic entry may
+    /// well be the one holding it there.
+    /// </summary>
+    [Fact]
+
+    public void CascadeSemanticDrops_SkipsPastAnEntryTheRenderedPromptDoesNotHold()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        ContextMaterializationLedger ledger = CreateLedger(sessionId);
+
+        _ = ledger.Accept(SemanticCandidate(sessionId, "attachment", "attachment-hash", 10, 3, 0), materialized: true);
+
+        _ = ledger.Accept(
+            Candidate(
+                sessionId,
+                ContextMaterializationSourceKind.WorkspaceRag,
+                "workspace",
+                contentHash: "workspace-hash",
+                range: new ContextMaterializationRange(0, 10)),
+            materialized: true);
+
+        List<ContextMaterializationSourceKind> offered = [];
+
+        // The workspace chunk is the lower priority and is surrendered first, but nothing in the
+        // rendered prompt matches it; only the attachment chunk actually leaves the payload.
+        bool OnDropped(ContextMaterializationEntry removed)
+        {
+
+            offered.Add(removed.SourceKind);
+
+            return removed.SourceKind == ContextMaterializationSourceKind.AttachmentRag;
+
+        }
+
+        int budgetChecks = 0;
+
+        bool IsOverBudget()
+        {
+
+            budgetChecks++;
+
+            return !offered.Contains(ContextMaterializationSourceKind.AttachmentRag);
+
+        }
+
+        WizardIntelligenceProvider.CascadeSemanticDrops(ledger, OnDropped, IsOverBudget);
+
+        Assert.Equal(
+            [ContextMaterializationSourceKind.WorkspaceRag, ContextMaterializationSourceKind.AttachmentRag],
+            offered);
+
+        // Only the eviction that actually shrank the payload is reported.
+        Assert.Equal(0, ledger.DroppedWorkspaceRagChunks);
+
+        Assert.Equal(0, ledger.DroppedWorkspaceRagTokens);
+
+        Assert.Equal(1, ledger.DroppedAttachmentRagChunks);
+
+        Assert.Equal(3, ledger.DroppedAttachmentRagTokens);
+
+        // Re-measuring an unchanged payload is a whole tokenizer pass plus a payload-wide hash for no
+        // new information, so an ineffective drop must not trigger one: the entry check, then one
+        // re-check after the drop that actually landed.
+        Assert.Equal(2, budgetChecks);
+
+    }
+
     private static ContextMaterializationLedger CreateLedger(Guid sessionId) =>
         new(
             sessionId,

@@ -450,6 +450,53 @@ public sealed class ContextMaterializationLedger
 
     }
 
+    /// <summary>
+    /// Un-counts a pressure drop that turned out to free nothing. <see cref="DropLowestPrioritySemantic"/>
+    /// records the eviction as it surrenders the entry, but only the caller can tell whether the
+    /// rendered prompt actually held a counterpart; when it did not, the reported <c>Dropped*</c> counts
+    /// would otherwise claim context relief the turn never got. The entry itself stays surrendered —
+    /// nothing in the payload matches it, so it is not context either.
+    /// </summary>
+    public void RescindContextPressureDrop(ContextMaterializationEntry removed)
+    {
+
+        ArgumentNullException.ThrowIfNull(removed);
+
+        int tokens = Math.Max(0, removed.EstimatedTokens);
+
+        if (removed.SourceKind == ContextMaterializationSourceKind.AttachmentRag)
+        {
+
+            _droppedAttachmentRagChunks = SaturatingDecrement(_droppedAttachmentRagChunks);
+
+            _droppedAttachmentRagTokens = SaturatingSubtract(
+                _droppedAttachmentRagTokens,
+                tokens);
+
+        }
+        else if (removed.SourceKind == ContextMaterializationSourceKind.WorkspaceRag)
+        {
+
+            _droppedWorkspaceRagChunks = SaturatingDecrement(_droppedWorkspaceRagChunks);
+
+            _droppedWorkspaceRagTokens = SaturatingSubtract(
+                _droppedWorkspaceRagTokens,
+                tokens);
+
+        }
+        else if (removed.SourceKind == ContextMaterializationSourceKind.TapestryMemory)
+        {
+
+            _droppedTapestryNodes = SaturatingDecrement(_droppedTapestryNodes);
+
+            _droppedTapestryTokens = SaturatingSubtract(
+                _droppedTapestryTokens,
+                tokens);
+
+        }
+
+    }
+
     private void RecordContextPressureDrop(ContextMaterializationEntry removed)
     {
 
@@ -493,6 +540,12 @@ public sealed class ContextMaterializationLedger
 
     private static int SaturatingAdd(int left, int right) =>
         int.CreateSaturating((long)Math.Max(0, left) + Math.Max(0, right));
+
+    private static int SaturatingDecrement(int value) =>
+        Math.Max(0, value - 1);
+
+    private static int SaturatingSubtract(int left, int right) =>
+        Math.Max(0, left - Math.Max(0, right));
 
     private bool IsStaleAttachmentVersion(ContextMaterializationCandidate candidate)
     {

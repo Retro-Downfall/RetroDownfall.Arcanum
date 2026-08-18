@@ -446,6 +446,70 @@ public sealed class WeaveServiceTests
 
     }
 
+    /// <summary>
+    /// The two clamps are independent — <c>EmbeddingsChunkSizeChars</c> admits 128..8,192 and
+    /// <c>EmbeddingsChunkOverlapChars</c> admits 0..1,024 — so an overlap at or above the resolved chunk
+    /// size is individually legal. Unbounded, the sliding window then advances a single character per
+    /// iteration and a document emits one near-duplicate chunk per character.
+    /// </summary>
+    [Theory]
+    [InlineData(128, 128)]
+    [InlineData(128, 1_024)]
+    [InlineData(1_000, 1_024)]
+    [InlineData(8_192, 8_192)]
+    public void ResolveChunkStep_OverlapAtOrAboveChunkSize_AdvancesByHalfAWindow(
+        int chunkSizeChars,
+        int chunkOverlapChars)
+    {
+
+        int step = WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars);
+
+        Assert.Equal(chunkSizeChars - (chunkSizeChars / 2), step);
+
+    }
+
+    /// <summary>
+    /// The bounded step is what keeps the emitted chunk count within a constant factor of the minimum;
+    /// a one-character step turns a 200 KB source into ~200,000 retained chunks and the batched
+    /// embedding spend that goes with them.
+    /// </summary>
+    [Fact]
+    public void ResolveChunkStep_OverlapAtOrAboveChunkSize_KeepsTheEmittedChunkCountBounded()
+    {
+
+        const int chunkSizeChars = 128;
+
+        const int documentChars = 200_000;
+
+        int step = WeaveService.ResolveChunkStep(chunkSizeChars, 1_024);
+
+        int emitted = ((documentChars - 1) / step) + 1;
+
+        int minimum = ((documentChars - 1) / chunkSizeChars) + 1;
+
+        Assert.True(emitted <= minimum * 2, $"{emitted} chunks emitted for a {minimum}-chunk document.");
+
+    }
+
+    /// <summary>
+    /// An overlap the window can actually carry is honoured exactly — the relative bound must not
+    /// silently shrink an ordinary configuration.
+    /// </summary>
+    [Theory]
+    [InlineData(1_000, 100, 900)]
+    [InlineData(128, 0, 128)]
+    [InlineData(8_192, 1_024, 7_168)]
+    [InlineData(2_048, 1_024, 1_024)]
+    public void ResolveChunkStep_OverlapWithinHalfTheChunkSize_IsHonouredExactly(
+        int chunkSizeChars,
+        int chunkOverlapChars,
+        int expectedStep)
+    {
+
+        Assert.Equal(expectedStep, WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars));
+
+    }
+
     private static ArcanumSettings EnabledSettings() =>
         new()
         {
