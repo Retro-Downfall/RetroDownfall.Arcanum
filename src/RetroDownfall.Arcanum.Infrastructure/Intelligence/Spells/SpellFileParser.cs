@@ -279,13 +279,13 @@ internal static class SpellFileParser
 
         sb.Append("name: ");
 
-        sb.AppendLine(name);
+        sb.AppendLine(SingleFrontmatterLine(name));
 
         if (!string.IsNullOrWhiteSpace(description))
         {
             sb.Append("description: ");
 
-            sb.AppendLine(description.Trim());
+            sb.AppendLine(SingleFrontmatterLine(description));
         }
 
         AppendArrayLine(sb, "tags", tags);
@@ -294,28 +294,28 @@ internal static class SpellFileParser
         {
             sb.Append("systemPrompt: ");
 
-            sb.AppendLine(systemPrompt.Trim());
+            sb.AppendLine(SingleFrontmatterLine(systemPrompt));
         }
 
         if (!string.IsNullOrWhiteSpace(template))
         {
             sb.Append("template: ");
 
-            sb.AppendLine(template.Trim());
+            sb.AppendLine(SingleFrontmatterLine(template));
         }
 
         if (!string.IsNullOrWhiteSpace(model))
         {
             sb.Append("model: ");
 
-            sb.AppendLine(model.Trim());
+            sb.AppendLine(SingleFrontmatterLine(model));
         }
 
         if (!string.IsNullOrWhiteSpace(provider))
         {
             sb.Append("provider: ");
 
-            sb.AppendLine(provider.Trim());
+            sb.AppendLine(SingleFrontmatterLine(provider));
         }
 
         AppendArrayLine(sb, "tools", tools);
@@ -337,6 +337,32 @@ internal static class SpellFileParser
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Collapses a frontmatter scalar onto the single line it is written on.
+    /// </summary>
+    /// <remarks>
+    /// The frontmatter block is line-delimited, so a value carrying CR or LF would forge every field
+    /// after it — including <c>tools</c> and <c>requiredMcpServers</c>, which decide what a cast may
+    /// reach. <see cref="SpellFrontmatterValidator"/> rejects such a value and every current writer
+    /// runs it, so this is belt and braces: holding the invariant at the emitter means a future
+    /// writer that forgets the gate still cannot produce a forged file. The text is kept and only
+    /// the delimiter is neutralized, so a legitimate value is never silently discarded.
+    /// </remarks>
+    internal static string SingleFrontmatterLine(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        return value.IndexOfAny(['\r', '\n']) < 0
+            ? value.Trim()
+            : value.Replace("\r\n", " ", StringComparison.Ordinal)
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Trim();
+    }
+
     private static void AppendArrayLine(StringBuilder sb, string key, string[] values)
     {
         if (values.Length == 0)
@@ -348,7 +374,7 @@ internal static class SpellFileParser
 
         sb.Append(": ");
 
-        sb.AppendLine(string.Join(", ", values));
+        sb.AppendLine(string.Join(", ", values.Select(SingleFrontmatterLine)));
     }
 
     private static string[] ParseArrayValue(ReadOnlySpan<char> raw)

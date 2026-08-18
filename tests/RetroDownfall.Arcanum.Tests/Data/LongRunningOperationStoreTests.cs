@@ -233,6 +233,83 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The ordinary heartbeat runs on a connection this store owns, never the workload's scoped one.
+    /// </summary>
+    /// <remarks>
+    /// <para>Every heartbeat in the repo fires from a background timer while the owner's handler is
+    /// still working — SubagentRunner, A2ASendingLeaseRenewer and BlobEncryptionLifecycleService all
+    /// do it. Running that UPDATE on the workload's own scoped <c>ArcanumDbContext</c> connection put
+    /// two writers on one <see cref="SqliteConnection"/>, whose live-command list is not
+    /// synchronized, and folded the renewal into whatever transaction the workload had open — so a
+    /// rolled-back unit of work silently took the lease renewal with it and the reconciler could
+    /// steal an operation whose owner was still running. <c>RenewLeaseAsync</c> already opened its
+    /// own connection for exactly this reason; the ordinary heartbeat has the same requirement and
+    /// every caller.</para>
+    /// <para><c>busy_timeout</c> is the observation: it is connection-local, so branding the scoped
+    /// connection with a sentinel no initialized connection would ever carry lets a trigger report
+    /// which connection actually ran the statement. Holding a real write transaction open instead
+    /// would only prove SQLite's single-writer rule — the heartbeat would correctly wait for the
+    /// lock, which on one thread is a deadlock rather than a result.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task HeartbeatAsync_RunsOnAConnectionTheStoreOwns()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!);
+
+        DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = Assert.IsType<LongRunningOperation>(
+            await store.TryStartSingleFlightAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionPrune,
+                    LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                    "Apply one bounded retention sweep.",
+                    startedAt),
+                "retention-owner",
+                startedAt,
+                startedAt.AddMinutes(5)));
+
+        // Pin the scoped connection open so the brand survives; EF otherwise closes between commands
+        // and the pragma resets with it.
+        await _db!.Database.OpenConnectionAsync();
+
+        await ExecuteAsync("PRAGMA busy_timeout = 424242;");
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER assert_heartbeat_is_not_on_the_scoped_connection
+            BEFORE UPDATE ON "LongRunningOperations"
+            BEGIN
+                SELECT RAISE(ABORT, 'the heartbeat ran on the workload''s scoped connection')
+                WHERE (SELECT "timeout" FROM pragma_busy_timeout) = 424242;
+            END;
+            """);
+
+        DateTimeOffset heartbeatAt = startedAt.AddMinutes(1);
+
+        DateTimeOffset leaseExpiresAt = heartbeatAt.AddMinutes(5);
+
+        bool beat = await store.HeartbeatAsync(
+            operation.Id,
+            "retention-owner",
+            heartbeatAt,
+            leaseExpiresAt);
+
+        Assert.True(beat);
+
+        LongRunningOperation persisted = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(operation.Id));
+
+        Assert.Equal(heartbeatAt, persisted.HeartbeatAt);
+
+        Assert.Equal(leaseExpiresAt, persisted.LeaseExpiresAt);
+
+    }
+
     [SkippableFact]
 
     public async Task RenewLeaseAsync_AppliesConnectionPolicyToItsIndependentConnection()

@@ -1174,14 +1174,41 @@ internal sealed class ProtectedArtifactTransferStore(
 
     }
 
+    /// <summary>
+    /// Re-owns an attachment path onto the Session id its row is actually being written under.
+    /// </summary>
+    /// <remarks>
+    /// The leading segment is compared as an identity, not as text, and re-rendered in the one form
+    /// the attachment tree is keyed by. <see cref="Data.SessionAttachmentStore"/> writes that segment
+    /// with <c>ToString("N")</c> while the caller carries Session ids in dashed form, so a textual
+    /// prefix comparison never matched and every remap was a permanent no-op — the imported rows kept
+    /// pointing into the source Session's directory, and <c>TryDeleteSessionDirectory</c> could never
+    /// reclaim those bytes because it looks under a name that was never created. A leading segment
+    /// that is not a Session id, <c>_pending</c> included, is left exactly as it was found. This
+    /// mirrors <c>BackupSessionImporter.ReplaceLeadingSegment</c>; the two must not drift.
+    /// </remarks>
     private static string ReplaceLeadingSegment(string relative, string oldSegment, string newSegment)
     {
 
         string normalized = relative.Replace('\\', '/');
 
-        return normalized.StartsWith(oldSegment + "/", StringComparison.Ordinal)
-            ? newSegment + normalized[oldSegment.Length..]
-            : normalized;
+        int boundary = normalized.IndexOf('/');
+
+        if (boundary <= 0
+            || !Guid.TryParse(oldSegment, out Guid owner)
+            || !Guid.TryParse(normalized[..boundary], out Guid current)
+            || current != owner)
+        {
+
+            return normalized;
+
+        }
+
+        string replacement = Guid.TryParse(newSegment, out Guid replacementId)
+            ? replacementId.ToString("N")
+            : newSegment;
+
+        return replacement + normalized[boundary..];
 
     }
 
