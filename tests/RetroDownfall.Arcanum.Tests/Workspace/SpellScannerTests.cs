@@ -1,3 +1,5 @@
+using System.Text.Json;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -262,9 +264,68 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         Assert.Equal(expected.RequiredMcpServers, actual.RequiredMcpServers);
 
-        Assert.Equal(expected.SkillMetadata, actual.SkillMetadata);
+        AssertSameSkillMetadata(expected.SkillMetadata, actual.SkillMetadata);
 
     }
+
+    /// <summary>
+    /// Content equality for two independently deserialized <see cref="SkillMetadata"/> instances. The
+    /// record closes over <c>List&lt;string&gt;</c>, <c>Dictionary&lt;string, double&gt;?</c> and
+    /// <c>JsonDocument?</c> members, every one of which its compiler-generated equality compares by
+    /// reference, so comparing the two records would hold only while both sides share one cached
+    /// instance — the exact assumption <see cref="AssertSameSpellContent"/> exists to stop relying on.
+    /// </summary>
+    private static void AssertSameSkillMetadata(SkillMetadata? expected, SkillMetadata? actual)
+    {
+
+        if (expected is null || actual is null)
+        {
+
+            Assert.Null(expected);
+
+            Assert.Null(actual);
+
+            return;
+
+        }
+
+        Assert.Equal(expected.Name, actual.Name);
+
+        Assert.Equal(expected.Version, actual.Version);
+
+        Assert.Equal(expected.Description, actual.Description);
+
+        Assert.Equal(expected.Tags, actual.Tags);
+
+        Assert.Equal(RawJson(expected.InputSchema), RawJson(actual.InputSchema));
+
+        Assert.Equal(RawJson(expected.OutputSchema), RawJson(actual.OutputSchema));
+
+        Assert.Equal(expected.DeclaredTools, actual.DeclaredTools);
+
+        Assert.Equal(expected.Dependencies, actual.Dependencies);
+
+        Assert.Equal(expected.Model, actual.Model);
+
+        Assert.Equal(expected.Provider, actual.Provider);
+
+        // Ordered by key so the comparison is over the pairs themselves rather than over whatever
+        // enumeration order the two dictionaries happened to be filled in.
+        Assert.Equal(
+            expected.DefaultParameters?.OrderBy(p => p.Key, StringComparer.Ordinal).ToArray(),
+            actual.DefaultParameters?.OrderBy(p => p.Key, StringComparer.Ordinal).ToArray());
+
+        Assert.Equal(expected.LastModified, actual.LastModified);
+
+        Assert.Equal(expected.ActiveVersion, actual.ActiveVersion);
+
+    }
+
+    /// <summary>
+    /// The schema's own text. Two <see cref="JsonDocument"/> instances parsed from one file are never
+    /// <c>Equal</c>, and the document is what the sidecar carries, so its raw text is the invariant.
+    /// </summary>
+    private static string? RawJson(JsonDocument? document) => document?.RootElement.GetRawText();
 
     /// <summary>
     /// The deterministic form of the load-flake in <c>LoadFullAsync_concurrent_misses_share_one_parse</c>:
@@ -310,6 +371,69 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.NotNull(second);
 
         Assert.NotSame(first, second);
+
+        AssertSameSpellContent(first, second);
+
+    }
+
+    /// <summary>
+    /// The same re-parse, over a spell that carries a <c>SPELL.json</c> sidecar. <see cref="SkillMetadata"/>
+    /// is a record over <c>List&lt;string&gt;</c>, <c>Dictionary&lt;string, double&gt;?</c> and
+    /// <c>JsonDocument?</c> members, every one of which the compiler-generated equality compares by
+    /// reference, so two independent deserializations of one sidecar are never <c>Equal</c>. Without a
+    /// sidecar the member is null on both sides and the reference comparison holds by accident — which is
+    /// exactly why this case has to be covered explicitly rather than left to the fixtures.
+    /// </summary>
+    [Fact]
+    public async Task LoadFullAsync_reparse_of_a_spell_with_a_sidecar_returns_a_content_equal_spell()
+    {
+
+        _workspace.WriteFile(
+            "spells/reparse-sidecar/SPELL.md",
+            """
+            ---
+            name: reparse-sidecar
+            description: reparse test with a sidecar
+            ---
+            body
+            """);
+
+        _workspace.WriteFile(
+            "spells/reparse-sidecar/SPELL.json",
+            """
+            {
+              "name": "reparse-sidecar",
+              "version": "3.1.0",
+              "description": "sidecar",
+              "tags": ["alpha", "beta"],
+              "inputSchema": { "type": "object" },
+              "outputSchema": { "type": "string" },
+              "declaredTools": ["read_file"],
+              "dependencies": ["other-spell"],
+              "model": "m",
+              "provider": "p",
+              "defaultParameters": { "temperature": 0.5 },
+              "activeVersion": "3.1.0"
+            }
+            """);
+
+        string spellPath = Path.Combine(_workspace.Root, "spells", "reparse-sidecar", "SPELL.md");
+
+        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(first);
+
+        Assert.NotNull(first!.SkillMetadata);
+
+        File.SetLastWriteTimeUtc(spellPath, File.GetLastWriteTimeUtc(spellPath).AddSeconds(1));
+
+        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(second);
+
+        Assert.NotSame(first, second);
+
+        Assert.NotSame(first.SkillMetadata, second!.SkillMetadata);
 
         AssertSameSpellContent(first, second);
 

@@ -163,7 +163,7 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
 
             delete.CommandText = """DELETE FROM "Campaigns" WHERE "Id" = $id;""";
 
-            _ = delete.Parameters.AddWithValue("$id", CampaignOne.ToString("D"));
+            _ = delete.Parameters.AddWithValue("$id", CampaignOne);
 
             _ = await delete.ExecuteNonQueryAsync(Token);
 
@@ -203,13 +203,9 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
             Token,
             coreObjects: ["campaign_path_identities", "campaign_registry_state_campaign_delete"]);
 
-        // CampaignAvailabilityReader.FindAvailabilityGenerationAsync still binds a lowercase
-        // identity against the EF-owned "Campaigns"."Id", which EF writes uppercase, so this suite
-        // has to seed the lowercase text a real host never produces. That reader is the bug, not the
-        // seed: fixing its bind is what lets these two calls drop the flag.
-        await fixture.AddCampaignAsync(CampaignOne, "one", Token, legacyLowercaseIdentity: true);
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
 
-        await fixture.AddCampaignAsync(CampaignTwo, "two", Token, legacyLowercaseIdentity: true);
+        await fixture.AddCampaignAsync(CampaignTwo, "two", Token);
 
         return fixture;
 
@@ -238,7 +234,10 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
             VALUES ($campaignId, $policyVersion, $revision, $displayPath, $depth, $digest, $updated);
             """;
 
-        _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString("D"));
+        // CampaignId is REFERENCES "Campaigns"("Id"), so a row can only exist holding the exact text
+        // the EF-owned parent holds. Binding the Guid produces that text; a formatted lowercase
+        // literal is refused by the foreign key rather than silently registering an orphan.
+        _ = command.Parameters.AddWithValue("$campaignId", campaignId);
 
         _ = command.Parameters.AddWithValue(
             "$policyVersion",

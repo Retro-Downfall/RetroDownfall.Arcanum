@@ -142,6 +142,17 @@ internal sealed class CampaignPathIdentityReader(
 
     }
 
+    /// <summary>
+    /// Reads the registration a named Campaign owns, if it still has one.
+    /// </summary>
+    /// <remarks>
+    /// <c>campaign_path_identities.CampaignId</c> is <c>REFERENCES "Campaigns"("Id")</c>, so every row
+    /// that can exist holds the exact text the EF-owned parent column holds, which the provider writes
+    /// as an uppercase <c>D</c>-format literal. Neither column is <c>COLLATE NOCASE</c>, so the
+    /// identity is bound as a <see cref="Guid"/> and not as <c>ToString()</c>: a lowercase literal
+    /// matches nothing for any identity carrying a hex letter, and the miss reads as "not registered"
+    /// rather than as a failure.
+    /// </remarks>
     public async ValueTask<Result<RegisteredCampaignIdentity?>> FindByCampaignAsync(
         Guid campaignId,
         CancellationToken cancellationToken)
@@ -167,7 +178,7 @@ internal sealed class CampaignPathIdentityReader(
             WHERE CampaignId = $campaignId;
             """;
 
-        _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString());
+        _ = command.Parameters.AddWithValue("$campaignId", campaignId);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -205,6 +216,12 @@ internal sealed class CampaignPathIdentityReader(
 /// Campaign that was already gone. The generation is the always-present core
 /// <c>campaign_registry_state.RegistryEpoch</c> rather than a Covenant-owned counter, so ordinary
 /// Campaign resolution keeps working with the optional Covenant tiers absent or damaged.
+///
+/// <para>The existence probe reaches into the EF-owned <c>"Campaigns"</c> table, whose <c>"Id"</c> the
+/// provider writes as an uppercase <c>D</c>-format literal and which is not <c>COLLATE NOCASE</c>. The
+/// identity is therefore bound as a <see cref="Guid"/>, exactly as
+/// <c>CovenantStoreSql.DependentHeadScan</c>'s scoped predicate binds it, so the primary key index
+/// still serves the probe and the comparison stays in one representation.</para>
 /// </remarks>
 internal sealed class CampaignAvailabilityReader(ICovenantConnectionSource connections)
     : ICampaignAvailabilityReader
@@ -232,7 +249,7 @@ internal sealed class CampaignAvailabilityReader(ICovenantConnectionSource conne
               AND EXISTS (SELECT 1 FROM "Campaigns" AS c WHERE c."Id" = $campaignId);
             """;
 
-        _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString());
+        _ = command.Parameters.AddWithValue("$campaignId", campaignId);
 
         object? epoch = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
