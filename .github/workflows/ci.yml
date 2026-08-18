@@ -63,6 +63,12 @@ jobs:
           # The Forge tests are temporarily skipped in CI.
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj -c Release --no-build
 
+      # The macOS signing helpers pick an identity out of the operator's keychain, and every way
+      # they can pick the wrong one still produces a signature that verifies. Drive them through
+      # stubbed `security`/`codesign`; nothing here touches a keychain or signs anything.
+      - name: Test the macOS signing helpers
+        run: ./scripts/packaging/macos/common_test.sh
+
       - name: Arcanum tests + coverage thresholds
         run: |
           python3 -m unittest scripts/coverage_threshold_test.py

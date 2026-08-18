@@ -118,6 +118,193 @@ public sealed class ReleasePipelineTests
 
     }
 
+    /// <summary>
+    /// Packaging flags that produce an artifact no one outside the build host can trust:
+    /// <c>--skip-sign</c> leaves it unsigned, and <c>--local-sign</c> signs it with whatever
+    /// certificate the operator has in Keychain Access and deliberately skips notarization.
+    /// Both are local-verification tools. Either one in a release workflow uploads a draft-release
+    /// asset that installs cleanly on the machine that built it and is refused by Gatekeeper
+    /// everywhere else — a failure the release job itself cannot observe.
+    /// </summary>
+    private static readonly string[] NonReleaseSigningFlags =
+    [
+        "--skip-sign",
+
+        "--local-sign",
+    ];
+
+    [Fact]
+    public void Release_workflows_never_pass_a_non_release_signing_flag()
+    {
+
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles())
+        {
+
+            foreach ((int number, string text) in ShellScriptLines(File.ReadAllLines(workflow)))
+            {
+
+                foreach (string flag in NonReleaseSigningFlags)
+                {
+
+                    if (text.Contains(flag, StringComparison.Ordinal))
+                    {
+
+                        offenders.Add($"{Path.GetFileName(workflow)}:{number}: {text.Trim()}");
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A workflow passes a packaging flag that suppresses release signing or notarization. "
+            + "The artifact it produces is trusted only on the build host, and nothing later in "
+            + "the release job can tell the difference:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+
+    }
+
+    /// <summary>
+    /// Local signing exists so the hardened runtime and the JIT entitlements can be exercised on a
+    /// development certificate, which Apple will not notarize. If a notarization or stapling step
+    /// were reachable from that path it would fail at the Apple end, late, and only on the one
+    /// machine that runs it — so every call site stays behind an explicit <c>LOCAL_SIGN</c> guard.
+    /// </summary>
+    [Fact]
+    public void MacOs_local_signing_never_reaches_notarization()
+    {
+
+        string[] notarizationCalls = ["notarize_submit", "staple_item", "spctl --assess"];
+
+        foreach (string script in MacOsPackagingBuildScripts())
+        {
+
+            string text = File.ReadAllText(script);
+
+            string name = Path.GetFileName(script);
+
+            Assert.True(
+                text.Contains("require_local_signing_identity", StringComparison.Ordinal),
+                $"{name} does not offer local signing; it must resolve the identity through "
+                + "require_local_signing_identity so the keychain is the only source.");
+
+            foreach (string call in notarizationCalls)
+            {
+
+                foreach (string block in GuardedBlocksContaining(text, call))
+                {
+
+                    Assert.True(
+                        block.Contains("LOCAL_SIGN", StringComparison.Ordinal),
+                        $"{name} reaches '{call}' from a branch that does not exclude "
+                        + "--local-sign. Apple rejects a development certificate, so this fails "
+                        + "at submission time rather than at the flag.");
+
+                }
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// The <c>if</c>/<c>elif</c> conditions governing every line that contains
+    /// <paramref name="needle"/>, taken as the condition text of each enclosing shell branch. A
+    /// script with no occurrence yields nothing, which is a pass — the point is that a reachable
+    /// call is guarded, not that one exists.
+    /// </summary>
+    private static IReadOnlyList<string> GuardedBlocksContaining(string script, string needle)
+    {
+
+        List<string> conditions = [];
+
+        string[] lines = script.Split('\n');
+
+        List<string> open = [];
+
+        foreach (string line in lines)
+        {
+
+            string trimmed = line.Trim();
+
+            if (trimmed.StartsWith("if ", StringComparison.Ordinal))
+            {
+
+                open.Add(trimmed);
+
+            }
+            else if (trimmed.StartsWith("elif ", StringComparison.Ordinal) && open.Count > 0)
+            {
+
+                open[^1] = open[^1] + " " + trimmed;
+
+            }
+            else if (trimmed == "fi" && open.Count > 0)
+            {
+
+                open.RemoveAt(open.Count - 1);
+
+            }
+
+            if (!line.Contains(needle, StringComparison.Ordinal))
+            {
+
+                continue;
+
+            }
+
+            if (trimmed.StartsWith('#'))
+            {
+
+                continue;
+
+            }
+
+            conditions.Add(open.Count == 0 ? string.Empty : string.Join(" ", open));
+
+        }
+
+        return conditions;
+
+    }
+
+    private static IReadOnlyList<string> MacOsPackagingBuildScripts()
+    {
+
+        string directory = Path.Combine(
+            RepositoryRoot(),
+            "scripts",
+            "packaging",
+            "macos");
+
+        Assert.True(Directory.Exists(directory), $"Missing macOS packaging directory: {directory}");
+
+        string[] scripts =
+        [
+            Path.Combine(directory, "build-arcanum.sh"),
+
+            Path.Combine(directory, "build-app-dmg.sh"),
+        ];
+
+        foreach (string script in scripts)
+        {
+
+            Assert.True(File.Exists(script), $"Missing macOS packaging script: {script}");
+
+        }
+
+        return scripts;
+
+    }
+
     [Fact]
     public void Windows_packaging_signs_every_portable_executable_it_ships()
     {

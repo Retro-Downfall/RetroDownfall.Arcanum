@@ -697,7 +697,16 @@ The manual **Release macOS arm64** workflow builds on `macos-15-xlarge`, signs w
 - `compendium-osx-arm64.dmg` — signed, notarized, stapled `Compendium.app`; and
 - `the-forge-osx-arm64.dmg` — signed, notarized, stapled `The Forge.app`.
 
-Signing is mandatory in CI; `--skip-sign` is only for local package-structure smoke tests. Spot-check the draft on a clean Mac, then publish it. Rerunning the same version replaces its release assets. Full distribution contracts are in [DESIGN §19.12](docs/Arcanum.DESIGN.md#1912-build-packaging-and-maintenance).
+To sign a macOS build locally with the Apple certificate you have installed in Keychain Access, pass `--local-sign` instead of the release flags:
+
+```bash
+./scripts/packaging/macos/build-arcanum.sh --version 0.1.0-beta.1 --output-dir ./dist --local-sign
+./scripts/packaging/macos/build-app-dmg.sh --product compendium --version 0.1.0-beta.1 --marketing-version 0.1.0 --bundle-version 1 --output-dir ./dist --local-sign
+```
+
+The identity is discovered with `security find-identity -v -p codesigning`; set `APPLE_SIGNING_IDENTITY` to a common name or certificate SHA-1 if more than one is installed. `--local-sign` signs with the same hardened runtime and entitlements as a release and then launches the result, which is the only check that catches a binary that aborts before `Main` on a wrong JIT entitlement. It does not notarize or staple: Apple notarizes Developer ID submissions only, so an Apple **Development** certificate cannot be notarized at all, and the output is trusted solely on machines that already trust that certificate.
+
+Signing is mandatory in CI; `--skip-sign` and `--local-sign` are for local package-structure smoke tests and local signature checks only, and a test fails the build if either appears in a workflow. Spot-check the draft on a clean Mac, then publish it. Rerunning the same version replaces its release assets. Full distribution contracts are in [DESIGN §19.12](docs/Arcanum.DESIGN.md#1912-build-packaging-and-maintenance).
 
 ## Current operator limitations
 

@@ -399,7 +399,7 @@ Metrics use bounded labels. High-cardinality identities, prompt fragments, paths
 
 Source-generated JSON, request delegates, generated regexes, and trimming annotations are design constraints, not cleanup tasks. Windows and Linux publish the CLI as Native AOT. macOS ships a self-contained folder while retaining the same AOT-safe code shape.
 
-Package and distribution scripts live under `scripts/packaging`. Signing and notarization are platform workflows; unsigned local artifacts retain the operating system's normal trust warnings.
+Package and distribution scripts live under `scripts/packaging`. Signing and notarization are platform workflows; unsigned local artifacts retain the operating system's normal trust warnings. On macOS a developer can also sign a build with the Apple certificate already installed in Keychain Access by passing `--local-sign`, which is enough to confirm the signed application actually starts on that machine. Apple only notarizes certificates issued for distribution, so such a build is deliberately not notarized and stays trusted only where that certificate is already trusted — it is a check, not a release.
 
 Configuration is loaded from `~/.config/arcanum/arcanum.json`, environment variables, and protected credential stores according to the precedence in the technical design. Changing ordinary configuration requires a restart, not a Grimoire reinstall.
 

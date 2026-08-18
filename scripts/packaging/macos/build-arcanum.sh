@@ -3,8 +3,11 @@
 #
 # Usage:
 #   build-arcanum.sh --version 0.1.0-beta.1 --output-dir ./dist [--skip-sign]
+#   build-arcanum.sh --version 0.1.0-beta.1 --output-dir ./dist --local-sign
 #
-# CI must never pass --skip-sign. Local structure smoke tests may.
+# CI must never pass --skip-sign or --local-sign. Local structure smoke tests may pass --skip-sign;
+# --local-sign signs with the certificate the operator installed in Keychain Access and stops short
+# of notarization, which Apple does not offer for a development certificate.
 #
 # Outputs:
 #   <output-dir>/arcanum-osx-arm64.zip
@@ -23,16 +26,19 @@ source "$SCRIPT_DIR/common.sh"
 VERSION=""
 OUTPUT_DIR=""
 SKIP_SIGN=0
+LOCAL_SIGN=0
 CONFIGURATION=Release
 RID=osx-arm64
 
 usage() {
   cat <<'EOF'
-Usage: build-arcanum.sh --version <semver> --output-dir <dir> [--skip-sign]
+Usage: build-arcanum.sh --version <semver> --output-dir <dir> [--skip-sign|--local-sign]
 
   --version       SemVer (e.g. 0.1.0-beta.1); no +build metadata
   --output-dir    Directory for arcanum-osx-arm64.zip
   --skip-sign     Local structure smoke only — never use in CI release
+  --local-sign    Sign with the identity installed in Keychain Access and skip notarization;
+                  for verifying the signed binary on this machine, never for release
 EOF
 }
 
@@ -50,6 +56,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_SIGN=1
       shift
       ;;
+    --local-sign)
+      LOCAL_SIGN=1
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -64,6 +74,11 @@ done
 
 if [[ -z "$VERSION" || -z "$OUTPUT_DIR" ]]; then
   usage >&2
+  exit 1
+fi
+
+if [[ "$SKIP_SIGN" -eq 1 && "$LOCAL_SIGN" -eq 1 ]]; then
+  echo "error: --skip-sign and --local-sign are mutually exclusive" >&2
   exit 1
 fi
 
@@ -134,8 +149,13 @@ fi
 if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd codesign
   require_cmd ditto
-  require_cmd xcrun
-  require_signing_env
+
+  if [[ "$LOCAL_SIGN" -eq 1 ]]; then
+    require_local_signing_identity
+  else
+    require_cmd xcrun
+    require_signing_env
+  fi
 
   # These are the .NET JIT entitlements, and they are required whenever the macOS CLI falls back to
   # the self-contained CoreCLR folder publish (no ld64.lld on the build host): the hardened runtime
@@ -153,7 +173,12 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
     exit 1
   fi
 
-  echo "==> Signing publish tree Mach-Os (Developer ID Application, hardened runtime + JIT entitlements)"
+  if [[ "$LOCAL_SIGN" -eq 1 ]]; then
+    echo "==> Signing publish tree Mach-Os (keychain identity, hardened runtime + JIT entitlements)"
+  else
+    echo "==> Signing publish tree Mach-Os (Developer ID Application, hardened runtime + JIT entitlements)"
+  fi
+
   sign_publish_dir "$STAGE_DIR" "$ENTITLEMENTS"
 else
   echo "==> --skip-sign: skipping codesign/notarization (local smoke only)"
@@ -166,7 +191,20 @@ rm -f "$ZIP_PATH"
   ditto -c -k --keepParent "arcanum-osx-arm64" "$ZIP_PATH"
 )
 
-if [[ "$SKIP_SIGN" -eq 0 ]]; then
+if [[ "$LOCAL_SIGN" -eq 1 ]]; then
+  # No notarization: Apple notarizes Developer ID submissions only, and a development certificate
+  # is rejected outright. The launch smoke below is the part that actually matters locally — it is
+  # the only check that catches a hardened-runtime binary which aborts before Main because the JIT
+  # entitlements are wrong, and codesign --verify and spctl both pass on exactly that binary.
+  echo "==> Verifying the locally signed binary"
+  codesign --verify --strict --verbose=4 "$STAGE_DIR/arcanum"
+
+  echo "==> Launching signed binary (--version) as a local smoke"
+  "$STAGE_DIR/arcanum" --version
+
+  echo "==> Signed with '$LOCAL_SIGNING_IDENTITY_NAME'; NOT notarized, NOT a release artifact."
+  echo "    On any Mac that does not trust this certificate, Gatekeeper will refuse the binary."
+elif [[ "$SKIP_SIGN" -eq 0 ]]; then
   echo "==> Submitting zip to notarytool (no staple on zip)"
   notarize_submit "$ZIP_PATH"
 

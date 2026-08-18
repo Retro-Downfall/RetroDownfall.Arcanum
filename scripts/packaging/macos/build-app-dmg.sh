@@ -9,13 +9,15 @@
 #     --bundle-version 42 \
 #     --output-dir ./dist \
 #     [--single-file] \
-#     [--skip-sign]
+#     [--skip-sign | --local-sign]
 #
 # Default publish is multi-file self-contained (preferred for first signed release
 # so native libraries can be codesigned individually). Pass --single-file to use
 # PublishSingleFile=true instead.
 #
-# CI must never pass --skip-sign.
+# CI must never pass --skip-sign or --local-sign. --local-sign signs with the certificate the
+# operator installed in Keychain Access and stops short of notarization and stapling, which Apple
+# does not offer for a development certificate.
 
 set -euo pipefail
 
@@ -29,6 +31,7 @@ MARKETING_VERSION=""
 BUNDLE_VERSION=""
 OUTPUT_DIR=""
 SKIP_SIGN=0
+LOCAL_SIGN=0
 SINGLE_FILE=0
 CONFIGURATION=Release
 RID=osx-arm64
@@ -37,7 +40,7 @@ usage() {
   cat <<'EOF'
 Usage: build-app-dmg.sh --product <compendium|the-forge> --version <semver>
                         --marketing-version <x.y.z> --bundle-version <n>
-                        --output-dir <dir> [--single-file] [--skip-sign]
+                        --output-dir <dir> [--single-file] [--skip-sign|--local-sign]
 
   --product             compendium | the-forge
   --version             SemVer stamped into .NET Version (e.g. 0.1.0-beta.1)
@@ -46,6 +49,8 @@ Usage: build-app-dmg.sh --product <compendium|the-forge> --version <semver>
   --output-dir          Directory for the .dmg
   --single-file         Publish with PublishSingleFile=true (default: multi-file)
   --skip-sign           Local structure smoke only — never use in CI release
+  --local-sign          Sign with the identity installed in Keychain Access and skip
+                        notarization/stapling; never use in CI release
 EOF
 }
 
@@ -79,6 +84,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_SIGN=1
       shift
       ;;
+    --local-sign)
+      LOCAL_SIGN=1
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -93,6 +102,11 @@ done
 
 if [[ -z "$PRODUCT" || -z "$VERSION" || -z "$MARKETING_VERSION" || -z "$BUNDLE_VERSION" || -z "$OUTPUT_DIR" ]]; then
   usage >&2
+  exit 1
+fi
+
+if [[ "$SKIP_SIGN" -eq 1 && "$LOCAL_SIGN" -eq 1 ]]; then
+  echo "error: --skip-sign and --local-sign are mutually exclusive" >&2
   exit 1
 fi
 
@@ -200,8 +214,13 @@ fi
 if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd codesign
   require_cmd hdiutil
-  require_cmd xcrun
-  require_signing_env
+
+  if [[ "$LOCAL_SIGN" -eq 1 ]]; then
+    require_local_signing_identity
+  else
+    require_cmd xcrun
+    require_signing_env
+  fi
 
   echo "==> Signing ${APP_NAME}.app (nested then bundle; no --deep for signing)"
   sign_app_bundle "$APP_PATH" "$ENTITLEMENTS"
@@ -222,7 +241,17 @@ hdiutil create \
   -format UDZO \
   "$DMG_PATH"
 
-if [[ "$SKIP_SIGN" -eq 0 ]]; then
+if [[ "$LOCAL_SIGN" -eq 1 ]]; then
+  echo "==> Signing DMG"
+  codesign_item "$DMG_PATH"
+  codesign --verify --strict --verbose=4 "$DMG_PATH"
+
+  # No notarization and therefore no staple: Apple notarizes Developer ID submissions only, and
+  # stapler has nothing to attach without a notarization ticket. spctl is skipped for the same
+  # reason -- it would fail on this DMG by design, not because the bundle is malformed.
+  echo "==> Signed with '$LOCAL_SIGNING_IDENTITY_NAME'; NOT notarized, NOT stapled, NOT releasable."
+  echo "    On any Mac that does not trust this certificate, Gatekeeper will refuse ${APP_NAME}.app."
+elif [[ "$SKIP_SIGN" -eq 0 ]]; then
   echo "==> Signing DMG"
   codesign_item "$DMG_PATH"
 

@@ -54,13 +54,120 @@ require_signing_env() {
   fi
 }
 
+# --- Local (development) signing ---------------------------------------------------------------
+#
+# require_signing_env above builds a release identity out of repository secrets. Local signing
+# instead uses whatever certificate the operator already has in Keychain Access, which is what an
+# Apple Development certificate is for: it signs, and the result runs on the machines that trust
+# that certificate, but Apple will not notarize it and Gatekeeper on a clean Mac will reject it.
+# Nothing produced on this path is a release artifact, and the notarize/staple steps stay off.
+
+# Identity common-name prefixes a local signature may use. Developer ID Application is allowed
+# because signing locally with the release certificate is a legitimate rehearsal of the hardened
+# runtime and entitlements; it still does not notarize.
+LOCAL_SIGNING_IDENTITY_PREFIXES=(
+  "Developer ID Application:"
+  "Apple Distribution:"
+  "Apple Development:"
+  "Mac Developer:"
+)
+
+# Common name of the identity local signing resolved, for logging only. codesign is handed the
+# certificate's SHA-1 instead, which stays unambiguous when two certificates share a common name.
+LOCAL_SIGNING_IDENTITY_NAME=""
+
+# Emits "<sha1> <common name>" for every usable codesigning identity in the keychain search list.
+# `find-identity -v` already filters to currently valid certificates that have their private key,
+# so everything printed here can actually sign.
+keychain_codesigning_identities() {
+  security find-identity -v -p codesigning |
+    sed -n 's/^[[:space:]]*[0-9][0-9]*)[[:space:]]*\([0-9A-Fa-f]\{40\}\)[[:space:]]*"\(.*\)"[[:space:]]*$/\1 \2/p'
+}
+
+# Resolves APPLE_SIGNING_IDENTITY from Keychain Access. When APPLE_SIGNING_IDENTITY is already set
+# it acts as a selector -- an exact common name or a SHA-1 -- and must match an installed identity.
+# Otherwise exactly one installed identity may carry an allowed prefix, so a machine holding both a
+# development and a Developer ID certificate has to say which one it means rather than be guessed at.
+require_local_signing_identity() {
+  require_cmd security
+  require_cmd codesign
+
+  local -a identities=()
+  local line
+  while IFS= read -r line; do
+    identities+=("$line")
+  done < <(keychain_codesigning_identities)
+
+  if ((${#identities[@]} == 0)); then
+    echo "error: no code signing identity is installed in Keychain Access." >&2
+    echo "  Import the certificate *and* its private key into the login keychain, then confirm with:" >&2
+    echo "    security find-identity -v -p codesigning" >&2
+    echo "  A certificate imported without its private key, or one whose Apple WWDR intermediate is" >&2
+    echo "  missing, does not appear in that list and cannot sign." >&2
+    exit 1
+  fi
+
+  local -a matches=()
+  local hash name prefix
+
+  for line in "${identities[@]}"; do
+    hash="${line%% *}"
+    name="${line#* }"
+
+    if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+      if [[ "$name" == "$APPLE_SIGNING_IDENTITY" || "$hash" == "$APPLE_SIGNING_IDENTITY" ]]; then
+        matches+=("$line")
+      fi
+      continue
+    fi
+
+    for prefix in "${LOCAL_SIGNING_IDENTITY_PREFIXES[@]}"; do
+      if [[ "$name" == "$prefix"* ]]; then
+        matches+=("$line")
+        break
+      fi
+    done
+  done
+
+  if ((${#matches[@]} == 0)); then
+    if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+      echo "error: APPLE_SIGNING_IDENTITY matches no installed identity: ${APPLE_SIGNING_IDENTITY}" >&2
+    else
+      echo "error: no Apple signing identity among the installed certificates." >&2
+      echo "  Expected a common name starting with one of: ${LOCAL_SIGNING_IDENTITY_PREFIXES[*]}" >&2
+    fi
+    echo "  Installed:" >&2
+    printf '    %s\n' "${identities[@]}" >&2
+    exit 1
+  fi
+
+  if ((${#matches[@]} > 1)); then
+    echo "error: more than one identity matched; set APPLE_SIGNING_IDENTITY to the one to use." >&2
+    printf '    %s\n' "${matches[@]}" >&2
+    exit 1
+  fi
+
+  APPLE_SIGNING_IDENTITY="${matches[0]%% *}"
+  LOCAL_SIGNING_IDENTITY_NAME="${matches[0]#* }"
+  CODESIGN_TIMESTAMP_ARG="--timestamp=none"
+
+  echo "==> Local signing identity from Keychain Access: $LOCAL_SIGNING_IDENTITY_NAME"
+  echo "    certificate SHA-1 $APPLE_SIGNING_IDENTITY; output is NOT notarized and NOT releasable"
+}
+
+# A release signature carries a secure timestamp from Apple's TSA so it survives the certificate's
+# own expiry, and notarization rejects a signature without one. A local signature is never
+# distributed and is often made offline, where reaching the TSA is a hard failure rather than a
+# warning, so require_local_signing_identity turns it off.
+CODESIGN_TIMESTAMP_ARG="--timestamp"
+
 codesign_item() {
   local target="$1"
   local entitlements="${2:-}"
   local -a args=(
     --force
     --options runtime
-    --timestamp
+    "$CODESIGN_TIMESTAMP_ARG"
     --sign "$APPLE_SIGNING_IDENTITY"
   )
   if [[ -n "$entitlements" ]]; then
