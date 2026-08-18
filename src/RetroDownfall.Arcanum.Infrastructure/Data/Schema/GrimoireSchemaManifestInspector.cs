@@ -106,6 +106,7 @@ internal sealed class GrimoireSchemaManifestInspector(
                 connection,
                 transaction,
                 entry,
+                installed,
                 frame,
                 cancellationToken).ConfigureAwait(false);
 
@@ -204,10 +205,11 @@ internal sealed class GrimoireSchemaManifestInspector(
 
     }
 
-    private async Task<GrimoireSchemaInspectionResult?> AppendIndexShapesAsync(
+    private static async Task<GrimoireSchemaInspectionResult?> AppendIndexShapesAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         GrimoireSchemaManifestEntry entry,
+        Dictionary<string, InstalledObject> installed,
         StringBuilder frame,
         CancellationToken cancellationToken)
     {
@@ -236,6 +238,23 @@ internal sealed class GrimoireSchemaManifestInspector(
             if (match.IsUnique != expected.IsUnique
                 || !string.Equals(match.Origin, expected.Origin, StringComparison.Ordinal)
                 || match.IsPartial != expected.IsPartial)
+            {
+
+                return GrimoireSchemaInspectionResult.Invalid(
+                    GrimoireSchemaInspectionFailure.IndexShapeDrift,
+                    expected.Name);
+
+            }
+
+            // Shape stops here. PRAGMA index_list reduces a partial index to a 0/1 flag and
+            // index_xinfo has no predicate column, so an index that keeps its name, uniqueness, and
+            // key columns while carrying a different WHERE predicate - or a different expression
+            // position - is invisible to everything above. Only the stored DDL carries it, and an
+            // explicit index always has one; an implicit index's is null and is validated by shape
+            // alone through its owning table.
+            if (installed.TryGetValue(expected.Name, out InstalledObject declaration)
+                && declaration.NormalizedSql.Length != 0
+                && !string.Equals(declaration.NormalizedSql, expected.NormalizedSql, StringComparison.Ordinal))
             {
 
                 return GrimoireSchemaInspectionResult.Invalid(
@@ -307,11 +326,20 @@ internal sealed class GrimoireSchemaManifestInspector(
                 .Append(index.IsPartial ? '1' : '0');
 
             // Autoindex names encode constraint declaration order and are not stable enough to
-            // fingerprint; their shape is.
+            // fingerprint; their shape is. An explicitly named index carries its stored DDL into the
+            // frame as well, so the fingerprint moves for a predicate or expression change the same
+            // way it moves for a changed table definition.
             if (!index.Name.StartsWith("sqlite_autoindex_", StringComparison.Ordinal))
             {
 
                 _ = frame.Append(FieldSeparator).Append(index.Name);
+
+                if (installed.TryGetValue(index.Name, out InstalledObject declaration))
+                {
+
+                    _ = frame.Append(FieldSeparator).Append(declaration.NormalizedSql);
+
+                }
 
             }
 

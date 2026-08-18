@@ -101,7 +101,7 @@ internal static class GrimoireSchemaManifests
                 GrimoireSchemaFamily.Core,
                 GrimoireSchemaTransactionTier.Core,
                 GrimoireSchemaManifestBuilder.CovenantSchemaVersion,
-                GrimoireSchemaCatalog.CanonicalSchemaFingerprint,
+                GrimoireSchemaCatalog.CoreSchemaFingerprint,
                 GrimoireSchemaCatalog.CoreObjects),
             LazyThreadSafetyMode.ExecutionAndPublication);
 

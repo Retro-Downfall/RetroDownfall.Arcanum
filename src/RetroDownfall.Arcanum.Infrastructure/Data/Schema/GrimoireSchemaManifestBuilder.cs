@@ -250,10 +250,10 @@ internal static class GrimoireSchemaManifestBuilder
 
             }
 
-            // An expression position is ordinary SQLite and the shipped catalog contains one, so it
-            // is expected rather than refused: PRAGMA index_xinfo reports it with a null column name
-            // and column id -2, which is exactly the shape recorded here. The expression text itself
-            // is not part of the shape, because the index's own stored DDL already carries it.
+            // An expression position is ordinary SQLite, so it is expected rather than refused:
+            // PRAGMA index_xinfo reports it with a null column name and column id -2, which is
+            // exactly the shape recorded here. The expression text itself is not part of the shape,
+            // because the index's own stored DDL carries it and the inspector compares that verbatim.
             bool isExpression = column.Contains('(', StringComparison.Ordinal);
 
             columns.Add(
@@ -277,7 +277,7 @@ internal static class GrimoireSchemaManifestBuilder
 
         }
 
-        return new GrimoireExpectedIndex(name, isUnique, "c", isPartial, columns);
+        return new GrimoireExpectedIndex(name, isUnique, "c", isPartial, normalized, columns);
 
     }
 

@@ -494,10 +494,23 @@ internal sealed class GrimoireSchemaInstaller(
     }
 
     /// <summary>
-    /// Resynchronizes the Lexicon's FTS5 external-content index with <c>lexicon_entries</c>. A no-op
-    /// on a fresh install and cheap insurance on a reopen. Best-effort: a failure narrows Lexicon
-    /// search until the next rebuild, it does not break the database.
+    /// Resynchronizes the Lexicon's FTS5 external-content index with <c>lexicon_entries</c>, but only
+    /// while doing so is free. Best-effort: a failure narrows Lexicon search until the next rebuild,
+    /// it does not break the database.
     /// </summary>
+    /// <remarks>
+    /// FTS5's <c>rebuild</c> has no incremental mode - it drops the whole index and re-tokenizes every
+    /// content row - so running it unconditionally would re-index the entire corpus on every start,
+    /// before readiness opens and on every CLI verb that bootstraps the Grimoire, growing with a
+    /// Lexicon that only ever accumulates. That is exactly what this design already refuses to do
+    /// inline for the Covenant accelerator index.
+    ///
+    /// <para>Nothing is lost by declining. <c>lexicon_entries_ai</c>/<c>_au</c>/<c>_ad</c> maintain the
+    /// index through the external-content <c>'delete'</c> idiom, so ordinary writes keep it exactly in
+    /// step. The one desync that does occur - a factory reset emptying <c>lexicon_fts</c> while its
+    /// content rows are still present, then deleting those rows and leaving delete markers behind -
+    /// ends with an empty content table, which is precisely the case still repaired here.</para>
+    /// </remarks>
     private async Task TryRebuildLexiconFtsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
@@ -505,6 +518,13 @@ internal sealed class GrimoireSchemaInstaller(
 
         try
         {
+
+            if (!await LexiconCorpusIsEmptyAsync(connection, cancellationToken).ConfigureAwait(false))
+            {
+
+                return;
+
+            }
 
             await using SqliteCommand command = connection.CreateCommand();
 
@@ -521,6 +541,25 @@ internal sealed class GrimoireSchemaInstaller(
                 "The Lexicon FTS rebuild after schema install failed; search may be incomplete until the next rebuild.");
 
         }
+
+    }
+
+    /// <summary>
+    /// Whether the Lexicon holds no entities, answered by an existence probe rather than a count so
+    /// the guard costs one index seek on a corpus the rebuild it guards would have read in full.
+    /// </summary>
+    private static async Task<bool> LexiconCorpusIsEmptyAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT 1 FROM lexicon_entries LIMIT 1;";
+
+        object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return result is null || result == DBNull.Value;
 
     }
 
