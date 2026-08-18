@@ -48,7 +48,7 @@ public sealed class CommandCenterWardCoordinatorQueueTests
         Task<WardApprovalDecision> humanHold = default!;
 
         // Occupy slot with a HumanPrompt-shaped active via arbiter directly, then queue ward.
-        Assert.True(arbiter.RequestShow(CommandCenterHardModalKind.HumanPrompt, "p1", () => { }));
+        Assert.True(arbiter.RequestShow(CommandCenterHardModalKind.HumanPrompt, "p1", static () => true));
 
         Task<WardApprovalDecision> ward = coordinator.RequestApprovalAsync(
             new WardApprovalRequest("ward-q", "execute_command", "{}"),

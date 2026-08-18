@@ -147,7 +147,7 @@ internal sealed class CommandCenterHumanPromptCoordinator(
             () => ShowQueuedOrPending(request, onShow));
     }
 
-    private void ShowQueuedOrPending(
+    private bool ShowQueuedOrPending(
         HumanPromptRequest request,
         Action<HumanPromptRequest, string?>? onShow)
     {
@@ -162,9 +162,17 @@ internal sealed class CommandCenterHumanPromptCoordinator(
                 toShow = _queued[queuedIndex];
                 _queued.RemoveAt(queuedIndex);
             }
+            else if (_pending is not null
+                && string.Equals(_pending.PromptId, request.PromptId, StringComparison.Ordinal))
+            {
+                // Opened directly and only then queued by the arbiter — still this prompt's turn.
+                toShow = request;
+            }
             else
             {
-                toShow = request;
+                // Closed (submitted, expired, cancelled) while it waited for the slot. Decline it so
+                // the arbiter promotes the next entry instead of displaying a dead prompt.
+                return false;
             }
 
             _pending = toShow;
@@ -174,6 +182,7 @@ internal sealed class CommandCenterHumanPromptCoordinator(
         }
 
         onShow?.Invoke(toShow, null);
+        return true;
     }
 
     /// <summary>
@@ -266,7 +275,14 @@ internal sealed class CommandCenterHumanPromptCoordinator(
         }
 
         onHide?.Invoke(reason, notice);
-        _ = hardModalArbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, closedId);
+
+        // A prompt can be pending here while the arbiter only has it queued (it opened, then a hard
+        // modal took the slot before RequestShow ran), so release whichever slot it actually holds.
+        if (!hardModalArbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, closedId))
+        {
+            _ = hardModalArbiter.TryRemoveQueued(CommandCenterHardModalKind.HumanPrompt, closedId);
+        }
+
         return true;
     }
 

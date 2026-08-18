@@ -125,6 +125,63 @@ public sealed class IncantationStoreTests
             $"20 unchanged refreshes took {warm.ElapsedMilliseconds}ms after a first pass of {cold.ElapsedMilliseconds}ms.");
     }
 
+    /// <summary>
+    /// The chat runner mutates these records on a thread-pool thread for the whole of a streamed turn
+    /// while the Terminal.Gui main loop copies the pane on every layout pass, so formatting outside the
+    /// store gate reads a record mid-mutation: the result text is re-read after its own null check and
+    /// the ward-note list is indexed after its own count. The sibling <c>SessionLogBuffer.CopyLinesTo</c>
+    /// builds its lines inside the gate for exactly this reason.
+    /// </summary>
+    [Fact]
+    public async Task Copying_display_lines_while_the_chat_thread_mutates_a_record_does_not_throw()
+    {
+        IncantationStore store = new();
+        _ = store.UpsertCall("c-race", "execute_command", """{"command":"dotnet --version"}""");
+
+        using CancellationTokenSource stop = new(TimeSpan.FromSeconds(10));
+        Exception? readerFailure = null;
+        Exception? writerFailure = null;
+
+        Task writer = Task.Run(() =>
+        {
+            try
+            {
+                for (int i = 0; i < 100_000 && !stop.IsCancellationRequested; i++)
+                {
+                    _ = store.UpsertResult("c-race", "execute_command", "ok");
+                    _ = store.UpsertResult("c-race", "execute_command", null);
+                    _ = store.AppendWardNote("execute_command", "Ward pending (" + i + ")", "w" + i);
+                }
+            }
+            catch (Exception ex)
+            {
+                writerFailure = ex;
+            }
+        });
+
+        Task reader = Task.Run(() =>
+        {
+            ObservableCollection<string> lines = new();
+            List<string?> anchors = new();
+            try
+            {
+                while (!writer.IsCompleted)
+                {
+                    store.CopyDisplayLinesTo(lines, anchors, 60);
+                }
+            }
+            catch (Exception ex)
+            {
+                readerFailure = ex;
+            }
+        });
+
+        await Task.WhenAll(writer, reader);
+
+        Assert.Null(writerFailure);
+        Assert.Null(readerFailure);
+    }
+
     [Fact]
     public void Display_lines_are_memoized_until_the_record_changes()
     {

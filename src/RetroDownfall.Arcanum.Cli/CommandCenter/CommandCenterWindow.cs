@@ -203,11 +203,14 @@ internal sealed class CommandCenterWindow : Window
 
         ContextTelemetryFrame.Add(ContextTelemetryBody);
 
+        // Focusable on purpose: Terminal.Gui refuses focus to a view whose SuperView cannot focus, so an
+        // unfocusable pane would leave the Transcript region selected while the keyboard stays on the
+        // composer — every printable key silently mutating the draft.
         TranscriptPane = new FrameView
         {
             Title = "Transcript",
             BorderStyle = chrome,
-            CanFocus = false,
+            CanFocus = true,
             SchemeName = CommandCenterTheme.SessionScheme,
         };
 
@@ -245,11 +248,13 @@ internal sealed class CommandCenterWindow : Window
         };
         TranscriptPane.Add(ThinkingLabel);
 
+        // Focusable for the same reason as TranscriptPane: an unfocusable pane makes
+        // IncantationsView.SetFocus() a permanent no-op and its key handlers dead code.
         IncantationsPane = new FrameView
         {
             Title = "Incantations",
             BorderStyle = chrome,
-            CanFocus = false,
+            CanFocus = true,
             SchemeName = CommandCenterTheme.SessionScheme,
         };
 
@@ -748,6 +753,10 @@ internal sealed class CommandCenterWindow : Window
     {
         void Focus()
         {
+            // Re-assert the pane invariant before every move: Terminal.Gui refuses focus to a view whose
+            // SuperView cannot focus, and a silently unfocusable pane makes this whole method a no-op.
+            TranscriptPane.CanFocus = true;
+            LogView.CanFocus = true;
             LogView.SetFocus();
             if (_logLines.Count == 0)
             {
@@ -777,6 +786,8 @@ internal sealed class CommandCenterWindow : Window
     {
         void Focus()
         {
+            IncantationsPane.CanFocus = true;
+            IncantationsView.CanFocus = true;
             IncantationsView.SetFocus();
             if (_incantationLines.Count == 0)
             {
