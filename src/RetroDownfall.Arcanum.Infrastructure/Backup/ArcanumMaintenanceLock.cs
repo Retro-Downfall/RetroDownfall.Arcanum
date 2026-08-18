@@ -188,12 +188,18 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
 
         }
 
+        // Closing the handle is the whole of the release, and the lock file is deliberately left
+        // behind. Release cannot be two steps: the share mode is an advisory lock on the open file
+        // description, so between the close and an unlink another process can open and lock that
+        // same inode — and unlinking it then leaves that process holding a nameless file while the
+        // next acquirer creates a fresh inode at the same path and takes what both believe is the
+        // installation's only maintenance lock. A file nothing holds is already not a lock, which is
+        // why leaving it costs nothing and why no unlink can be made safe (there is no portable
+        // compare-inode-and-unlink to close the window with).
         try
         {
 
             stream.Dispose();
-
-            File.Delete(Path);
 
         }
         catch (Exception exception) when (

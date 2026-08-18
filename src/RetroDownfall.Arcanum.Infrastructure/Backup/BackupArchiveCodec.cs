@@ -429,9 +429,28 @@ public sealed class BackupArchiveCodec
 
     }
 
+    public Task<BackupVerifyResult> VerifyAsync(
+        string archivePath,
+        ReadOnlyMemory<char> passphrase,
+        CancellationToken cancellationToken) =>
+        VerifyAsync(archivePath, passphrase, protectedScratchRoot: null, cancellationToken);
+
+    /// <summary>
+    /// Authenticates an archive end to end, decrypting beneath <paramref name="protectedScratchRoot"/>.
+    /// </summary>
+    /// <remarks>
+    /// Verification is the one archive operation with no destination of its own, so it has to be told
+    /// where its scratch belongs. Unnamed, it falls back to the archive's own directory — right only
+    /// for the staged self-verification inside a create, where the archive already sits in the
+    /// caller's owner-only staging root. A standalone verify inheriting that default writes the
+    /// decrypted payload and the entire extraction tree onto whatever volume the operator keeps
+    /// backups on: removable media, a sync root, or a filesystem that cannot carry owner-only
+    /// permissions at all, where a perfectly good archive is then reported as malformed.
+    /// </remarks>
     public async Task<BackupVerifyResult> VerifyAsync(
         string archivePath,
         ReadOnlyMemory<char> passphrase,
+        string? protectedScratchRoot,
         CancellationToken cancellationToken)
     {
 
@@ -448,6 +467,26 @@ public sealed class BackupArchiveCodec
 
             ValidatePassphrase(passphrase.Span);
 
+            string scratchDirectory;
+
+            if (string.IsNullOrWhiteSpace(protectedScratchRoot))
+            {
+
+                scratchDirectory = Path.GetDirectoryName(fullPath)!;
+
+            }
+            else
+            {
+
+                // Only a root this codec was handed is a root it may create or tighten. The fallback
+                // is a directory the operator chose for something else — an archive output parent
+                // whose existing permissions a create is required to leave exactly as it found them.
+                scratchDirectory = Path.GetFullPath(protectedScratchRoot);
+
+                SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(scratchDirectory);
+
+            }
+
             ParsedHeader parsed = await ReadHeaderAsync(fullPath, cancellationToken).ConfigureAwait(false);
 
             formatVersion = parsed.Header.FormatVersion;
@@ -456,10 +495,11 @@ public sealed class BackupArchiveCodec
                 fullPath,
                 parsed,
                 passphrase,
+                scratchDirectory,
                 cancellationToken).ConfigureAwait(false);
 
             extraction = CreateProtectedTemporaryDirectory(
-                Path.GetDirectoryName(fullPath)!,
+                scratchDirectory,
                 ".arcanum-backup-verify-");
 
             ExtractedPayload extracted = await ExtractPayloadAsync(

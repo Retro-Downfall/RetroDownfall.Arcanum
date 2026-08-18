@@ -319,6 +319,17 @@ internal static class BackupSessionImporter
 
         List<PendingAttachmentCopy> copies = [];
 
+        // Destinations this import has spoken for. Two rows in one import can otherwise resolve to
+        // the same path — neither exists on disk while the rows are being read, because the bytes are
+        // not copied until the Session loop has finished — and the second copy would then fail on a
+        // file the first one had just written.
+        HashSet<string> claimed = new(StringComparer.Ordinal);
+
+        // The destinations this import actually brought into existence, and the only ones it is
+        // entitled to remove again. A destination it merely collided with belongs to the live
+        // installation.
+        List<string> written = [];
+
         // Payloads land in the live attachment tree, which no transaction can roll back. Nothing but
         // a successful commit entitles them to stay, so the cleanup is keyed on this rather than on
         // the exception types the catch below happens to name.
@@ -368,6 +379,7 @@ internal static class BackupSessionImporter
                     sourceAttachmentsRoot,
                     destinationAttachmentsRoot,
                     copies,
+                    claimed,
                     cancellationToken).ConfigureAwait(false);
 
                 attachments += copied;
@@ -384,7 +396,23 @@ internal static class BackupSessionImporter
                 SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(
                     Path.GetDirectoryName(copy.Destination)!);
 
-                File.Copy(copy.Source, copy.Destination, overwrite: false);
+                // Created rather than copied, so the record of having created it is taken from the
+                // act itself: `CreateNew` fails on a destination that already exists, which means
+                // nothing reaches the unwind list that this import did not bring into being.
+                await using (FileStream sink = new(
+                    copy.Destination,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None))
+                {
+
+                    written.Add(copy.Destination);
+
+                    await using FileStream payload = File.OpenRead(copy.Source);
+
+                    await payload.CopyToAsync(sink, cancellationToken).ConfigureAwait(false);
+
+                }
 
                 SecureFilePermissions.ApplyOwnerOnlyFile(copy.Destination);
 
@@ -425,7 +453,7 @@ internal static class BackupSessionImporter
 
                 // Cancellation unwinds here too, and it is the one failure the catch above never
                 // sees: the transaction is rolled back by its own disposal, but the bytes are not.
-                Discard(copies);
+                Discard(written);
 
             }
 
@@ -433,16 +461,16 @@ internal static class BackupSessionImporter
 
     }
 
-    private static void Discard(List<PendingAttachmentCopy> copies)
+    private static void Discard(List<string> written)
     {
 
-        foreach (PendingAttachmentCopy copy in copies)
+        foreach (string destination in written)
         {
 
             try
             {
 
-                File.Delete(copy.Destination);
+                File.Delete(destination);
 
             }
             catch (Exception exception) when (
@@ -630,6 +658,7 @@ internal static class BackupSessionImporter
         string sourceAttachmentsRoot,
         string destinationAttachmentsRoot,
         List<PendingAttachmentCopy> copies,
+        HashSet<string> claimed,
         CancellationToken cancellationToken)
     {
 
@@ -712,28 +741,38 @@ internal static class BackupSessionImporter
 
                 }
 
-                if (File.Exists(destinationFile)
+                if (!claimed.Contains(destinationFile)
+                    && File.Exists(destinationFile)
                     && SameContent(sourceFile, destinationFile))
                 {
 
                     deduplicated++;
 
                 }
-                else if (File.Exists(destinationFile))
-                {
-
-                    effectiveRelative = ReplaceLeadingSegment(
-                        relative,
-                        originalSessionId,
-                        effectiveSessionId + "-" + attachmentId[..8]);
-
-                    copies.Add(new PendingAttachmentCopy(
-                        sourceFile,
-                        ResolveContained(destinationAttachmentsRoot, effectiveRelative)));
-
-                }
                 else
                 {
+
+                    if (claimed.Contains(destinationFile) || File.Exists(destinationFile))
+                    {
+
+                        effectiveRelative = DisambiguateLeaf(effectiveRelative, attachmentId[..8]);
+
+                        destinationFile = ResolveContained(
+                            destinationAttachmentsRoot,
+                            effectiveRelative);
+
+                    }
+
+                    // Refused before a byte moves rather than discovered by a failing copy. The old
+                    // shape let a taken destination reach the copy loop, where the failure unwound an
+                    // import that had already deleted the live payload it collided with.
+                    if (!claimed.Add(destinationFile) || File.Exists(destinationFile))
+                    {
+
+                        throw new IOException(
+                            "An imported attachment has no free destination path to be written to.");
+
+                    }
 
                     copies.Add(new PendingAttachmentCopy(sourceFile, destinationFile));
 
@@ -831,6 +870,17 @@ internal static class BackupSessionImporter
 
     }
 
+    /// <summary>
+    /// Re-owns an attachment path onto the Session id its row is actually being written under.
+    /// </summary>
+    /// <remarks>
+    /// The leading segment is compared as an identity, not as text, and re-rendered in the one form
+    /// the attachment tree is keyed by. <see cref="Data.SessionAttachmentStore"/> writes that segment
+    /// with <c>ToString("N")</c> while the importer carries Session ids in dashed form, so a textual
+    /// prefix comparison never matched and every remap was a permanent no-op — the imported rows kept
+    /// pointing into the archived Session's directory. A leading segment that is not a Session id,
+    /// <c>_pending</c> included, is left exactly as it was found.
+    /// </remarks>
     private static string ReplaceLeadingSegment(
         string relative,
         string oldSegment,
@@ -839,9 +889,48 @@ internal static class BackupSessionImporter
 
         string normalized = relative.Replace('\\', '/');
 
-        return normalized.StartsWith(oldSegment + "/", StringComparison.Ordinal)
-            ? newSegment + normalized[oldSegment.Length..]
-            : normalized;
+        int boundary = normalized.IndexOf('/');
+
+        if (boundary <= 0
+            || !Guid.TryParse(oldSegment, out Guid owner)
+            || !Guid.TryParse(normalized[..boundary], out Guid current)
+            || current != owner)
+        {
+
+            return normalized;
+
+        }
+
+        string replacement = Guid.TryParse(newSegment, out Guid replacementId)
+            ? replacementId.ToString("N")
+            : newSegment;
+
+        return replacement + normalized[boundary..];
+
+    }
+
+    /// <summary>
+    /// Distinguishes a payload whose destination is already taken, on the file name rather than on
+    /// the owner segment.
+    /// </summary>
+    /// <remarks>
+    /// The owner segment is the Session id the attachment tree is keyed by, and
+    /// <c>TryDeleteSessionDirectory</c> reclaims a Session's bytes by that exact name. A suffixed
+    /// owner segment is a directory no per-Session cleanup will ever find again, which trades a
+    /// collision for a permanent leak.
+    /// </remarks>
+    private static string DisambiguateLeaf(string relative, string discriminator)
+    {
+
+        int boundary = relative.LastIndexOf('/');
+
+        string directory = boundary < 0 ? string.Empty : relative[..(boundary + 1)];
+
+        string leaf = boundary < 0 ? relative : relative[(boundary + 1)..];
+
+        string extension = Path.GetExtension(leaf);
+
+        return directory + leaf[..(leaf.Length - extension.Length)] + "-" + discriminator + extension;
 
     }
 

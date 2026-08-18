@@ -632,6 +632,192 @@ public sealed class BackupServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// `--restore-master-api-key` adopts the archived key out of the portable recovery document, so
+    /// including the master API key in a backup has to put it there. A separate archive entry nothing
+    /// reads makes the whole option a dead letter: the restore reports the archive carries no key
+    /// while the archive demonstrably does, and the operator is sent to fix a problem they do not
+    /// have.
+    /// </summary>
+    [Fact]
+    public async Task An_included_master_api_key_is_carried_by_the_portable_recovery_material()
+    {
+
+        BackupStatePaths paths = Paths();
+
+        const string grimoireSecret = "grimoire-secret";
+
+        RetroDownfall.Arcanum.Infrastructure.Data.SqliteNativeRuntime.Instance.Initialize();
+
+        await CreateMissingAttachmentDatabaseAsync(paths.DatabasePath, grimoireSecret);
+
+        await using (Microsoft.Data.Sqlite.SqliteConnection connection = new(
+                         new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+                         {
+
+                             DataSource = paths.DatabasePath,
+
+                             Password = DeriveDatabasePassphrase(paths.DatabasePath, grimoireSecret),
+
+                             Pooling = false,
+
+                         }.ToString()))
+        {
+
+            await connection.OpenAsync();
+
+            await using Microsoft.Data.Sqlite.SqliteCommand remove = connection.CreateCommand();
+
+            remove.CommandText = "DELETE FROM SessionAttachments;";
+
+            _ = await remove.ExecuteNonQueryAsync();
+
+        }
+
+        string fileEncryptionSecret = Convert.ToBase64String(
+            RandomNumberGenerator.GetBytes(32));
+
+        BackupService service = CreateService(
+            paths,
+            new StubSecretReader(
+                SecretStoreReadResult.Ok(grimoireSecret),
+                SecretStoreReadResult.Ok(fileEncryptionSecret),
+                SecretStoreReadResult.Ok("the archived master key")));
+
+        string archive = Path.Combine(_root, "master-key.arcbackup");
+
+        BackupCreateResult created = await service.CreateAsync(
+            new BackupCreateRequest(
+                new BackupPlanRequest(
+                    BackupScope.Full,
+                    SessionId: null,
+                    Include: [BackupComponent.MasterApiKey],
+                    Exclude: []),
+                archive,
+                Overwrite: false),
+            "master key passphrase".AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupCreateStatus.Complete, created.Status);
+
+        string extracted = Path.Combine(_root, "extracted");
+
+        string scratch = Path.Combine(_root, "extract-scratch");
+
+        Directory.CreateDirectory(extracted);
+
+        Directory.CreateDirectory(scratch);
+
+        BackupArchiveExtraction extraction = await new BackupArchiveCodec(
+            new BackupArchiveCodecOptions
+            {
+
+                KdfIterations = 10_000,
+
+                ChunkSize = 64 * 1024,
+
+            }).ExtractAsync(
+                archive,
+                "master key passphrase".AsMemory(),
+                extracted,
+                scratch,
+                CancellationToken.None);
+
+        Assert.Empty(extraction.Issues);
+
+        AdoptingSecretStore adopted = new();
+
+        BackupSecretRewrapResult rewrap = await new BackupSecretRewrapper(adopted)
+            .RewrapAsync(
+                Path.Combine(extracted, "recovery", "portable-keys.json"),
+                restoreMasterApiKey: true,
+                CancellationToken.None);
+
+        Assert.Empty(rewrap.Issues);
+
+        Assert.True(rewrap.MasterApiKeyWritten);
+
+        Assert.Equal("the archived master key", adopted.ApiKey);
+
+    }
+
+    /// <summary>
+    /// Verification decrypts the whole payload to disk twice over — a plaintext temporary the size of
+    /// the archive, and an extraction tree beside it — and the archive is wherever the operator keeps
+    /// their backups: a USB stick, a sync root. Neither belongs there. The archive's own volume is
+    /// also the one place owner-only permissions may not hold, which is how a perfectly good archive
+    /// on exFAT gets reported as malformed.
+    /// </summary>
+    [Fact]
+    public async Task Verification_scratch_stays_on_the_installations_volume_not_the_archives()
+    {
+
+        BackupStatePaths paths = Paths();
+
+        string removable = Path.Combine(_root, "removable");
+
+        Directory.CreateDirectory(removable);
+
+        string archive = Path.Combine(removable, "portable.arcbackup");
+
+        BackupCreateResult created = await CreateService(paths, new CountingSecretReader())
+            .CreateAsync(
+                new BackupCreateRequest(
+                    new BackupPlanRequest(
+                        BackupScope.MetadataOnly,
+                        SessionId: null,
+                        Include: [],
+                        Exclude: []),
+                    archive,
+                    Overwrite: false),
+                "scratch passphrase".AsMemory(),
+                CancellationToken.None);
+
+        Assert.Equal(BackupCreateStatus.Complete, created.Status);
+
+        List<string> temporaries = [];
+
+        BackupService service = new(
+            paths,
+            new BackupInventoryPlanner(paths),
+            new BackupDatabaseSnapshotter(),
+            new BackupArchiveCodec(new BackupArchiveCodecOptions
+            {
+
+                KdfIterations = 10_000,
+
+                ChunkSize = 64 * 1024,
+
+                BeforeTemporaryPayloadCleanupForTests = temporaries.Add,
+
+                BeforeTemporaryExtractionCleanupForTests = temporaries.Add,
+
+            }),
+            new CountingSecretReader(),
+            TimeProvider.System);
+
+        BackupVerifyResult verified = await service.VerifyAsync(
+            archive,
+            "scratch passphrase".AsMemory(),
+            CancellationToken.None);
+
+        Assert.True(verified.IsValid);
+
+        Assert.Equal(2, temporaries.Count);
+
+        Assert.All(
+            temporaries,
+            temporary => Assert.StartsWith(
+                paths.BackupsDirectory + Path.DirectorySeparatorChar,
+                temporary,
+                StringComparison.Ordinal));
+
+        Assert.Equal(
+            [archive],
+            Directory.EnumerateFileSystemEntries(removable).Order(StringComparer.Ordinal));
+
+    }
+
     [Fact]
     public async Task Same_size_source_mutation_after_inventory_is_rejected()
     {
@@ -834,6 +1020,79 @@ public sealed class BackupServiceTests : IDisposable
             ReadCount++;
 
             return Task.FromResult(SecretStoreReadResult.Missing());
+
+        }
+
+    }
+
+    private sealed class StubSecretReader(
+        SecretStoreReadResult grimoire,
+        SecretStoreReadResult fileEncryptionKeys,
+        SecretStoreReadResult masterApiKey) : IBackupSecretSnapshotReader
+    {
+
+        public Task<SecretStoreReadResult> ReadGrimoireSecretAsync() =>
+            Task.FromResult(grimoire);
+
+        public Task<SecretStoreReadResult> ReadFileEncryptionKeysAsync() =>
+            Task.FromResult(fileEncryptionKeys);
+
+        public Task<SecretStoreReadResult> ReadMasterApiKeyAsync() =>
+            Task.FromResult(masterApiKey);
+
+    }
+
+    /// <summary>The clean machine a portable archive is restored onto: it holds nothing until the re-wrap writes it.</summary>
+    private sealed class AdoptingSecretStore : ISecretStore
+    {
+
+        public string? ApiKey { get; private set; }
+
+        public string? GrimoireSecret { get; private set; }
+
+        public string? FileEncryptionSecret { get; private set; }
+
+        public Task<string?> GetApiKeyAsync() => Task.FromResult(ApiKey);
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(
+                ApiKey is null
+                    ? SecretStoreReadResult.Missing()
+                    : SecretStoreReadResult.Ok(ApiKey));
+
+        public Task SaveApiKeyAsync(string apiKey)
+        {
+
+            ApiKey = apiKey;
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() =>
+            Task.FromResult(GrimoireSecret);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
+        {
+
+            GrimoireSecret = encryptionSecret;
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
+            Task.FromResult(
+                FileEncryptionSecret is null
+                    ? SecretStoreReadResult.Missing()
+                    : SecretStoreReadResult.Ok(FileEncryptionSecret));
+
+        public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
+        {
+
+            FileEncryptionSecret = encryptionSecret;
+
+            return Task.CompletedTask;
 
         }
 

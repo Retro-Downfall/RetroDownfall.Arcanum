@@ -97,8 +97,10 @@ public sealed class FileEncryptionKeyProviderTests
     }
 
     // The persisted key ring must be LF-delimited on every platform: AppendLine emits CRLF on
-    // Windows, and every reader (this provider, BackupSecretSnapshotReader, BackupSecretRewrapper)
-    // requires bare LF, so a CRLF ring makes every encrypted blob permanently unreadable.
+    // Windows, and BackupSecretRewrapper still requires bare LF, so a ring this writer emits with
+    // CRLF cannot be merged back in on restore. This provider and BackupSecretSnapshotReader also
+    // accept CRLF, which is what rescues rings an older Windows build already wrote — tolerance on
+    // the reading side, one canonical form on the writing side.
     [Fact]
     public async Task Persisted_key_ring_is_line_feed_delimited_on_every_platform()
     {

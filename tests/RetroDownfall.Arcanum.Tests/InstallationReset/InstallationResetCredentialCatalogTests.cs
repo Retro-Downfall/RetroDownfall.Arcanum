@@ -49,8 +49,13 @@ public sealed class InstallationResetCredentialCatalogTests
                 settings,
                 mirrorRoot);
 
+            // The Campaign root-identity key belongs here because the documented contract says a full
+            // installation reset regenerates it, and this catalog is the only thing that can delete
+            // it: `IOsCredentialStore` has no enumeration surface, so an account nobody names here is
+            // an account nothing on this machine can ever erase.
             Assert.Equal(
                 [
+                    ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
                     ArcanumCredentialIdentity.FileEncryptionKeyAccount,
                     "inference-provider-MY_CO-api-key",
                     "inference-provider-OPENAI-api-key",
