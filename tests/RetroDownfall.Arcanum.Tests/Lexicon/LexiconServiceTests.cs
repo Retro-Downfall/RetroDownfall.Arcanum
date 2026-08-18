@@ -1,3 +1,8 @@
+using System.Collections;
+using System.Data;
+using System.Data.Common;
+using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -698,5 +703,168 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     private static int CountProvenanceQueries(List<string> statements) =>
         statements.Count(static statement =>
             statement.Contains("lexicon_fact_attachment_provenance", StringComparison.Ordinal));
+
+    /// <summary>
+    /// A rollback that fails in an unanticipated way must not replace the failure that caused it.
+    /// </summary>
+    /// <remarks>
+    /// Both callers are shaped <c>catch { await TryRollbackAsync(...); throw; }</c>, and an exception
+    /// raised inside a catch block discards the one being handled. The outer handler would then see the
+    /// rollback's exception instead of the real failure — and because it filters on
+    /// <c>ex is not OperationCanceledException</c>, an aborted request whose rollback threw would stop
+    /// being reported as a cancellation and start being reported as a generic Lexicon write failure.
+    /// Best-effort has to mean best-effort for every failure kind, not for three enumerated ones.
+    /// </remarks>
+    [Fact]
+    public async Task A_rollback_that_fails_unexpectedly_never_replaces_the_original_failure()
+    {
+
+        MethodInfo rollback = typeof(LexiconService).GetMethod(
+                "TryRollbackAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("TryRollbackAsync is no longer where this suite expects it.");
+
+        using HostileConnection connection = new();
+
+        // NotSupportedException is neither one of the three anticipated kinds nor derived from any.
+        await (Task)rollback.Invoke(_service!, [connection, "entity"])!;
+
+        Assert.True(connection.RollbackAttempted);
+
+    }
+
+    /// <summary>
+    /// A connection whose command execution fails in a way the rollback's author did not enumerate.
+    /// </summary>
+    private sealed class HostileConnection : DbConnection
+    {
+
+        public bool RollbackAttempted { get; private set; }
+
+        [AllowNull]
+        public override string ConnectionString { get; set; } = string.Empty;
+
+        public override string Database => string.Empty;
+
+        public override string DataSource => string.Empty;
+
+        public override string ServerVersion => string.Empty;
+
+        public override ConnectionState State => ConnectionState.Open;
+
+        public override void ChangeDatabase(string databaseName) => throw new NotSupportedException();
+
+        public override void Close()
+        {
+        }
+
+        public override void Open()
+        {
+        }
+
+        protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) =>
+            throw new NotSupportedException();
+
+        protected override DbCommand CreateDbCommand()
+        {
+
+            RollbackAttempted = true;
+
+            return new HostileCommand(this);
+
+        }
+
+    }
+
+    private sealed class HostileCommand(DbConnection connection) : DbCommand
+    {
+
+        [AllowNull]
+        public override string CommandText { get; set; } = string.Empty;
+
+        public override int CommandTimeout { get; set; }
+
+        public override CommandType CommandType { get; set; } = CommandType.Text;
+
+        public override bool DesignTimeVisible { get; set; }
+
+        public override UpdateRowSource UpdatedRowSource { get; set; }
+
+        protected override DbConnection? DbConnection { get; set; } = connection;
+
+        protected override DbParameterCollection DbParameterCollection { get; } = new HostileParameterCollection();
+
+        protected override DbTransaction? DbTransaction { get; set; }
+
+        public override void Cancel()
+        {
+        }
+
+        public override int ExecuteNonQuery() =>
+            throw new NotSupportedException("The provider refused the statement outright.");
+
+        public override object? ExecuteScalar() => throw new NotSupportedException();
+
+        public override void Prepare() => throw new NotSupportedException();
+
+        protected override DbParameter CreateDbParameter() => throw new NotSupportedException();
+
+        protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) =>
+            throw new NotSupportedException();
+
+    }
+
+    private sealed class HostileParameterCollection : DbParameterCollection
+    {
+
+        private readonly List<object> _items = [];
+
+        public override int Count => _items.Count;
+
+        public override object SyncRoot => _items;
+
+        public override int Add(object value)
+        {
+
+            _items.Add(value);
+
+            return _items.Count - 1;
+
+        }
+
+        public override void AddRange(Array values) => throw new NotSupportedException();
+
+        public override void Clear() => _items.Clear();
+
+        public override bool Contains(object value) => _items.Contains(value);
+
+        public override bool Contains(string value) => false;
+
+        public override void CopyTo(Array array, int index) => throw new NotSupportedException();
+
+        public override IEnumerator GetEnumerator() => _items.GetEnumerator();
+
+        public override int IndexOf(object value) => _items.IndexOf(value);
+
+        public override int IndexOf(string parameterName) => -1;
+
+        public override void Insert(int index, object value) => _items.Insert(index, value);
+
+        public override void Remove(object value) => _items.Remove(value);
+
+        public override void RemoveAt(int index) => _items.RemoveAt(index);
+
+        public override void RemoveAt(string parameterName) => throw new NotSupportedException();
+
+        protected override DbParameter GetParameter(int index) => throw new NotSupportedException();
+
+        protected override DbParameter GetParameter(string parameterName) => throw new NotSupportedException();
+
+        protected override void SetParameter(int index, DbParameter value) => throw new NotSupportedException();
+
+        protected override void SetParameter(string parameterName, DbParameter value) =>
+            throw new NotSupportedException();
+
+    }
 
 }

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -163,6 +164,13 @@ internal sealed partial class ArcanumInternalToolServer
 
         }
 
+        // The ARCANUM_ prefix scrub only covers the derived default names. Every one of these variables
+        // can be pointed at a name the operator chose — a provider key at MY_OPENAI_KEY, the Comm Link
+        // webhook URL at TEAM_WEBHOOK_URL — and a model-directed child would inherit it untouched, so the
+        // configured names travel with the profile rather than being assumed from a prefix.
+        IReadOnlyList<string> operatorDeclaredSecrets =
+            FamiliarSecretEnvironmentNames.Collect(optionsMonitor.CurrentValue);
+
         CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.ToolExec,
@@ -173,7 +181,8 @@ internal sealed partial class ArcanumInternalToolServer
             cancellationToken,
             sandboxRequest,
             _logger,
-            outputSpillDirectory: outputSpillDirectory)
+            outputSpillDirectory: outputSpillDirectory,
+            operatorDeclaredSecretEnvironmentVariables: operatorDeclaredSecrets)
             .ConfigureAwait(false);
 
         if (runResult.Outcome != CappedChildProcessOutcome.Completed)

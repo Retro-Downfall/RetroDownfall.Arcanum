@@ -254,10 +254,11 @@ public sealed class InMemoryDaemonExecutionRepository(
         {
             if (record.Status == DaemonJobStatus.Cancelled)
             {
-                // Re-entry is DaemonRunner reporting that job.RunAsync has actually returned, so this is
-                // where the reservation is finally released and the token source disposed.
-                ReleaseDrainedExecution(record, executionId);
-
+                // Idempotent, and nothing more. This method is reachable straight from
+                // POST /api/daemons/executions/{id}/cancel, so re-entry is just as likely to be a second
+                // operator hit as the runner reporting the body returned — and the two mean opposite
+                // things about whether the reservation may be freed. The runner says so explicitly
+                // through ReportDrainedAsync instead.
                 return Task.FromResult(record.ToSummary());
             }
 
@@ -288,6 +289,31 @@ public sealed class InMemoryDaemonExecutionRepository(
             // the cancel-not-dispose ordering the Apprentice runtime already uses (DESIGN §5.7).
             return Task.FromResult(record.ToSummary());
         }
+    }
+
+    public Task ReportDrainedAsync(string executionId, CancellationToken ct)
+    {
+
+        ct.ThrowIfCancellationRequested();
+
+        if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? record))
+        {
+
+            // A drain report comes from a catch arm, which can run after history trimming evicted the
+            // record. There is nothing left to release, and nothing to complain about.
+            return Task.CompletedTask;
+
+        }
+
+        lock (GetLock(record.DaemonId))
+        {
+
+            ReleaseDrainedExecution(record, executionId);
+
+        }
+
+        return Task.CompletedTask;
+
     }
 
     public bool HasRunningExecution(string daemonId) =>

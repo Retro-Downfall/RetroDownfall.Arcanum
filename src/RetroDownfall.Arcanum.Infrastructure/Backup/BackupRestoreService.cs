@@ -722,7 +722,18 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             exception is IOException or UnauthorizedAccessException)
         {
 
-            _ = createdStaging?.TryDelete();
+            if (createdStaging is not null)
+            {
+
+                // Journal first, exactly as the outer finally does. This catch is reachable with the
+                // journal already written, and BackupRestoreJournal.Discover adopts a staging root only
+                // while it still holds one — so a TryDelete that fails would otherwise leave the startup
+                // sweep a Stage-phase journal to resume, for a restore that touched nothing.
+                BackupRestoreJournal.Delete(createdStaging.Path);
+
+                _ = createdStaging.TryDelete();
+
+            }
 
             if (indexedStagingPath is not null)
             {
