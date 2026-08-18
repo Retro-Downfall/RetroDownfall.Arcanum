@@ -24,6 +24,14 @@ public interface IDaemonExecutionRepository
 
     Task<DaemonExecutionSummary> FailAsync(string executionId, string errorMessage, CancellationToken ct);
 
+    /// <summary>
+    /// Signals the execution's cancellation token and records it terminal. Cancellation is cooperative, so
+    /// returning proves only that the request was recorded — the job body may still be unwinding, and the
+    /// per-daemon in-flight reservation is deliberately held (and the token source left undisposed) until a
+    /// terminal transition reports the drain. Calling this, <see cref="CompleteAsync"/>, or
+    /// <see cref="FailAsync"/> once <c>job.RunAsync</c> has returned is what reports it; every one of them
+    /// releases the reservation idempotently without changing the recorded terminal status.
+    /// </summary>
     Task<DaemonExecutionSummary> CancelAsync(string executionId, CancellationToken ct);
 
     Task<bool> TryDeleteTerminalAsync(string executionId, CancellationToken ct);

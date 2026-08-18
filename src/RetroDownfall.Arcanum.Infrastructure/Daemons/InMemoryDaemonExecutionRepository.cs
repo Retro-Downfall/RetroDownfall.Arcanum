@@ -254,6 +254,10 @@ public sealed class InMemoryDaemonExecutionRepository(
         {
             if (record.Status == DaemonJobStatus.Cancelled)
             {
+                // Re-entry is DaemonRunner reporting that job.RunAsync has actually returned, so this is
+                // where the reservation is finally released and the token source disposed.
+                ReleaseDrainedExecution(record, executionId);
+
                 return Task.FromResult(record.ToSummary());
             }
 
@@ -276,10 +280,12 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             record.ErrorMessage = "Job was cancelled.";
 
-            DisposeCancellation(record);
-
-            RemoveInFlightIfMatch(record.DaemonId, executionId);
-
+            // Cancel, but neither dispose the token source nor release the in-flight reservation:
+            // cancellation is cooperative, so the job body is still executing and still holds that token.
+            // The reservation is this daemon's only single-flight mechanism, so freeing it here would let a
+            // second headless run start against the same target spell while the first is mid-turn. Both
+            // happen in ReleaseDrainedExecution once a terminal transition reports the body has returned —
+            // the cancel-not-dispose ordering the Apprentice runtime already uses (DESIGN §5.7).
             return Task.FromResult(record.ToSummary());
         }
     }
@@ -367,9 +373,13 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         lock (GetLock(record.DaemonId))
         {
-            // Terminal CAS: only Running → terminal; first terminal wins; later Complete/Fail no-op.
+            // Terminal CAS: only Running → terminal; first terminal wins; later Complete/Fail no-op on the
+            // recorded status — but a job cancelled out of band drains through exactly this call, so the
+            // release still has to happen here or the daemon stays reserved for the life of the host.
             if (record.Status != DaemonJobStatus.Running)
             {
+                ReleaseDrainedExecution(record, executionId);
+
                 return record.ToSummary();
             }
 
@@ -379,12 +389,24 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             record.ErrorMessage = errorMessage;
 
-            DisposeCancellation(record);
-
-            RemoveInFlightIfMatch(record.DaemonId, executionId);
+            ReleaseDrainedExecution(record, executionId);
 
             return record.ToSummary();
         }
+    }
+
+    /// <summary>
+    /// The one place an execution's runtime resources are handed back: called only from a terminal
+    /// transition, which the runner performs after <c>job.RunAsync</c> has returned. Idempotent and
+    /// id-matched, so the repeated terminal calls a cancelled-then-completed execution produces are safe.
+    /// </summary>
+    private void ReleaseDrainedExecution(DaemonExecutionRecord record, string executionId)
+    {
+
+        DisposeCancellation(record);
+
+        RemoveInFlightIfMatch(record.DaemonId, executionId);
+
     }
 
     // W3.3 Fix 4: id-matched removal. Only evict the in-flight slot when the

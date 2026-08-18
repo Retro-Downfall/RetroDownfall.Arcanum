@@ -24,11 +24,37 @@ public sealed class SessionEventHub
         _logger = logger;
     }
 
+    /// <summary>
+    /// Number of sessions holding a live per-session hub. A hub exists exactly while it has at least one
+    /// subscriber, so this is never a count of sessions that have merely published.
+    /// </summary>
+    internal int TrackedSessionCount => _hubs.Count;
+
     public void Publish(Guid sessionId, Entry entry)
     {
-        PerSessionHub hub = GetOrCreateHub(sessionId);
 
-        int drops = hub.Publish(entry);
+        int drops;
+
+        // Publishing must never create a hub: a hub is removed only when its last subscriber leaves, so a
+        // publisher-created hub would live for the lifetime of this singleton, and every ordinary turn
+        // (`arcanum run`, /v1/chat/completions, a daemon job, an Apprentice step) publishes with nobody on
+        // GET /api/sessions/{id}/stream. With nobody subscribed the entry has no destination anyway — the
+        // session stream is live-only, never replayed from memory. Taking _lifecycleLock for the whole body
+        // is what makes that check honest: SubscribeAsync removes the hub under the same lock, so a lookup
+        // outside it could publish into a hub the last subscriber had just orphaned.
+        lock (_lifecycleLock)
+        {
+
+            if (!_hubs.TryGetValue(sessionId, out PerSessionHub? hub))
+            {
+
+                return;
+
+            }
+
+            drops = hub.Publish(entry);
+
+        }
 
         if (drops > 0)
         {
@@ -39,6 +65,7 @@ public sealed class SessionEventHub
                 sessionId);
 
         }
+
     }
 
     public async IAsyncEnumerable<Entry> SubscribeAsync(

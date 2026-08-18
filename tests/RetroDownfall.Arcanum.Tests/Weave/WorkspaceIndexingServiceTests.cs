@@ -54,6 +54,74 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A directory link whose target resolves back under the workspace root passes the containment
+    /// pre-check, so containment alone admits a cycle. Only a canonical visited set — the guard
+    /// <c>EyeOfTheWorldService.ScanWorkspace</c> and <c>SpellScanner</c> already carry — stops the walk
+    /// re-reaching every real file through <c>docs/latest/docs/latest/…</c> at every depth, re-embedding
+    /// it under alias paths until the accumulated path finally trips PATH_MAX.
+    /// </summary>
+    [Fact]
+    public void Candidate_walk_terminates_on_an_in_workspace_directory_symlink_cycle()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        _workspace.WriteFile("docs/note.md", "the only real candidate");
+
+        string cyclePath = Path.Combine(_workspace.Root, "docs", "latest");
+
+        Directory.CreateSymbolicLink(cyclePath, _workspace.Root);
+
+        List<string> candidates;
+
+        try
+        {
+
+            candidates = EnumerateCandidateFiles(_workspace.Root, [".md"], take: 64);
+
+        }
+        finally
+        {
+
+            Directory.Delete(cyclePath);
+
+        }
+
+        Assert.Equal(
+            [Path.Combine(_workspace.Root, "docs", "note.md")],
+            candidates);
+
+    }
+
+    private static List<string> EnumerateCandidateFiles(
+        string workspacePath,
+        string[] extensions,
+        int take)
+    {
+
+        System.Reflection.MethodInfo? method = typeof(WorkspaceIndexingService)
+            .GetMethod(
+                "EnumerateCandidateFiles",
+                System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        IEnumerable<string> walk = (IEnumerable<string>)method!.Invoke(
+            null,
+            [workspacePath, new HashSet<string>(extensions, StringComparer.OrdinalIgnoreCase)])!;
+
+        // Bounded so an unterminated walk fails the assertion instead of hanging the suite.
+        return [.. walk.Take(take)];
+
+    }
+
     private readonly GrimoireFixture _fixture;
 
     private readonly TempWorkspace _workspace = new();
