@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -219,14 +220,7 @@ internal sealed partial class ArcanumInternalToolServer
                 .SearchArchivesAsync(query, maxResults, cancellationToken)
                 .ConfigureAwait(false);
 
-            return new McpToolsCallResultWire
-            {
-                Content =
-                [
-                    new McpToolContentTextWire { Text = text },
-                ],
-                IsError = false,
-            };
+            return BuildBoundedSearchArchivesResult(text);
         }
         catch (OperationCanceledException)
         {
@@ -238,6 +232,96 @@ internal sealed partial class ArcanumInternalToolServer
 
             return ToolError("An internal error occurred during tool execution.");
         }
+    }
+
+    /// <summary>
+    /// search_archives is the one text tool with neither a continuation cursor nor a model-settable
+    /// result knob — its schema exposes only <c>query</c> — while a single archived entry is allowed to
+    /// be as large as the whole tool-result allocation. Letting the global cap reject the response
+    /// therefore turns any sufficiently large match into a dead end whose error names no parameter the
+    /// caller could change. Return the leading matches that fit instead, cut back to a whole line, and
+    /// say plainly that the tail was dropped — the truncated-but-useful shape search_workspace uses.
+    /// </summary>
+    private McpToolsCallResultWire BuildBoundedSearchArchivesResult(string text)
+    {
+        long effectiveCap = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
+            _settings.ToolOutputCapBytes,
+            _maxJsonRpcLineBytes);
+
+        long byteCount = Encoding.UTF8.GetByteCount(text);
+
+        if (byteCount <= effectiveCap)
+        {
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = text },
+                ],
+                IsError = false,
+            };
+        }
+
+        string notice =
+            $"\n... [TRUNCATED: the matched archives are {byteCount} UTF-8 bytes and one tool result carries at most {effectiveCap}. Narrow 'query' with more specific keywords to reach the rest.]";
+
+        long bodyBudget = effectiveCap - Encoding.UTF8.GetByteCount(notice);
+
+        if (bodyBudget <= 0L)
+        {
+            return ToolError(
+                $"search_archives: output too large ({byteCount} UTF-8 bytes; limit {effectiveCap}). Narrow 'query' and retry.");
+        }
+
+        int retained = LongestPrefixWithinUtf8Budget(text, bodyBudget);
+
+        int lastLineBreak = retained > 0
+            ? text.LastIndexOf('\n', retained - 1)
+            : -1;
+
+        if (lastLineBreak > 0)
+        {
+            retained = lastLineBreak;
+        }
+
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = string.Concat(text.AsSpan(0, retained), notice) },
+            ],
+            IsError = false,
+        };
+    }
+
+    private static int LongestPrefixWithinUtf8Budget(string text, long budget)
+    {
+        int low = 0;
+
+        int high = text.Length;
+
+        while (low < high)
+        {
+            int mid = low + ((high - low + 1) / 2);
+
+            if (Encoding.UTF8.GetByteCount(text.AsSpan(0, mid)) <= budget)
+            {
+                low = mid;
+            }
+            else
+            {
+                high = mid - 1;
+            }
+        }
+
+        // A prefix ending on a high surrogate encodes as one replacement character, so the budget can
+        // admit it; dropping the orphan keeps the emitted text a real prefix of the match.
+        if (low > 0 && low < text.Length && char.IsHighSurrogate(text[low - 1]))
+        {
+            low--;
+        }
+
+        return low;
     }
 
 }

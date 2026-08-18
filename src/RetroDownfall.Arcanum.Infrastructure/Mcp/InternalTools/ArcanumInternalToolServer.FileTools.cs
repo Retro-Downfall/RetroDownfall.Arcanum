@@ -13,6 +13,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed partial class ArcanumInternalToolServer
 {
 
+    /// <summary>
+    /// Invoked once per entry for which the <c>list_directory</c> walk performs a full
+    /// <see cref="WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck"/> component walk. Each of
+    /// those is several filesystem syscalls per path component, and the continuation replays the walk
+    /// from the top of the tree on every page, so this is the only observable measure of how much of
+    /// the replay is being paid for again. Instance-scoped so a test never observes another session's
+    /// walk. Never set outside tests.
+    /// </summary>
+    internal Action<string>? ListDirectoryEntryValidationObserverForTests { get; set; }
+
     private async Task<McpToolsCallResultWire> ExecuteReadFileChunkAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
@@ -72,10 +82,6 @@ internal sealed partial class ArcanumInternalToolServer
             return revalidateErr!;
         }
 
-        int take = requestedLines;
-
-        List<string> selected = new(take);
-
         int maxReadBytes = checked((int)
             ArcanumSettingClamps.MaxFileReadSizeBytes(
                 _maxFileReadSizeBytes));
@@ -93,41 +99,96 @@ internal sealed partial class ArcanumInternalToolServer
             return PrefixToolError("read_file_chunk", readError!);
         }
 
-        using StringReader reader = new(content);
+        string slice = SliceLineRange(
+            content,
+            args.StartLine,
+            args.EndLine,
+            cancellationToken);
 
-        int currentLine = 0;
+        return CapToolTextResult(slice, "read_file_chunk");
+    }
 
-        while (currentLine < args.StartLine - 1)
+    /// <summary>
+    /// Slices the 1-based inclusive line range out of <paramref name="content"/> by index so the text
+    /// this tool returns is a literal substring of the file's decoded bytes. <c>StringReader.ReadLine</c>
+    /// consumes <c>"\r\n"</c>, <c>"\n"</c> and a lone <c>"\r"</c> and hands back none of them, so
+    /// rejoining with <c>"\n"</c> rewrote every CRLF (and classic-Mac) file and made the chunk
+    /// impossible to use as <c>replace_text_block</c>'s verbatim <c>exactSearchText</c>, whose schema
+    /// promises the block is matched "including whitespace and newlines". The terminator model matches
+    /// <c>WorkspaceTextFile.ParseLines</c>, which is what already makes <c>apply_patch</c> line-ending
+    /// faithful. The final selected line's terminator is excluded, so a pure-LF file's chunk is
+    /// byte-for-byte what the previous read-and-join produced.
+    /// </summary>
+    private static string SliceLineRange(
+        string content,
+        int startLine,
+        int endLine,
+        CancellationToken cancellationToken)
+    {
+        int lineNumber = 1;
+
+        int lineStart = 0;
+
+        int sliceStart = -1;
+
+        int sliceEnd = -1;
+
+        int index = 0;
+
+        while (index < content.Length)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            string? skipped = reader.ReadLine();
-
-            if (skipped is null)
+            if ((index & 0xFFF) == 0)
             {
-                break;
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
-            currentLine++;
-        }
+            char character = content[index];
 
-        while (selected.Count < take)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            string? line = reader.ReadLine();
-
-            if (line is null)
+            if (character is not ('\r' or '\n'))
             {
-                break;
+                index++;
+
+                continue;
             }
 
-            selected.Add(line);
+            if (lineNumber == startLine)
+            {
+                sliceStart = lineStart;
+            }
+
+            if (lineNumber >= startLine)
+            {
+                sliceEnd = index;
+            }
+
+            if (lineNumber == endLine)
+            {
+                return sliceStart < 0 ? string.Empty : content[sliceStart..sliceEnd];
+            }
+
+            index += character == '\r'
+                && index + 1 < content.Length
+                && content[index + 1] == '\n'
+                    ? 2
+                    : 1;
+
+            lineNumber++;
+
+            lineStart = index;
         }
 
-        string joined = string.Join("\n", selected);
+        // A trailing segment with no terminator is the file's last line.
+        if (lineStart < content.Length && lineNumber >= startLine)
+        {
+            if (lineNumber == startLine)
+            {
+                sliceStart = lineStart;
+            }
 
-        return CapToolTextResult(joined, "read_file_chunk");
+            sliceEnd = content.Length;
+        }
+
+        return sliceStart < 0 || sliceEnd < sliceStart ? string.Empty : content[sliceStart..sliceEnd];
     }
 
     private async Task<McpToolsCallResultWire> ExecuteReplaceTextBlockAsync(
@@ -276,7 +337,10 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("Invalid arguments for write_file.");
         }
 
-        if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
+        // Content is checked explicitly: WriteFileParams is positional, so a missing (or explicitly
+        // null) 'content' binds to the parameter default without raising JsonException, and the first
+        // thing the write-limit guard does is take its UTF-8 byte count.
+        if (args is null || string.IsNullOrWhiteSpace(args.RelativePath) || args.Content is null)
         {
             return ToolError("write_file requires 'relativePath' and 'content'.");
         }
@@ -416,9 +480,14 @@ internal sealed partial class ArcanumInternalToolServer
 
             string? lastPath = null;
 
+            // The captured local is read live by the enumerator, so the moment the checkpoint below is
+            // matched the walk resumes full per-entry validation for everything it goes on to emit.
+            bool ReachedContinuation() => continuationReached;
+
             foreach (string entry in EnumerateListDirectoryEntries(
                          absolutePath,
                          args.Recursive,
+                         ReachedContinuation,
                          cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -631,6 +700,7 @@ internal sealed partial class ArcanumInternalToolServer
     private IEnumerable<string> EnumerateListDirectoryEntries(
         string absolutePath,
         bool recursive,
+        Func<bool> continuationReached,
         CancellationToken cancellationToken)
     {
 
@@ -675,20 +745,34 @@ internal sealed partial class ArcanumInternalToolServer
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                        _workspaceRoot!,
-                        entry,
-                        out string? resolvedEntry))
-                {
-                    continue;
-                }
-
                 bool isDirectory = Directory.Exists(entry);
 
                 if (isDirectory
                     && IsListDirectorySkipFolder(Path.GetFileName(entry)))
                 {
                     continue;
+                }
+
+                string? resolvedEntry = null;
+
+                // A directory is validated even while the consumer is still replaying forward to its
+                // continuation checkpoint: the resolved target decides whether the walk descends into
+                // it and identifies it for cycle detection, so deferring that would let the replay
+                // descend through an escaping symlink and emit out-of-workspace paths after the resume
+                // point. A plain file is only ever emitted, never descended, so its component walk —
+                // several filesystem syscalls per path component — can wait until the consumer
+                // actually intends to return it, instead of being paid again on every page.
+                if (isDirectory || continuationReached())
+                {
+                    ListDirectoryEntryValidationObserverForTests?.Invoke(entry);
+
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                            _workspaceRoot!,
+                            entry,
+                            out resolvedEntry))
+                    {
+                        continue;
+                    }
                 }
 
                 yield return entry;

@@ -872,6 +872,56 @@ public sealed partial class McpConnectionManager(
         }
     }
 
+    /// <summary>
+    /// Disposes the client generations a reload retired, one bounded wait at a time. A generation
+    /// only finishes draining when its last in-flight call returns, and the calls
+    /// <c>McpBridgeTool.RunsUntilCallerCancellation</c> classifies carry no clock at all, so an
+    /// unbounded await here would tie the reload to an operator answering a prompt. Each disposal is
+    /// tracked before it is awaited so a wait that times out abandons the task to shutdown rather
+    /// than dropping a still-draining generation on the floor.
+    /// </summary>
+    private async Task DisposeRetiredReloadClientsAsync(
+        IReadOnlyList<IMcpClient> retiredClients)
+    {
+        foreach (IMcpClient client in retiredClients)
+        {
+            Task disposal;
+
+            try
+            {
+                disposal = client.DisposeAsync().AsTask();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error disposing MCP client instance during reload.");
+
+                continue;
+            }
+
+            TrackPendingWorkspaceRetirement(disposal);
+
+            using CancellationTokenSource cleanupDeadline =
+                new(WorkspaceRetirementCleanupTimeout);
+
+            try
+            {
+                await disposal
+                    .WaitAsync(cleanupDeadline.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (cleanupDeadline.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "Timed out draining a retired MCP client generation during reload; the drain continues in the background.");
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error disposing MCP client instance during reload.");
+            }
+        }
+    }
+
     private async Task AwaitRetiredPartitionDisposalsAsync()
     {
         Task[] pending =
@@ -882,9 +932,21 @@ public sealed partial class McpConnectionManager(
             return;
         }
 
+        using CancellationTokenSource cleanupDeadline =
+            new(WorkspaceRetirementCleanupTimeout);
+
         try
         {
-            await Task.WhenAll(pending).ConfigureAwait(false);
+            await Task.WhenAll(pending)
+                .WaitAsync(cleanupDeadline.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (cleanupDeadline.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Timed out awaiting {PendingCount} retired MCP client generation(s); the drain continues in the background.",
+                pending.Length);
         }
         catch (Exception ex)
         {
@@ -996,6 +1058,8 @@ public sealed partial class McpConnectionManager(
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        List<IMcpClient> retiredClients = [];
+
         await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
@@ -1028,30 +1092,26 @@ public sealed partial class McpConnectionManager(
 
             _globalRegistryLoaded = false;
 
-            foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
+            // The retired clients are collected here but disposed after the lock is released and
+            // after every cached surface has been dropped. Draining a generation can take as long as
+            // its longest in-flight call — ask_human and execute_command run with
+            // Timeout.InfiniteTimeSpan — so disposing under _globalInitLock, or before the caches
+            // are cleared, would leave the whole tool surface pinned to the retired generation (and
+            // _globalInitLock held) for the duration of an operator-answered prompt.
+            foreach (KeyValuePair<string, Lazy<McpPartitionClients>> partitionEntry in _partitionClients.ToArray())
             {
-                if (!partitionLazy.IsValueCreated)
+                if (!_partitionClients.TryRemove(partitionEntry))
                 {
                     continue;
                 }
 
-                foreach (IMcpClient client in partitionLazy.Value.SnapshotClients())
+                if (!partitionEntry.Value.IsValueCreated)
                 {
-                    try
-                    {
-                        await client.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex, "Error disposing MCP client instance during reload.");
-                    }
+                    continue;
                 }
+
+                retiredClients.AddRange(partitionEntry.Value.Value.DrainClients());
             }
-
-            await AwaitRetiredPartitionDisposalsAsync()
-                .ConfigureAwait(false);
-
-            _partitionClients.Clear();
 
             _mergedToolsByWorkspace.Clear();
 
@@ -1067,6 +1127,12 @@ public sealed partial class McpConnectionManager(
         {
             _globalInitLock.Release();
         }
+
+        await DisposeRetiredReloadClientsAsync(retiredClients)
+            .ConfigureAwait(false);
+
+        await AwaitRetiredPartitionDisposalsAsync()
+            .ConfigureAwait(false);
 
         await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
 
