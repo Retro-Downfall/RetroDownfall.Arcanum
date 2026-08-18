@@ -126,13 +126,40 @@ sign_publish_dir() {
     fi
   done < <(find "$dir" -type f -print0)
 
-  # Deepest paths first so nested dylibs are signed before dependents / main.
-  # Use NUL-delimited sort so paths with spaces are not word-split.
+  # Deepest paths first so nested dylibs are signed before dependents / main. The ordering is done
+  # in-shell rather than through a NUL-delimited pipeline: BSD `cut` has no `-z` and one-true-awk
+  # stores RS="\0" as the empty string, so on the only OS that runs this script the pipeline emitted
+  # nothing at all — which then either aborted the release on bash 3.2 (`sorted: unbound variable`)
+  # or, on a newer bash, silently signed nothing but the main executable. Parameter expansion never
+  # word-splits, so paths with spaces are safe without a delimiter.
   if ((${#nested[@]} > 0)); then
-    local sorted=()
-    while IFS= read -r -d '' file; do
-      sorted+=("$file")
-    done < <(printf '%s\0' "${nested[@]}" | awk 'BEGIN{RS="\0";ORS="\0"} {print length($0), $0}' | sort -nzr | cut -z -d' ' -f2-)
+    local -a depths=()
+    local -a sorted=()
+    local separators
+    local max_depth=0
+    for file in "${nested[@]}"; do
+      separators="${file//[!\/]/}"
+      depths+=("${#separators}")
+      if ((${#separators} > max_depth)); then
+        max_depth=${#separators}
+      fi
+    done
+    local level
+    local index
+    for ((level = max_depth; level >= 0; level--)); do
+      for ((index = 0; index < ${#nested[@]}; index++)); do
+        if ((depths[index] == level)); then
+          sorted+=("${nested[index]}")
+        fi
+      done
+    done
+    # A reordering that drops entries would sign a partial tree and leave the rest unsigned inside an
+    # archive that `codesign --verify` still calls valid, because it only inspects the main binary.
+    # Fail loudly instead.
+    if ((${#sorted[@]} != ${#nested[@]})); then
+      echo "error: sign_publish_dir: depth ordering kept ${#sorted[@]} of ${#nested[@]} Mach-O files; refusing to sign a partial tree" >&2
+      exit 1
+    fi
     nested=("${sorted[@]}")
   fi
 
