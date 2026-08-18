@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Text;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -8,6 +10,10 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 /// <summary>One pending ward card in The Gatehouse with approve/deny and an ExpiresAt countdown.</summary>
 public sealed partial class WardCardViewModel : ObservableObject
 {
+
+    private const int MaxArgumentsSummaryLength = 400;
+
+    private static readonly JsonWriterOptions IndentedWriterOptions = new() { Indented = true };
 
     private readonly Func<WardCardViewModel, bool, string?, CancellationToken, Task> _resolve;
 
@@ -27,6 +33,8 @@ public sealed partial class WardCardViewModel : ObservableObject
 
         _resolve = resolve;
 
+        ArgumentsSummary = FormatArguments(ward.Arguments);
+
         RefreshCountdown(DateTimeOffset.UtcNow);
 
     }
@@ -41,13 +49,16 @@ public sealed partial class WardCardViewModel : ObservableObject
 
     public DateTimeOffset ExpiresAt => Ward.ExpiresAt;
 
-    public string ArgumentsSummary => FormatArguments(Ward.Arguments);
+    /// <summary>Formatted once per DTO; the Gatehouse re-polls every two seconds and the view re-reads on every notification.</summary>
+    public string ArgumentsSummary { get; private set; }
 
     /// <summary>Replaces the underlying DTO and refreshes bound display properties.</summary>
     public void Update(WardDto ward)
     {
 
         Ward = ward;
+
+        ArgumentsSummary = FormatArguments(ward.Arguments);
 
         OnPropertyChanged(nameof(Ward));
 
@@ -133,21 +144,28 @@ public sealed partial class WardCardViewModel : ObservableObject
         try
         {
 
-            indented = JsonSerializer.Serialize(arguments.Value, new JsonSerializerOptions { WriteIndented = true });
+            ArrayBufferWriter<byte> buffer = new();
+
+            using (Utf8JsonWriter writer = new(buffer, IndentedWriterOptions))
+            {
+
+                arguments.Value.WriteTo(writer);
+
+            }
+
+            indented = Encoding.UTF8.GetString(buffer.WrittenSpan);
 
         }
-        catch
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or ObjectDisposedException)
         {
 
             indented = arguments.Value.ToString();
 
         }
 
-        const int maxLength = 400;
-
-        return indented.Length <= maxLength
+        return indented.Length <= MaxArgumentsSummaryLength
             ? indented
-            : indented[..maxLength] + "…";
+            : string.Concat(indented.AsSpan(0, MaxArgumentsSummaryLength), "…");
 
     }
 

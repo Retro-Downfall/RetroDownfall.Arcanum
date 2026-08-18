@@ -123,12 +123,20 @@
                 <TextBlock Text="{Binding FoundryFloor.OutputEmptyState}" TextWrapping="Wrap" Margin="8" />
               </DataTemplate>
               <DataTemplate DataType="dock:LogsToolContent">
-                <Grid>
-                  <TextBlock Text="{Binding FoundryFloor.LogsEmptyState}"
+                <Grid RowDefinitions="Auto,*">
+                  <Button Grid.Row="0"
+                          Content="Clear"
+                          Command="{Binding FoundryFloor.ClearCommand}"
+                          HorizontalAlignment="Right"
+                          Margin="8,4"
+                          MinWidth="64" />
+                  <TextBlock Grid.Row="1"
+                             Text="{Binding FoundryFloor.LogsEmptyState}"
                              IsVisible="{Binding FoundryFloor.HasNoLines}"
                              TextWrapping="Wrap"
                              Margin="8" />
-                  <ListBox ItemsSource="{Binding FoundryFloor.Lines}"
+                  <ListBox Grid.Row="1"
+                           ItemsSource="{Binding FoundryFloor.Lines}"
                            IsVisible="{Binding !FoundryFloor.HasNoLines}"
                            BorderThickness="0" />
                 </Grid>

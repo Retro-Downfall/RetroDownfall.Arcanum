@@ -380,6 +380,56 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
     }
 
+    /// <summary>
+    /// Commits a resolved splitter drag for one dock region. The Grid definitions bind one-way to
+    /// <see cref="DockGroupViewModel.EffectiveSize"/> — a collapse-aware computed value with no setter —
+    /// so a drag alone only moves the Grid and is undone by the next layout notification and lost on
+    /// exit. This is the write-back that reaches <see cref="DockGroupViewModel.Size"/> and, through the
+    /// group PropertyChanged hook, <c>the-forge.json</c>. Sizes are clamped to the same bounds
+    /// <c>DockLayoutSerializer</c> enforces on load, and a collapsed region is ignored so an empty
+    /// region never persists a zero size.
+    /// </summary>
+    public void ApplyRegionSize(DockRegion region, double size)
+    {
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        DockGroupViewModel? group = GroupFor(region);
+
+        if (group is null || group.IsCollapsed)
+        {
+
+            return;
+
+        }
+
+        if (double.IsNaN(size) || double.IsInfinity(size) || size <= 0)
+        {
+
+            return;
+
+        }
+
+        (double min, double max) = BoundsFor(region);
+
+        double clamped = Math.Clamp(size, min, max);
+
+        if (Math.Abs(group.Size - clamped) < 0.5)
+        {
+
+            return;
+
+        }
+
+        group.Size = clamped;
+
+    }
+
     public TheForgeDockLayoutDto CaptureDto()
     {
 
@@ -552,6 +602,14 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
         DockRegion.Right => Right,
         DockRegion.Bottom => Bottom,
         _ => null,
+    };
+
+    private static (double Min, double Max) BoundsFor(DockRegion region) => region switch
+    {
+        DockRegion.Left => (DockLayoutDefaults.MinLeftWidth, DockLayoutDefaults.MaxLeftWidth),
+        DockRegion.Right => (DockLayoutDefaults.MinRightWidth, DockLayoutDefaults.MaxRightWidth),
+        DockRegion.Bottom => (DockLayoutDefaults.MinBottomHeight, DockLayoutDefaults.MaxBottomHeight),
+        _ => (0d, 0d),
     };
 
     private static void Renumber(DockGroupViewModel group)

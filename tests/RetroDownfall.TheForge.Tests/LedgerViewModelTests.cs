@@ -194,7 +194,7 @@ public class LedgerViewModelTests
     }
 
     [Fact]
-    public async Task Commit_EmptyMessage_Confirms_AndDoesNotInvokeCommit()
+    public async Task Commit_EmptyMessage_RefusesWithoutPrompting()
     {
 
         FakeGitProcessRunner git = new();
@@ -215,9 +215,45 @@ public class LedgerViewModelTests
 
         await viewModel.CommitCommand.ExecuteAsync(null);
 
-        Assert.Equal(1, confirmation.CallCount);
+        // The affirmative answer could never commit — git rejects an empty message, and the modal
+        // blocks the message box — so the prompt offered a choice it could not honour.
+        Assert.Equal(0, confirmation.CallCount);
 
         Assert.DoesNotContain(git.Invocations, inv => inv.Arguments.Count > 0 && inv.Arguments[0] == "commit");
+
+        Assert.Equal("Enter a commit message before committing.", viewModel.LastError);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public async Task Commit_NothingStaged_ReportsTheEmptyIndexRatherThanTheMessage()
+    {
+
+        FakeGitProcessRunner git = new();
+
+        ConfigureCleanRefresh(git, porcelain: " M a.txt\n");
+
+        ControllableConfirmation confirmation = new(accept: true);
+
+        LedgerViewModel viewModel = NewViewModel(git, confirmation: confirmation);
+
+        viewModel.CommitMessage = "   ";
+
+        viewModel.ManualRepositoryPath = "/repo";
+
+        viewModel.UseManualPath();
+
+        await WaitForIdleAsync(viewModel);
+
+        Assert.Empty(viewModel.StagedEntries);
+
+        await viewModel.CommitCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, confirmation.CallCount);
+
+        Assert.Equal("Nothing staged to commit.", viewModel.LastError);
 
         viewModel.Dispose();
 
@@ -291,6 +327,32 @@ public class LedgerViewModelTests
         await WaitForIdleAsync(viewModel);
 
         Assert.Equal(LedgerViewModel.NotAGitRepositoryMessage, viewModel.LastError);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public async Task Refresh_HealthyRepositoryWithAdversarialPath_IsNotMistakenForANonRepository()
+    {
+
+        FakeGitProcessRunner git = new();
+
+        ConfigureCleanRefresh(git, porcelain: "M  docs/not a git repository.md\n?? docs/outside repository.md\n");
+
+        LedgerViewModel viewModel = NewViewModel(git);
+
+        viewModel.ManualRepositoryPath = "/repo";
+
+        viewModel.UseManualPath();
+
+        await WaitForIdleAsync(viewModel);
+
+        Assert.Null(viewModel.LastError);
+
+        Assert.Single(viewModel.StagedEntries);
+
+        Assert.Single(viewModel.UnstagedEntries);
 
         viewModel.Dispose();
 

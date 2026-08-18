@@ -538,23 +538,37 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
 
         string message = CommitMessage.Trim();
 
-        bool messageInvalid = string.IsNullOrWhiteSpace(message);
-
         int stagedCount = StagedEntries.Count;
 
-        bool manyFiles = stagedCount >= ManyFilesCommitThreshold;
-
-        if (messageInvalid || manyFiles)
+        // Blockers are reported before any prompt. Both refusals are unconditional, so confirming
+        // them would offer the operator a choice the command could not honour — and the modal blocks
+        // the message box the prompt asks them to reconsider. Report the empty index first: it is the
+        // blocker the operator cannot see from the commit box.
+        if (stagedCount == 0)
         {
 
-            string reason = messageInvalid
-                ? "The commit message is empty or whitespace-only."
-                : $"You are about to commit {stagedCount} staged files.";
+            LastError = "Nothing staged to commit.";
+
+            return;
+
+        }
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+
+            LastError = "Enter a commit message before committing.";
+
+            return;
+
+        }
+
+        if (stagedCount >= ManyFilesCommitThreshold)
+        {
 
             bool confirmed = await _confirmation
                 .ConfirmAsync(
                     "Confirm commit?",
-                    $"{reason}\n\nCommit with the current message in the selected repository?",
+                    $"You are about to commit {stagedCount} staged files.\n\nCommit with the current message in the selected repository?",
                     cancellationToken,
                     confirmIsDefault: false)
                 .ConfigureAwait(true);
@@ -565,24 +579,6 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
                 return;
 
             }
-
-            if (messageInvalid)
-            {
-
-                LastError = "Commit cancelled: message is still empty. Enter a commit message.";
-
-                return;
-
-            }
-
-        }
-
-        if (stagedCount == 0)
-        {
-
-            LastError = "Nothing staged to commit.";
-
-            return;
 
         }
 
@@ -914,10 +910,18 @@ public sealed partial class LedgerViewModel : ViewModelBase, IDisposable
 
         }
 
-        string combined = $"{result.Stderr}\n{result.Stdout}";
+        // Only a failed command's stderr. `git status --porcelain=v1` writes working-tree *paths* to
+        // stdout, so a tracked file such as `docs/not a git repository.md` would otherwise make a
+        // healthy repository look broken and hide the operator's real changes.
+        if (result.ExitCode is 0 or null)
+        {
 
-        return combined.Contains("not a git repository", StringComparison.OrdinalIgnoreCase)
-            || combined.Contains("outside repository", StringComparison.OrdinalIgnoreCase);
+            return false;
+
+        }
+
+        return result.Stderr.Contains("not a git repository", StringComparison.OrdinalIgnoreCase)
+            || result.Stderr.Contains("outside repository", StringComparison.OrdinalIgnoreCase);
 
     }
 

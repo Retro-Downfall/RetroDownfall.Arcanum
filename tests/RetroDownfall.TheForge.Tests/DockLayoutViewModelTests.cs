@@ -185,6 +185,84 @@ public class DockLayoutViewModelTests
     }
 
     [Fact]
+    public void ApplyRegionSize_ClampsASplitterDragToTheRegionBounds()
+    {
+
+        using DockLayoutViewModel layout = new();
+
+        layout.ApplyRegionSize(DockRegion.Left, 520);
+
+        Assert.Equal(520, layout.Left.Size);
+
+        layout.ApplyRegionSize(DockRegion.Left, DockLayoutDefaults.MaxLeftWidth + 200);
+
+        Assert.Equal(DockLayoutDefaults.MaxLeftWidth, layout.Left.Size);
+
+        layout.ApplyRegionSize(DockRegion.Left, 10);
+
+        Assert.Equal(DockLayoutDefaults.MinLeftWidth, layout.Left.Size);
+
+    }
+
+    [Fact]
+    public void ApplyRegionSize_IgnoresACollapsedRegionSoZeroIsNeverPersisted()
+    {
+
+        using DockLayoutViewModel layout = new();
+
+        layout.HideTool(layout.FindTool(DockToolId.Atelier)!);
+
+        Assert.True(layout.Left.IsCollapsed);
+
+        layout.ApplyRegionSize(DockRegion.Left, 0);
+
+        Assert.Equal(DockLayoutDefaults.DefaultLeftWidth, layout.Left.Size);
+
+    }
+
+    [Fact]
+    public async Task ApplyRegionSize_PersistsTheDraggedWidth()
+    {
+
+        string path = Path.Combine(Path.GetTempPath(), $"forge-dock-splitter-{Guid.NewGuid():N}.json");
+
+        try
+        {
+
+            TheForgeSettingsStore store = new(path);
+
+            await store.SaveAsync(new TheForgeSettings { Theme = "light" });
+
+            DockLayoutViewModel layout = new(store, persistDebounce: TimeSpan.FromSeconds(30));
+
+            layout.ApplyRegionSize(DockRegion.Left, 520);
+
+            layout.Dispose();
+
+            TheForgeSettings loaded = await store.LoadAsync();
+
+            Assert.False(string.IsNullOrWhiteSpace(loaded.LayoutState));
+
+            TheForgeDockLayoutDto dto = DockLayoutSerializer.DeserializeOrDefault(loaded.LayoutState);
+
+            Assert.Equal(520, dto.LeftWidth);
+
+        }
+        finally
+        {
+
+            if (File.Exists(path))
+            {
+
+                File.Delete(path);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
     public async Task Dispose_FlushesPendingLayoutSave()
     {
 

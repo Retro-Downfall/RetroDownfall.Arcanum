@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Lore;
@@ -95,17 +96,56 @@ public class LoreBrowserViewModelTests
 
         };
 
-        LoreBrowserViewModel viewModel = NewViewModel(dataSource);
+        ControllableConfirmationDialog confirmation = new(accept: true);
+
+        LoreBrowserViewModel viewModel = NewViewModel(dataSource, confirmation);
 
         viewModel.SelectedLore = lore;
 
         await viewModel.DeleteAsync(CancellationToken.None);
+
+        Assert.Equal(1, confirmation.CallCount);
 
         Assert.Equal("sigil", dataSource.LastDeleteKey);
 
         Assert.Equal(1, dataSource.ListCallCount);
 
         Assert.Null(viewModel.SelectedLore);
+
+    }
+
+    [Fact]
+    public async Task Delete_DeclinedConfirmation_LeavesTheEntryAlone()
+    {
+
+        LoreDto lore = new("sigil", "azure", DateTime.UtcNow);
+
+        FakeLoreDataSource dataSource = new()
+        {
+
+            ListResult = new DataSourceResult<ListPageResult<LoreDto>>(
+                new ListPageResult<LoreDto>([lore], false),
+                true,
+                null,
+                null),
+
+            DeleteResult = new DataSourceResult<bool>(true, true, null, null),
+
+        };
+
+        ControllableConfirmationDialog confirmation = new(accept: false);
+
+        LoreBrowserViewModel viewModel = NewViewModel(dataSource, confirmation);
+
+        viewModel.SelectedLore = lore;
+
+        await viewModel.DeleteAsync(CancellationToken.None);
+
+        Assert.Equal(1, confirmation.CallCount);
+
+        Assert.Null(dataSource.LastDeleteKey);
+
+        Assert.Same(lore, viewModel.SelectedLore);
 
     }
 
@@ -130,8 +170,29 @@ public class LoreBrowserViewModelTests
 
     }
 
-    private static LoreBrowserViewModel NewViewModel(FakeLoreDataSource dataSource) =>
-        new(dataSource, new FoundryFloorViewModel(new NullLogService()));
+    private static LoreBrowserViewModel NewViewModel(
+        FakeLoreDataSource dataSource,
+        IConfirmationDialogService? confirmation = null) =>
+        new(
+            dataSource,
+            new FoundryFloorViewModel(new NullLogService()),
+            confirmation ?? new ControllableConfirmationDialog(accept: true));
+
+    private sealed class ControllableConfirmationDialog(bool accept) : IConfirmationDialogService
+    {
+
+        public int CallCount { get; private set; }
+
+        public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true)
+        {
+
+            CallCount++;
+
+            return Task.FromResult(accept);
+
+        }
+
+    }
 
     private sealed class FakeLoreDataSource : ILoreDataSource
     {

@@ -497,7 +497,7 @@ internal static class MainViewModelFactory
                 new StaticTheForgeSettingsMonitor(),
                 new FakeActiveCampaignService(),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<RetroDownfall.TheForge.Ux.ViewModels.Anvil.AnvilViewModel>.Instance),
-            new RetroDownfall.TheForge.Ux.ViewModels.Lore.LoreBrowserViewModel(new NullLoreDataSource(), foundryFloor),
+            new RetroDownfall.TheForge.Ux.ViewModels.Lore.LoreBrowserViewModel(new NullLoreDataSource(), foundryFloor, new NullConfirmationDialogService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Archive.SagaArchiveViewModel(new NullSagaArchiveDataSource(), foundryFloor, new NullConfirmationDialogService(), new FakeClipboardService(), new FakeWhispersService(), connection),
             new RetroDownfall.TheForge.Ux.ViewModels.Divination.DivinationViewModel(
                 new NullDivinationDataSource(),
