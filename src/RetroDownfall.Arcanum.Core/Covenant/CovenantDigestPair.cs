@@ -24,9 +24,9 @@ public static class CovenantDigestPair
 
         Span<byte> preimage = stackalloc byte[CovenantLimits.DigestBytes * 2];
 
-        first.Bytes.AsSpan().CopyTo(preimage);
+        first.Span.CopyTo(preimage);
 
-        second.Bytes.AsSpan().CopyTo(preimage[CovenantLimits.DigestBytes..]);
+        second.Span.CopyTo(preimage[CovenantLimits.DigestBytes..]);
 
         return new CovenantDigest(SHA256.HashData(preimage));
 

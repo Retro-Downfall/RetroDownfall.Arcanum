@@ -85,19 +85,24 @@ public readonly struct CovenantDiagnosticTag : IEquatable<CovenantDiagnosticTag>
 
         EnsureInitialized();
 
-        Span<byte> tag = stackalloc byte[TagBytes];
-
-        WriteTo(tag);
-
-        Span<byte> encoded = stackalloc byte[Base64Url.GetEncodedLength(TagBytes)];
-
-        _ = Base64Url.EncodeToUtf8(tag, encoded, out _, out int written);
-
+        // 'v' + version digits + '.' + the unpadded base64url tag, and not one character more:
+        // string.Create hands back a zero-initialized buffer, so an over-long request would leave a
+        // U+0000 inside the one value a reader is ever allowed to correlate two log lines by.
         return string.Create(
-            2 + written + 1 + CountDigits(_keyVersion),
-            (Version: _keyVersion, Encoded: encoded[..written].ToArray()),
+            2 + CountDigits(_keyVersion) + Base64Url.GetEncodedLength(TagBytes),
+            (Version: _keyVersion, High: _high, Low: _low),
             static (destination, state) =>
             {
+
+                Span<byte> tag = stackalloc byte[TagBytes];
+
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(tag, state.High);
+
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(tag[8..], state.Low);
+
+                Span<byte> encoded = stackalloc byte[Base64Url.GetEncodedLength(TagBytes)];
+
+                _ = Base64Url.EncodeToUtf8(tag, encoded, out _, out int written);
 
                 destination[0] = 'v';
 
@@ -109,9 +114,14 @@ public readonly struct CovenantDiagnosticTag : IEquatable<CovenantDiagnosticTag>
 
                 destination[offset++] = '.';
 
-                for (int index = 0; index < state.Encoded.Length; index++)
+                for (int index = 0; index < written; index++)
                 {
-                    destination[offset + index] = (char)state.Encoded[index];
+                    destination[offset + index] = (char)encoded[index];
+                }
+
+                if (offset + written != destination.Length)
+                {
+                    throw new InvalidOperationException("A rendered diagnostic tag must fill its buffer exactly.");
                 }
 
             });

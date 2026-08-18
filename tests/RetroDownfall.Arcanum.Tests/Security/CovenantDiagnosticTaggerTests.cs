@@ -1,3 +1,4 @@
+using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -35,6 +36,33 @@ public sealed class CovenantDiagnosticTaggerTests
         Assert.Equal(expected, actual.ToArray());
         Assert.Equal(3u, tag.KeyVersion);
         Assert.StartsWith("v3.", tag.ToString(), StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [InlineData(1u)]
+    [InlineData(3u)]
+    [InlineData(4_294_967_295u)]
+    public void The_rendered_tag_is_exactly_the_version_and_the_unpadded_base64url(uint keyVersion)
+    {
+
+        CovenantDigest digest = new(SHA256.HashData(Encoding.UTF8.GetBytes("covenant-entry")));
+
+        CovenantDiagnosticTag tag = new CovenantDiagnosticTagger(new StubKeySource(KeyOne, keyVersion)).Create(digest);
+
+        Span<byte> raw = stackalloc byte[CovenantDiagnosticTag.TagBytes];
+
+        tag.WriteTo(raw);
+
+        string expected = $"v{keyVersion}.{Base64Url.EncodeToString(raw)}";
+
+        string rendered = tag.ToString();
+
+        // The rendering is the only correlation identity Covenant publishes, so a stray character
+        // past the encoded tag lands in every log line and every operator-visible label.
+        Assert.Equal(expected, rendered);
+        Assert.Equal(expected.Length, rendered.Length);
+        Assert.DoesNotContain('\0', rendered);
 
     }
 
