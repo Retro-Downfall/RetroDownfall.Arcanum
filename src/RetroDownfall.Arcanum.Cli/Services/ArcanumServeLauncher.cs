@@ -138,6 +138,16 @@ internal sealed class ArcanumServeLauncher(
                 "Probe timed out — a server may be stuck or listening but not responding. Run `arcanum doctor`.");
         }
 
+        if (probe.State == HealthProbeState.UnexpectedResponder)
+        {
+            return new ServeLaunchResult(
+                ServeLaunchStatus.Failed,
+                probe.State,
+                sw.Elapsed,
+                null,
+                "Something is already listening at the address but did not answer as an Arcanum host (a foreign service on the port, or a host that is mid-crash). Run `arcanum doctor`. Do not auto-start.");
+        }
+
         if (probe.State is not (
             HealthProbeState.ConnectionRefused
             or HealthProbeState.NetworkUnreachable

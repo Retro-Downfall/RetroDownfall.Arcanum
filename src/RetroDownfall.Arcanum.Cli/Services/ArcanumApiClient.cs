@@ -4009,6 +4009,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     }
 
+    /// <summary>
+    /// Streams the multi-pass research progress as NDJSON. The pass count is unbounded and the host
+    /// may be restarted under a long run, so every read failure is mapped to the shared transport
+    /// copy and yielded as a terminal error frame — the same contract the ask and chronicle streams
+    /// hold. Letting one escape would surface as the generic "unexpected CLI error" instead.
+    /// </summary>
     public async IAsyncEnumerable<WebResearchStreamFrame> ResearchWebAsync(
         WebResearchWorkflowRequest body,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -4079,6 +4085,12 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             sendError = RequestUnreachableError;
 
         }
+        catch (IOException)
+        {
+
+            sendError = RequestDisconnectedError;
+
+        }
 
         if (sendError is Error error)
         {
@@ -4136,9 +4148,54 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                 bufferSize: 4_096,
                 leaveOpen: true);
 
-            while (await reader.ReadLineAsync(cancellationToken)
-                .ConfigureAwait(false) is { } line)
+            while (true)
             {
+
+                string? line = null;
+
+                string? readError = null;
+
+                try
+                {
+
+                    line = await reader.ReadLineAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
+                catch (Exception exception)
+                {
+
+                    readError = TryMapStreamReadFailure(exception, cancellationToken);
+
+                    if (readError is null)
+                    {
+
+                        throw;
+
+                    }
+
+                }
+
+                if (readError is not null)
+                {
+
+                    yield return ResearchError(
+                        new Error(
+                            readError == StreamTimeoutMessage
+                                ? ErrorCodes.Connection.Timeout
+                                : ErrorCodes.Connection.Unreachable,
+                            readError));
+
+                    yield break;
+
+                }
+
+                if (line is null)
+                {
+
+                    break;
+
+                }
 
                 if (string.IsNullOrWhiteSpace(line))
                 {

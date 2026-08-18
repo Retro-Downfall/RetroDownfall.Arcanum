@@ -11,9 +11,22 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 /// Console HITL lifecycle for <c>ask_human</c>: continues NDJSON pumping while input is pending,
 /// races operator input vs ToolError/Result/Error/timeout/cancel, and ensures exactly one console
 /// input owner. Abandoned reads are drained so they cannot steal the next REPL line.
+///
+/// <para>The draining is bounded. The shipped reader wraps <c>Console.ReadKey</c>, which no
+/// cancellation token can interrupt, so waiting for an abandoned read to end is waiting for the
+/// operator to type — after the answer is already on stdout and the command is trying to exit. Past
+/// <see cref="AbandonedReadGrace" /> the read is disowned instead: its result is discarded, and the
+/// single-owner guard keeps a later prompt from racing it for the operator's keystrokes.</para>
 /// </summary>
 internal sealed class ConsoleAskHumanCoordinator
 {
+    /// <summary>
+    /// How long a dismissed prompt waits for its abandoned read before disowning it. Long enough for
+    /// a reader that can observe its token to unwind, short enough that a reader that cannot never
+    /// becomes the reason the command will not exit.
+    /// </summary>
+    private static readonly TimeSpan AbandonedReadGrace = TimeSpan.FromMilliseconds(250);
+
     private readonly object _gate = new();
     private readonly ArcanumApiClient _apiClient;
     private readonly IThemePalette _palette;
@@ -22,6 +35,7 @@ internal sealed class ConsoleAskHumanCoordinator
 
     private PendingHitl? _pending;
     private Task? _raceTask;
+    private Task<string?>? _disownedRead;
     private AskHumanResult? _settledResult;
     private int _generation;
 
@@ -134,6 +148,19 @@ internal sealed class ConsoleAskHumanCoordinator
                 return AskHumanResult.SubmitFailed;
             }
 
+            // A disowned read is still parked on the console. Starting a second one would put two
+            // readers on the same keyboard, so this prompt is refused rather than answered wrongly.
+            if (_disownedRead is { IsCompleted: false })
+            {
+                _diagnosticConsole.MarkupLine(
+                    _palette.ErrorMarkup(Markup.Escape(
+                        "ask_human: a previous prompt's console read is still waiting for input, so "
+                        + "this prompt cannot be answered here.")));
+                return AskHumanResult.SubmitFailed;
+            }
+
+            _disownedRead = null;
+
             int generation = ++_generation;
             TaskCompletionSource dismissTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
             PendingHitl pending = new(
@@ -235,7 +262,9 @@ internal sealed class ConsoleAskHumanCoordinator
                 Cancel();
                 try
                 {
-                    await race.ConfigureAwait(false);
+                    // Bounded for the same reason the abandoned read is: a drain that outlives its
+                    // own cancelled token is the wedge this method exists to end, not prevent.
+                    await race.WaitAsync(AbandonedReadGrace).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -269,7 +298,7 @@ internal sealed class ConsoleAskHumanCoordinator
             {
                 // Prompt/turn ended — never submit. Drain abandoned ReadLine so it cannot steal REPL.
                 linked.Cancel();
-                _ = await DrainInputAsync(inputTask).ConfigureAwait(false);
+                await DisownInputAsync(inputTask).ConfigureAwait(false);
                 Settle(pending.Generation, AskHumanResult.Handled);
                 return;
             }
@@ -402,20 +431,43 @@ internal sealed class ConsoleAskHumanCoordinator
         return string.Equals(pendingCallId, eventCallId, StringComparison.Ordinal);
     }
 
-    private static async Task<string?> DrainInputAsync(Task<string?> inputTask)
+    /// <summary>
+    /// Gives an abandoned read <see cref="AbandonedReadGrace" /> to notice the cancellation, then
+    /// disowns it. Whatever the read eventually returns is discarded either way — the generation and
+    /// ownership checks already forbid submitting it — so the only thing the wait buys is releasing
+    /// the console before the next prompt, and only a reader that can observe its token ever does.
+    /// </summary>
+    private async Task DisownInputAsync(Task<string?> inputTask)
     {
         try
         {
-            return await inputTask.ConfigureAwait(false);
+            _ = await inputTask.WaitAsync(AbandonedReadGrace).ConfigureAwait(false);
+            return;
+        }
+        catch (TimeoutException)
+        {
+            // The read cannot observe its token. Fall through and disown it.
         }
         catch (OperationCanceledException)
         {
-            return null;
+            return;
         }
         catch (InvalidOperationException)
         {
-            return null;
+            return;
         }
+
+        lock (_gate)
+        {
+            _disownedRead = inputTask;
+        }
+
+        // Nothing awaits this task again, so its failure would otherwise go unobserved.
+        _ = inputTask.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private static IAnsiConsole CreateStandardErrorConsole() =>
