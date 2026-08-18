@@ -115,20 +115,27 @@ public static class WorkspaceRootPolicy
             return false;
         }
 
-        if (!SymlinkPathResolver.TryResolveFinalTarget(candidateFullPath, out string? resolvedTarget))
+        // The lexical test above is necessary but nowhere near sufficient: it says nothing about what
+        // the path actually points at. Canonicalize both sides component-by-component so a symbolic
+        // link anywhere along the candidate — not just in its final position — is followed before the
+        // containment decision is made. Resolving only the final component would let "<root>/link/child"
+        // through whenever "child" is an ordinary directory, however far outside the root "link" points.
+        if (!SymlinkPathResolver.TryResolveCanonicalPath(candidateFullPath, out string? canonicalCandidate)
+            || canonicalCandidate is null)
         {
             return false;
         }
 
-        if (resolvedTarget is null)
+        if (!SymlinkPathResolver.TryResolveCanonicalPath(normalizedRoot, out string? canonicalRoot)
+            || canonicalRoot is null)
         {
-            return true;
+            return false;
         }
 
-        string resolvedPrefix = normalizedRoot + sep;
+        string canonicalRootPrefix = canonicalRoot.TrimEnd(sep) + sep;
 
-        return resolvedTarget.Equals(normalizedRoot, cmp)
-            || resolvedTarget.StartsWith(resolvedPrefix, cmp);
+        return canonicalCandidate.Equals(canonicalRoot.TrimEnd(sep), cmp)
+            || canonicalCandidate.StartsWith(canonicalRootPrefix, cmp);
     }
 
     private static bool IsSamePath(string leftFullPath, string rightFullPath, char sep, StringComparison cmp)

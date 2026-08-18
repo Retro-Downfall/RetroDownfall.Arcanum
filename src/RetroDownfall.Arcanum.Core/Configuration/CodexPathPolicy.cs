@@ -93,6 +93,12 @@ public static class CodexPathPolicy
     /// <summary>
     /// Reads at most <paramref name="maxBytes"/> UTF-8 bytes from <paramref name="path"/>.
     /// </summary>
+    /// <remarks>
+    /// Operator cancellation propagates as <see cref="OperationCanceledException"/>; it is never rewritten
+    /// into a domain failure. A file that exists but cannot be opened or read fails as
+    /// <c>Prompt.CodexReadFailed</c> rather than <c>Prompt.CodexPathNotFound</c>, so a permission or I/O
+    /// problem does not send the operator hunting for a path that is already known to resolve.
+    /// </remarks>
     public static async Task<Result<string>> ReadCappedAsync(string path, long maxBytes, CancellationToken cancellationToken = default)
     {
 
@@ -115,7 +121,8 @@ public static class CodexPathPolicy
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-            byte[] buffer = new byte[Math.Min(4096, maxBytes + 1)];
+            // maxBytes + 1 overflows to a negative length at long.MaxValue, so bound before widening.
+            byte[] buffer = new byte[maxBytes >= 4096L ? 4096 : (int)maxBytes + 1];
             using MemoryStream accumulator = new();
             long bytesRead = 0L;
 
@@ -146,10 +153,21 @@ public static class CodexPathPolicy
             return Result<string>.Success(Encoding.UTF8.GetString(accumulator.ToArray()));
 
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
 
             return Result<string>.Failure(new Error("Prompt.CodexPathNotFound", "The codex file was not found."));
+
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException
+            or IOException
+            or NotSupportedException
+            or ArgumentException
+            or PathTooLongException)
+        {
+
+            return Result<string>.Failure(
+                new Error("Prompt.CodexReadFailed", "The codex file could not be read."));
 
         }
 

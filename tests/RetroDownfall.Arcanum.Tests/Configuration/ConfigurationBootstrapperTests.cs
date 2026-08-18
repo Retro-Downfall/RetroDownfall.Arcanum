@@ -296,6 +296,102 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
     }
 
+    [Theory]
+    [InlineData("""["https://ui.internal"]""")]
+    [InlineData("https://ui.internal")]
+    public void AddArcanumConfiguration_projects_array_overrides_as_indexed_children(string rawValue)
+    {
+
+        const string variable = "ARCANUM_Arcanum__Host__CorsAllowedOrigins";
+
+        string? original = global::System.Environment.GetEnvironmentVariable(variable);
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"corsAllowedOrigins":["http://localhost:5001","http://localhost:3000","http://127.0.0.1:3000"]}}}""");
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, rawValue);
+
+            ConfigurationManager configuration = new();
+
+            configuration.AddArcanumConfiguration();
+
+            IConfigurationSection section = configuration.GetSection("Arcanum:Host:CorsAllowedOrigins");
+
+            Assert.True(section.Exists());
+
+            string[] origins = section
+                .GetChildren()
+                .Select(static child => child.Value)
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value!)
+                .ToArray();
+
+            Assert.Equal(["https://ui.internal"], origins);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, original);
+
+        }
+
+    }
+
+    [Fact]
+    public void AddArcanumConfiguration_projects_array_overrides_when_file_omits_the_key()
+    {
+
+        const string variable = "ARCANUM_Arcanum__Host__CorsAllowedOrigins";
+
+        string? original = global::System.Environment.GetEnvironmentVariable(variable);
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable(
+                variable,
+                """["https://ui.internal","https://ops.internal"]""");
+
+            ConfigurationManager configuration = new();
+
+            configuration.AddArcanumConfiguration();
+
+            IConfigurationSection section = configuration.GetSection("Arcanum:Host:CorsAllowedOrigins");
+
+            Assert.True(section.Exists());
+
+            string[] origins = section
+                .GetChildren()
+                .Select(static child => child.Value)
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value!)
+                .ToArray();
+
+            Assert.Equal(["https://ui.internal", "https://ops.internal"], origins);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, original);
+
+        }
+
+    }
+
     [Fact]
     public void ValidateArcanumConfigurationFile_invalid_json_throws()
     {
