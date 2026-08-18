@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -31,11 +33,14 @@ internal static partial class OpenAiV1Endpoints
         _ = v1.MapPost("/embeddings", HandleEmbeddingsAsync)
             .WithName("PostOpenAiEmbeddings")
             .WithLargeRequestBody()
-            .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(0, ArcanumJsonContext.Default.OpenAiEmbeddingRequest));
+            // ForRawBody, not ForBoundArgument: the handler reads the body itself (see below), so
+            // there is no bound argument to fingerprint. Buffers and rewinds the request the same
+            // way /v1/chat/completions does.
+            .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
     }
 
     private static async Task<IResult> HandleEmbeddingsAsync(
-        OpenAiEmbeddingRequest? body,
+        HttpContext httpContext,
         IWeaveService weave,
         InferenceTokenizerResolver tokenizerResolver,
         IOptionsSnapshot<ArcanumSettings> settings,
@@ -46,6 +51,55 @@ internal static partial class OpenAiV1Endpoints
         ArcanumSettings arc = settings.Value;
 
         EmbeddingSettings embeddings = arc.ResolveEmbeddings();
+
+        OpenAiEmbeddingRequest? body = null;
+
+        // Read the body by hand rather than binding it as a route-handler parameter. RequestDelegateFactory
+        // swallows the JsonException and completes the request with an empty 400 (and an empty 415 for a
+        // non-JSON Content-Type) before this handler runs, so §8.23's OpenAI error envelope would never be
+        // written — and OpenAiEmbeddingInputConverter's deliberately specific "'input' must be a string, an
+        // array of strings..." diagnostic would be thrown away unread. Same treatment as
+        // HandleChatCompletionsAsync and HandleCreateBatchAsync.
+        //
+        // A request with no body at all is left to the missing_required_parameter arm below, exactly
+        // where it landed before: only an actual non-JSON body is a 415.
+        if (httpContext.Features.Get<IHttpRequestBodyDetectionFeature>()?.CanHaveBody ?? true)
+        {
+
+            if (!httpContext.Request.HasJsonContentType())
+            {
+                return CreateUnsupportedMediaTypeErrorResult();
+            }
+
+            try
+            {
+                body = await httpContext.Request
+                    .ReadFromJsonAsync(ArcanumJsonContext.Default.OpenAiEmbeddingRequest, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (JsonException exception)
+            {
+                // Echoing the parse message is safe here and nowhere else on this surface: it is derived
+                // solely from the caller's own request body, never from a provider response. It is also the
+                // point of OpenAiEmbeddingInputConverter's hand-written "'input' must be a string, an array
+                // of strings..." diagnostic, which a fixed message would discard.
+                return JsonError(
+                    exception.Message,
+                    "invalid_request_error",
+                    code: "invalid_json",
+                    param: null,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+            catch (InvalidOperationException)
+            {
+                return CreateUnsupportedMediaTypeErrorResult();
+            }
+            catch (BadHttpRequestException exception)
+            {
+                return CreateRequestBodyReadErrorResult(exception.StatusCode);
+            }
+
+        }
 
         if (body is null || body.Input is null)
         {
@@ -208,6 +262,20 @@ internal static partial class OpenAiV1Endpoints
 
             }
 
+            // Ragged widths never throw on this path — each vector lands in its own slot — so an
+            // unguarded ragged batch is emitted as one 200 whose data[] rows have different vector
+            // lengths, which violates the OpenAI embeddings contract with no signal at all.
+            int shortWidth = batchResult.Value[0].Vector.Length;
+
+            if (Array.Exists(batchResult.Value, embedding => embedding.Vector.Length != shortWidth))
+            {
+
+                return WeaveErrorToOpenAiResult(new Error(
+                    ErrorCodes.Embeddings.ProviderUnavailable,
+                    "The embedding provider returned vectors of inconsistent dimensions."));
+
+            }
+
             for (int i = 0; i < shortIndexes.Count; i++)
             {
 
@@ -361,6 +429,24 @@ internal static partial class OpenAiV1Endpoints
             return Result<float[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider returned a mismatched number of vectors."));
+
+        }
+
+        // The same distrust applied to the vector count applies to the vector width. WeaveService
+        // issues one round trip per BatchSize sub-batch, so a load-balanced or mid-rollout provider
+        // pool can answer one document with vectors of two widths while each HTTP response is
+        // well-formed. MeanPoolAndNormalize pins its dimension count to the first vector: a narrower
+        // later vector reads off its end, and a wider one is silently truncated, mean-pooled and
+        // renormalized into a plausible-looking but wrong unit vector — the worse of the two, since
+        // it poisons whatever vector store the caller writes it into.
+        int width = batch.Value[0].Vector.Length;
+
+        if (Array.Exists(batch.Value, embedding => embedding.Vector.Length != width))
+        {
+
+            return Result<float[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider returned vectors of inconsistent dimensions."));
 
         }
 

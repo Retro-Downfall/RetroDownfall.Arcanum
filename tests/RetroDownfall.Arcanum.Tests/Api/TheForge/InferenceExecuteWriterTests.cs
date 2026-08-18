@@ -202,6 +202,79 @@ public sealed class InferenceExecuteWriterTests
     }
 
     [Fact]
+    public async Task WriteStreamAsync_ProviderSideIoExceptionWithHealthyClient_WritesSanitizedFailure()
+    {
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        MemoryStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.RequestServices = provider;
+
+        httpContext.Response.Body = body;
+
+        CancellationTokenSource requestAborted = new();
+
+        httpContext.RequestAborted = requestAborted.Token;
+
+        FakeIntelligenceProvider intelligence = new();
+
+        // The producer socket broke, not the client one: RequestAborted is never cancelled, so
+        // this is a provider fault and the caller is owed a terminal Error frame.
+        intelligence.NextStreamException = new IOException("provider stream failed");
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, CancellationToken.None);
+
+        string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteStreamAsync_ClientDisconnectDuringWrite_SuppressesErrorFrame()
+    {
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        ThrowingStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.RequestServices = provider;
+
+        httpContext.Response.Body = body;
+
+        CancellationTokenSource requestAborted = new();
+
+        httpContext.RequestAborted = requestAborted.Token;
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "partial",
+        };
+
+        body.ThrowOnNextWrite = true;
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, CancellationToken.None);
+
+        Assert.DoesNotContain(
+            body.CapturedWrittenText,
+            written => written.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task WriteStreamAsync_HostCallerCancellation_WritesSanitizedFailure()
     {
         ServiceCollection services = new();

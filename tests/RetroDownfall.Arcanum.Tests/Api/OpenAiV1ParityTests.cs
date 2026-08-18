@@ -448,6 +448,74 @@ public sealed class OpenAiV1ParityTests
     }
 
     [SkippableFact]
+    public async Task PostChatCompletions_Streaming_NeverSplitsAToolCallArgumentSurrogatePair()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextToolCalls = null;
+
+        _factory.FakeIntelligence.NextText = "final answer";
+
+        _factory.FakeIntelligence.NextFinishReason = "stop";
+
+        // "{\"note\":\"" is 9 UTF-16 units, so 30 filler characters put the emoji's high surrogate at
+        // index 39 and its low surrogate at index 40 — straddling the 40-unit chunk boundary. A raw
+        // slice hands the first delta a lone high surrogate, which the Utf8JsonWriter replaces with
+        // U+FFFD, and an accumulating OpenAI SDK reassembles arguments that no longer parse.
+        string arguments = "{\"note\":\"" + new string('x', 30) + "\U0001F600" + new string('y', 30) + "\"}";
+
+        Assert.True(char.IsHighSurrogate(arguments[39]), "Test data no longer straddles the chunk boundary.");
+
+        _factory.FakeIntelligence.NextStreamToolCalls =
+        [
+            new IntelligenceToolCallEvent("call-surrogate", "note_tool", arguments, Index: 0),
+        ];
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "stream": true,
+              "messages": [
+                { "role": "user", "content": "note it" }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string sseBody = await response.Content.ReadAsStringAsync();
+
+        List<OpenAiStreamToolCall> toolCallDeltas = ParseSseChunks(sseBody)
+            .SelectMany(static c => c.Choices)
+            .Select(static c => c.Delta.ToolCalls)
+            .Where(static tc => tc is { Length: > 0 })
+            .SelectMany(static tc => tc!)
+            .ToList();
+
+        Assert.All(
+            toolCallDeltas,
+            static delta => Assert.InRange(delta.Function?.Arguments?.Length ?? 0, 1, 40));
+
+        string reassembled = string.Concat(toolCallDeltas.Select(static d => d.Function?.Arguments ?? string.Empty));
+
+        Assert.Equal(arguments, reassembled);
+
+        Assert.DoesNotContain('�', reassembled);
+
+        _factory.FakeIntelligence.NextStreamToolCalls = null;
+
+    }
+
+    [SkippableFact]
     public async Task PostChatCompletions_ReplaysClientSuppliedToolCallTranscript()
     {
 

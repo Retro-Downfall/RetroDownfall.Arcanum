@@ -10,7 +10,11 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using RetroDownfall.Arcanum.Api.TheForge;
+
 using RetroDownfall.Arcanum.Core.Lexicon;
+
+using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Core.Memory;
 
@@ -211,6 +215,108 @@ public sealed class MemoryEndpointTests
 
     }
 
+    [SkippableFact]
+
+    public async Task Search_bounds_the_saga_page_it_requests_and_caps_the_response()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        // A store that answers with whatever it was asked for, so an unbounded request produces an
+        // unbounded response — exactly what a broad query against a mature corpus does.
+        SaturatingSagaMemoryStore saga = new(available: MemoryEndpoints.SearchResultLimit + 2_000);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                services.RemoveAll<ISagaMemoryStore>();
+
+                services.AddSingleton<ISagaMemoryStore>(saga);
+
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("e", MemorySearchScope.Saga),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.Equal(MemoryEndpoints.SearchResultLimit, saga.RequestedLimit);
+
+        Assert.Equal(MemoryEndpoints.SearchResultLimit, envelope.Data.Results.Length);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Search_shares_one_budget_across_scopes_rather_than_one_per_scope()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        SaturatingSagaMemoryStore saga = new(available: MemoryEndpoints.SearchResultLimit + 2_000);
+
+        FakeLexiconService lexicon = new();
+
+        _ = await lexicon.UpsertAsync(
+            "Operator",
+            "Person",
+            ["Prefers dark mode."],
+            CancellationToken.None);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                services.RemoveAll<ISagaMemoryStore>();
+
+                services.AddSingleton<ISagaMemoryStore>(saga);
+
+                services.RemoveAll<ILexiconService>();
+
+                services.AddSingleton<ILexiconService>(lexicon);
+
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("dark", MemorySearchScope.All),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.True(
+            envelope.Data.Results.Length <= MemoryEndpoints.SearchResultLimit,
+            $"scope=all returned {envelope.Data.Results.Length} results, above the {MemoryEndpoints.SearchResultLimit} budget.");
+
+    }
+
     private static async Task<T?> ReadAsync<T>(
         HttpResponseMessage response,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
@@ -219,6 +325,88 @@ public sealed class MemoryEndpointTests
         byte[] json = await response.Content.ReadAsByteArrayAsync();
 
         return JsonSerializer.Deserialize(json, typeInfo);
+
+    }
+
+    /// <summary>
+    /// Answers <c>ListAsync</c> with whatever page size it is asked for, up to a fixed corpus size,
+    /// and records that size. Stands in for a mature Saga corpus so the endpoint's own bound is what
+    /// limits the response rather than the amount of test data.
+    /// </summary>
+    private sealed class SaturatingSagaMemoryStore(int available) : ISagaMemoryStore
+    {
+
+        public int RequestedLimit { get; private set; }
+
+        public Task<SagaMemoryDto[]> ListAsync(
+            string? query,
+            Guid? sessionId,
+            int limit,
+            int offset,
+            CancellationToken cancellationToken)
+        {
+
+            RequestedLimit = limit;
+
+            int count = Math.Min(available, limit);
+
+            SagaMemoryDto[] memories = new SagaMemoryDto[count];
+
+            for (int i = 0; i < count; i++)
+            {
+
+                memories[i] = new SagaMemoryDto(
+                    $"saga-{i}",
+                    "e",
+                    DateTimeOffset.UnixEpoch,
+                    null,
+                    null,
+                    null);
+
+            }
+
+            return Task.FromResult(memories);
+
+        }
+
+        public Task InsertAsync(
+            string id,
+            string content,
+            DateTimeOffset createdAt,
+            Guid? sessionId,
+            string? tags,
+            string? source,
+            float[] embedding,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<int> CountAsync(CancellationToken cancellationToken) => Task.FromResult(available);
+
+        public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
+        public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(
+            IReadOnlyList<string> ids,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task DeleteAllAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task SetWatermarkAsync(
+            Guid sessionId,
+            DateTimeOffset lastExtractedEntryCreatedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
 
     }
 

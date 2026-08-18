@@ -215,7 +215,15 @@ internal static class InferenceExecuteWriter
             {
             }
         }
-        catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+        // Direction matters here. The write-side catches above already absorb a broken pipe on the
+        // response socket; anything reaching this whole-pipeline catch came out of the producer's
+        // MoveNextAsync. An IOException/HttpIOException raised there while the client socket is
+        // still healthy is a PROVIDER fault, and the caller is owed the terminal Error frame the
+        // general catch below writes — so only classify it as a disconnect when the client really
+        // is gone.
+        catch (Exception ex) when (
+            ClientDisconnect.IsClientDisconnect(ex, httpContext)
+            && (clientGone || httpContext.RequestAborted.IsCancellationRequested))
         {
             if (!continueThenReplay)
             {

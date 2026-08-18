@@ -39,6 +39,20 @@ namespace RetroDownfall.Arcanum.Api.TheForge;
 internal static class MemoryEndpoints
 {
 
+    /// <summary>
+    /// Ceiling on the number of rows <c>POST /api/memory/search</c> materializes and returns, shared
+    /// across every scope of one request rather than granted per scope.
+    /// </summary>
+    /// <remarks>
+    /// A one-character query matches essentially every Grimoire entry, attachment chunk and workspace
+    /// chunk on a mature install, and every matched row carries its full text. Without this bound the
+    /// handler reads the whole corpus into one list — the same failure <c>GrimoireRepository</c>
+    /// windows long threads to avoid and <c>SagaEndpoints</c> clamps to <c>MaxListLimit</c> to avoid.
+    /// Set to <see cref="ArcanumSettingClamps.ListQueryLimit"/>'s upper bound so this surface is
+    /// bounded exactly like its neighbours.
+    /// </remarks>
+    internal const int SearchResultLimit = 10_000;
+
     private const string SessionRetention = "Session lifetime; archiving retains it and session purge removes it.";
 
     private const string PinRetention = "Until explicitly unpinned or the owning session is purged.";
@@ -350,9 +364,12 @@ internal static class MemoryEndpoints
 
         string query = request.Query.Trim();
 
+        // One budget for the whole request, not one per scope: a per-scope ceiling would still let
+        // scope=all return five times the bound. Each scope is asked only for what the budget has
+        // left, so a one-character query can never materialize more than SearchResultLimit rows.
         List<MemorySearchResultDto> results = [];
 
-        if (Includes(request.Scope, MemorySearchScope.Session))
+        if (Includes(request.Scope, MemorySearchScope.Session) && results.Count < SearchResultLimit)
         {
 
             await SearchSessionAsync(
@@ -360,11 +377,12 @@ internal static class MemoryEndpoints
                 query,
                 request.SessionId,
                 results,
+                SearchResultLimit - results.Count,
                 context.RequestAborted).ConfigureAwait(false);
 
         }
 
-        if (Includes(request.Scope, MemorySearchScope.Attachments))
+        if (Includes(request.Scope, MemorySearchScope.Attachments) && results.Count < SearchResultLimit)
         {
 
             await SearchAttachmentsAsync(
@@ -372,11 +390,12 @@ internal static class MemoryEndpoints
                 query,
                 request.SessionId,
                 results,
+                SearchResultLimit - results.Count,
                 context.RequestAborted).ConfigureAwait(false);
 
         }
 
-        if (Includes(request.Scope, MemorySearchScope.Workspace))
+        if (Includes(request.Scope, MemorySearchScope.Workspace) && results.Count < SearchResultLimit)
         {
 
             await SearchWorkspaceAsync(
@@ -384,11 +403,12 @@ internal static class MemoryEndpoints
                 query,
                 request.WorkspaceId,
                 results,
+                SearchResultLimit - results.Count,
                 context.RequestAborted).ConfigureAwait(false);
 
         }
 
-        if (Includes(request.Scope, MemorySearchScope.Saga))
+        if (Includes(request.Scope, MemorySearchScope.Saga) && results.Count < SearchResultLimit)
         {
 
             await SearchSagaAsync(
@@ -396,11 +416,12 @@ internal static class MemoryEndpoints
                 query,
                 request.SessionId,
                 results,
+                SearchResultLimit - results.Count,
                 context.RequestAborted).ConfigureAwait(false);
 
         }
 
-        if (Includes(request.Scope, MemorySearchScope.Lexicon))
+        if (Includes(request.Scope, MemorySearchScope.Lexicon) && results.Count < SearchResultLimit)
         {
 
             Result<IReadOnlyList<LexiconEntryDto>> entries = await lexicon
@@ -420,7 +441,7 @@ internal static class MemoryEndpoints
 
             }
 
-            AddLexiconMatches(entries.Value, query, results);
+            AddLexiconMatches(entries.Value, query, results, SearchResultLimit - results.Count);
 
         }
 
@@ -803,6 +824,7 @@ internal static class MemoryEndpoints
         string query,
         Guid? sessionId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -816,15 +838,20 @@ internal static class MemoryEndpoints
             WHERE instr(lower(e.Content), lower(@query)) > 0
             {(sessionId is null ? string.Empty : "AND e.SessionId = @sessionId")}
             ORDER BY e.CreatedAt DESC, e.Sequence DESC
+            LIMIT @limit
             """;
 
         AddParameter(command, "@query", query);
+
+        AddParameter(command, "@limit", limit);
 
         AddSessionParameter(command, sessionId);
 
         await using DbDataReader reader = await command
             .ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        int taken = 0;
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -839,9 +866,22 @@ internal static class MemoryEndpoints
                 SessionRetention,
                 reader.GetString(0)));
 
+            taken++;
+
         }
 
         await reader.DisposeAsync().ConfigureAwait(false);
+
+        // The entry scan and the summary scan share this scope's slice of the budget; entries are the
+        // narrower, more specific hit, so they are read first and the summaries take what is left.
+        int summaryLimit = limit - taken;
+
+        if (summaryLimit <= 0)
+        {
+
+            return;
+
+        }
 
         await using DbCommand summaries = connection.CreateCommand();
 
@@ -853,9 +893,12 @@ internal static class MemoryEndpoints
               AND instr(lower(Summary), lower(@query)) > 0
               {(sessionId is null ? string.Empty : "AND Id = @sessionId")}
             ORDER BY UpdatedAt DESC
+            LIMIT @limit
             """;
 
         AddParameter(summaries, "@query", query);
+
+        AddParameter(summaries, "@limit", summaryLimit);
 
         AddSessionParameter(summaries, sessionId);
 
@@ -887,6 +930,7 @@ internal static class MemoryEndpoints
         string query,
         Guid? sessionId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -902,9 +946,12 @@ internal static class MemoryEndpoints
                    OR instr(lower(LogicalKey), lower(@query)) > 0)
               {(sessionId is null ? string.Empty : "AND SessionId = @sessionId")}
             ORDER BY IndexedAt DESC, ChunkIndex
+            LIMIT @limit
             """;
 
         AddParameter(command, "@query", query);
+
+        AddParameter(command, "@limit", limit);
 
         AddSessionParameter(command, sessionId);
 
@@ -932,6 +979,7 @@ internal static class MemoryEndpoints
         string query,
         string? workspaceId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -981,9 +1029,12 @@ internal static class MemoryEndpoints
                    OR instr(lower(RelativePath), lower(@query)) > 0)
               {(workspacePath is null ? string.Empty : "AND WorkspacePath = @workspacePath")}
             ORDER BY IndexedAt DESC, RelativePath, ChunkIndex
+            LIMIT @limit
             """;
 
         AddParameter(command, "@query", query);
+
+        AddParameter(command, "@limit", limit);
 
         if (workspacePath is not null)
         {
@@ -1018,6 +1069,7 @@ internal static class MemoryEndpoints
         string query,
         Guid? sessionId,
         List<MemorySearchResultDto> results,
+        int limit,
         CancellationToken cancellationToken)
     {
 
@@ -1025,7 +1077,7 @@ internal static class MemoryEndpoints
             .ListAsync(
                 query,
                 sessionId,
-                int.MaxValue,
+                limit,
                 0,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1066,11 +1118,21 @@ internal static class MemoryEndpoints
     private static void AddLexiconMatches(
         IReadOnlyList<LexiconEntryDto> entries,
         string query,
-        List<MemorySearchResultDto> results)
+        List<MemorySearchResultDto> results,
+        int limit)
     {
+
+        int taken = 0;
 
         foreach (LexiconEntryDto entry in entries)
         {
+
+            if (taken >= limit)
+            {
+
+                break;
+
+            }
 
             if (!LexiconMatches(entry, query))
             {
@@ -1101,6 +1163,8 @@ internal static class MemoryEndpoints
                 provenance,
                 LexiconRetention,
                 entry.Id.ToString("D")));
+
+            taken++;
 
         }
 

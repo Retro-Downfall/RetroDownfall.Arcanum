@@ -106,6 +106,15 @@ internal static class EventEndpoints
                     await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
 
                 }
+                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                {
+
+                    // A broken pipe here is the client hanging up, not an application fault. Writes
+                    // inside SseStreamWriter already classify it this way; the `: connected` sentinel
+                    // and the terminal WriteDoneAsync are written outside it, and without this arm
+                    // either one escapes to ArcanumExceptionHandler as a logged 500.
+
+                }
                 finally
                 {
 
@@ -167,6 +176,15 @@ internal static class EventEndpoints
                 {
 
                     await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
+
+                }
+                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                {
+
+                    // A broken pipe here is the client hanging up, not an application fault. Writes
+                    // inside SseStreamWriter already classify it this way; the `: connected` sentinel
+                    // and the terminal WriteDoneAsync are written outside it, and without this arm
+                    // either one escapes to ArcanumExceptionHandler as a logged 500.
 
                 }
                 finally
@@ -270,6 +288,15 @@ internal static class EventEndpoints
                 {
 
                     await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
+
+                }
+                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                {
+
+                    // A broken pipe here is the client hanging up, not an application fault. Writes
+                    // inside SseStreamWriter already classify it this way; the `: connected` sentinel
+                    // and the terminal WriteDoneAsync are written outside it, and without this arm
+                    // either one escapes to ArcanumExceptionHandler as a logged 500.
 
                 }
                 finally
