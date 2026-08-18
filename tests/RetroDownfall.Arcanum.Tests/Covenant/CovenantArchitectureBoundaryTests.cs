@@ -157,6 +157,16 @@ public sealed class CovenantArchitectureBoundaryTests
                 // claims it is current — and a purge runs against a database whose applied tuple is
                 // null, before it becomes anybody's live installation.
                 "BackupRestoreProtectedStateInspector.cs",
+
+                // The second declared exception, and it is not a live writer either. A canonical
+                // erasure empties the projection in the same transaction that deletes the heads it
+                // projected and stamps a new dataset generation, so there is no moment at which the
+                // applied FTS tuple claims a projection this file removed: the tuple is set to null by
+                // the same statement (§10.20.5). It runs on its own exclusive maintenance connection
+                // with the family's admission already closed, which is the one condition under which
+                // clearing the projection is not a race against the workers that own it.
+                "CovenantCanonicalErasureTransaction.cs",
+
                 "CovenantIndexRebuilder.cs",
                 "CovenantSearchIndex.cs",
                 "CovenantSearchOutboxWorker.cs",

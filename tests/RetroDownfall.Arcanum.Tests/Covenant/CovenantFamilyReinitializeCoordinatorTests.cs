@@ -24,6 +24,19 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
 
     private static CancellationToken Token => CancellationToken.None;
 
+    /// <summary>
+    /// Family reinitialize keeps the same markers a Covenant reset does, asserted where they do.
+    /// </summary>
+    /// <remarks>
+    /// This path reaches storage through <c>ICovenantFamilyReinitializeTransition</c>, which has no
+    /// production implementation, so there is no run to assert a retained row against. What can be
+    /// asserted is the property that makes the promise true for every path at once: no production file
+    /// outside a closed list is able to issue the deletion at all (§10.20.5).
+    /// </remarks>
+    [Fact]
+    public void Family_reinitialize_retains_the_marker_set_no_production_path_may_delete() =>
+        CovenantRetainedEvidence.AssertNoProductionPathDeletesRetainedEvidence();
+
     [Fact]
     public async Task A_clean_run_erases_every_protected_artifact_before_the_family_is_dropped()
     {

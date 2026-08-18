@@ -228,6 +228,73 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
     }
 
+    /// <summary>
+    /// Opens an unpooled handle to the same scratch file and deliberately does not initialize it.
+    /// </summary>
+    /// <remarks>
+    /// For the one kind of suite that owns initialization itself. An exclusive maintenance connection
+    /// applies its own mode and proves its own <c>secure_delete</c>, and handing it a connection some
+    /// other component had already initialized would hide exactly the step under test.
+    /// </remarks>
+    public async Task<SqliteConnection> OpenUninitializedConnectionAsync(CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = _path,
+
+                Password = Passphrase,
+
+                Pooling = false,
+            }.ToString());
+
+        try
+        {
+
+            await connection.OpenAsync(cancellationToken);
+
+            return connection;
+
+        }
+        catch
+        {
+
+            await connection.DisposeAsync();
+
+            throw;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Reopens and reinitializes <see cref="Connection"/> after a maintenance path drained it.
+    /// </summary>
+    /// <remarks>
+    /// A drained handle is closed rather than disposed, so the same object can carry a suite's
+    /// assertions afterwards. Reinitializing is not optional: closing drops every pragma, and the
+    /// canonical triggers consult authorization functions an uninitialized connection does not have.
+    /// </remarks>
+    public async Task ReopenAsync(CancellationToken cancellationToken)
+    {
+
+        if (Connection.State != System.Data.ConnectionState.Closed)
+        {
+
+            return;
+
+        }
+
+        await Connection.OpenAsync(cancellationToken);
+
+        await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+            Connection,
+            CovenantSqliteConnectionMode.ReadWrite,
+            cancellationToken);
+
+    }
+
     public async Task<bool> ObjectExistsAsync(string name, string type, CancellationToken cancellationToken)
     {
 
