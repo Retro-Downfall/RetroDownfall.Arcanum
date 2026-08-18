@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -322,25 +323,84 @@ public static class TapestryHash
     public static string OfContent(string? content) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content ?? string.Empty)));
 
+    /// <summary>The U+001F separator, which UTF-8 encodes as the single byte 0x1F.</summary>
+    private static ReadOnlySpan<byte> PartSeparator => [0x1f];
+
     /// <summary>
     /// Hashes an ordered sequence of parts with an unambiguous separator, so
     /// <c>["ab", "c"]</c> and <c>["a", "bc"]</c> can never collide.
     /// </summary>
+    /// <remarks>
+    /// Streamed rather than concatenated. <see cref="OfCorpus"/> passes one part per leaf, so
+    /// assembling the sequence as a single string and then again as a single byte array is two
+    /// large-object-heap allocations proportional to the whole corpus — paid on every sweep tick,
+    /// including the overwhelmingly common tick whose only job is to learn that nothing changed.
+    /// The digest is unchanged: each part is encoded in one call, so a surrogate pair is never split
+    /// across appends, and the separator still follows every part including the last. A part ending
+    /// in an unpaired high surrogate encodes to U+FFFD either way, because the concatenated form put
+    /// the separator between it and the next part as well.
+    /// </remarks>
     public static string OfParts(IEnumerable<string> parts)
     {
 
         ArgumentNullException.ThrowIfNull(parts);
 
-        StringBuilder builder = new();
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        foreach (string part in parts)
+        Span<byte> inline = stackalloc byte[256];
+
+        byte[]? rented = null;
+
+        try
         {
 
-            builder.Append(part).Append('\u001f');
+            foreach (string part in parts)
+            {
+
+                int required = Encoding.UTF8.GetByteCount(part);
+
+                Span<byte> buffer = inline;
+
+                if (required > buffer.Length)
+                {
+
+                    if (rented is not null && rented.Length < required)
+                    {
+
+                        ArrayPool<byte>.Shared.Return(rented);
+
+                        rented = null;
+
+                    }
+
+                    rented ??= ArrayPool<byte>.Shared.Rent(required);
+
+                    buffer = rented;
+
+                }
+
+                int written = Encoding.UTF8.GetBytes(part, buffer);
+
+                hash.AppendData(buffer[..written]);
+
+                hash.AppendData(PartSeparator);
+
+            }
+
+        }
+        finally
+        {
+
+            if (rented is not null)
+            {
+
+                ArrayPool<byte>.Shared.Return(rented);
+
+            }
 
         }
 
-        return OfContent(builder.ToString());
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
 
     }
 

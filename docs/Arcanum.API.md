@@ -131,7 +131,7 @@ The established §8 contract numbers are retained in this extracted reference so
 | PUT | `/api/codex` | Create or overwrite global CODEX (`ApiResponse<CodexContentDto>`; same size and containment failures as the campaign route; DESIGN §19). |
 | DELETE | `/api/codex` | Delete global CODEX (**204**; DESIGN §19). |
 | GET | `/api/campaigns/{campaignId}/sanctum` | Campaign Sanctum config (`ApiResponse<SanctumConfig>`; default `Enabled: false`; DESIGN §11.15). |
-| PUT | `/api/campaigns/{campaignId}/sanctum` | Update Sanctum config (`ApiResponse<SanctumConfig>`; body `SanctumConfig`). |
+| PUT | `/api/campaigns/{campaignId}/sanctum` | Update Sanctum config (`ApiResponse<SanctumConfig>`; body `SanctumConfig`). A member the body omits takes its declared default, not `default(T)`: a partial body cannot silently clear `enforcePathBoundary`, floor `maxBreachCount`, or zero the `resourceLimits` ceilings (where `0` means *unlimited* for `maxCpuSeconds` / `maxMemoryMb` / `maxFileDescriptors`). Send a member explicitly to change it. |
 | GET | `/api/campaigns/{campaignId}/sanctum/breaches` | Paginated Sanctum breach history (`ApiResponse<SanctumBreachQueryResult>`; `?limit=` default 100 clamp 1–1,000, `?before=` ISO 8601 cursor, `?tool=` filter). |
 | GET | `/api/wards` | List active wards (`ApiResponse<WardDto[]>`; DESIGN §11.14). |
 | GET | `/api/wards/{id}` | Active ward detail (`ApiResponse<WardDto>`; **404** `Ward.NotFound`). |

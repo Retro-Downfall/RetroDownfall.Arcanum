@@ -462,6 +462,23 @@ public static class HostProcessToolsMarkerPayload
 
         string installationIdentity = Encoding.UTF8.GetString(identityField[..identityLength]);
 
+        // The identity is the one field whose decode is lossy, so it is the one field that has to be
+        // re-checked rather than trusted. GetString substitutes U+FFFD for each invalid byte and that
+        // replacement re-encodes to three bytes, so as few as 43 invalid bytes already exceed the
+        // pinned field width. Accepting such a payload hands HostProcessToolsOsMarkerEvidence an
+        // identity its constructor rejects, and that ArgumentException escapes the startup gate as a
+        // crash where the design calls for a block. Refuse anything this decoder cannot hand back
+        // byte for byte, and anything blank, so everything TryDecode accepts the constructor takes.
+        Span<byte> roundTripped = stackalloc byte[InstallationIdentityFieldBytes];
+
+        if (string.IsNullOrWhiteSpace(installationIdentity)
+            || !Encoding.UTF8.TryGetBytes(installationIdentity, roundTripped, out int roundTrippedLength)
+            || roundTrippedLength != identityLength
+            || !roundTripped[..roundTrippedLength].SequenceEqual(identityField[..identityLength]))
+        {
+            return false;
+        }
+
         Guid transitionId = new(payload.Slice(2 + InstallationIdentityFieldBytes, 16), bigEndian: true);
 
         if (transitionId == Guid.Empty)

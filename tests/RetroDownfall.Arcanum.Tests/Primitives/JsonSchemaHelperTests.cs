@@ -479,4 +479,137 @@ public sealed class JsonSchemaHelperTests
 
     }
 
+    /// <summary>
+    /// The array case is bounded because every element recurses through the one guard in
+    /// <c>ValidateElement</c>. The object case never recurses — one unexpected property is one
+    /// <c>errors.Add</c> in a flat loop — so it needs its own guard to honour the same ceiling.
+    /// </summary>
+    [Fact]
+    public void Validate_EveryPropertyOfALargeObjectIsUnexpected_ReportsABoundedErrorList()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        string payload = "{" + string.Join(',', Enumerable.Range(0, 20_000).Select(i => $"\"p{i}\":1")) + "}";
+
+        ValidationResult result = JsonSchemaHelper.Validate(payload, parsed.Value);
+
+        Assert.False(result.IsValid);
+
+        Assert.InRange(result.Errors.Count, 1, JsonSchemaHelper.MaxReportedErrors + 1);
+
+        Assert.True(
+            string.Join("; ", result.Errors).Length < 64 * 1024,
+            "The joined report is embedded verbatim in a public error envelope.");
+
+    }
+
+    /// <summary>
+    /// A caller-supplied <c>required</c> array scales with the request rather than the model reply,
+    /// so an unbounded missing-property report is the strongest amplification vector of the two.
+    /// </summary>
+    [Fact]
+    public void Validate_EveryRequiredPropertyOfALargeSchemaIsMissing_ReportsABoundedErrorList()
+    {
+
+        string requiredNames = string.Join(',', Enumerable.Range(0, 20_000).Select(i => $"\"p{i}\""));
+
+        using JsonDocument schema = JsonDocument.Parse($$"""
+            {
+              "type": "object",
+              "required": [{{requiredNames}}]
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        ValidationResult result = JsonSchemaHelper.Validate("{}", parsed.Value);
+
+        Assert.False(result.IsValid);
+
+        Assert.InRange(result.Errors.Count, 1, JsonSchemaHelper.MaxReportedErrors + 1);
+
+        Assert.True(
+            string.Join("; ", result.Errors).Length < 64 * 1024,
+            "The joined report is embedded verbatim in a public error envelope.");
+
+    }
+
+    /// <summary>
+    /// Capping the unexpected-property report must not stop the walk that fills the seen-property
+    /// set: a required property that appears after the ceiling is reached is still present, and
+    /// reporting it as missing would tell the model to add a field it already sent.
+    /// </summary>
+    [Fact]
+    public void Validate_TruncatedObjectReport_DoesNotInventMissingRequiredProperties()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "type": "object",
+              "properties": { "a": { "type": "integer" } },
+              "required": ["a"],
+              "additionalProperties": false
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        // "a" is last, so it is only seen well past the error ceiling.
+        string payload = "{"
+            + string.Join(',', Enumerable.Range(0, 20_000).Select(i => $"\"p{i}\":1"))
+            + ",\"a\":1}";
+
+        ValidationResult result = JsonSchemaHelper.Validate(payload, parsed.Value);
+
+        Assert.InRange(result.Errors.Count, 1, JsonSchemaHelper.MaxReportedErrors + 1);
+
+        Assert.DoesNotContain(result.Errors, e => e.Contains("required property 'a' is missing", StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// The sentinel announces that the report was truncated, so it must not be appended to an
+    /// object report that already lists everything that failed.
+    /// </summary>
+    [Fact]
+    public void Validate_ObjectReportBelowTheCeiling_OmitsTheTruncationSentinel()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        string payload = "{" + string.Join(',', Enumerable.Range(0, 3).Select(i => $"\"p{i}\":1")) + "}";
+
+        ValidationResult result = JsonSchemaHelper.Validate(payload, parsed.Value);
+
+        Assert.Equal(3, result.Errors.Count);
+
+        Assert.DoesNotContain(result.Errors, e => e.Contains("Validation stopped", StringComparison.Ordinal));
+
+    }
+
 }
