@@ -443,13 +443,13 @@ public sealed class ApplicationDeepLinkRouterTests
     }
 
     [Fact]
-    public async Task Coordinator_RejectsWhenConnectionIsAlreadyInError()
+    public async Task Coordinator_RejectsWhenConnectionIsAlreadyInAuthFailure()
     {
 
         // A rotated master key settles the health poller on Error with the bad key cached for the process
         // lifetime, so waiting for Connected never returns and the caller's "could not be opened" whisper
         // never fires.
-        MutableArcanumConnection connection = new(ConnectionState.Error);
+        MutableArcanumConnection connection = new(ConnectionState.Error, "Auth.Unauthorized");
 
         RecordingDeepLinkTarget target = new();
 
@@ -470,7 +470,7 @@ public sealed class ApplicationDeepLinkRouterTests
     }
 
     [Fact]
-    public async Task Coordinator_RejectsWhenConnectionTransitionsToError()
+    public async Task Coordinator_RejectsWhenConnectionTransitionsToAuthFailure()
     {
 
         MutableArcanumConnection connection = new(ConnectionState.Connecting);
@@ -489,7 +489,7 @@ public sealed class ApplicationDeepLinkRouterTests
 
         Assert.False(routing.IsCompleted);
 
-        connection.SetState(ConnectionState.Error);
+        connection.SetState(ConnectionState.Error, "Security.MissingApiKey");
 
         TheForgeDeepLinkRouteResult result = await routing.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -498,6 +498,129 @@ public sealed class ApplicationDeepLinkRouterTests
         Assert.False(target.HasCalls);
 
     }
+
+    [Fact]
+    public async Task Coordinator_WaitsThroughTransientErrorAndRoutesOnRecovery()
+    {
+
+        // Three consecutive missed health polls settle the poller on Error while it keeps polling, so a link
+        // that arrives during an Arcanum restart must still route once the connection recovers.
+        Guid sessionId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+
+        MutableArcanumConnection connection = new(ConnectionState.Connecting);
+
+        RecordingDeepLinkTarget target = new();
+
+        TheForgeDeepLinkCoordinator coordinator = new(connection, new TheForgeDeepLinkRouter(target));
+
+        ApplicationDeepLink link = NewLink(
+            ApplicationResourceKind.Session,
+            sessionId.ToString("D"));
+
+        Task<TheForgeDeepLinkRouteResult> routing = coordinator.RouteAsync(link, CancellationToken.None);
+
+        await Task.Yield();
+
+        connection.SetState(ConnectionState.Error, "Connection.Failed");
+
+        await SettleAsync();
+
+        Assert.False(routing.IsCompleted);
+
+        Assert.False(target.HasCalls);
+
+        connection.SetState(ConnectionState.Connected);
+
+        TheForgeDeepLinkRouteResult result = await routing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(result.Accepted);
+
+        Assert.Equal(
+            (DocumentKind.Session, sessionId.ToString("D"), (string?)null),
+            Assert.Single(target.OpenedDocuments));
+
+    }
+
+    [Fact]
+    public async Task Coordinator_RoutesWhenConnectionStartsInTransientErrorAndRecovers()
+    {
+
+        // The link can also arrive after the poller has already given up on a restarting server; the
+        // pre-subscription fast path must not turn that into a rejection either.
+        Guid sessionId = Guid.Parse("aaaaaaaa-9999-9999-9999-999999999999");
+
+        MutableArcanumConnection connection = new(ConnectionState.Error, "Connection.Timeout");
+
+        RecordingDeepLinkTarget target = new();
+
+        TheForgeDeepLinkCoordinator coordinator = new(connection, new TheForgeDeepLinkRouter(target));
+
+        ApplicationDeepLink link = NewLink(
+            ApplicationResourceKind.Session,
+            sessionId.ToString("D"));
+
+        Task<TheForgeDeepLinkRouteResult> routing = coordinator.RouteAsync(link, CancellationToken.None);
+
+        await SettleAsync();
+
+        Assert.False(routing.IsCompleted);
+
+        Assert.False(target.HasCalls);
+
+        connection.SetState(ConnectionState.Connected);
+
+        TheForgeDeepLinkRouteResult result = await routing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(result.Accepted);
+
+        Assert.Equal(
+            (DocumentKind.Session, sessionId.ToString("D"), (string?)null),
+            Assert.Single(target.OpenedDocuments));
+
+    }
+
+    [Fact]
+    public async Task Coordinator_RejectsWhenAuthFailureArrivesDuringTransientError()
+    {
+
+        // Once State is Error a later auth failure changes only LastErrorCode, raising no State
+        // notification; watching State alone would wait forever on a key that never clears.
+        MutableArcanumConnection connection = new(ConnectionState.Connecting);
+
+        RecordingDeepLinkTarget target = new();
+
+        TheForgeDeepLinkCoordinator coordinator = new(connection, new TheForgeDeepLinkRouter(target));
+
+        ApplicationDeepLink link = NewLink(
+            ApplicationResourceKind.Session,
+            "bbbbbbbb-9999-9999-9999-999999999999");
+
+        Task<TheForgeDeepLinkRouteResult> routing = coordinator.RouteAsync(link, CancellationToken.None);
+
+        await Task.Yield();
+
+        connection.SetState(ConnectionState.Error, "Connection.Failed");
+
+        await SettleAsync();
+
+        Assert.False(routing.IsCompleted);
+
+        connection.SetErrorCode("Auth.Unauthorized");
+
+        TheForgeDeepLinkRouteResult result = await routing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.Accepted);
+
+        Assert.False(target.HasCalls);
+
+    }
+
+    /// <summary>
+    /// Lets any continuation the coordinator scheduled actually run, so a "still waiting" assertion
+    /// observes a settled coordinator rather than a scheduling race: the wait completes its
+    /// TaskCompletionSource with RunContinuationsAsynchronously, so a bare yield can outrun the rejection.
+    /// </summary>
+    private static Task SettleAsync() => Task.Delay(TimeSpan.FromMilliseconds(50));
 
     private static ApplicationDeepLink NewLink(
         ApplicationResourceKind resourceKind,
@@ -576,10 +699,12 @@ public sealed class ApplicationDeepLinkRouterTests
     private sealed class MutableArcanumConnection : IArcanumConnection
     {
 
-        public MutableArcanumConnection(ConnectionState state)
+        public MutableArcanumConnection(ConnectionState state, string? lastErrorCode = null)
         {
 
             State = state;
+
+            LastErrorCode = lastErrorCode;
 
         }
 
@@ -589,7 +714,7 @@ public sealed class ApplicationDeepLinkRouterTests
 
         public InstanceMetadataDto? LastMeta => null;
 
-        public string? LastErrorCode => null;
+        public string? LastErrorCode { get; private set; }
 
         public string? LastErrorMessage => null;
 
@@ -603,12 +728,31 @@ public sealed class ApplicationDeepLinkRouterTests
         {
         }
 
-        public void SetState(ConnectionState state)
+        /// <summary>
+        /// Mirrors the health poller, which assigns LastErrorCode and raises its notification before
+        /// flipping State, so a State observer always reads the code that caused the transition.
+        /// </summary>
+        public void SetState(ConnectionState state, string? errorCode = null)
         {
+
+            SetErrorCode(errorCode);
 
             State = state;
 
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(State)));
+
+        }
+
+        /// <summary>
+        /// Changes only the error code, as a later failing poll does once State has already settled on
+        /// Error and therefore raises no further State notification.
+        /// </summary>
+        public void SetErrorCode(string? errorCode)
+        {
+
+            LastErrorCode = errorCode;
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastErrorCode)));
 
         }
 

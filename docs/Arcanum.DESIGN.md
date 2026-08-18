@@ -3293,7 +3293,7 @@ The client supports both stream families:
 
 The desktop bundles as self-contained Avalonia on .NET 10 and is **not Native AOT**. This does not relax the Arcanum host's source-generated wire contracts or Native AOT requirements (§9).
 
-At startup The Forge parses the shared Core deep-link envelope before opening a resource. A valid link waits for `ConnectionState.Connected` without inventing a timeout, then routes through existing ViewModel/navigation services. Wrong-target, malformed, and unsupported future-schema links are rejected without exposing their raw payload. Normal startup remains unchanged when no link is present.
+At startup The Forge parses the shared Core deep-link envelope before opening a resource. A valid link waits for `ConnectionState.Connected` without inventing a timeout, then routes through existing ViewModel/navigation services. Waiting survives a transient `ConnectionState.Error`: the health poller settles there after three consecutive missed polls but keeps polling, so a link that arrives while Arcanum is restarting or still booting routes once the connection recovers. The one terminal answer is an auth-class failure (`Security.MissingApiKey`, `Auth.Unauthorized`), whose rejected key is cached for the process lifetime — waiting for a recovery that can never come would hang the link silently, so it is rejected and the caller's failure whisper fires. Wrong-target, malformed, and unsupported future-schema links are rejected without exposing their raw payload. Normal startup remains unchanged when no link is present.
 
 ### 19.8 Desktop wire contracts
 
