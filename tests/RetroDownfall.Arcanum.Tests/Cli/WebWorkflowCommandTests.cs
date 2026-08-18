@@ -10,6 +10,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Cli.Services;
+
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -281,6 +283,37 @@ public sealed class WebWorkflowCommandTests
         Assert.Contains("Rendering", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("Synthesizing", result.Error, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A research run that cannot reach the host fails for exactly the reason an <c>ask</c> does, so
+    /// it must name the same next step. Printing the transport copy without the hint leaves the
+    /// operator with a diagnosis and no command to run.
+    /// </summary>
+    [Fact]
+
+    public void Research_transport_failure_carries_the_doctor_hint_ask_appends()
+    {
+
+        RecordingHandler handler = new(
+            _ => throw new HttpRequestException("No listener on the configured port."));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["research", "What changed?"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains(
+            ArcanumApiClient.StreamUnreachableMessage,
+            result.Error,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            ArcanumApiClient.StreamDoctorHint,
+            result.Error,
+            StringComparison.Ordinal);
 
     }
 

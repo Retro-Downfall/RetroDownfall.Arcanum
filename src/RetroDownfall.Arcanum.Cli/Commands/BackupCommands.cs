@@ -486,7 +486,11 @@ internal sealed class BackupCommands(
         if (plan.Blockers.Length > 0)
         {
 
-            WriteIssues(plan.Blockers);
+            // The refusal ends the command, so this is the only thing stdout will carry. Under
+            // --output-format json that has to be the one document a consumer can parse, and the plan
+            // is the shape --dry-run already publishes for the same question — the blockers are on it
+            // as data rather than as the prose the text mode still prints.
+            Write(plan, CliJsonContext.Default.BackupRestorePlan, p => WriteIssues(p.Blockers));
 
             return ProtectedStateAnswer.Refused;
 

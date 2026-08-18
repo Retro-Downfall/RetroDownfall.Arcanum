@@ -148,7 +148,9 @@ public sealed class ServeCommandConfigReaderTests
 
     /// <summary>
     /// An acknowledgement that cannot be obtained because the console is not interactive is the
-    /// documented exit-2 case, not a generic runtime failure — automation keys on the difference.
+    /// documented exit-2 case, not a generic runtime failure — automation keys on the difference. The
+    /// refusal is a diagnostic, so it belongs on stderr: an operator who redirected stdout to capture
+    /// the host's own output must still be told why it declined to start.
     /// </summary>
     [Fact]
     public void EnforceListenAnyPolicy_refuses_non_interactively_with_the_configuration_exit_code()
@@ -158,7 +160,13 @@ public sealed class ServeCommandConfigReaderTests
 
         IAnsiConsole prior = AnsiConsole.Console;
 
+        TextWriter priorError = Console.Error;
+
+        StringWriter capturedError = new();
+
         AnsiConsole.Console = console;
+
+        Console.SetError(capturedError);
 
         try
         {
@@ -171,13 +179,17 @@ public sealed class ServeCommandConfigReaderTests
 
             Assert.Equal((int)CliExitCode.ConfigurationError, refusal);
 
-            Assert.Contains("ARCANUM_LISTEN_ANY_ACK", console.Output, StringComparison.Ordinal);
+            Assert.Contains("ARCANUM_LISTEN_ANY_ACK", capturedError.ToString(), StringComparison.Ordinal);
+
+            Assert.DoesNotContain("ARCANUM_LISTEN_ANY_ACK", console.Output, StringComparison.Ordinal);
 
         }
         finally
         {
 
             AnsiConsole.Console = prior;
+
+            Console.SetError(priorError);
 
         }
 

@@ -25,7 +25,7 @@ public sealed class ModelCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -66,7 +66,7 @@ public sealed class ModelCommands(
     {
         if (resourceCatalog is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("A model name is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("A model name is required.")));
             return 1;
         }
 
@@ -79,7 +79,7 @@ public sealed class ModelCommands(
         }
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
             return 1;
         }
 
@@ -111,7 +111,7 @@ public sealed class ProviderCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -155,7 +155,7 @@ public sealed class ProviderCommands(
     {
         if (resourceCatalog is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("A provider name is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("A provider name is required.")));
             return 1;
         }
 
@@ -168,7 +168,7 @@ public sealed class ProviderCommands(
         }
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
             return 1;
         }
 

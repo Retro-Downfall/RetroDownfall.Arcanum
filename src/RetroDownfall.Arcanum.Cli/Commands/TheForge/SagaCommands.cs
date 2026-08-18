@@ -38,7 +38,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             if (!CliArgReader.TryParseGuid(session, out Guid parsedSessionId))
             {
 
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
 
                 return 1;
 
@@ -55,7 +55,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
@@ -119,7 +119,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (string.IsNullOrWhiteSpace(query))
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<QUERY> is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<QUERY> is required.")));
 
             return 1;
 
@@ -132,7 +132,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
@@ -196,7 +196,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
@@ -219,7 +219,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 

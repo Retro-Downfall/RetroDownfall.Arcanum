@@ -238,6 +238,39 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
     }
 
+    /// <summary>
+    /// The same refusal under <c>--output-format json</c>. The blockers are the whole answer to "why
+    /// did this restore refuse", so a consumer has to receive them as data: prose lines on stdout are
+    /// both the wrong shape and, on this branch, the only thing written — the command returns before
+    /// any document is emitted, so `arcanum backup restore --output-format json | jq` gets a parse
+    /// error instead of a reason.
+    /// </summary>
+    [Fact]
+    public async Task A_plan_blocker_under_json_writes_one_typed_document_rather_than_prose()
+    {
+
+        Harness harness = new(confirm: true, json: true)
+        {
+
+            Blockers =
+            [
+                new BackupVerifyIssue(
+                    BackupRestoreProtectedStatePolicy.CovenantRequiredCode,
+                    "This installation does not run the Covenant restore arm."),
+            ],
+
+        };
+
+        int exit = await harness.RestoreAsync("purge-protected-state");
+
+        Assert.Equal((int)CliExitCode.GenericError, exit);
+
+        Assert.Empty(harness.Payloads);
+
+        Assert.Contains("<json:BackupRestorePlan>", harness.Events);
+
+    }
+
     [Fact]
     public async Task An_exact_count_is_reported_as_exact_rather_than_as_a_lower_bound()
     {
@@ -353,10 +386,14 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
         private readonly RecordingConfirmationPrompt _prompt;
 
-        internal Harness(bool confirm)
+        private readonly bool _json;
+
+        internal Harness(bool confirm, bool json = false)
         {
 
             _prompt = new RecordingConfirmationPrompt(Events, confirm);
+
+            _json = json;
 
         }
 
@@ -393,7 +430,7 @@ public sealed class BackupRestoreProtectedStateCommandTests
                 Passphrases,
                 _prompt,
                 new RecordingDispatcher(Events, Payloads),
-                new FixedInvocationContext(),
+                new FixedInvocationContext(_json),
                 Options.Create(
                     new ArcanumSettings
                     {
@@ -496,11 +533,11 @@ public sealed class BackupRestoreProtectedStateCommandTests
 
     }
 
-    private sealed class FixedInvocationContext : ICliInvocationContext
+    private sealed class FixedInvocationContext(bool json) : ICliInvocationContext
     {
 
         public CliInvocationOptions Options { get; } =
-            new(Json: false, Plain: true, Yes: false);
+            new(json, Plain: true, Yes: false);
 
     }
 

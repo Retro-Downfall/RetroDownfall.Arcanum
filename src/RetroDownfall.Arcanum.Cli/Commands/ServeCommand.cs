@@ -41,7 +41,7 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(
                         $"Could not stop the Arcanum host: {result.Error.Message} "
@@ -68,7 +68,7 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         if (!requiresInteractiveConfirmation)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
 
             return null;
 
@@ -77,7 +77,7 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         if (!AnsiConsole.Console.Profile.Capabilities.Interactive)
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(
                         "Refusing to bind to all interfaces: set ARCANUM_LISTEN_ANY_ACK=1 or run interactively to acknowledge the security risk.")));
@@ -89,7 +89,7 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
 
         }
 
-        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
+        CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
 
         if (!AnsiConsole.Confirm(ListenAnySecurityPolicy.InteractiveConfirmPrompt, defaultValue: false))
         {

@@ -46,7 +46,7 @@ public sealed class DaemonCommandTests
 
         Assert.Empty(handler.Requests);
 
-        Assert.Contains("--severity", result.Output, StringComparison.Ordinal);
+        Assert.Contains("--severity", result.Error, StringComparison.Ordinal);
 
     }
 

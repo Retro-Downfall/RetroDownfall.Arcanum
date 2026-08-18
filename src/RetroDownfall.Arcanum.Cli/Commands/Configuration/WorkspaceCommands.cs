@@ -168,7 +168,7 @@ public sealed class WorkspaceCommands(
         if (!TryParseWorkspaceType(type, out WorkspaceType workspaceType))
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     "--type must be one of: spell, campaign, data, custom."));
 
@@ -792,7 +792,7 @@ public sealed class WorkspaceCommands(
         if (selection.Status == ResourceSelectionStatus.Error)
         {
 
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(selection.Error!)));
 
@@ -888,7 +888,7 @@ public sealed class WorkspaceCommands(
     private int WriteError(Error error)
     {
 
-        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(error));
+        CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(error));
 
         return 1;
 

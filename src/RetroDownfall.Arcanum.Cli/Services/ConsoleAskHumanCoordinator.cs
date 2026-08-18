@@ -32,6 +32,7 @@ internal sealed class ConsoleAskHumanCoordinator
     private readonly IThemePalette _palette;
     private readonly IAnsiConsole _diagnosticConsole;
     private readonly Func<string, bool, CancellationToken, Task<string?>> _readLineAsync;
+    private readonly Action? _onOperatorInterrupt;
 
     private PendingHitl? _pending;
     private Task? _raceTask;
@@ -59,17 +60,25 @@ internal sealed class ConsoleAskHumanCoordinator
     /// the process-global console: the non-interactive branch below is exactly the redirected and
     /// <c>--json</c> case, where stdout carries the assistant answer. Only the interactive prompt
     /// itself is rendered on stdout, by the caller-supplied read-line delegate.
+    ///
+    /// <para><paramref name="onOperatorInterrupt" /> is how a Ctrl+C typed into the prompt reaches the
+    /// caller. The read captures that keystroke rather than letting it raise SIGINT, so
+    /// <c>Console.CancelKeyPress</c> never runs, and this coordinator's own token is a child of the
+    /// caller's — cancelling it cannot travel upward. A caller that supplies nothing keeps the old
+    /// behaviour: the prompt settles and the turn runs on.</para>
     /// </summary>
     public ConsoleAskHumanCoordinator(
         ArcanumApiClient apiClient,
         IThemePalette palette,
         Func<string, bool, CancellationToken, Task<string?>>? readLineAsync = null,
-        IAnsiConsole? diagnosticConsole = null)
+        IAnsiConsole? diagnosticConsole = null,
+        Action? onOperatorInterrupt = null)
     {
         _apiClient = apiClient;
         _palette = palette;
         _diagnosticConsole = diagnosticConsole ?? CreateStandardErrorConsole();
         _readLineAsync = readLineAsync ?? DefaultReadLineAsync;
+        _onOperatorInterrupt = onOperatorInterrupt;
     }
 
     public bool HasPending
@@ -318,6 +327,16 @@ internal sealed class ConsoleAskHumanCoordinator
             }
             catch (OperationCanceledException)
             {
+                // A read that ends cancelled while the caller's own token is still live is the
+                // operator's Ctrl+C, taken as a keystroke rather than as SIGINT. Nothing else will
+                // observe it: the caller is parked in its stream pump, and `linked` is a child of the
+                // caller's token, so cancelling it here cannot reach the parent. Hand the interrupt
+                // back instead — that is what makes the command unwind and return the documented 130.
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    NotifyOperatorInterrupt();
+                }
+
                 Settle(pending.Generation, AskHumanResult.Handled);
                 return;
             }
@@ -379,6 +398,22 @@ internal sealed class ConsoleAskHumanCoordinator
         {
             Settle(pending.Generation, AskHumanResult.SubmitFailed);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Reports the operator's interrupt to the caller. A callback that throws must not become the
+    /// race's own failure — the prompt is already over, and the caller has one more chance to notice
+    /// the interrupt when its stream ends.
+    /// </summary>
+    private void NotifyOperatorInterrupt()
+    {
+        try
+        {
+            _onOperatorInterrupt?.Invoke();
+        }
+        catch (ObjectDisposedException)
+        {
         }
     }
 
@@ -482,13 +517,15 @@ internal sealed class ConsoleAskHumanCoordinator
         bool allowEmpty,
         CancellationToken cancellationToken)
     {
-        // CliLineReader cannot observe CT; abandonment is handled by draining after dismiss.
+        // The reader polls for a keystroke rather than blocking in Console.ReadKey, so it observes the
+        // token throughout the read and a dismissed prompt gives the console back on its own.
+        // Draining after dismiss stays as the backstop for a console that cannot report readiness.
         bool empty = allowEmpty;
         return Task.Run(
             () =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                return CliLineReader.ReadLine(promptMarkup, empty);
+                return CliLineReader.ReadLine(promptMarkup, empty, cancellationToken);
             },
             CancellationToken.None);
     }

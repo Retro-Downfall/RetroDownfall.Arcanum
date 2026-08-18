@@ -223,7 +223,7 @@ public sealed class ToolCommands(
     private int WriteError(string error)
     {
 
-        AnsiConsole.MarkupLine(
+        CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(Markup.Escape(error)));
 
         return 1;

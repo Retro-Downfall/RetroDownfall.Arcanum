@@ -37,7 +37,7 @@ public sealed class PromptCommands(
 
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
@@ -52,7 +52,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -102,7 +102,7 @@ public sealed class PromptCommands(
         {
             if (resourceCatalog is null)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
                 return 1;
             }
 
@@ -115,7 +115,7 @@ public sealed class PromptCommands(
             }
             if (selection.Status == ResourceSelectionStatus.Error)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
                 return 1;
             }
 
@@ -126,7 +126,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -197,7 +197,7 @@ public sealed class PromptCommands(
 
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
@@ -212,7 +212,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -259,28 +259,28 @@ public sealed class PromptCommands(
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
             return 1;
         }
 
         if (string.IsNullOrWhiteSpace(version))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
             return 1;
         }
 
         if (string.IsNullOrEmpty(template))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--template is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--template is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(template, out string resolvedTemplate, out string? templateError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(templateError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(templateError!)));
 
             return 1;
         }
@@ -292,7 +292,7 @@ public sealed class PromptCommands(
 
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
@@ -320,7 +320,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -357,7 +357,7 @@ public sealed class PromptCommands(
 
             if (!CliArgReader.TryReadInlineOrFile(template, out string readTemplate, out string? templateError))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(templateError!)));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(templateError!)));
 
                 return 1;
             }
@@ -384,7 +384,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -410,7 +410,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -434,7 +434,7 @@ public sealed class PromptCommands(
 
         if (!CliArgReader.TryParseKeyValuePairs(param, out Dictionary<string, string> parameters, out string? paramError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(paramError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(paramError!)));
 
             return 1;
         }
@@ -445,7 +445,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -477,7 +477,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -508,21 +508,21 @@ public sealed class PromptCommands(
 
         if (string.IsNullOrEmpty(input))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(input, out string resolvedInput, out string? inputError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(inputError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(inputError!)));
 
             return 1;
         }
 
         if (!CliArgReader.TryParseKeyValuePairs(param, out Dictionary<string, string> parameters, out string? paramError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(paramError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(paramError!)));
 
             return 1;
         }
@@ -534,7 +534,7 @@ public sealed class PromptCommands(
 
             if (!CliArgReader.TryParseGuid(sessionId, out Guid parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--sessionId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--sessionId must be a valid GUID.")));
 
                 return 1;
             }
@@ -552,7 +552,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -583,7 +583,7 @@ public sealed class PromptCommands(
 
         if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newVersion))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name and --new-version are required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name and --new-version are required.")));
 
             return 1;
         }
@@ -595,7 +595,7 @@ public sealed class PromptCommands(
 
             if (!CliArgReader.TryParseGuid(campaign, out Guid parsedCampaignId2))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
 
                 return 1;
             }
@@ -610,7 +610,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -678,7 +678,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -699,7 +699,7 @@ public sealed class PromptCommands(
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
 
                 return 1;
             }
@@ -728,7 +728,7 @@ public sealed class PromptCommands(
 
         if (resourceCatalog is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
             return (false, false, default);
         }
 
@@ -741,7 +741,7 @@ public sealed class PromptCommands(
         }
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
             return (false, false, default);
         }
 
@@ -753,7 +753,7 @@ public sealed class PromptCommands(
 
         if (string.IsNullOrWhiteSpace(file))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
             return 1;
         }
@@ -766,7 +766,7 @@ public sealed class PromptCommands(
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 
             return 1;
         }
@@ -779,14 +779,14 @@ public sealed class PromptCommands(
         }
         catch (JsonException ex)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid prompt export JSON: {ex.Message}")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid prompt export JSON: {ex.Message}")));
 
             return 1;
         }
 
         if (payload is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Prompt export JSON parsed to an empty payload.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Prompt export JSON parsed to an empty payload.")));
 
             return 1;
         }
@@ -798,7 +798,7 @@ public sealed class PromptCommands(
 
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
@@ -813,7 +813,7 @@ public sealed class PromptCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
