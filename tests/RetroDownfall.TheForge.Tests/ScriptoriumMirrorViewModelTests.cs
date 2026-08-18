@@ -119,12 +119,15 @@ public class ScriptoriumMirrorViewModelTests
 
         betaGate.SetResult();
 
-        for (int attempt = 0; attempt < 100 && vm.MirrorComparedPrompt?.Version != "v3"; attempt++)
-        {
-
-            await Task.Delay(10);
-
-        }
+        // Wait for the WHOLE post-condition, not just the version. The view model publishes
+        // MirrorComparedPrompt and MirrorDiffLines in separate steps, so a loop that stops at the
+        // version can observe the beta prompt with the alpha diff still rendered and fail spuriously
+        // under load.
+        await WaitUntilAsync(
+            () => vm.MirrorComparedPrompt?.Version == "v3"
+                && vm.MirrorDiffLines.Any(static l => l.Text.Contains("BBB-unique-beta", StringComparison.Ordinal))
+                && !vm.MirrorDiffLines.Any(static l => l.Text.Contains("AAA-unique-alpha", StringComparison.Ordinal)),
+            "the beta selection's diff to replace the alpha selection's");
 
         Assert.Equal("v3", vm.MirrorComparedPrompt!.Version);
 
@@ -133,6 +136,33 @@ public class ScriptoriumMirrorViewModelTests
         Assert.DoesNotContain(vm.MirrorDiffLines, static l => l.Text.Contains("AAA-unique-alpha", StringComparison.Ordinal));
 
         vm.Dispose();
+
+    }
+
+    /// <summary>
+    /// Polls until <paramref name="settled"/> holds, then returns. Fails with a description of what
+    /// was being waited for rather than letting a later assertion report a confusing intermediate
+    /// state. The generous ceiling is a deadlock guard, not a timing assumption: the happy path exits
+    /// on the first satisfied poll.
+    /// </summary>
+    private static async Task WaitUntilAsync(Func<bool> settled, string description)
+    {
+
+        for (int attempt = 0; attempt < 500; attempt++)
+        {
+
+            if (settled())
+            {
+
+                return;
+
+            }
+
+            await Task.Delay(10);
+
+        }
+
+        Assert.Fail($"Timed out after 5s waiting for {description}.");
 
     }
 
