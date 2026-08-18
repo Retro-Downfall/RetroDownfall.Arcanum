@@ -1347,6 +1347,20 @@ public sealed class WebWorkflowEndpointTests
             static frame => frame.Type == WebResearchStreamFrameType.Progress
                 && frame.Stage == "attachment_failed");
 
+        // The progress frame is the whole story: unlike search and browse, the research result carries
+        // no `attachmentError` of its own. A permanently-null field on the terminal frame would read to
+        // a client as "the attachment succeeded", which is the opposite of what happened.
+        string terminalLine = ndjson
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[^1];
+
+        using JsonDocument terminalJson = JsonDocument.Parse(terminalLine);
+
+        Assert.False(
+            terminalJson.RootElement
+                .GetProperty("result")
+                .TryGetProperty("attachmentError", out _),
+            $"the research result frame carried an attachmentError property: {terminalLine}");
+
     }
 
     /// <summary>
