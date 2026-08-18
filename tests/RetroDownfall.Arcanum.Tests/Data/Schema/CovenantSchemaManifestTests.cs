@@ -335,6 +335,62 @@ public sealed class CovenantSchemaManifestTests
     }
 
     /// <summary>
+    /// A partial index that stays partial while its predicate changes is drift. This is the case the
+    /// shape checks structurally cannot see: <c>PRAGMA index_list</c> reports <c>partial</c> as a bare
+    /// 0/1 flag and <c>PRAGMA index_xinfo</c> has no predicate column, so name, uniqueness, origin,
+    /// partial-ness, and key columns all still agree while the index enforces a different rule.
+    /// </summary>
+    /// <remarks>
+    /// <c>ux_covenant_entries_global_key</c> is half of what keeps Global and Campaign keys in
+    /// separate namespaces. Narrowing its predicate the way a hand-edited repair would leaves the
+    /// uniqueness rule quietly unenforced for rows the declared index covers.
+    /// </remarks>
+    [Fact]
+    public async Task Manifest_rejects_a_partial_index_whose_predicate_changed_while_staying_partial()
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await database.ExecuteAsync("DROP INDEX ux_covenant_entries_global_key;", CancellationToken.None);
+
+        await database.ExecuteAsync(
+            """
+            CREATE UNIQUE INDEX ux_covenant_entries_global_key
+                ON covenant_entries(NormalizedKey) WHERE CampaignId IS NULL AND ScopeCode = 1;
+            """,
+            CancellationToken.None);
+
+        GrimoireSchemaInspectionResult drifted = await InspectCanonicalAsync(database);
+
+        Assert.False(drifted.IsValid, Describe(drifted));
+
+        Assert.Equal(GrimoireSchemaInspectionFailure.IndexShapeDrift, drifted.Failure);
+
+        Assert.Equal("ux_covenant_entries_global_key", drifted.ObjectName);
+
+        Assert.Null(drifted.InstalledCatalogFingerprint);
+
+        await database.ExecuteAsync("DROP INDEX ux_covenant_entries_global_key;", CancellationToken.None);
+
+        // Restoring the declared predicate clears the signal, so the rejection above was the
+        // predicate rather than a check that had latched on.
+        await database.ExecuteAsync(
+            """
+            CREATE UNIQUE INDEX ux_covenant_entries_global_key
+                ON covenant_entries(NormalizedKey) WHERE CampaignId IS NULL;
+            """,
+            CancellationToken.None);
+
+        GrimoireSchemaInspectionResult restored = await InspectCanonicalAsync(database);
+
+        Assert.True(restored.IsValid, Describe(restored));
+
+    }
+
+    /// <summary>
     /// The shadow tables have no source resource file, so nothing but this manifest claims them. All
     /// four are owned, because a missing or altered shadow means search would answer from a structure
     /// this build did not create.

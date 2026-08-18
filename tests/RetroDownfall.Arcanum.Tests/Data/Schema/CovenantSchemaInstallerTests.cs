@@ -321,6 +321,55 @@ public sealed class CovenantSchemaInstallerTests
     }
 
     /// <summary>
+    /// The identity each tier records is scoped to that tier's own resources, so a release that
+    /// changes one capability's definitions cannot be read as a change to another's.
+    /// </summary>
+    /// <remarks>
+    /// This is the value <c>ClassifyExistingAsync</c> compares on the next open, and Core is the tier
+    /// whose mismatch throws instead of degrading. Recording the whole-tree fingerprint against Core
+    /// would make a comment-only edit under <c>Capabilities/Covenant/</c> refuse an intact Core tier
+    /// and abort the host and every CLI verb that opens the Grimoire - the total outage the three
+    /// failure domains exist to prevent.
+    /// </remarks>
+    [Fact]
+    public async Task Each_tier_records_a_source_identity_scoped_to_its_own_resources()
+    {
+
+        await using SqliteConnection connection = await OpenAsync();
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, Dimensions, CancellationToken.None);
+
+        Assert.Equal(
+            GrimoireSchemaCatalog.CoreSchemaFingerprint,
+            await ReadSourceFingerprintAsync(
+                connection,
+                GrimoireSchemaFamily.Core,
+                GrimoireSchemaTransactionTier.Core));
+
+        Assert.NotEqual(
+            GrimoireSchemaCatalog.CanonicalSchemaFingerprint,
+            await ReadSourceFingerprintAsync(
+                connection,
+                GrimoireSchemaFamily.Core,
+                GrimoireSchemaTransactionTier.Core));
+
+        Assert.Equal(
+            GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
+            await ReadSourceFingerprintAsync(
+                connection,
+                GrimoireSchemaFamily.Covenant,
+                GrimoireSchemaTransactionTier.CovenantCanonical));
+
+        Assert.Equal(
+            GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint,
+            await ReadSourceFingerprintAsync(
+                connection,
+                GrimoireSchemaFamily.Covenant,
+                GrimoireSchemaTransactionTier.CovenantAccelerator));
+
+    }
+
+    /// <summary>
     /// Objects that exist with no metadata row prove nothing about what installed them, so the tier
     /// is refused rather than converged onto.
     /// </summary>
@@ -630,6 +679,30 @@ public sealed class CovenantSchemaInstallerTests
             """;
 
         AddCanonicalKey(command);
+
+        object? result = await command.ExecuteScalarAsync(CancellationToken.None);
+
+        return result is null or DBNull ? null : (string)result;
+
+    }
+
+    private static async Task<string?> ReadSourceFingerprintAsync(
+        SqliteConnection connection,
+        GrimoireSchemaFamily family,
+        GrimoireSchemaTransactionTier tier)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT SourceDefinitionFingerprint
+            FROM grimoire_feature_schemas
+            WHERE FamilyCode = $familyCode AND TransactionTierCode = $tierCode;
+            """;
+
+        _ = command.Parameters.AddWithValue("$familyCode", (long)family);
+
+        _ = command.Parameters.AddWithValue("$tierCode", (long)tier);
 
         object? result = await command.ExecuteScalarAsync(CancellationToken.None);
 
