@@ -22,11 +22,11 @@ public sealed class OpenAiCompatApiClientReliabilityTests
             new StaticApiKeyProvider(),
             NullLogger<ArcanumApiClient>.Instance);
 
-        bool result = await client.DeleteNoContentAsync(
+        DeleteOutcome result = await client.DeleteNoContentAsync(
             "/api/campaigns/test",
             CancellationToken.None);
 
-        Assert.True(result);
+        Assert.True(result.Success);
     }
 
     [Fact]
@@ -41,11 +41,13 @@ public sealed class OpenAiCompatApiClientReliabilityTests
             new StaticApiKeyProvider(),
             NullLogger<ArcanumApiClient>.Instance);
 
-        bool result = await client.DeleteNoContentAsync(
+        DeleteOutcome result = await client.DeleteNoContentAsync(
             "/api/campaigns/test",
             CancellationToken.None);
 
-        Assert.False(result);
+        Assert.False(result.Success);
+
+        Assert.Equal("Connection.Timeout", result.ErrorCode);
     }
 
     [Fact]

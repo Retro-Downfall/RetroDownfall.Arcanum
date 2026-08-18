@@ -125,7 +125,7 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
     public ObservableCollection<ComparisonVariantResultViewModel> Results { get; } = [];
 
-    public ObservableCollection<DiffLineItem> DiffLines { get; } = [];
+    public BulkObservableCollection<DiffLineItem> DiffLines { get; } = [];
 
     public ObservableCollection<ComparisonRunRecord> History { get; } = [];
 
@@ -305,7 +305,7 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
             }
 
-            RefreshDiff();
+            await RefreshDiffAsync(runToken).ConfigureAwait(true);
 
             ComparisonRunRecord run = new(
                 runId,
@@ -356,26 +356,42 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
     }
 
-    partial void OnLeftResultChanged(ComparisonVariantResultViewModel? value) => RefreshDiff();
+    partial void OnLeftResultChanged(ComparisonVariantResultViewModel? value) =>
+        TaskUtilities.FireAndForget(RefreshDiffAsync(CancellationToken.None));
 
-    partial void OnRightResultChanged(ComparisonVariantResultViewModel? value) => RefreshDiff();
+    partial void OnRightResultChanged(ComparisonVariantResultViewModel? value) =>
+        TaskUtilities.FireAndForget(RefreshDiffAsync(CancellationToken.None));
+
+    /// <summary>
+    /// Monotonic ticket for diff refreshes. Selecting a different pair while one is in flight must not
+    /// let the older comparison land on the surface afterwards.
+    /// </summary>
+    private int _diffRefreshGeneration;
 
     [RelayCommand]
-    public void RefreshDiff()
+    public async Task RefreshDiffAsync(CancellationToken cancellationToken)
     {
 
-        DiffLines.Clear();
+        int generation = ++_diffRefreshGeneration;
 
         string left = LeftResult?.Output ?? string.Empty;
 
         string right = RightResult?.Output ?? string.Empty;
 
-        foreach (DiffLineItem line in LineDiff.Compare(left, right))
+        // Two model outputs can be long, and LCS over them is CPU-bound on the UI thread. Compute off
+        // it, then publish the whole diff in one notification instead of one event per line.
+        IReadOnlyList<DiffLineItem> lines = await Task
+            .Run(() => LineDiff.Compare(left, right), cancellationToken)
+            .ConfigureAwait(true);
+
+        if (generation != _diffRefreshGeneration)
         {
 
-            DiffLines.Add(line);
+            return;
 
         }
+
+        DiffLines.ResetTo(lines);
 
     }
 

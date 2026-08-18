@@ -22,16 +22,35 @@ public static class ArtifactImportExportHelper
         CancellationToken cancellationToken) =>
         fileDialog.PickOpenJsonPathAsync(cancellationToken);
 
-    public static async Task WriteJsonAsync<T>(
+    /// <summary>
+    /// Serializes and writes <paramref name="value"/>, returning <see langword="null"/> on success or
+    /// the failure message otherwise — the same contract as <see cref="ReadJsonAsync{T}"/>, so a
+    /// caller cannot accidentally leave an export write unguarded. Cancellation is not a failure and
+    /// still propagates, because callers report a cancelled export differently from a failed one.
+    /// </summary>
+    public static async Task<string?> WriteJsonAsync<T>(
         string path,
         T value,
         JsonTypeInfo<T> typeInfo,
         CancellationToken cancellationToken)
     {
 
-        string json = JsonSerializer.Serialize(value, typeInfo);
+        try
+        {
 
-        await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(true);
+            string json = JsonSerializer.Serialize(value, typeInfo);
+
+            await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(true);
+
+            return null;
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            return ex.Message;
+
+        }
 
     }
 

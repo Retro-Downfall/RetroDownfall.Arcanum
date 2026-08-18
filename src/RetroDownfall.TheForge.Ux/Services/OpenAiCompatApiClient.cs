@@ -123,6 +123,14 @@ public sealed class OpenAiCompatApiClient
                 .ConfigureAwait(false);
 
         }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            _logger.LogError(ex, "OpenAI multipart POST {Path} aborted: {Code}.", path, ex.Code);
+
+            return OpenAiResult<TResponse>.Fail(ex.Code, ex.Message);
+
+        }
         catch (InvalidOperationException ex)
         {
 
@@ -232,6 +240,14 @@ public sealed class OpenAiCompatApiClient
             temporaryPath = null;
 
             return OpenAiResult<bool>.Ok(true);
+
+        }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            _logger.LogError(ex, "OpenAI download GET {Path} aborted: {Code}.", path, ex.Code);
+
+            return OpenAiResult<bool>.Fail(ex.Code, ex.Message);
 
         }
         catch (InvalidOperationException ex)
@@ -347,6 +363,14 @@ public sealed class OpenAiCompatApiClient
             return OpenAiResult<Stream>.Ok(owner);
 
         }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            _logger.LogError(ex, "OpenAI content GET {Path} aborted: {Code}.", path, ex.Code);
+
+            return OpenAiResult<Stream>.Fail(ex.Code, ex.Message);
+
+        }
         catch (InvalidOperationException ex)
         {
 
@@ -409,6 +433,14 @@ public sealed class OpenAiCompatApiClient
 
             return await ParseJsonResponseAsync(response, responseTypeInfo, path, cancellationToken)
                 .ConfigureAwait(false);
+
+        }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            _logger.LogError(ex, "OpenAI {Method} {Path} aborted: {Code}.", method, path, ex.Code);
+
+            return OpenAiResult<TResponse>.Fail(ex.Code, ex.Message);
 
         }
         catch (InvalidOperationException ex)
@@ -567,9 +599,34 @@ public sealed class OpenAiCompatApiClient
 
         }
 
+        // the-forge.json is reload-on-change and hand-editable, and only the Setup Wizard validates the
+        // URL. Without these guards a malformed value escapes as UriFormatException/FormatException —
+        // neither of which any caller catches — instead of the OpenAiResult failure this layer
+        // promises. Same guards and same codes as ArcanumApiClient.CreateClientAsync.
+        if (!Uri.TryCreate(settings.BaseUrl, UriKind.Absolute, out Uri? baseAddress)
+            || (baseAddress.Scheme != Uri.UriSchemeHttp && baseAddress.Scheme != Uri.UriSchemeHttps))
+        {
+
+            throw new ArcanumClientConfigurationException(
+                ArcanumApiClient.InvalidBaseUrlCode,
+                $"The Forge setting 'BaseUrl' is not an absolute http/https URL: '{settings.BaseUrl}'. "
+                + "Correct it in the-forge.json or re-run the setup wizard.");
+
+        }
+
+        if (apiKey.AsSpan().IndexOfAny('\r', '\n', '\0') >= 0)
+        {
+
+            throw new ArcanumClientConfigurationException(
+                ArcanumApiClient.InvalidApiKeyCode,
+                "The master API key contains a line break or NUL character and cannot be sent as an HTTP "
+                + "header. Re-enter the key on a single line.");
+
+        }
+
         HttpClient client = _httpClientFactory.CreateClient(ArcanumApiClient.HttpClientName);
 
-        client.BaseAddress = new Uri(settings.BaseUrl, UriKind.Absolute);
+        client.BaseAddress = baseAddress;
 
         client.DefaultRequestHeaders.Remove(ApiKeyHeaderName);
 

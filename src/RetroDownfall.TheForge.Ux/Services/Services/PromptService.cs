@@ -103,7 +103,7 @@ public sealed class PromptService
             cancellationToken);
 
     /// <summary><c>DELETE /api/prompts/{id}</c> — success is <c>204 No Content</c>.</summary>
-    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+    public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
         _apiClient.DeleteNoContentAsync($"/api/prompts/{id}", cancellationToken);
 
     /// <summary><c>POST /api/prompts/{id}/clone</c> — copies the prompt under a new name/version.</summary>

@@ -59,7 +59,7 @@ public sealed class CampaignService
             TheForgeJsonContext.Default.ApiResponseCampaignDto,
             cancellationToken);
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+    public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
         _apiClient.DeleteNoContentAsync($"/api/campaigns/{id}", cancellationToken);
 
     public Task<ApiResponse<ListPageResult<PromptSummaryDto>>?> GetPromptsAsync(

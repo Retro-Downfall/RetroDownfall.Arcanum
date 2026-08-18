@@ -203,7 +203,26 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
         }
 
-        await File.WriteAllTextAsync(path, BuildExportJson(), Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        LastError = null;
+
+        try
+        {
+
+            await File.WriteAllTextAsync(path, BuildExportJson(), Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            // A read-only volume, a vanished removable drive, or a denied path must land in
+            // LastError; unguarded it escapes onto the dispatcher from a fire-and-forget command.
+            LastError = ex.Message;
+
+            StatusText = "Trace export failed.";
+
+            return;
+
+        }
 
         StatusText = "Trace exported.";
 
@@ -222,16 +241,33 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
         }
 
-        InferenceTraceStoreDocument document = await _store.LoadAsync(cancellationToken).ConfigureAwait(true);
+        LastError = null;
 
-        List<InferenceTraceRecord> traces = [ToRecord(Guid.NewGuid(), DateTimeOffset.UtcNow), .. document.Traces];
+        try
+        {
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+            InferenceTraceStoreDocument document = await _store.LoadAsync(cancellationToken).ConfigureAwait(true);
 
-        await _store.SaveAsync(
-                new InferenceTraceStoreDocument(InferenceTraceStore.CurrentSchemaVersion, document.CreatedAt, now, traces),
-                cancellationToken)
-            .ConfigureAwait(true);
+            List<InferenceTraceRecord> traces = [ToRecord(Guid.NewGuid(), DateTimeOffset.UtcNow), .. document.Traces];
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            await _store.SaveAsync(
+                    new InferenceTraceStoreDocument(InferenceTraceStore.CurrentSchemaVersion, document.CreatedAt, now, traces),
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = "Trace save failed.";
+
+            return;
+
+        }
 
         StatusText = "Trace saved locally.";
 

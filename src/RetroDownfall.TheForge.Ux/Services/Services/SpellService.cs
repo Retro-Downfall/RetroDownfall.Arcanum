@@ -96,7 +96,7 @@ public sealed class SpellService
     }
 
     /// <summary><c>DELETE /api/spells/{name}?workspace=</c> — success is <c>204 No Content</c>.</summary>
-    public Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken)
+    public Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken)
     {
 
         string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}", ("workspace", workspace));

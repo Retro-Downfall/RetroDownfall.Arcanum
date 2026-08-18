@@ -52,6 +52,33 @@ public class ScriptoriumViewModelTests
     }
 
     [Fact]
+    public async Task LoadAsync_WithUnsavedEdits_RefusesInsteadOfDiscardingThem()
+    {
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = NewPromptDetail(),
+        };
+
+        FakeWhispersService whispers = new();
+
+        ScriptoriumViewModel viewModel = NewScriptorium(dataSource, whispers: whispers);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.Template = "unsaved operator work";
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        Assert.Equal("unsaved operator work", viewModel.Template);
+
+        Assert.True(viewModel.IsEditorDirty);
+
+        Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Warning);
+
+    }
+
+    [Fact]
     public async Task Save_SendsSamplingAndEmptyObjectJson()
     {
 
@@ -624,8 +651,8 @@ public class ScriptoriumViewModelTests
         public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new DataSourceResult<PromptSummaryDto>(null, false, "test", "not used"));
 
-        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
-            Task.FromResult(false);
+        public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
 
     }
 

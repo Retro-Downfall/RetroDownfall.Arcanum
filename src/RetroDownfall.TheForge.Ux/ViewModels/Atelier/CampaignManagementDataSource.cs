@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
@@ -51,20 +52,22 @@ public sealed class CampaignManagementDataSource : ICampaignManagementDataSource
     public async Task<DataSourceResult<bool>> DeleteAsync(Guid id, CancellationToken cancellationToken)
     {
 
-        bool deleted = await _campaignService.DeleteAsync(id, cancellationToken).ConfigureAwait(false);
+        DeleteOutcome outcome = await _campaignService.DeleteAsync(id, cancellationToken).ConfigureAwait(false);
 
-        if (deleted)
+        if (outcome.Success)
         {
 
             return new DataSourceResult<bool>(true, true, null, null);
 
         }
 
+        // A 404 really is "not registered"; a refused connection, a 403, or a 500 is not, and
+        // labelling all three Campaign.NotFound sends the operator looking for the wrong problem.
         return new DataSourceResult<bool>(
             false,
             false,
-            ErrorCodes.Campaign.NotFound,
-            "Campaign unregister failed.");
+            outcome.ErrorCode == "Http.404" ? ErrorCodes.Campaign.NotFound : outcome.ErrorCode,
+            outcome.ErrorMessage ?? "Campaign unregister failed.");
 
     }
 

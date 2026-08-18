@@ -140,7 +140,9 @@ public class SagaArchiveViewModelTests
 
         };
 
-        SagaArchiveViewModel viewModel = NewViewModel(dataSource);
+        SagaArchiveViewModel viewModel = NewViewModel(
+            dataSource,
+            confirmation: new ScriptedConfirmationDialogService(confirm: true));
 
         viewModel.SelectedMemory = memory;
 
@@ -149,6 +151,39 @@ public class SagaArchiveViewModelTests
         Assert.Equal("mem-3", dataSource.LastDeleteId);
 
         Assert.Null(viewModel.SelectedMemory);
+
+    }
+
+    [Fact]
+    public async Task DeleteMemory_WhenDeclined_DoesNotDelete()
+    {
+
+        SagaMemoryDto memory = new("mem-4", "keep me", DateTimeOffset.UtcNow, null, null, null);
+
+        FakeSagaArchiveDataSource dataSource = new()
+        {
+
+            ListResult = new DataSourceResult<SagaMemoryDto[]>([], true, null, null),
+
+            StatsResult = new DataSourceResult<SagaStats>(new SagaStats(0, 0, null, null), true, null, null),
+
+        };
+
+        ScriptedConfirmationDialogService confirmation = new(confirm: false);
+
+        SagaArchiveViewModel viewModel = NewViewModel(dataSource, confirmation: confirmation);
+
+        viewModel.SelectedMemory = memory;
+
+        // A Saga memory cannot be retyped from the on-screen editor the way a Lore key/value can,
+        // so the single-item delete has to ask before it destroys it.
+        await viewModel.DeleteMemoryAsync(CancellationToken.None);
+
+        Assert.Null(dataSource.LastDeleteId);
+
+        Assert.Single(confirmation.Prompts);
+
+        Assert.Equal(memory, viewModel.SelectedMemory);
 
     }
 

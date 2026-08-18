@@ -164,7 +164,7 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         if (kind == DocumentKind.Session && Guid.TryParse(id, out Guid sessionId))
         {
 
-            TomeViewModel tome = new(sessionId, _tomeDataSource, _navigation, _foundryFloor, _clipboard);
+            TomeViewModel tome = new(sessionId, _tomeDataSource, _navigation, _foundryFloor, _clipboard, _confirmationDialog);
 
             _ = tome.LoadCommand.ExecuteAsync(null);
 
@@ -188,7 +188,7 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 
             }
 
-            CodexViewModel codex = new(campaignId, _codexDataSource, _foundryFloor);
+            CodexViewModel codex = new(campaignId, _codexDataSource, _foundryFloor, _confirmationDialog);
 
             _ = codex.LoadCommand.ExecuteAsync(null);
 

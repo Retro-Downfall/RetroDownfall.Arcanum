@@ -247,6 +247,8 @@ public class WhispersServiceTests
     private sealed class SynchronousUiThreadDispatcher : IUiThreadDispatcher
     {
 
+        public bool CheckAccess() => true;
+
         public void Post(Action action) => action();
 
     }

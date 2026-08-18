@@ -243,7 +243,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
     public ObservableCollection<string> DeclaredTools { get; } = [];
 
-    public ObservableCollection<DiffLineItem> DiffLines { get; } = [];
+    public BulkObservableCollection<DiffLineItem> DiffLines { get; } = [];
 
     public ObservableCollection<IntelligenceEvent> ExecutionEvents { get; } = [];
 
@@ -990,14 +990,18 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         try
         {
 
-            bool deleted = await _dataSource.DeleteAsync(SpellName, Workspace, cancellationToken).ConfigureAwait(true);
+            DeleteOutcome outcome = await _dataSource
+                .DeleteAsync(SpellName, Workspace, cancellationToken)
+                .ConfigureAwait(true);
 
-            if (!deleted)
+            if (!outcome.Success)
             {
 
-                LastError = "Delete failed — the server rejected the request.";
+                LastError = outcome.ErrorMessage is { Length: > 0 } detail
+                    ? $"Delete failed ({outcome.ErrorCode}): {detail}"
+                    : "Delete failed — the server rejected the request.";
 
-                _foundryFloor.AppendLine($"Spell delete failed: {SpellName}.");
+                _foundryFloor.AppendLine($"Spell delete failed: {SpellName} — {outcome.ErrorCode}.");
 
                 _whispers.Show(WhisperSeverity.Error, "Spell delete failed.");
 
@@ -1010,6 +1014,14 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell deleted: {SpellName} ({Workspace}).");
 
             _whispers.Show(WhisperSeverity.Success, "Spell deleted.");
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // Closing the window mid-delete cancels the caller's token. That is an ordinary outcome,
+            // not a crash: unhandled it escapes onto the dispatcher from a fire-and-forget command.
+            StatusText = "Delete cancelled.";
 
         }
         finally
@@ -1245,33 +1257,44 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         }
 
-        SpellVersionDto? activated = await _dataSource
-            .ActivateVersionAsync(SpellName, version.Version, Workspace, cancellationToken)
-            .ConfigureAwait(true);
+        // The dirty guard above only checks on entry. Without IsBusy the editor stays live across the
+        // round trip, so the operator can type into a buffer the post-activation reload then
+        // overwrites; and without the catch a transport failure escapes onto the dispatcher instead
+        // of landing in LastError like every sibling version command's server-rejected path.
+        IsBusy = true;
 
-        if (activated is not null)
+        LastError = null;
+
+        try
         {
 
-            ActivatePreviousVersionNote = activated.PreviousVersion is null
-                ? null
-                : $"Previous SPELL.md preserved as SPELL.v{activated.PreviousVersion}.md";
+            SpellVersionDto? activated = await _dataSource
+                .ActivateVersionAsync(SpellName, version.Version, Workspace, cancellationToken)
+                .ConfigureAwait(true);
 
-            await LoadCoreAsync(cancellationToken).ConfigureAwait(true);
-
-            StatusText = "Version activated.";
-
-            if (ActivatePreviousVersionNote is not null)
+            if (activated is not null)
             {
 
-                _foundryFloor.AppendLine($"Spell activate ({SpellName}): {ActivatePreviousVersionNote}");
+                ActivatePreviousVersionNote = activated.PreviousVersion is null
+                    ? null
+                    : $"Previous SPELL.md preserved as SPELL.v{activated.PreviousVersion}.md";
+
+                await LoadCoreAsync(cancellationToken).ConfigureAwait(true);
+
+                StatusText = "Version activated.";
+
+                if (ActivatePreviousVersionNote is not null)
+                {
+
+                    _foundryFloor.AppendLine($"Spell activate ({SpellName}): {ActivatePreviousVersionNote}");
+
+                }
+
+                _whispers.Show(WhisperSeverity.Success, "Version activated.");
+
+                return;
 
             }
-
-            _whispers.Show(WhisperSeverity.Success, "Version activated.");
-
-        }
-        else
-        {
 
             LastError = "Activate failed — the server rejected the request.";
 
@@ -1280,6 +1303,24 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell activate failed: {SpellName} v{version.Version}.");
 
             _whispers.Show(WhisperSeverity.Error, "Version activation failed.");
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = "Activate failed.";
+
+            _foundryFloor.AppendLine($"Spell activate error ({SpellName} v{version.Version}): {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Version activation failed.");
+
+        }
+        finally
+        {
+
+            IsBusy = false;
 
         }
 
@@ -1488,12 +1529,24 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         }
 
-        foreach (DiffLineItem line in LineDiff.Compare(_persistedActiveBody, detail.Body))
+        // LCS over two large bodies is bounded but still CPU-bound, and every caller is on the UI
+        // thread. Compute it on the pool, then publish the whole diff in one notification.
+        string persistedBody = _persistedActiveBody;
+
+        string versionBody = detail.Body;
+
+        IReadOnlyList<DiffLineItem> lines = await Task
+            .Run(() => LineDiff.Compare(persistedBody, versionBody), cancellationToken)
+            .ConfigureAwait(true);
+
+        if (_disposed || generation != _mirrorRefreshGeneration)
         {
 
-            DiffLines.Add(line);
+            return;
 
         }
+
+        DiffLines.ResetTo(lines);
 
     }
 

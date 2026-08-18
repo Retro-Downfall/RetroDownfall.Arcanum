@@ -13,8 +13,13 @@
       <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,6,0" />
     </DockPanel>
 
-    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
-               IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+    <StackPanel Grid.Row="1" Spacing="4" Margin="0,0,0,8">
+      <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap"
+                 IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      <TextBlock Text="Incomplete change list — git status output was truncated, so files are missing from the lists below."
+                 Foreground="{DynamicResource ForgeErrorBrush}" FontWeight="SemiBold" TextWrapping="Wrap"
+                 IsVisible="{Binding IsChangeListIncomplete}" />
+    </StackPanel>
 
     <StackPanel Grid.Row="2" Spacing="6" Margin="0,0,0,8">
       <DockPanel LastChildFill="True">

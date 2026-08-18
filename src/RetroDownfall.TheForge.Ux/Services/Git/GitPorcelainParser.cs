@@ -55,7 +55,16 @@ public static class GitPorcelainParser
 
             }
 
-            if (!TrySplitRename(remainder, out string path, out string? originalPath))
+            // Only an R (rename) or C (copy) status carries an "old -> new" pair. Scanning every line
+            // for the arrow mis-splits an ordinary path that legitimately contains " -> ": that needs
+            // no quoting, so git emits it bare and it is indistinguishable from a separator by text.
+            bool renameOrCopy = indexStatus is 'R' or 'C' || workTreeStatus is 'R' or 'C';
+
+            string path;
+
+            string? originalPath;
+
+            if (!renameOrCopy || !TrySplitRename(remainder, out path, out originalPath))
             {
 
                 path = UnquotePath(remainder);
@@ -116,6 +125,17 @@ public static class GitPorcelainParser
 
             char c = text[i];
 
+            if (inQuotes && c == '\\')
+            {
+
+                // Inside a C-quoted path \" is a literal quote, not the closing delimiter. Toggling on
+                // it desynchronises the scan and the arrow inside the filename reads as the separator.
+                i++;
+
+                continue;
+
+            }
+
             if (c == '"')
             {
 
@@ -148,16 +168,17 @@ public static class GitPorcelainParser
     private static string UnquotePath(string raw)
     {
 
-        string trimmed = raw.Trim();
-
-        if (trimmed.Length < 2 || trimmed[0] != '"')
+        // No Trim: git leaves a path bare unless it needs escaping, and a leading or trailing space
+        // never does. Trimming here silently renames "notes .txt " to a file that does not exist.
+        // Quoted paths are delimited by the quotes themselves, so they need no trimming either.
+        if (raw.Length < 2 || raw[0] != '"')
         {
 
-            return trimmed;
+            return raw;
 
         }
 
-        StringBuilder builder = new(trimmed.Length);
+        StringBuilder builder = new(raw.Length);
 
         // core.quotePath defaults to true, so git C-quotes any byte outside printable ASCII as a
         // three-digit octal escape — one escape per UTF-8 byte. Escapes must therefore be gathered into a
@@ -166,22 +187,22 @@ public static class GitPorcelainParser
 
         int i = 1;
 
-        while (i < trimmed.Length)
+        while (i < raw.Length)
         {
 
-            char c = trimmed[i];
+            char c = raw[i];
 
-            if (c == '"' && i == trimmed.Length - 1)
+            if (c == '"' && i == raw.Length - 1)
             {
 
                 break;
 
             }
 
-            if (c == '\\' && i + 1 < trimmed.Length)
+            if (c == '\\' && i + 1 < raw.Length)
             {
 
-                if (TryReadOctalEscape(trimmed, i, out byte octalByte))
+                if (TryReadOctalEscape(raw, i, out byte octalByte))
                 {
 
                     pendingBytes.Add(octalByte);
@@ -194,7 +215,7 @@ public static class GitPorcelainParser
 
                 AppendPendingBytes(builder, pendingBytes);
 
-                builder.Append(trimmed[i + 1] switch
+                builder.Append(raw[i + 1] switch
                 {
                     'n' => '\n',
                     't' => '\t',
