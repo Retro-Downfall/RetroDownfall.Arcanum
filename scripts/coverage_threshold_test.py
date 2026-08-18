@@ -244,6 +244,11 @@ class CoverageThresholdParserTests(unittest.TestCase):
             "IdentityOwnedFileSystemCleanup",
             coverage_threshold.SECURITY_TYPES,
         )
+        # WorkspacePathPolicy decides whether a path escapes the workspace root, which is the
+        # containment check every workspace tool leans on. It lives in Infrastructure and is
+        # therefore already inside the coverage denominator; only the 100% list omitted it,
+        # and that is the one list where an omission is completely silent.
+        self.assertIn("WorkspacePathPolicy", coverage_threshold.SECURITY_TYPES)
 
 
 if __name__ == "__main__":

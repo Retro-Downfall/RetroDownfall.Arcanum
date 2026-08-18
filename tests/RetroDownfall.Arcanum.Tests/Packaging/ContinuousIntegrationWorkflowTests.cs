@@ -10,8 +10,8 @@ public sealed class ContinuousIntegrationWorkflowTests
 {
 
     /// <summary>
-    /// One job of <c>.github/workflows/ci.yml</c>: the runner it asks for, whether a job-level
-    /// <c>if:</c> gates it, and every line of its body.
+    /// One job of a workflow under <c>.github/workflows</c>: the runner it asks for, whether a
+    /// job-level <c>if:</c> gates it, and every line of its body.
     /// </summary>
     private sealed record WorkflowJob(string Id, string RunsOn, bool IsConditional, string Body);
 
@@ -22,42 +22,56 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// <c>dotnet build</c> and never reaches a single test, so it has to be gated on the manifest
     /// rather than presented as a check that merely happens to be red.
     /// </summary>
+    /// <remarks>
+    /// Every workflow, not only <c>ci.yml</c>. A <c>workflow_dispatch:</c> release pipeline fails
+    /// no pull request, which is exactly what makes it worse: the breakage is invisible until an
+    /// operator reaches for it to cut a build, and then it presents as a packaging failure at the
+    /// moment a release is wanted rather than as a missing prerequisite. Gating on the manifest
+    /// states the prerequisite up front and restores the lane by itself once the asset lands.
+    /// </remarks>
     [Fact]
-    public void Ci_never_builds_on_a_runner_whose_native_sqlcipher_asset_is_missing()
+    public void No_workflow_builds_on_a_runner_whose_native_sqlcipher_asset_is_missing()
     {
 
         string repositoryRoot = FindRepositoryRoot();
 
         List<string> offenders = [];
 
-        foreach (WorkflowJob job in ContinuousIntegrationJobs(repositoryRoot))
+        foreach (string workflow in WorkflowFiles(repositoryRoot))
         {
 
-            if (!job.Body.Contains("actions/setup-dotnet", StringComparison.Ordinal))
+            foreach (WorkflowJob job in JobsIn(workflow))
             {
 
-                continue;
+                if (!job.Body.Contains("actions/setup-dotnet", StringComparison.Ordinal))
+                {
+
+                    continue;
+
+                }
+
+                string rid = RuntimeIdentifierFor(job.RunsOn);
+
+                if (HasVerifiedNativeSqlCipherAsset(repositoryRoot, rid) || job.IsConditional)
+                {
+
+                    continue;
+
+                }
+
+                offenders.Add(
+                    $"{Path.GetFileName(workflow)}: {job.Id} (runs-on: {job.RunsOn}, needs a "
+                    + $"verified {rid} asset)");
 
             }
-
-            string rid = RuntimeIdentifierFor(job.RunsOn);
-
-            if (HasVerifiedNativeSqlCipherAsset(repositoryRoot, rid) || job.IsConditional)
-            {
-
-                continue;
-
-            }
-
-            offenders.Add($"{job.Id} (runs-on: {job.RunsOn}, needs a verified {rid} asset)");
 
         }
 
         Assert.True(
             offenders.Count == 0,
-            "A CI job builds .NET on a runtime identifier whose hermetic SQLCipher asset is not "
-            + "checked in and verified, so it fails with ARCSQLC002 before any test runs. Gate the "
-            + "job on the manifest status so it returns automatically once the asset lands:"
+            "A workflow job builds .NET on a runtime identifier whose hermetic SQLCipher asset is "
+            + "not checked in and verified, so it fails with ARCSQLC002 before any test runs. Gate "
+            + "the job on the manifest status so it returns automatically once the asset lands:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
 
@@ -293,16 +307,31 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     }
 
-    /// <summary>
-    /// Splits <c>.github/workflows/ci.yml</c> into its jobs. Job keys are the only two-space-indented
-    /// mapping keys under <c>jobs:</c>, and <c>runs-on:</c>/<c>if:</c> at four spaces are the only
-    /// job-level occurrences of those keys, so the shape can be read without a YAML parser.
-    /// </summary>
-    private static IReadOnlyList<WorkflowJob> ContinuousIntegrationJobs(string repositoryRoot)
+    private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {
 
-        string[] lines = File.ReadAllLines(
-            Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml"));
+        string directory = Path.Combine(repositoryRoot, ".github", "workflows");
+
+        string[] files = Directory.GetFiles(directory, "*.yml");
+
+        Assert.NotEmpty(files);
+
+        return files;
+
+    }
+
+    private static IReadOnlyList<WorkflowJob> ContinuousIntegrationJobs(string repositoryRoot) =>
+        JobsIn(Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml"));
+
+    /// <summary>
+    /// Splits a workflow file into its jobs. Job keys are the only two-space-indented mapping keys
+    /// under <c>jobs:</c>, and <c>runs-on:</c>/<c>if:</c> at four spaces are the only job-level
+    /// occurrences of those keys, so the shape can be read without a YAML parser.
+    /// </summary>
+    private static IReadOnlyList<WorkflowJob> JobsIn(string workflowPath)
+    {
+
+        string[] lines = File.ReadAllLines(workflowPath);
 
         List<WorkflowJob> jobs = [];
 

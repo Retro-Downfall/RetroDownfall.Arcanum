@@ -13,18 +13,55 @@ permissions:
   contents: read
 
 jobs:
+  native-sqlcipher-assets:
+    # A RID whose hermetic SQLCipher asset is still `pending` cannot be built at all: the targets
+    # raise ARCSQLC002 before CopyFilesToOutputDirectory, deliberately, with no probe and no
+    # fallback. This workflow is workflow_dispatch:-only, so no pull request ever reports that
+    # breakage -- without this gate an operator discovers it at the moment they reach for a
+    # release, and it presents as a packaging failure rather than as the missing prerequisite it
+    # is. Read the manifest, skip honestly, and resume with zero workflow edits the moment the
+    # asset is verified and checked in.
+    name: Native SQLCipher asset status
+    runs-on: ubuntu-latest
+    outputs:
+      win-x64: ${{ steps.manifest.outputs.win-x64 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the native asset manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          package=src/RetroDownfall.Arcanum.NativeSqlCipher
+          for rid in win-x64; do
+            status=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].status // "absent"' "$package/native-source-manifest.json")
+            path=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].path // ""' "$package/native-source-manifest.json")
+            if [[ "$status" == "verified" && -n "$path" && -f "$package/$path" ]]; then
+              echo "$rid=verified" >> "$GITHUB_OUTPUT"
+            else
+              echo "$rid=$status" >> "$GITHUB_OUTPUT"
+              echo "::warning::No verified hermetic SQLCipher asset for $rid (status: $status). Its packaging job is skipped; build it on a native runner with scripts/build-native-sqlcipher.ps1, verify it with scripts/verify-native-sqlcipher.sh, and check it in."
+            fi
+          done
+
   build-windows-x64:
     name: Publish Arcanum + Compendium (win-x64)
+    # win-x64 has no verified hermetic SQLCipher asset yet, and the targets refuse to build a RID
+    # without one (ARCSQLC002) long before packaging starts. Gate on the manifest so the job skips
+    # honestly instead of failing at `dotnet build`, and returns by itself once the asset lands.
+    needs: native-sqlcipher-assets
+    if: needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
           cache: true
@@ -68,7 +105,7 @@ jobs:
             -SkipForge
 
       - name: Upload Windows x64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: arcanum-compendium-win-x64
           path: |

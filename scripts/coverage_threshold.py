@@ -30,6 +30,7 @@ SECURITY_TYPES = {
     "IdempotencyClaimStore",
     "BudgetReservationService",
     "WardGate",
+    "WorkspacePathPolicy",
 }
 
 

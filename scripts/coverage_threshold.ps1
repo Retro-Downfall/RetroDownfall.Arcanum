@@ -55,7 +55,8 @@ $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
         "HostProcessToolPolicy",
         "IdempotencyClaimStore",
         "BudgetReservationService",
-        "WardGate"
+        "WardGate",
+        "WorkspacePathPolicy"
     ),
     [System.StringComparer]::Ordinal
 )
