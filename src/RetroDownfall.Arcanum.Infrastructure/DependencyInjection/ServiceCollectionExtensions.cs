@@ -179,6 +179,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantSqliteConnectionInitializer>(
             static _ => CovenantSqliteConnectionInitializer.Instance);
 
+        // Issue #125. One drain per process, because its correctness is the enrolment set: a
+        // per-resolution instance would hold no handles and would report a clean drain over every
+        // connection this process is actually holding open (§10.20.5).
+        services.AddSingleton<ICovenantConnectionDrain, CovenantConnectionDrain>();
+
         services.AddSingleton<IGrimoireSchemaDataInitializer, CoreGrimoireSchemaDataInitializer>();
 
         services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantCanonicalSchemaDataInitializer>();
@@ -739,6 +744,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ICovenantSqliteConnectionInitializer>(
             static _ => CovenantSqliteConnectionInitializer.Instance);
+
+        // Issue #125. One drain per process, because its correctness is the enrolment set: a
+        // per-resolution instance would hold no handles and would report a clean drain over every
+        // connection this process is actually holding open (§10.20.5).
+        services.AddSingleton<ICovenantConnectionDrain, CovenantConnectionDrain>();
 
         services.AddSingleton<IGrimoireSchemaDataInitializer, CoreGrimoireSchemaDataInitializer>();
 

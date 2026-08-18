@@ -6,10 +6,25 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Tests.Covenant;
+
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed class InstallationResetCredentialCatalogTests
 {
+
+    /// <summary>
+    /// Ordinary credential cleanup keeps the host-tools marker, asserted where the erasure paths do.
+    /// </summary>
+    /// <remarks>
+    /// The closed-catalog test in this suite pins the accounts this path does delete; this one pins
+    /// the retention from the other side, in the same place a Covenant reset, a healthy-catalog factory
+    /// erasure, and a family reinitialize read it. Four suites each phrasing the rule themselves is
+    /// four chances for one of them to drift into asserting something weaker (§10.20.5).
+    /// </remarks>
+    [Fact]
+    public void Ordinary_credential_cleanup_retains_the_marker_set_no_production_path_may_delete() =>
+        CovenantRetainedEvidence.AssertNoProductionPathDeletesRetainedEvidence();
 
     [Fact]
     public void Catalog_is_closed_to_fixed_configured_and_canonical_mirror_identities()
