@@ -93,6 +93,36 @@ public sealed class CliCompletionResolverTests
 
     }
 
+    /// <summary>
+    /// One candidate per line. bash, zsh and PowerShell all re-split the resolver's output on
+    /// whitespace, but a fish command substitution splits on newlines only — a space-joined line
+    /// becomes a single completion candidate holding the whole name list, and accepting it inserts
+    /// an unusable value. Newline is IFS in bash and zsh and is matched by PowerShell's `\s+`, and
+    /// the resolver already refuses names containing whitespace, so per-line output suits all four.
+    /// </summary>
+    [Fact]
+    public async Task A_successful_resolve_writes_one_candidate_per_line()
+    {
+
+        ServiceCollection services = CreateServices(new RefusingHandler());
+
+        services.AddSingleton<ICliCompletionResolver>(
+            new FixedResolver(["gpt-4o", "gpt-4o-mini", "llama3"]));
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["completion", "resolve", "model"]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        string[] lines = result.Output.Split(
+            '\n',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        Assert.Equal(["gpt-4o", "gpt-4o-mini", "llama3"], lines);
+
+    }
+
     [Fact]
     public async Task An_unknown_provider_yields_nothing_without_calling_the_api()
     {
@@ -200,6 +230,16 @@ public sealed class CliCompletionResolverTests
                 BaseAddress = new Uri("http://127.0.0.1:9/"),
                 Timeout = Timeout.InfiniteTimeSpan,
             };
+
+    }
+
+    private sealed class FixedResolver(IReadOnlyList<string> values) : ICliCompletionResolver
+    {
+
+        public Task<IReadOnlyList<string>> ResolveAsync(
+            string provider,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(values);
 
     }
 

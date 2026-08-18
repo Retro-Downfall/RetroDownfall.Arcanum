@@ -1,4 +1,5 @@
 using System.Globalization;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -10,7 +11,10 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Lore;
 /// <summary>
 /// Manage Grimoire explicit memory (lore) directly.
 /// </summary>
-public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class LoreCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    IConsoleDispatcher console)
 {
 
     private const int SnippetMaxLength = 50;
@@ -24,7 +28,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -66,18 +70,19 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
         }
 
-        Panel panel = new(new Markup(Markup.Escape(result.Value.Value)))
-        {
-            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Lore: {key}"))),
-        };
+        // The key on the diagnostic stream, the value verbatim on the payload stream. A Spectre
+        // panel would draw a border around the value and re-flow it at the profile width (80 when
+        // stdout is redirected), so `VALUE=$(arcanum lore get k)` captured box art and a multi-line
+        // value could not survive a set/get round-trip.
+        console.WriteDiagnostic($"Lore: {key}");
 
-        AnsiConsole.Write(panel);
+        await Console.Out.WriteLineAsync(result.Value.Value).ConfigureAwait(false);
 
         return 0;
 
@@ -97,7 +102,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 
@@ -122,7 +127,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
 

@@ -492,16 +492,21 @@ internal sealed class BackupCommands(
 
         }
 
-        dispatcher.WritePayload(CovenantExternalRetentionDisclosure.DestructiveOperationText);
+        // The question's stream, not the payload stream. Everything here is disclosure an operator
+        // reads before answering, which the output contract classes with the question itself. It
+        // stays on stderr in every mode: under --output-format json a payload write would be
+        // replayed ahead of the JSON document and break the one-document guarantee, and under --yes
+        // it is still written first so an unattended run records what it was told.
+        dispatcher.WriteDiagnostic(CovenantExternalRetentionDisclosure.DestructiveOperationText);
 
-        dispatcher.WritePayload(
+        dispatcher.WriteDiagnostic(
             DescribeExposure(plan.DestinationDisclosure ?? BackupRestoreDisclosureExposure.None));
 
         foreach (CovenantRetentionHelpTarget target in
                  CovenantExternalRetentionDisclosure.ResolveHelpTargets(settings.Value.Providers ?? []))
         {
 
-            dispatcher.WritePayload(
+            dispatcher.WriteDiagnostic(
                 target.Provider.Length == 0
                     ? $"  Retention guidance: {target.Uri}"
                     : $"  Retention guidance ({target.Provider}): {target.Uri}");

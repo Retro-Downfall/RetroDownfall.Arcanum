@@ -349,6 +349,67 @@ public sealed class WorkspaceCommandTests
     }
 
 
+    /// <summary>
+    /// `workspace read` promises the bytes the server read. Under `--output-format json` the legacy
+    /// text wrapper used to reach them: it strips every ESC-introduced sequence out of the middle of
+    /// the buffer and trims the trailing newlines off the end, so the file could not be reproduced
+    /// from its own `--output-format json` output. Emitting a structured document instead keeps the
+    /// content out of that wrapper entirely.
+    /// </summary>
+    [Fact]
+
+    public void Workspace_read_json_reproduces_the_file_byte_for_byte()
+    {
+
+        string content = "\u001b[31mred\u001b[0m literal escape\nplain line\n\n";
+
+        RecordingHandler handler = new(request =>
+        {
+
+            if (request.RequestUri!.AbsolutePath.EndsWith(
+                "/files/contents",
+                StringComparison.Ordinal))
+            {
+
+                FileReadResult read = new(
+                    "src/App.cs",
+                    content,
+                    "utf-8",
+                    content.Length,
+                    DateTimeOffset.Parse("2026-07-31T12:00:00Z"));
+
+                return CreateResponse(
+                    new ApiResponse<FileReadResult>(read, true, null),
+                    ArcanumJsonContext.Default.ApiResponseFileReadResult);
+
+            }
+
+
+            return CreateWorkspaceApiResponse(request);
+
+        });
+
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["workspace", "read", "src/App.cs", "--workspace", "ws-demo", "--json"]);
+
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(
+            content,
+            document.RootElement.GetProperty("content").GetString());
+
+        Assert.Equal(
+            "src/App.cs",
+            document.RootElement.GetProperty("path").GetString());
+
+    }
+
+
     [Fact]
 
     public void Workspace_current_reports_independent_campaign_and_workspace_mapping()
