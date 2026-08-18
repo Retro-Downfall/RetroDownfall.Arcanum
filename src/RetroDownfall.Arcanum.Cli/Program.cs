@@ -201,7 +201,9 @@ internal static class Program
 internal static class CliBootstrapDiagnostics
 {
 
-    private static readonly string[] DiagnosticVerbs = ["doctor", "config"];
+    // `help` earns its place beside the repair verbs: with arcanum.json unreadable it is the other
+    // way an operator finds out which command to reach for, and it needs no configuration to answer.
+    private static readonly string[] DiagnosticVerbs = ["doctor", "config", "help"];
 
     private static readonly string[] HelpOrVersionFlags = ["--help", "-h", "-?", "/?", "--version"];
 
@@ -219,6 +221,16 @@ internal static class CliBootstrapDiagnostics
 
         foreach (string arg in args)
         {
+
+            // Everything after `--` belongs to the command being run, not to Arcanum, so a help flag
+            // there is not a help request. Program.IsHelpOrVersionRequest draws the line in the same
+            // place; the two have to agree or one preflight admits what the other refuses.
+            if (string.Equals(arg, "--", StringComparison.Ordinal))
+            {
+
+                break;
+
+            }
 
             if (HelpOrVersionFlags.Contains(arg, StringComparer.Ordinal))
             {
@@ -239,7 +251,13 @@ internal static class CliBootstrapDiagnostics
 
         }
 
-        return DiagnosticVerbs.Contains(args[0], StringComparer.Ordinal);
+        // The verb is located by skipping the recursive root options rather than by position:
+        // --json, --plain, -v and their siblings are legal before the subcommand token, and
+        // `arcanum --json doctor` is how operators and scripts write it. Reading args[0] refused the
+        // one command that can tell them what to fix, on the one occasion they need it.
+        string? verb = InstallationFactoryResetArgvPreflight.FindRootCommand(args);
+
+        return verb is not null && DiagnosticVerbs.Contains(verb, StringComparer.Ordinal);
 
     }
 

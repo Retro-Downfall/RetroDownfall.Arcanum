@@ -208,6 +208,13 @@ public sealed class CliOperatorSurfaceTests
 
     }
 
+    /// <summary>
+    /// The recursive root options are legal before the subcommand token, and `arcanum --json doctor`
+    /// is the form operators and scripts actually write, so the verb has to be located by skipping
+    /// them rather than by reading argv[0]. `help` belongs here too: on a malformed arcanum.json it
+    /// is the other way an operator finds out what to run. Nothing after `--` is the CLI's argument,
+    /// so a help flag there must not unlock the degraded path.
+    /// </summary>
     [Theory]
     [InlineData(new[] { "doctor" }, true)]
     [InlineData(new[] { "config", "validate" }, true)]
@@ -216,6 +223,14 @@ public sealed class CliOperatorSurfaceTests
     [InlineData(new[] { "--version" }, true)]
     [InlineData(new[] { "run", "hello" }, false)]
     [InlineData(new string[0], false)]
+    [InlineData(new[] { "--json", "doctor" }, true)]
+    [InlineData(new[] { "-v", "config", "validate" }, true)]
+    [InlineData(new[] { "--output-format", "json", "doctor" }, true)]
+    [InlineData(new[] { "--output-format=json", "config", "edit" }, true)]
+    [InlineData(new[] { "--plain", "run", "hello" }, false)]
+    [InlineData(new[] { "help" }, true)]
+    [InlineData(new[] { "--json", "help", "doctor" }, true)]
+    [InlineData(new[] { "run", "--", "--help" }, false)]
     public void AllowsDegradedConfiguration_keeps_only_repair_paths_alive(string[] args, bool expected)
     {
 

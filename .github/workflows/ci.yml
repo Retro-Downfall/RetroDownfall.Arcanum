@@ -11,6 +11,36 @@ permissions:
   contents: read
 
 jobs:
+  native-sqlcipher-assets:
+    # A RID whose hermetic SQLCipher asset is still `pending` cannot be built at all: the targets
+    # raise ARCSQLC002 before CopyFilesToOutputDirectory, deliberately, with no probe and no
+    # fallback. Reading the manifest here and gating the platform lanes on the result keeps a lane
+    # that cannot possibly build from masquerading as a check that merely happens to be red, and
+    # the lane comes back on its own the moment the asset is verified and checked in.
+    name: Native SQLCipher asset status
+    runs-on: ubuntu-latest
+    outputs:
+      win-x64: ${{ steps.manifest.outputs.win-x64 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the native asset manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          package=src/RetroDownfall.Arcanum.NativeSqlCipher
+          for rid in win-x64; do
+            status=$(jq -r --arg rid "$rid" '.assets[] | select(.rid == $rid) | .status' "$package/native-source-manifest.json")
+            path=$(jq -r --arg rid "$rid" '.assets[] | select(.rid == $rid) | .path' "$package/native-source-manifest.json")
+            if [[ "$status" == "verified" && -f "$package/$path" ]]; then
+              echo "$rid=verified" >> "$GITHUB_OUTPUT"
+            else
+              echo "$rid=$status" >> "$GITHUB_OUTPUT"
+              echo "::warning::No verified hermetic SQLCipher asset for $rid (status: $status). Its CI lane is skipped; build it on a native runner with scripts/build-native-sqlcipher.ps1, verify it with scripts/verify-native-sqlcipher.sh, and check it in."
+            fi
+          done
+
   build-test:
     name: Build, test, coverage
     # macOS arm64, not ubuntu: the Grimoire's SQLCipher library is now built by Arcanum and shipped
@@ -24,10 +54,10 @@ jobs:
       COVERAGE_BRANCH_TARGET: "70"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
           cache: true
@@ -43,25 +73,28 @@ jobs:
       - name: Restore and build Arcanum + Compendium + The Forge
         run: |
           set -euo pipefail
-          # The Forge's test suite is temporarily excluded from CI while it is repaired, but
           # TheForge.Ux (and through it TheForge.Core) is compiled here because both release
           # workflows package and ship it; without this a compile break merges green.
           for project in \
             src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj \
             src/RetroDownfall.TheForge.Ux/RetroDownfall.TheForge.Ux.csproj \
             tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
-            tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
+            tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj \
+            tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj
           do
             dotnet restore "$project"
             dotnet build "$project" -c Release --no-restore
           done
 
-      - name: Test Compendium
+      - name: Test Compendium and The Forge
         run: |
           set -euo pipefail
           # Authoritative Arcanum coverage path is coverage.sh below (do not double-run Arcanum.Tests).
-          # The Forge tests are temporarily skipped in CI.
+          # The Forge's suite is the sole automated guard for a shipped desktop client — including the
+          # markdown image loader's SSRF policy — so a whole-project exclusion here is invisible in
+          # every test report. Quarantine individual tests with Skip if it ever needs it again.
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj -c Release --no-build
+          dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj -c Release --no-build
 
       - name: Arcanum tests + coverage thresholds
         run: |
@@ -70,7 +103,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: arcanum-coverage-report
           path: |
@@ -88,10 +121,10 @@ jobs:
       ARCANUM_REQUIRE_MACOS_WORKSPACE_CHECK: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
           cache: true
@@ -150,6 +183,12 @@ jobs:
     # permissions -- is untested, which is how WindowsOsCredentialStore shipped persisting
     # uninitialized heap in place of the operator's API key.
     name: Windows test suite
+    # win-x64 has no verified hermetic SQLCipher asset yet, and the targets refuse to build a RID
+    # without one (ARCSQLC002) long before the first test executes. Gate on the manifest so the
+    # lane skips honestly instead of failing at `dotnet build`, and returns by itself once the
+    # asset lands.
+    needs: native-sqlcipher-assets
+    if: needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
     env:
       DOTNET_NOLOGO: true
@@ -161,10 +200,10 @@ jobs:
       ARCANUM_TEST_OS_CREDENTIAL_STORE: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
           cache: true
@@ -178,7 +217,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # The Forge is excluded from CI build/test on every lane while its suite is repaired.
+          # The Forge's suite runs once, on build-test; this lane exists for the Windows-gated
+          # Arcanum surface, so re-running a platform-agnostic suite here would buy nothing.
           foreach ($project in @(
             'tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj',
             'tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj'
@@ -193,8 +233,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # Category!=Perf: ArcanumPerfBaselineTests measures wall clock against absolute budgets on
+          # a shared runner. DESIGN 13.8 calls that harness explicitly not a gate, and coverage.sh
+          # excludes it for the same reason -- an unfiltered lane reds on scheduling noise instead.
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            -c Release --no-build --no-restore
+            -c Release --no-build --no-restore --filter "Category!=Perf"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test Compendium
@@ -214,10 +257,10 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
           cache: true
@@ -230,7 +273,17 @@ jobs:
       # verify-aot-il-warnings.sh fails closed without ripgrep, which the runner image does
       # not ship. Install it explicitly rather than letting the gate refuse to run.
       - name: Install ripgrep
-        run: command -v rg >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ripgrep)
+        run: command -v rg >/dev/null 2>&1 || brew install ripgrep
+
+      # Without ld64.lld the csproj cannot enable Native AOT on macOS (Apple's ld-prime asserts on
+      # the large object file, dotnet/runtime#119380), and the gate quietly degrades to Roslyn
+      # analyzer diagnostics with no ILC whole-program analysis. That is a weaker gate that still
+      # reports success, so the linker is a hard requirement of this lane rather than a nicety.
+      - name: Install LLVM lld so the gate runs real ILC closure analysis
+        run: |
+          set -euo pipefail
+          command -v /opt/homebrew/opt/lld/bin/ld64.lld >/dev/null 2>&1 || brew install lld
+          test -x /opt/homebrew/opt/lld/bin/ld64.lld
 
       # The gate itself has silent failure modes (a warning misfiled as third-party, an ILC
       # assertion satisfied by another project's log). Test the gate before trusting it; this
