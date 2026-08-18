@@ -678,6 +678,137 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     /// <summary>
+    /// The staging parent, the index entry, the staging root, the journal and the captured secrets are
+    /// all built before the phase loop, and a failure in any of them has to arrive the way every other
+    /// restore failure does: as a typed blocker with a plan and phase records attached. Escaping as an
+    /// exception costs the operator everything that matters here — the reason, the path, and the one
+    /// sentence that says the current installation was never touched.
+    /// </summary>
+    [Fact]
+    public async Task A_staging_root_that_cannot_be_created_is_a_typed_refusal_rather_than_an_exception()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unwritable-profile.arcbackup");
+
+        string sealedParent = Path.Combine(_root, "sealed");
+
+        Directory.CreateDirectory(sealedParent);
+
+        File.SetUnixFileMode(sealedParent, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        try
+        {
+
+            if (CanCreateDirectoryIn(sealedParent))
+            {
+
+                // A process that outranks the mode — root in a container, most often — cannot observe
+                // the refusal at all, so there is nothing here to assert.
+                return;
+
+            }
+
+            BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.NewProfileRoot,
+                    Path.Combine(sealedParent, "profile", "arcanum"),
+                    Confirmed: true,
+                    CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+            Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+            Assert.Contains(result.Issues, static issue => issue.Code == "backup.restore_failed");
+
+            Assert.Equal(
+                "# the archived codex",
+                await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+
+        }
+        finally
+        {
+
+            File.SetUnixFileMode(
+                sealedParent,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Only a replace-installation restore rebuilds local secret protection, so it is the only mode
+    /// that can adopt the archived key. Accepted anywhere else the option promises an adoption in the
+    /// plan and then performs none — the one variant of this that produces no report at all.
+    /// </summary>
+    [Fact]
+    public async Task Adopting_the_archived_master_api_key_outside_a_replacement_is_refused()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync(
+            "master-key-mode.arcbackup",
+            include: [BackupComponent.MasterApiKey]);
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(
+                archive,
+                BackupRestoreConflictMode.NewProfileRoot,
+                Path.Combine(_root, "adopting-profile"),
+                Confirmed: true,
+                CreateSafetyBackup: false,
+                RestoreMasterApiKey: true),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(
+            result.Issues,
+            static issue => issue.Code == "backup.restore_master_api_key_not_applicable");
+
+        Assert.False(Directory.Exists(Path.Combine(_root, "adopting-profile")));
+
+    }
+
+    private static bool CanCreateDirectoryIn(string parent)
+    {
+
+        try
+        {
+
+            string probe = Path.Combine(parent, "probe-" + Guid.NewGuid().ToString("N"));
+
+            Directory.CreateDirectory(probe);
+
+            Directory.Delete(probe);
+
+            return true;
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+
+            return false;
+
+        }
+
+    }
+
+    /// <summary>
     /// A new-profile restore must stage beside its destination so commit stays a same-volume rename,
     /// which is somewhere startup recovery's sweep of the live root's parent can never reach. The
     /// staging index is the trail back, so a process death does not strand decrypted archive

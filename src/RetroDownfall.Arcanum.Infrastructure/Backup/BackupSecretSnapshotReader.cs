@@ -128,12 +128,25 @@ internal static class BackupFileEncryptionKeyExporter
         try
         {
 
-            if (encoded.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal))
+            // The canonical encoding is LF-delimited, but a ring persisted by an older Windows build
+            // used Environment.NewLine and `FileEncryptionKeyProvider` deliberately still loads it —
+            // so this must too. An exporter that refuses what the runtime accepts tells the operator
+            // their intact key ring is malformed and hands back no archive at all. The trailing '\r'
+            // has to come off every line, not just the header: Convert.FromBase64String skips it, so
+            // the keys would decode while the active id carried an invisible '\r' and stopped
+            // matching any of them.
+            if (encoded.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal)
+                || encoded.StartsWith(KeyRingHeader + "\r\n", StringComparison.Ordinal))
             {
 
-                string[] lines = encoded.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                string[] lines = encoded
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(static line => line.TrimEnd('\r'))
+                    .Where(static line => line.Length > 0)
+                    .ToArray();
 
                 if (lines.Length < 3
+                    || !string.Equals(lines[0], KeyRingHeader, StringComparison.Ordinal)
                     || !lines[1].StartsWith("active=", StringComparison.Ordinal))
                 {
 

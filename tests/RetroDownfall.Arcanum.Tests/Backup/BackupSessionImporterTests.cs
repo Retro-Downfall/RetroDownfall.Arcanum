@@ -128,10 +128,119 @@ public sealed class BackupSessionImporterTests : IDisposable
                 Path.Combine(
                     _destinationRoot,
                     "attachments",
-                    SessionId.ToString(),
+                    SessionId.ToString("N"),
+                    "note",
+                    "v1",
                     "note.bin")));
 
         Assert.Equal(1, await CountSessionsAsync(destinationSecret));
+
+    }
+
+    /// <summary>
+    /// A remapped Session has to take its payload directory with it. If the attachment row keeps the
+    /// archived owner segment, the imported Session's rows point into the Session it collided with:
+    /// deleting that one takes the import's bytes with it, and deleting the import leaves them behind
+    /// forever, because the directory it looks for was never created.
+    /// </summary>
+    [Fact]
+    public async Task A_remapped_Session_owns_the_attachment_directory_its_rows_point_at()
+    {
+
+        string sourceSecret = await SeedSourceAsync();
+
+        string destinationSecret = await SeedDestinationAsync();
+
+        await SeedCollidingSessionAsync(destinationSecret);
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportAsync(
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            [SessionId],
+            Path.Combine(_sourceRoot, "attachments"),
+            Path.Combine(_destinationRoot, "attachments"),
+            destinationSecret,
+            sourceSecret,
+            CancellationToken.None);
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(1, result.RemappedIds);
+
+        Guid imported = await ReadImportedSessionIdAsync(destinationSecret);
+
+        Assert.NotEqual(SessionId, imported);
+
+        string relative = await ReadAttachmentRelativePathAsync(destinationSecret, imported);
+
+        Assert.StartsWith(imported.ToString("N") + "/", relative, StringComparison.Ordinal);
+
+        Assert.Equal(
+            "attachment bytes",
+            await File.ReadAllTextAsync(
+                Path.Combine(
+                    _destinationRoot,
+                    "attachments",
+                    relative.Replace('/', Path.DirectorySeparatorChar))));
+
+        // The archived id names the Session already living here. Nothing this import wrote may land
+        // under it.
+        Assert.False(
+            Directory.Exists(
+                Path.Combine(_destinationRoot, "attachments", SessionId.ToString("N"))));
+
+    }
+
+    /// <summary>
+    /// Payload bytes are the one part of an import no transaction unwinds, so the importer deletes
+    /// them itself when it does not commit. It may only delete the ones it wrote: a destination file
+    /// it merely collided with belongs to the live installation, and removing it dangles that row
+    /// while the returned issue says the destination is unchanged.
+    /// </summary>
+    [Fact]
+    public async Task An_import_never_removes_destination_payload_bytes_it_did_not_write()
+    {
+
+        string sourceSecret = await SeedSourceAsync();
+
+        string destinationSecret = await SeedDestinationAsync();
+
+        string occupied = Path.Combine(
+            _destinationRoot,
+            "attachments",
+            SourceRelativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(occupied)!);
+
+        await File.WriteAllTextAsync(occupied, "bytes the destination already had");
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportAsync(
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            [SessionId],
+            Path.Combine(_sourceRoot, "attachments"),
+            Path.Combine(_destinationRoot, "attachments"),
+            destinationSecret,
+            sourceSecret,
+            CancellationToken.None);
+
+        Assert.Equal(
+            "bytes the destination already had",
+            await File.ReadAllTextAsync(occupied));
+
+        Assert.Empty(result.Issues);
+
+        string relative = await ReadAttachmentRelativePathAsync(destinationSecret, SessionId);
+
+        Assert.NotEqual(SourceRelativePath, relative);
+
+        Assert.Equal(
+            "attachment bytes",
+            await File.ReadAllTextAsync(
+                Path.Combine(
+                    _destinationRoot,
+                    "attachments",
+                    relative.Replace('/', Path.DirectorySeparatorChar))));
 
     }
 
@@ -187,6 +296,11 @@ public sealed class BackupSessionImporterTests : IDisposable
 
     }
 
+    // The owner segment is the session id in "N" form, exactly as SessionAttachmentStore writes it.
+    // Seeding the dashed form instead would make the importer's id remap look like it worked, which
+    // is how a permanent no-op survived here in the first place.
+    private static string SourceRelativePath => SessionId.ToString("N") + "/note/v1/note.bin";
+
     private async Task<string> SeedSourceAsync(bool campaignBound = false)
     {
 
@@ -195,8 +309,7 @@ public sealed class BackupSessionImporterTests : IDisposable
         string payload = Path.Combine(
             _sourceRoot,
             "attachments",
-            SessionId.ToString(),
-            "note.bin");
+            SourceRelativePath.Replace('/', Path.DirectorySeparatorChar));
 
         Directory.CreateDirectory(Path.GetDirectoryName(payload)!);
 
@@ -222,7 +335,7 @@ public sealed class BackupSessionImporterTests : IDisposable
                  "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                  "SourceKind", "SourceStatus", "EncryptionVersion")
             VALUES ('55555555-5555-5555-5555-555555555555', '{SessionId}', 'Bound', 'note',
-                    'note.txt', 1, '{SessionId}/note.bin', 'abc', 'text/plain', 16, 'Text',
+                    'note.txt', 1, '{SourceRelativePath}', 'abc', 'text/plain', 16, 'Text',
                     '2026-01-01T00:00:00Z', 'WorkspaceFile', 'Refreshable', 0);
             """;
 
@@ -241,6 +354,70 @@ public sealed class BackupSessionImporterTests : IDisposable
             Path.Combine(_destinationRoot, "attachments"));
 
         return secret;
+
+    }
+
+    /// <summary>Gives the destination a Session under the archived id, so the import must remap.</summary>
+    private async Task SeedCollidingSessionAsync(string destinationSecret)
+    {
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            destinationSecret,
+            readOnly: false,
+            CancellationToken.None);
+
+        await using SqliteCommand seed = connection.CreateCommand();
+
+        seed.CommandText = $"""
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ('{SessionId}', NULL, 'The Session already living here', 'active',
+                    '2026-02-02T00:00:00Z', '2026-02-02T00:00:00Z');
+            """;
+
+        _ = await seed.ExecuteNonQueryAsync();
+
+    }
+
+    private async Task<Guid> ReadImportedSessionIdAsync(string destinationSecret)
+    {
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            destinationSecret,
+            readOnly: true,
+            CancellationToken.None);
+
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.CommandText = """
+            SELECT "Id" FROM "Sessions" WHERE "Title" = 'Archived session';
+            """;
+
+        return Guid.Parse((string)(await read.ExecuteScalarAsync())!);
+
+    }
+
+    private async Task<string> ReadAttachmentRelativePathAsync(
+        string destinationSecret,
+        Guid sessionId)
+    {
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            destinationSecret,
+            readOnly: true,
+            CancellationToken.None);
+
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.CommandText = """
+            SELECT "RelativePath" FROM "SessionAttachments" WHERE "SessionId" = $id;
+            """;
+
+        _ = read.Parameters.AddWithValue("$id", sessionId.ToString());
+
+        return (string)(await read.ExecuteScalarAsync())!;
 
     }
 

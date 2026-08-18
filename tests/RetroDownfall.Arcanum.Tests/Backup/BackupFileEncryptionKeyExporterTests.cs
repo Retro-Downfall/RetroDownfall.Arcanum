@@ -108,6 +108,45 @@ public sealed class BackupFileEncryptionKeyExporterTests
 
     }
 
+    /// <summary>
+    /// A ring persisted by a pre-LF Windows build is CRLF-delimited, and
+    /// <c>FileEncryptionKeyProvider</c> deliberately still loads it — so the installation's encrypted
+    /// blobs keep working while every backup of it would refuse. The exporter has to hold exactly the
+    /// same tolerance, or `arcanum backup create` reports an intact key ring as malformed and
+    /// produces no archive at all.
+    /// </summary>
+    [Fact]
+    public void Export_accepts_a_carriage_return_delimited_ring_the_runtime_still_loads()
+    {
+
+        byte[] active = Enumerable.Repeat((byte)0x77, 32).ToArray();
+
+        byte[] required = Enumerable.Repeat((byte)0x88, 32).ToArray();
+
+        string activeId = ComputeKeyId(active);
+
+        string requiredId = ComputeKeyId(required);
+
+        string encoded = EncodeRing(activeId, (activeId, active), (requiredId, required))
+            .Replace("\n", "\r\n", StringComparison.Ordinal);
+
+        using BackupRecoveryKeySnapshot snapshot = BackupFileEncryptionKeyExporter.Export(
+            encoded,
+            new HashSet<string>([requiredId], StringComparer.Ordinal),
+            includeActiveKey: true);
+
+        Assert.Equal(activeId, snapshot.ActiveKeyId);
+
+        Assert.Equal(
+            new[] { activeId, requiredId }.Order(StringComparer.Ordinal),
+            snapshot.Keys.Select(static key => key.KeyId));
+
+        Assert.Equal(
+            required,
+            Assert.Single(snapshot.Keys, key => key.KeyId == requiredId).KeyBytes);
+
+    }
+
     private static string EncodeRing(
         string activeKeyId,
         params (string Id, byte[] Key)[] keys) =>

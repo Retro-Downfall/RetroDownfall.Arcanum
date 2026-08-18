@@ -59,6 +59,38 @@ public sealed class ArcanumMaintenanceLockTests : IDisposable
     }
 
     [Fact]
+    public void Releasing_a_lock_leaves_its_file_in_place_for_whoever_holds_it_next()
+    {
+
+        string guarded = Path.Combine(_root, "arcanum");
+
+        Directory.CreateDirectory(guarded);
+
+        string path = ArcanumMaintenanceLock.LockPathFor(guarded);
+
+        ArcanumMaintenanceLock? held = ArcanumMaintenanceLock.TryAcquire(guarded);
+
+        Assert.NotNull(held);
+
+        held.Dispose();
+
+        // Exclusion is keyed to the file the acquirers open, not to its name: on Unix the share mode
+        // is an advisory lock on that one inode. Unlinking on release lets an acquirer that opened
+        // the inode during the release keep a lock on a file that no longer has a name, while the
+        // next acquirer creates a fresh inode at the same path and takes what it believes is the
+        // same exclusive lock. Closing the handle is the whole of the release — a file nothing holds
+        // is already not a lock, which is what the stale-file case below depends on.
+        Assert.True(File.Exists(path));
+
+        using ArcanumMaintenanceLock? next = ArcanumMaintenanceLock.TryAcquire(guarded);
+
+        Assert.NotNull(next);
+
+        Assert.Null(ArcanumMaintenanceLock.TryAcquire(guarded));
+
+    }
+
+    [Fact]
     public void A_stale_lock_file_left_by_a_dead_process_does_not_block_acquisition()
     {
 

@@ -382,6 +382,50 @@ public sealed class BackupService : IBackupService
 
             BackupPlan effectivePlan = inventory.Plan;
 
+            // Read before the portable recovery document is built, because that document is what
+            // carries it: `--restore-master-api-key` adopts the key from the material the re-wrap
+            // reads, and the standalone archive entry below is inventory, not a carrier. Splitting
+            // the two is what made the restore option a dead letter — it reported an archive that
+            // demonstrably held the key as holding none.
+            GeneratedSensitiveSource? master = selected.Contains(BackupComponent.MasterApiKey)
+                ? await BuildMasterApiKeyAsync().ConfigureAwait(false)
+                : null;
+
+            if (master?.Issue is not null)
+            {
+
+                await FailDurableOperationBestEffortAsync(
+                    durableOperation,
+                    master.Issue.Code).ConfigureAwait(false);
+
+                durableOperation = null;
+
+                effectivePlan = MarkComponentFailed(
+                    effectivePlan,
+                    BackupComponent.MasterApiKey,
+                    master.Issue.Message);
+
+                return new BackupCreateResult(
+                    BackupCreateStatus.Incomplete,
+                    ArchivePath: null,
+                    ArchiveBytes: 0,
+                    operationId,
+                    Manifest: null,
+                    effectivePlan,
+                    [master.Issue]);
+
+            }
+
+            if (master is not null)
+            {
+
+                // Registered for zeroing the moment the bytes exist, not where they are added to the
+                // archive: the recovery block below has early returns of its own, and a plaintext
+                // credential must not outlive one of them.
+                sensitiveMemorySources.Add(master.Bytes!);
+
+            }
+
             if (selected.Contains(BackupComponent.PortableRecoveryKeys))
             {
 
@@ -390,7 +434,8 @@ public sealed class BackupService : IBackupService
                 GeneratedSensitiveSource recovery = await BuildRecoveryMaterialAsync(
                     unlock.GrimoireSecret,
                     inventory.RequiredFileEncryptionKeyIds,
-                    includeActiveFileKey: request.Plan.Scope == BackupScope.Full).ConfigureAwait(false);
+                    includeActiveFileKey: request.Plan.Scope == BackupScope.Full,
+                    master?.Bytes).ConfigureAwait(false);
 
                 if (recovery.Issue is not null)
                 {
@@ -426,37 +471,8 @@ public sealed class BackupService : IBackupService
 
             }
 
-            if (selected.Contains(BackupComponent.MasterApiKey))
+            if (master is not null)
             {
-
-                GeneratedSensitiveSource master = await BuildMasterApiKeyAsync().ConfigureAwait(false);
-
-                if (master.Issue is not null)
-                {
-
-                    await FailDurableOperationBestEffortAsync(
-                        durableOperation,
-                        master.Issue.Code).ConfigureAwait(false);
-
-                    durableOperation = null;
-
-                    effectivePlan = MarkComponentFailed(
-                        effectivePlan,
-                        BackupComponent.MasterApiKey,
-                        master.Issue.Message);
-
-                    return new BackupCreateResult(
-                        BackupCreateStatus.Incomplete,
-                        ArchivePath: null,
-                        ArchiveBytes: 0,
-                        operationId,
-                        Manifest: null,
-                        effectivePlan,
-                        [master.Issue]);
-
-                }
-
-                sensitiveMemorySources.Add(master.Bytes!);
 
                 sources.Add(PreparedBackupSource.FromMemory(
                     BackupComponent.MasterApiKey,
@@ -733,11 +749,26 @@ public sealed class BackupService : IBackupService
         CancellationToken cancellationToken = default) =>
         _codec.InspectAsync(archivePath, recoveryPassphrase, cancellationToken);
 
+    /// <summary>
+    /// Verifies an archive, decrypting it into this installation rather than beside the archive.
+    /// </summary>
+    /// <remarks>
+    /// The operator names the archive, so its directory is theirs, not ours: a USB stick, a synced
+    /// folder, a share. Verification materializes the whole decrypted payload and every entry, and
+    /// none of that may land there — nor can it, on media that cannot hold owner-only permissions,
+    /// where the attempt reported a sound archive as malformed. Restore already keeps its staging
+    /// local for the same reason; this gives verification, which has no destination of its own, the
+    /// same footing.
+    /// </remarks>
     public Task<BackupVerifyResult> VerifyAsync(
         string archivePath,
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken = default) =>
-        _codec.VerifyAsync(archivePath, recoveryPassphrase, cancellationToken);
+        _codec.VerifyAsync(
+            archivePath,
+            recoveryPassphrase,
+            _paths.BackupsDirectory,
+            cancellationToken);
 
     public async Task<IReadOnlyList<BackupListItem>> ListAsync(
         string? directory,
@@ -1102,7 +1133,8 @@ public sealed class BackupService : IBackupService
     private async Task<GeneratedSensitiveSource> BuildRecoveryMaterialAsync(
         string grimoireSecret,
         IReadOnlySet<string> requiredFileKeyIds,
-        bool includeActiveFileKey)
+        bool includeActiveFileKey,
+        byte[]? masterApiKeyUtf8 = null)
     {
 
         BackupRecoveryKeySnapshot? fileKeys = null;
@@ -1173,6 +1205,13 @@ public sealed class BackupService : IBackupService
                         key.KeyBytes.ToArray()))
                     .ToArray()
                     ?? [],
+
+                // A copy, never the caller's buffer: this material zeroes what it holds when it is
+                // disposed, and the caller's buffer is the one the standalone archive entry is still
+                // waiting to be written from.
+                MasterApiKeyUtf8 = masterApiKeyUtf8 is { Length: > 0 }
+                    ? [.. masterApiKeyUtf8]
+                    : null,
 
             };
 
