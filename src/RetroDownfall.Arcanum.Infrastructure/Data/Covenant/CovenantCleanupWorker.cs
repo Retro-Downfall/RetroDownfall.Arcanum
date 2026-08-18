@@ -116,6 +116,14 @@ internal sealed class CovenantCleanupWorker(
 
         long headsRemoved = 0;
 
+        // The batch advances the canonical search sequence exactly once, so every delta it emits
+        // shares that one sequence and they have to share one ordinal space too. Restarting the
+        // ordinal per owner collided on covenant_search_outbox's (SearchSequence, Ordinal) primary
+        // key the moment a batch held two head-bearing Campaigns: the insert threw, the whole
+        // transaction rolled back with the cursor unmoved, and the next batch read the same events
+        // and failed identically, so the journal could never drain again.
+        int outboxOrdinal = 0;
+
         foreach (CovenantOwnerDeletionEvent owner in pending.Value)
         {
 
@@ -124,9 +132,16 @@ internal sealed class CovenantCleanupWorker(
             if (owner.Kind == CovenantOwnerKind.Campaign)
             {
 
-                headsRemoved = checked(
-                    headsRemoved + await CleanCampaignAsync(transaction, owner.OwnerId, cancellationToken)
-                        .ConfigureAwait(false));
+                int removed = await CleanCampaignAsync(
+                        transaction,
+                        owner.OwnerId,
+                        outboxOrdinal,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                headsRemoved = checked(headsRemoved + removed);
+
+                outboxOrdinal = checked(outboxOrdinal + removed);
 
                 campaigns = checked(campaigns + 1);
 
@@ -173,15 +188,27 @@ internal sealed class CovenantCleanupWorker(
 
     }
 
-    private static async ValueTask<long> CleanCampaignAsync(
+    /// <summary>
+    /// Removes one Campaign's Covenant rows and returns how many heads it emitted deltas for.
+    /// </summary>
+    /// <param name="firstOrdinal">
+    /// Where this owner's deltas start in the batch-wide ordinal space. The caller advances it by the
+    /// returned count, so one batch produces ordinals 0..N-1 under its single search sequence.
+    /// </param>
+    private static async ValueTask<int> CleanCampaignAsync(
         CovenantMutationTransaction transaction,
         Guid campaignId,
+        int firstOrdinal,
         CancellationToken cancellationToken)
     {
 
         string campaign = campaignId.ToString("D");
 
-        ImmutableArray<HeadIdentity> heads = await ReadCampaignHeadsAsync(transaction, campaign, cancellationToken)
+        ImmutableArray<HeadIdentity> heads = await ReadCampaignHeadsAsync(
+                transaction,
+                campaign,
+                firstOrdinal,
+                cancellationToken)
             .ConfigureAwait(false);
 
         // The key epoch is advanced by covenant_heads_key_epoch_delete, not here. Bumping it again
@@ -290,6 +317,7 @@ internal sealed class CovenantCleanupWorker(
     private static async ValueTask<ImmutableArray<HeadIdentity>> ReadCampaignHeadsAsync(
         CovenantMutationTransaction transaction,
         string campaignId,
+        int firstOrdinal,
         CancellationToken cancellationToken)
     {
 
@@ -314,7 +342,7 @@ internal sealed class CovenantCleanupWorker(
 
             heads.Add(
                 new HeadIdentity(
-                    heads.Count,
+                    checked(firstOrdinal + heads.Count),
                     reader.GetString(0),
                     reader.GetInt32(1),
                     reader.GetInt64(2),
@@ -382,6 +410,9 @@ internal sealed class CovenantCleanupWorker(
     private static string NowIso() =>
         DateTimeOffset.UtcNow.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// One head this batch will remove, with its position in the batch-wide outbox ordinal space.
+    /// </summary>
     private readonly record struct HeadIdentity(
         int Ordinal,
         string EntryId,

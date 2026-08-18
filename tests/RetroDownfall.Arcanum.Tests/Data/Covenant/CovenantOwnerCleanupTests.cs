@@ -157,6 +157,81 @@ public sealed class CovenantOwnerCleanupTests
     }
 
     [Fact]
+    public async Task One_batch_over_two_head_bearing_campaigns_emits_one_contiguous_ordinal_space()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CreateAsync();
+
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+
+        await fixture.AddCampaignAsync(CampaignTwo, "two", Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "first.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "First.",
+            Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "second.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Second.",
+            Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignTwo,
+            "third.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Third.",
+            Token);
+
+        await ExecuteAsync(fixture, $"DELETE FROM \"Campaigns\" WHERE \"Id\" = '{CampaignOne:D}';");
+
+        await ExecuteAsync(fixture, $"DELETE FROM \"Campaigns\" WHERE \"Id\" = '{CampaignTwo:D}';");
+
+        CovenantCleanupOutcome outcome = await RunAsync(fixture);
+
+        Assert.Equal(2, outcome.CampaignsCleaned);
+
+        Assert.Equal(3, outcome.HeadsRemoved);
+
+        Assert.True(outcome.SearchSequenceAdvanced);
+
+        Assert.Equal(0, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_heads;"));
+
+        // The batch advances the canonical sequence once, so every delta it emits shares that one
+        // sequence and the ordinals have to form a single contiguous space across all owners.
+        // Restarting the ordinal per Campaign collided on the (SearchSequence, Ordinal) primary key
+        // and rolled the whole batch back, leaving the journal permanently unable to drain.
+        Assert.Equal(
+            3,
+            await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_search_outbox WHERE DesiredVersionId IS NULL;"));
+
+        Assert.Equal(
+            1,
+            await ScalarAsync(
+                fixture,
+                "SELECT COUNT(DISTINCT SearchSequence) FROM covenant_search_outbox WHERE DesiredVersionId IS NULL;"));
+
+        Assert.Equal(
+            0,
+            await ScalarAsync(fixture, "SELECT MIN(Ordinal) FROM covenant_search_outbox WHERE DesiredVersionId IS NULL;"));
+
+        Assert.Equal(
+            2,
+            await ScalarAsync(fixture, "SELECT MAX(Ordinal) FROM covenant_search_outbox WHERE DesiredVersionId IS NULL;"));
+
+    }
+
+    [Fact]
     public async Task A_campaign_with_no_covenant_rows_advances_no_search_sequence()
     {
 
