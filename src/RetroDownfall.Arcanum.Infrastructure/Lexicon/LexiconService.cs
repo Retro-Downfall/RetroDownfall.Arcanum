@@ -1238,13 +1238,18 @@ internal sealed class LexiconService(
         {
             await ExecuteNonQueryAsync(connection, CancellationToken.None, "ROLLBACK").ConfigureAwait(false);
         }
-        catch (Exception ex) when (
-            ex is SqliteException
-                or InvalidOperationException
-                or ObjectDisposedException)
+        catch (Exception ex)
         {
-            // Best-effort rollback: a failed BEGIN or an already-closed connection leaves nothing to
-            // release. Anything outside these three is unexpected and must not be swallowed silently.
+            // Best-effort rollback, and deliberately for every failure kind. A failed BEGIN or an
+            // already-closed connection leaves nothing to release, and SqliteException,
+            // InvalidOperationException and ObjectDisposedException are the shapes that realistically
+            // carries — but narrowing the catch to those three lets anything else escape, and both
+            // callers invoke this from inside `catch { ...; throw; }`. An exception raised in a catch
+            // block discards the one being handled, so a surprising rollback failure would replace the
+            // real error the operator needs; worse, the outer handler filters on
+            // `ex is not OperationCanceledException`, so it would also turn an aborted request into a
+            // generic Lexicon write failure. The Warning is the diagnostic, and the original exception
+            // keeps the right of way.
             logger.LogWarning(
                 ex,
                 "Lexicon rollback failed for entity {Name}; the write transaction was left to the connection reset.",

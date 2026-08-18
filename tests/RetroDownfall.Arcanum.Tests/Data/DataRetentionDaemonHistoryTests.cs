@@ -599,6 +599,11 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             CancellationToken ct) =>
             _inner.CancelAsync(executionId, ct);
 
+        public Task ReportDrainedAsync(
+            string executionId,
+            CancellationToken ct) =>
+            _inner.ReportDrainedAsync(executionId, ct);
+
         public Task<bool> TryDeleteTerminalAsync(
             string executionId,
             CancellationToken ct) =>

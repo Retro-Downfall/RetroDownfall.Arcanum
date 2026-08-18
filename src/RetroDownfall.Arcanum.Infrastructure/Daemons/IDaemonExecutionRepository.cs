@@ -27,12 +27,27 @@ public interface IDaemonExecutionRepository
     /// <summary>
     /// Signals the execution's cancellation token and records it terminal. Cancellation is cooperative, so
     /// returning proves only that the request was recorded — the job body may still be unwinding, and the
-    /// per-daemon in-flight reservation is deliberately held (and the token source left undisposed) until a
-    /// terminal transition reports the drain. Calling this, <see cref="CompleteAsync"/>, or
-    /// <see cref="FailAsync"/> once <c>job.RunAsync</c> has returned is what reports it; every one of them
-    /// releases the reservation idempotently without changing the recorded terminal status.
+    /// per-daemon in-flight reservation is deliberately held (and the token source left undisposed) until
+    /// the drain is reported. This method never reports it, however many times it is called: it is
+    /// reachable straight from <c>POST /api/daemons/executions/{id}/cancel</c>, so a repeat means only
+    /// that an operator asked twice. <see cref="CompleteAsync"/> and <see cref="FailAsync"/> carry the
+    /// report implicitly, and <see cref="ReportDrainedAsync"/> carries it for a run that ended cancelled.
     /// </summary>
     Task<DaemonExecutionSummary> CancelAsync(string executionId, CancellationToken ct);
+
+    /// <summary>
+    /// Reports that <c>job.RunAsync</c> has returned, releasing the per-daemon in-flight reservation and
+    /// disposing the execution's token source without touching the recorded terminal status.
+    /// </summary>
+    /// <remarks>
+    /// The runner is the only caller, because it is the only thing that knows the body has unwound. A run
+    /// that ended cancelled terminates through <see cref="CancelAsync"/>, and overloading that method's
+    /// re-entry as the drain signal cannot work: a second operator cancel produces the identical signal
+    /// and would free this daemon's only single-flight reservation while the first body is still
+    /// mid-turn, letting a second headless run start against the same target spell. Idempotent, and a
+    /// no-op for an execution id that no longer exists.
+    /// </remarks>
+    Task ReportDrainedAsync(string executionId, CancellationToken ct);
 
     Task<bool> TryDeleteTerminalAsync(string executionId, CancellationToken ct);
 

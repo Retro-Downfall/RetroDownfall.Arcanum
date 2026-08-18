@@ -19,10 +19,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <c>AcquireOrdinary</c> — the ordinary lease every Covenant turn takes — always requires it. So
 /// without this step Covenant fails closed on its own hot path the instant the feature is enabled,
 /// and every staleness guard downstream is inert because the values it compares never move.</para>
-/// <para>Every writer that changes the persisted tuple republishes through here: the bootstrapper
-/// after installation, the family reinitialize coordinator, and the backup restore reconciler. One
-/// publisher rather than three keeps the derivations — which rebuild states count as owed, and when
-/// the applied tuple counts as synchronized — from drifting apart between them.</para>
+/// <para><c>GrimoireDatabaseBootstrapper</c> is the only caller, and deliberately the only one. The
+/// other writer of this tuple is <c>BackupCovenantRestoreReconciler</c>, which rewrites
+/// <c>DatasetGeneration</c> and nulls the applied pair — but it cannot leave a serving snapshot stale,
+/// because a restore and a host can never be running at once. <c>GrimoireDatabaseHostedService</c>
+/// takes <c>ArcanumMaintenanceLock</c> for the host's whole lifetime and fails startup without it,
+/// <c>BackupRestoreService</c> refuses with <c>backup.restore_maintenance_unavailable</c> when it
+/// cannot take the same lock, and <c>IBackupRestoreService</c> has no API route at all — it is reached
+/// only from the CLI's <c>BackupCommands</c>. The restore therefore runs in its own short-lived
+/// process against a snapshot nothing serves turns from, and the next <c>arcanum serve</c> republishes
+/// here before readiness. <c>CovenantFamilyReinitializeCoordinator</c> is unregistered in this release
+/// and constructed nowhere, so it writes no tuple to republish.</para>
+/// <para>Any future writer that changes the tuple <em>inside a serving host</em> has to republish
+/// through here rather than growing its own derivation: which rebuild states count as owed, and when
+/// the applied tuple counts as synchronized, are decided once in this file so two callers cannot drift
+/// apart on them.</para>
 /// </remarks>
 internal static class CovenantPersistedAvailabilityPublisher
 {

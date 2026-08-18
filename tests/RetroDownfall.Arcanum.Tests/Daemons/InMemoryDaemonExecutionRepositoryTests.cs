@@ -282,6 +282,79 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Equal(DaemonJobStatus.Cancelled, afterComplete.Status);
     }
 
+    /// <summary>
+    /// A second operator hit on <c>POST /api/daemons/executions/{id}/cancel</c> must not be mistaken for
+    /// the job body having drained.
+    /// </summary>
+    /// <remarks>
+    /// The endpoint reaches <c>CancelAsync</c> with no idempotency guard, so re-entry with the status
+    /// already Cancelled is a signal two very different callers produce. Only the runner knows
+    /// <c>job.RunAsync</c> returned. Releasing the in-flight reservation on a duplicate cancel frees this
+    /// daemon's only single-flight mechanism while the first body is still mid-turn, which is exactly
+    /// what lets a second headless run start against the same target spell.
+    /// </remarks>
+    [Fact]
+    public async Task Duplicate_cancel_does_not_release_the_reservation_the_running_body_still_holds()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        string executionId = await repository.StartAsync(
+            "daemon-double-cancel",
+            "Daemon Double Cancel",
+            CancellationToken.None);
+
+        _ = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.True(repository.HasRunningExecution("daemon-double-cancel"));
+
+        // The duplicate the endpoint happily forwards, and answers 200 to.
+        DaemonExecutionSummary repeat = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, repeat.Status);
+
+        Assert.True(repository.HasRunningExecution("daemon-double-cancel"));
+
+        Assert.NotNull(repository.GetCancellationTokenSource(executionId));
+
+        // Only the runner reporting the drain releases it.
+        await repository.ReportDrainedAsync(executionId, CancellationToken.None);
+
+        Assert.False(repository.HasRunningExecution("daemon-double-cancel"));
+
+    }
+
+    /// <summary>
+    /// The drain report is idempotent and never rewrites the recorded terminal status.
+    /// </summary>
+    [Fact]
+    public async Task Reporting_a_drain_twice_is_harmless_and_keeps_the_terminal_status()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        string executionId = await repository.StartAsync(
+            "daemon-drain-twice",
+            "Daemon Drain Twice",
+            CancellationToken.None);
+
+        _ = await repository.CancelAsync(executionId, CancellationToken.None);
+
+        await repository.ReportDrainedAsync(executionId, CancellationToken.None);
+
+        await repository.ReportDrainedAsync(executionId, CancellationToken.None);
+
+        Assert.False(repository.HasRunningExecution("daemon-drain-twice"));
+
+        DaemonExecutionDetail? detail = await repository.GetAsync(executionId, CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, detail!.Status);
+
+        // An execution that never existed is not an error: the runner reports a drain from a catch arm.
+        await repository.ReportDrainedAsync("no-such-execution", CancellationToken.None);
+
+    }
+
     [Fact]
     public async Task Complete_Then_Cancel_ThrowsNotRunning()
     {
@@ -369,10 +442,14 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
             Guid.NewGuid().ToString("N"),
             CancellationToken.None));
 
-        // DaemonRunner reports the drain by re-entering the terminal transition once job.RunAsync returns.
-        DaemonExecutionSummary drained = await repository.CancelAsync(executionId, CancellationToken.None);
+        // DaemonRunner reports the drain explicitly once job.RunAsync returns. It cannot be a second
+        // CancelAsync: that call is also the public cancel endpoint, where a repeat means an operator
+        // asked twice and proves nothing about the body.
+        await repository.ReportDrainedAsync(executionId, CancellationToken.None);
 
-        Assert.Equal(DaemonJobStatus.Cancelled, drained.Status);
+        DaemonExecutionDetail? drained = await repository.GetAsync(executionId, CancellationToken.None);
+
+        Assert.Equal(DaemonJobStatus.Cancelled, drained!.Status);
 
         Assert.False(repository.HasRunningExecution("daemon-drain"));
 

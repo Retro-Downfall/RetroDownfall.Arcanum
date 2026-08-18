@@ -163,7 +163,9 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
 
             delete.CommandText = """DELETE FROM "Campaigns" WHERE "Id" = $id;""";
 
-            _ = delete.Parameters.AddWithValue("$id", CampaignOne.ToString("D"));
+            // Bound as a Guid for the same reason the seed is: the column holds the exact text the
+            // provider writes for a Guid, and a formatted lowercase literal matches none of it.
+            _ = delete.Parameters.AddWithValue("$id", CampaignOne);
 
             _ = await delete.ExecuteNonQueryAsync(Token);
 
@@ -179,6 +181,44 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
 
         Assert.NotNull(survivor.Value);
         Assert.True(survivor.Value > live.Value);
+
+    }
+
+    /// <summary>
+    /// Pins the crossing into the EF-owned identity column, which is where the availability probe used
+    /// to bind a lowercase <c>D</c>-format literal against uppercase stored text.
+    /// </summary>
+    /// <remarks>
+    /// Every identity in this suite carries hex letters, so a case-sensitive comparison against the
+    /// stored text is the whole difference between "this Campaign exists" and a spurious
+    /// <c>Campaign.NotFound</c> on every campaign-scoped turn.
+    /// </remarks>
+    [Fact]
+    public async Task Availability_matches_the_uppercase_identity_text_the_core_table_stores()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CreateFixtureAsync();
+
+        string stored;
+
+        await using (SqliteCommand read = fixture.Connection.CreateCommand())
+        {
+
+            read.CommandText = """SELECT "Id" FROM "Campaigns" WHERE "Name" = 'one';""";
+
+            stored = (string)(await read.ExecuteScalarAsync(Token))!;
+
+        }
+
+        Assert.Equal(CampaignOne.ToString("D").ToUpperInvariant(), stored);
+        Assert.NotEqual(CampaignOne.ToString("D"), stored);
+
+        CampaignAvailabilityReader availability = new(new FixedCovenantConnectionSource(fixture.Connection));
+
+        Result<long?> generation = await availability.FindAvailabilityGenerationAsync(CampaignOne, Token);
+
+        Assert.True(generation.IsSuccess);
+        Assert.NotNull(generation.Value);
 
     }
 
@@ -203,13 +243,9 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
             Token,
             coreObjects: ["campaign_path_identities", "campaign_registry_state_campaign_delete"]);
 
-        // CampaignAvailabilityReader.FindAvailabilityGenerationAsync still binds a lowercase
-        // identity against the EF-owned "Campaigns"."Id", which EF writes uppercase, so this suite
-        // has to seed the lowercase text a real host never produces. That reader is the bug, not the
-        // seed: fixing its bind is what lets these two calls drop the flag.
-        await fixture.AddCampaignAsync(CampaignOne, "one", Token, legacyLowercaseIdentity: true);
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
 
-        await fixture.AddCampaignAsync(CampaignTwo, "two", Token, legacyLowercaseIdentity: true);
+        await fixture.AddCampaignAsync(CampaignTwo, "two", Token);
 
         return fixture;
 
@@ -238,7 +274,9 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
             VALUES ($campaignId, $policyVersion, $revision, $displayPath, $depth, $digest, $updated);
             """;
 
-        _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString("D"));
+        // campaign_path_identities.CampaignId REFERENCES "Campaigns"("Id"), and the fixture runs with
+        // foreign keys enforced, so the child row can only hold the exact text the parent holds.
+        _ = command.Parameters.AddWithValue("$campaignId", campaignId);
 
         _ = command.Parameters.AddWithValue(
             "$policyVersion",

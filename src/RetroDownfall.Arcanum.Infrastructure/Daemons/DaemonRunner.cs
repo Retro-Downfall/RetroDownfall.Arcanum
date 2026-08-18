@@ -100,6 +100,13 @@ public sealed class DaemonRunner(
                 .CancelAsync(executionId, CancellationToken.None)
                 .ConfigureAwait(false);
 
+            // Reaching this catch arm is the proof job.RunAsync has unwound, and this is the only place
+            // that proof exists — CancelAsync alone cannot distinguish it from a second operator cancel.
+            // Until it is reported, the daemon stays reserved for the life of the host.
+            await repository
+                .ReportDrainedAsync(executionId, CancellationToken.None)
+                .ConfigureAwait(false);
+
             PublishEvent(
                 job,
                 runId,
