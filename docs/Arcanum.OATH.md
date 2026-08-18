@@ -10,7 +10,7 @@
 
 **Document status:** current as of **2026-08-17**, reconciled against the `long-term-memory` branch at `e55a586b`, the approved Covenant specification and Plans 01–05, and GitHub issues #73–#115.
 
-**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.19.13), and the specification and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
+**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.20.2), and the specification and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
 
 ---
 
@@ -71,6 +71,7 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#113** | Landed | `BackupRestoreProtectedStatePolicy`, `BackupRestoreProtectedStateInspector`, `BackupRestoreProtectedStatePurger`, and the ordered destructive-disclosure prompt contract. |
 | **#114** | Landed | `ICovenantExportPolicy` and `CovenantExportAdmission`, the `Covenant.PlaintextExportRefused` refusal before any Session export byte, and the typed content-free Campaign export exclusion counts. |
 | **#115** | Landed | `--protected-state` and `--map-campaign` on `arcanum backup restore`, the pure-Core `BackupRestoreCampaignMappingPolicy`, plan-time validation of every mapping against this installation's own Campaigns, and an import refusal that names the archived Campaign. |
+| **#116** | Landed | `RetentionDataClass.Covenant` and `MemoryResetScope.Covenant` with every code in both enums written literally, a settings catalog and policy store that refuse to give the class a rule and say why, the content-free `DataRetentionCovenantInventory`, one read capability per planning call acquired in `PlanAsync` itself, and a Covenant memory reset that plans and then refuses with `Data.CovenantResetRequiresErasureCoordinator`. |
 
 Everything above is registered in both host compositions. As of this document there is still **no Covenant route mapped, no Covenant *command* registered, no MCP capability minted by a live turn**, and `Arcanum:Features:Covenant` remains **off by default**. Two places are where a Covenant decision reaches an already-shipped surface: #114's two plaintext export endpoints declare a conditional Covenant read and refuse or report under it, and #115's `--protected-state` and `--map-campaign` are options on the already-shipped `arcanum backup restore` rather than a new command. With the feature off all three behave exactly as they did.
 
@@ -78,7 +79,14 @@ Everything above is registered in both host compositions. As of this document th
 
 | Issue | Size | Role |
 |---|---|---|
-| **#94** | XL | Covenant retention, reset, and full installation erasure. |
+| **#94** | XL | Covenant retention, reset, and full installation erasure. Split into #116–#123; #116 is green. |
+| **#117** | XL | Route every direct deletion through the shared sensitivity purge boundary. |
+| **#118** | L | The Covenant reset phase machine and V3 retention checkpoints. |
+| **#119** | XL | `CovenantErasureCoordinator` — reset and healthy-catalog factory erasure. |
+| **#120** | L | The authenticated V2 installation-reset active record and its anti-rollback anchor. |
+| **#121** | L | Verified external remediation attestation for full installation reset. |
+| **#122** | XL | Host-tools marker-pair compare-deletion and Campaign-marker cleanup. |
+| **#123** | XL | Full-reset managed-file reconciliation and restore-credential terminalization. |
 | **#92** | XL | Performance, Native AOT, documentation, and release qualification — the #74 acceptance gate. |
 | **#102** | XL | Resumable raw-SQL feature-schema evolution and backfills. Shared prerequisite for #75–#78. |
 | **#105** | XL | Bitemporal validity and dependency-aware claims across durable memory stores. |
@@ -98,7 +106,7 @@ Everything above is registered in both host compositions. As of this document th
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.19.13 own the Covenant slices.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.20.2 own the Covenant slices.
 3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation authority.
@@ -1254,7 +1262,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` when that branch merges. This document and [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are the two that are deliberately kept identical on both branches.
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.19.13 **(branch)**:
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.20.2 **(branch)**:
   - §10.10 Core protocol foundation
   - §10.11 Canonical persistence and inspection search
   - §10.12 Invocation authority and Campaign binding
@@ -1265,6 +1273,7 @@ The following documents own or explain the detailed contracts summarized here. D
   - §10.17 Maintenance and protected-erasure recovery
   - §10.18 Operator surfaces, configuration, and the pre-binding authority boundary
   - §10.19.1–§10.19.13 Backup, restore, and protected transfer
+  - §10.20.1–§10.20.2 Retention, reset, and full erasure
 - [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
 - `docs/superpowers/specs/2026-08-13-covenant-design.md`: approved target semantics, authority firewall, persistence, runtime, surfaces, lifecycle, and acceptance contract **(branch)**.
