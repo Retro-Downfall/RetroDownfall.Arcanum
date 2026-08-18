@@ -155,6 +155,162 @@ public sealed class WebWorkflowCommandTests
 
     }
 
+    /// <summary>
+    /// A search whose provider call succeeded but whose <c>--attach-to-session</c> could not be written
+    /// returns the paid-for answer with a non-fatal <c>attachmentError</c> instead of failing the whole
+    /// workflow. That trade is only honest if the operator is told: an attachment silently not happening
+    /// is the same outcome as the workflow lying about having made one, so the error travels to stderr
+    /// exactly like the research path's <c>attachment_failed</c> progress frame does, while stdout keeps
+    /// carrying only the answer and the exit code stays 0.
+    /// </summary>
+    [Fact]
+
+    public void Search_reports_a_failed_attachment_on_stderr_without_failing_the_run()
+    {
+
+        RecordingHandler handler = new(
+            request => JsonResponse(
+                """
+                {
+                  "data": {
+                    "answer": "Answer that was already billed.",
+                    "citations": [],
+                    "provider": "perplexity",
+                    "model": "sonar",
+                    "truncated": false,
+                    "usage": { "totalTokens": 12, "searchQueries": 1 },
+                    "attachmentId": null,
+                    "attachmentError": "The session was archived before the attachment was written."
+                  },
+                  "isSuccess": true,
+                  "error": null,
+                  "traceId": "test"
+                }
+                """));
+
+        CliTestResult result = RunCommand(
+            handler,
+            [
+                "search",
+                "current facts",
+                "--attach-to-session",
+                "11111111-1111-1111-1111-111111111111",
+            ]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(
+            "The session was archived before the attachment was written.",
+            result.Error,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Answer that was already billed.",
+            result.Output,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "The session was archived before the attachment was written.",
+            result.Output,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Same contract on the browse path, which shares the fetch-is-already-billed reasoning and the same
+    /// non-fatal <c>attachmentError</c> field.
+    /// </summary>
+    [Fact]
+
+    public void Browse_reports_a_failed_attachment_on_stderr_without_failing_the_run()
+    {
+
+        RecordingHandler handler = new(
+            request => JsonResponse(
+                """
+                {
+                  "data": {
+                    "title": "Page",
+                    "markdown": "# Page",
+                    "finalUrl": "https://example.test/app",
+                    "links": [],
+                    "provider": "static",
+                    "renderMode": "static",
+                    "truncated": false,
+                    "attachmentId": null,
+                    "attachmentError": "The session was purged before the attachment was written."
+                  },
+                  "isSuccess": true,
+                  "error": null,
+                  "traceId": "test"
+                }
+                """));
+
+        CliTestResult result = RunCommand(
+            handler,
+            [
+                "browse",
+                "https://example.test/app",
+                "--attach-to-session",
+                "11111111-1111-1111-1111-111111111111",
+            ]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(
+            "The session was purged before the attachment was written.",
+            result.Error,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The successful attachment keeps naming the stored id, so the failure diagnostic is an addition to
+    /// the existing contract rather than a replacement for it.
+    /// </summary>
+    [Fact]
+
+    public void Search_names_the_attachment_id_when_the_attachment_succeeded()
+    {
+
+        RecordingHandler handler = new(
+            request => JsonResponse(
+                """
+                {
+                  "data": {
+                    "answer": "Attached answer.",
+                    "citations": [],
+                    "provider": "perplexity",
+                    "model": "sonar",
+                    "truncated": false,
+                    "usage": { "totalTokens": 12, "searchQueries": 1 },
+                    "attachmentId": "22222222-2222-2222-2222-222222222222",
+                    "attachmentError": null
+                  },
+                  "isSuccess": true,
+                  "error": null,
+                  "traceId": "test"
+                }
+                """));
+
+        CliTestResult result = RunCommand(
+            handler,
+            [
+                "search",
+                "current facts",
+                "--attach-to-session",
+                "11111111-1111-1111-1111-111111111111",
+            ]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(
+            "22222222-2222-2222-2222-222222222222",
+            result.Error,
+            StringComparison.Ordinal);
+
+    }
+
     [Fact]
 
     public void Search_save_writes_final_markdown_with_citations()
