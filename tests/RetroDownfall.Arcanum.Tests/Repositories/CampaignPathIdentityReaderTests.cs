@@ -203,9 +203,13 @@ public sealed class CampaignPathIdentityReaderTests : IDisposable
             Token,
             coreObjects: ["campaign_path_identities", "campaign_registry_state_campaign_delete"]);
 
-        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+        // CampaignAvailabilityReader.FindAvailabilityGenerationAsync still binds a lowercase
+        // identity against the EF-owned "Campaigns"."Id", which EF writes uppercase, so this suite
+        // has to seed the lowercase text a real host never produces. That reader is the bug, not the
+        // seed: fixing its bind is what lets these two calls drop the flag.
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token, legacyLowercaseIdentity: true);
 
-        await fixture.AddCampaignAsync(CampaignTwo, "two", Token);
+        await fixture.AddCampaignAsync(CampaignTwo, "two", Token, legacyLowercaseIdentity: true);
 
         return fixture;
 

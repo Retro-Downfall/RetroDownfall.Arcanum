@@ -265,14 +265,26 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         await using SqliteCommand command = transaction.CreateCommand();
 
+        // The receipt table carries no EntryId column, so the committed entry has to be recovered
+        // through what the row does record. An Applied outcome names a resulting version, and every
+        // version belongs to exactly one entry. A NoChange outcome has a NULL version by the table's
+        // own CHECK, so it resolves through the scoped key instead, which the partial unique indexes
+        // on covenant_entries make a single row.
         command.CommandText = """
-            SELECT RequestIdempotencyDigest, FinalMutationDigest, ResponseReceiptDigest, MutationKindCode,
-                   ScopeCode, CampaignId, LaneCode, OutcomeCode, ResultingVersionId, ResultingLaneRevision
-            FROM covenant_mutation_receipts
-            WHERE MutationId = $mutation;
+            SELECT r.RequestIdempotencyDigest, r.FinalMutationDigest, r.ResponseReceiptDigest, r.MutationKindCode,
+                   r.ScopeCode, r.CampaignId, r.LaneCode, r.OutcomeCode, r.ResultingVersionId, r.ResultingLaneRevision,
+                   COALESCE(
+                       (SELECT v.EntryId FROM covenant_versions v WHERE v.VersionId = r.ResultingVersionId),
+                       (SELECT e.EntryId FROM covenant_entries e
+                        WHERE e.ScopeCode = r.ScopeCode AND e.CampaignId IS r.CampaignId
+                          AND e.NormalizedKey = $key))
+            FROM covenant_mutation_receipts r
+            WHERE r.MutationId = $mutation;
             """;
 
         Bind(command, "$mutation", intent.MutationId.ToString("D"));
+
+        Bind(command, "$key", intent.Target.NormalizedKey.Value);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -299,15 +311,29 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             ? null
             : Guid.Parse(reader.GetString(8), CultureInfo.InvariantCulture);
 
+        // The scope comes from the committed row rather than from the retry, so a replay reports
+        // what was actually recorded instead of echoing back whatever the caller resent. The
+        // normalized key is the one field the table does not store, so it still comes from the
+        // intent, and the resolved entry above is the cross-check that it named the same row.
+        CovenantOperationScope storedScope = (CovenantScope)reader.GetInt32(4) == CovenantScope.Global
+            ? CovenantOperationScope.Global
+            : CovenantOperationScope.ForCampaign(Guid.Parse(reader.GetString(5), CultureInfo.InvariantCulture));
+
+        // Only null when the entry itself is gone, which owner cleanup does to the receipts in the
+        // same transaction. There is then no identity to name and Guid.Empty is the honest answer.
+        Guid entryId = reader.IsDBNull(10)
+            ? Guid.Empty
+            : Guid.Parse(reader.GetString(10), CultureInfo.InvariantCulture);
+
         return Result<CovenantMutationReceipt?>.Success(
             new CovenantMutationReceipt(
                 intent.MutationId,
                 (CovenantMutationOutcome)reader.GetInt32(7),
                 (CovenantMutationKind)reader.GetInt32(3),
-                intent.Target.Scope,
+                storedScope,
                 intent.Target.NormalizedKey.Value,
                 (CovenantLane)reader.GetInt32(6),
-                Guid.Empty,
+                entryId,
                 resultingVersionId,
                 reader.IsDBNull(9) ? null : reader.GetInt64(9),
                 storedRequest,

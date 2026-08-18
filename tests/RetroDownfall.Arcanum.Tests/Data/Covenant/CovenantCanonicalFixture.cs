@@ -80,7 +80,24 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
     }
 
-    internal async Task AddCampaignAsync(Guid campaignId, string name, CancellationToken cancellationToken)
+    /// <summary>
+    /// Seeds one core Campaign row in the representation EF actually writes.
+    /// </summary>
+    /// <remarks>
+    /// The identity is bound as a <see cref="Guid"/> rather than as a formatted string, so the
+    /// provider stores exactly the uppercase <c>D</c>-format text EF's SQLite mapping produces.
+    /// Seeding lowercase hides every query that compares its own identity text against this EF-owned
+    /// column, which is how the dependent-head scan shipped never matching a head in a real host.
+    ///
+    /// <para><paramref name="legacyLowercaseIdentity"/> seeds text no real host ever writes. It
+    /// exists only for suites whose reader still binds a lowercase identity against
+    /// <c>"Campaigns"."Id"</c>, and every one of those is a defect waiting to be fixed.</para>
+    /// </remarks>
+    internal async Task AddCampaignAsync(
+        Guid campaignId,
+        string name,
+        CancellationToken cancellationToken,
+        bool legacyLowercaseIdentity = false)
     {
 
         await using SqliteCommand command = Connection.CreateCommand();
@@ -90,7 +107,9 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
             VALUES ($id, $name, $nameLower, $root, 1, '{}', $created, $updated);
             """;
 
-        _ = command.Parameters.AddWithValue("$id", campaignId.ToString("D"));
+        _ = legacyLowercaseIdentity
+            ? command.Parameters.AddWithValue("$id", campaignId.ToString("D"))
+            : command.Parameters.AddWithValue("$id", campaignId);
 
         _ = command.Parameters.AddWithValue("$name", name);
 
