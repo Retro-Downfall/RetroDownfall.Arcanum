@@ -319,10 +319,93 @@ public sealed class ConsoleAskHumanCoordinatorTests
     }
 
     /// <summary>
+    /// Ctrl+C inside an <c>ask_human</c> prompt arrives as a keystroke, not as SIGINT, so
+    /// <c>CancelKeyPress</c> never runs and nothing else in the process learns the operator quit. The
+    /// coordinator's own token is a child of the caller's and cannot cancel upward, so an interrupted
+    /// read that only settles leaves the caller parked in its stream pump. The interrupt has to be
+    /// handed back to the caller, which is what turns it into the documented exit 130.
+    /// </summary>
+    [Fact]
+    public async Task An_operator_interrupt_trips_the_callers_cancellation()
+    {
+        ArcanumApiClient client = CreateApiClient((_, _, _) => true);
+
+        using CancellationTokenSource callerCts = new();
+
+        ConsoleAskHumanCoordinator coordinator = new(
+            client,
+            new FakePalette(),
+            InterruptedRead(),
+            onOperatorInterrupt: callerCts.Cancel);
+
+        Assert.Equal(
+            AskHumanResult.PendingInput,
+            await coordinator.TryBeginAsync(
+                AskHumanToolCall("call-1", "prompt-1", "Who?"),
+                unattended: false,
+                isInteractive: true,
+                callerCts.Token));
+
+        _ = await coordinator.DrainAsync().WaitAsync(DrainBudget);
+
+        Assert.True(callerCts.IsCancellationRequested);
+    }
+
+    /// <summary>
+    /// The other way a read ends cancelled is the caller's own token firing — the turn is already
+    /// unwinding, and reporting an operator interrupt there would attribute a host-side or timeout
+    /// cancellation to a keystroke nobody pressed.
+    /// </summary>
+    [Fact]
+    public async Task A_read_cancelled_by_the_callers_own_token_reports_no_operator_interrupt()
+    {
+        ArcanumApiClient client = CreateApiClient((_, _, _) => true);
+
+        TaskCompletionSource<string?> parkedRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using CancellationTokenSource callerCts = new();
+
+        int interrupts = 0;
+
+        ConsoleAskHumanCoordinator coordinator = new(
+            client,
+            new FakePalette(),
+            InterruptibleRead(parkedRead),
+            onOperatorInterrupt: () => Interlocked.Increment(ref interrupts));
+
+        Assert.Equal(
+            AskHumanResult.PendingInput,
+            await coordinator.TryBeginAsync(
+                AskHumanToolCall("call-1", "prompt-1", "Who?"),
+                unattended: false,
+                isInteractive: true,
+                callerCts.Token));
+
+        await callerCts.CancelAsync();
+
+        _ = await coordinator.DrainAsync().WaitAsync(DrainBudget);
+
+        Assert.Equal(0, Volatile.Read(ref interrupts));
+    }
+
+    /// <summary>
     /// The wall-clock ceiling a drain must beat. Generous enough that a loaded CI agent never trips
     /// it, and far below the "until the operator types" the defect imposed.
     /// </summary>
     private static readonly TimeSpan DrainBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// The shipped reader's Ctrl+C shape: the read raises rather than returning, while the caller's
+    /// own token stays live because the interrupt never reached the process-termination handler.
+    /// </summary>
+    private static Func<string, bool, CancellationToken, Task<string?>> InterruptedRead() =>
+        (_, _, _) => Task.FromException<string?>(
+            new OperationCanceledException("The console read was interrupted by the operator."));
+
+    /// <summary>A read that observes its token and raises when it fires.</summary>
+    private static Func<string, bool, CancellationToken, Task<string?>> InterruptibleRead(
+        TaskCompletionSource<string?> gate) =>
+        async (_, _, ct) => await gate.Task.WaitAsync(ct).ConfigureAwait(false);
 
     /// <summary>
     /// The production reader's shape: a blocking read that checks the token once, before it blocks,

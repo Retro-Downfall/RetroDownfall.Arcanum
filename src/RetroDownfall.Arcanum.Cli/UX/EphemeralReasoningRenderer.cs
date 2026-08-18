@@ -142,19 +142,11 @@ internal static class EphemeralReasoningRenderer
             return false;
         }
 
-        // The panel is a full-width box that Spectre lays out from column 0. The answer stream writes
-        // raw tokens with no newline between them, so a flush that lands part-way through an answer
-        // paints the box from the column the last token ended on and wraps its own border. The break
-        // that fixes it belongs to the terminal only: writing it into a redirected stdout would put a
-        // newline the model never produced into the payload.
-        bool sharesTerminal = answerSharesTerminal
-            ?? (!Console.IsOutputRedirected && !Console.IsErrorRedirected);
-
-        if (sharesTerminal && content.AnswerEndsMidLine)
-        {
-            (answerStream ?? Console.Out).WriteLine();
-            content.NoteAnswerLineBreak();
-        }
+        // The panel is a full-width box that Spectre lays out from column 0, so a flush that lands
+        // part-way through an answer paints it from the column the last token ended on and wraps its
+        // own border. Every other diagnostic the streaming loop writes shares that hazard, so both go
+        // through the one guard and its once-only accounting.
+        _ = CliStreamDiagnostic.EnsureColumnZero(content, answerStream, answerSharesTerminal);
 
         console.Write(Build(reasoning, palette));
         return true;

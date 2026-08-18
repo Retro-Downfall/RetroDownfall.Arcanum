@@ -22,7 +22,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -75,11 +75,11 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
 
             if (string.Equals(result.Error.Code, "Ward.NotFound", StringComparison.Ordinal))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Ward not found.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Ward not found.")));
             }
             else
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             }
 
             return 1;
@@ -140,7 +140,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         if (allow == deny)
         {
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("Exactly one of --allow or --deny is required.")));
 
             return 1;
@@ -155,7 +155,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
 
             if (string.Equals(result.Error.Code, "Ward.NotFound", StringComparison.Ordinal))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Ward not found.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Ward not found.")));
             }
             else if (string.Equals(result.Error.Code, "Ward.AlreadyResolved", StringComparison.Ordinal))
             {
@@ -163,7 +163,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
             }
             else
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             }
 
             return 1;

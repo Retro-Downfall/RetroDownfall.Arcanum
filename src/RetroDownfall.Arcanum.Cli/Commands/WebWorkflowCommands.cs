@@ -317,8 +317,11 @@ public sealed class WebWorkflowCommands(
 
                 case WebResearchStreamFrameType.Error:
 
+                    // A transport failure here is the same failure `arcanum ask` reports, so it gets
+                    // the same next step. A provider or policy error keeps its own copy untouched.
                     dispatcher.WriteDiagnostic(
-                        $"{frame.Code ?? ErrorCodes.WebResearch.ProviderUnavailable}: {frame.Message ?? "Research failed."}");
+                        $"{frame.Code ?? ErrorCodes.WebResearch.ProviderUnavailable}: "
+                        + CliStreamTransportHint.Append(frame.Code, frame.Message ?? "Research failed."));
 
                     return 1;
 
@@ -337,7 +340,7 @@ public sealed class WebWorkflowCommands(
         {
 
             dispatcher.WriteDiagnostic(
-                ArcanumApiClient.StreamEmptyResultMessage);
+                CliStreamTransportHint.Append(ArcanumApiClient.StreamEmptyResultMessage));
 
             return 1;
 

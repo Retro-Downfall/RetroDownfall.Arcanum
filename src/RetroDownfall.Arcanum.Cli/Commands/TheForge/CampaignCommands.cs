@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
@@ -23,7 +25,7 @@ internal static class CampaignCommandSupport
 
         if (resourceCatalog is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
             return (false, false, default);
         }
 
@@ -36,7 +38,7 @@ internal static class CampaignCommandSupport
         }
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
             return (false, false, default);
         }
 
@@ -125,6 +127,7 @@ internal static class CampaignCommandSupport
 public sealed class CampaignCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    IConsoleDispatcher dispatcher,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -142,7 +145,7 @@ public sealed class CampaignCommands(
 
             if (!CampaignCommandSupport.TryParseWorkspaceType(type, out WorkspaceType parsed))
             {
-                AnsiConsole.MarkupLine(
+                CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
 
                 return 1;
@@ -156,7 +159,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -206,7 +209,7 @@ public sealed class CampaignCommands(
         {
             if (resourceCatalog is null)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
                 return 1;
             }
 
@@ -219,7 +222,7 @@ public sealed class CampaignCommands(
             }
             if (selection.Status == ResourceSelectionStatus.Error)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
                 return 1;
             }
 
@@ -230,7 +233,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -258,14 +261,14 @@ public sealed class CampaignCommands(
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
             return 1;
         }
 
         if (string.IsNullOrWhiteSpace(path))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--path is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--path is required.")));
 
             return 1;
         }
@@ -274,7 +277,7 @@ public sealed class CampaignCommands(
 
         if (!CampaignCommandSupport.TryParseWorkspaceType(typeText, out WorkspaceType workspaceType))
         {
-            AnsiConsole.MarkupLine(
+            CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
 
             return 1;
@@ -286,7 +289,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -317,7 +320,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -343,7 +346,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -369,7 +372,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -390,7 +393,7 @@ public sealed class CampaignCommands(
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
 
                 return 1;
             }
@@ -416,7 +419,7 @@ public sealed class CampaignCommands(
 
         if (string.IsNullOrWhiteSpace(file))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
             return 1;
         }
@@ -429,7 +432,7 @@ public sealed class CampaignCommands(
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 
             return 1;
         }
@@ -444,14 +447,14 @@ public sealed class CampaignCommands(
         }
         catch (System.Text.Json.JsonException ex)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid campaign export JSON: {ex.Message}")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid campaign export JSON: {ex.Message}")));
 
             return 1;
         }
 
         if (payload is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Campaign export JSON parsed to an empty payload.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Campaign export JSON parsed to an empty payload.")));
 
             return 1;
         }
@@ -462,7 +465,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -507,7 +510,7 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -540,12 +543,21 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
 
         PromptSummaryDto[] prompts = result.Value.Items;
+
+        if (CliInvocationContext.Current.Json)
+        {
+
+            dispatcher.WriteJson(prompts, ArcanumJsonContext.Default.PromptSummaryDtoArray);
+
+            return 0;
+
+        }
 
         Table table = new();
 
@@ -607,7 +619,7 @@ public sealed class CampaignCommands(
                     System.Globalization.DateTimeStyles.RoundtripKind,
                     out DateTimeOffset parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--before-updated-at must be a valid timestamp.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--before-updated-at must be a valid timestamp.")));
 
                 return 1;
             }
@@ -622,12 +634,42 @@ public sealed class CampaignCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
 
         SessionSummaryDto[] sessions = result.Value.Summaries;
+
+        // The host is allowed to report more rows with no cursor and no rows: hasMore is computed
+        // before a tie group is reloaded, and the reload comes back empty if those sessions were
+        // archived or deleted in between. That is a host fault in either output mode, so it is
+        // decided before the mode is — the same typed no-progress fault the workspace and
+        // session-workspace consumers already raise.
+        if (result.Value is { HasMore: true, NextBeforeUpdatedAt: null } && sessions.Length == 0)
+        {
+
+            CliErrorOutput.WriteMarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape(
+                        "Api.PaginationNoProgress: the host reported more sessions without "
+                        + "an advancing cursor. Re-run the command.")));
+
+            return 1;
+
+        }
+
+        // The paging advice below is operator prose about how to ask for the next page, which a
+        // caller reading a document does not need: it already holds every summary, and the cursor it
+        // would page from is UpdatedAt on the last one.
+        if (CliInvocationContext.Current.Json)
+        {
+
+            dispatcher.WriteJson(sessions, ArcanumJsonContext.Default.SessionSummaryDtoArray);
+
+            return 0;
+
+        }
 
         Table table = new();
 
@@ -665,30 +707,9 @@ public sealed class CampaignCommands(
         if (result.Value.HasMore)
         {
 
-            // The host is allowed to report more rows with no cursor and no rows: hasMore is
-            // computed before a tie group is reloaded, and the reload comes back empty if those
-            // sessions were archived or deleted in between. Indexing the last summary of an empty
-            // page throws, so the page is reported as unable to advance \u2014 the same typed
-            // no-progress fault the workspace and session-workspace consumers already raise.
-            if (result.Value.NextBeforeUpdatedAt is not { } cursor)
-            {
-
-                if (sessions.Length == 0)
-                {
-
-                    CliErrorOutput.WriteMarkupLine(
-                        themePalette.ErrorMarkup(
-                            Markup.Escape(
-                                "Api.PaginationNoProgress: the host reported more sessions without "
-                                + "an advancing cursor. Re-run the command.")));
-
-                    return 1;
-
-                }
-
-                cursor = sessions[^1].UpdatedAt;
-
-            }
+            // The empty no-cursor page is already refused above, so the last summary is here to page
+            // from whenever the host did not name a cursor of its own.
+            DateTimeOffset cursor = result.Value.NextBeforeUpdatedAt ?? sessions[^1].UpdatedAt;
 
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(
@@ -725,7 +746,7 @@ public sealed class CampaignCodexCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -756,14 +777,14 @@ public sealed class CampaignCodexCommands(
 
         if (string.IsNullOrWhiteSpace(file))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile($"@{file}", out string content, out string? readError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(readError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(readError!)));
 
             return 1;
         }
@@ -772,7 +793,7 @@ public sealed class CampaignCodexCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -797,7 +818,7 @@ public sealed class CampaignCodexCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }

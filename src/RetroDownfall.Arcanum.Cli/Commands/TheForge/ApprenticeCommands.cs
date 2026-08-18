@@ -130,7 +130,7 @@ public sealed class ApprenticeCommands(
 
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
@@ -145,7 +145,7 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -200,7 +200,7 @@ public sealed class ApprenticeCommands(
         {
             if (resourceCatalog is null)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
                 return 1;
             }
 
@@ -214,7 +214,7 @@ public sealed class ApprenticeCommands(
 
             if (selection.Status == ResourceSelectionStatus.Error)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
                 return 1;
             }
 
@@ -225,7 +225,7 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -253,21 +253,21 @@ public sealed class ApprenticeCommands(
 
         if (string.IsNullOrEmpty(goal))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(goal, out string resolvedGoal, out string? goalError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(goalError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(goalError!)));
 
             return 1;
         }
 
         if (string.IsNullOrWhiteSpace(resolvedGoal))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal must not be empty.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal must not be empty.")));
 
             return 1;
         }
@@ -279,7 +279,7 @@ public sealed class ApprenticeCommands(
 
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
@@ -298,7 +298,7 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -323,7 +323,7 @@ public sealed class ApprenticeCommands(
 
         if (resourceCatalog is null)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
             return (false, false, default);
         }
 
@@ -337,7 +337,7 @@ public sealed class ApprenticeCommands(
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
             return (false, false, default);
         }
 
@@ -358,7 +358,7 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -411,7 +411,7 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -435,14 +435,14 @@ public sealed class ApprenticeCommands(
 
         if (string.IsNullOrEmpty(plan))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan is required.")));
 
             return 1;
         }
 
         if (!CliArgReader.TryReadInlineOrFile(plan, out string planJson, out string? planError))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(planError!)));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(planError!)));
 
             return 1;
         }
@@ -455,14 +455,14 @@ public sealed class ApprenticeCommands(
         }
         catch (JsonException ex)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid plan JSON: {ex.Message}")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Invalid plan JSON: {ex.Message}")));
 
             return 1;
         }
 
         if (steps is not { Count: > 0 })
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan must contain at least one step.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan must contain at least one step.")));
 
             return 1;
         }
@@ -471,7 +471,7 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -498,7 +498,7 @@ public sealed class ApprenticeCommands(
 
         if (string.IsNullOrWhiteSpace(guidance))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--guidance is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--guidance is required.")));
 
             return 1;
         }
@@ -507,7 +507,7 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -536,7 +536,7 @@ public sealed class ApprenticeCommands(
 
         if (string.IsNullOrWhiteSpace(goal))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
             return 1;
         }
@@ -550,13 +550,13 @@ public sealed class ApprenticeCommands(
 
             if (string.Equals(result.Error.Code, "Apprentice.ConclaveDisabled", StringComparison.Ordinal))
             {
-                AnsiConsole.MarkupLine(
+                CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(
                         Markup.Escape("The Conclave is disabled; cross-Apprentice delegation is not available. Enable Arcanum:Features:Conclave on the host to use 'apprentice cast'.")));
             }
             else
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             }
 
             return 1;
