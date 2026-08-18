@@ -319,16 +319,55 @@ internal sealed partial class CovenantSchemaRepairExecutor(
 
     }
 
+    /// <summary>
+    /// The tables the canonical manifest declares, which are the only ones whose presence says anything
+    /// about the canonical family.
+    /// </summary>
+    private static readonly string[] CanonicalTableNames =
+    [
+        .. GrimoireSchemaManifests.CovenantCanonical.Entries
+            .Where(static entry => entry.Type is GrimoireSchemaObjectType.Table or GrimoireSchemaObjectType.VirtualTable)
+            .Select(static entry => entry.Name),
+    ];
+
+    /// <summary>
+    /// Whether any table of the canonical Covenant family is installed.
+    /// </summary>
+    /// <remarks>
+    /// Matched against the names the manifest actually declares, never against a <c>covenant_</c> name
+    /// prefix: Core owns two tables that share that prefix (<c>covenant_schema_repair_intents</c> and
+    /// <c>covenant_authority_state</c>) and the core install runs before any repair pass, so a prefix
+    /// match answers "present" on every installation that exists — including the one whose canonical
+    /// family is genuinely absent, which is the single catalog
+    /// <see cref="CovenantSchemaRepairAction.InstallAbsentCanonicalFamily"/> exists to repair.
+    /// </remarks>
     private static async Task<bool> AnyCanonicalObjectExistsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
 
+        if (CanonicalTableNames.Length == 0)
+        {
+
+            return false;
+
+        }
+
         await using SqliteCommand command = connection.CreateCommand();
 
-        command.CommandText = """
-            SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE "type" = 'table' AND "name" LIKE 'covenant_%');
-            """;
+        // Parameterized rather than interpolated: the names are code-owned, but a catalog identity is
+        // exactly the kind of value that must never be concatenated into SQL.
+        string placeholders = string.Join(", ", CanonicalTableNames.Select(static (_, index) => $"@name{index}"));
+
+        command.CommandText =
+            $"""SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE "type" = 'table' AND "name" IN ({placeholders}));""";
+
+        for (int index = 0; index < CanonicalTableNames.Length; index++)
+        {
+
+            _ = command.Parameters.AddWithValue($"@name{index}", CanonicalTableNames[index]);
+
+        }
 
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),

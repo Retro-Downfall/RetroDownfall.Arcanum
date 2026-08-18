@@ -108,7 +108,7 @@ internal sealed class ArcanumA2ATaskStore(
                 + "follow-up reaches the Apprentice that asked for it.",
                 taskId);
 
-            return new AgentTask
+            AgentTask rehydrated = new()
             {
                 Id = taskId,
                 ContextId = parked.Value.ContextId ?? Guid.NewGuid().ToString("N"),
@@ -116,6 +116,18 @@ internal sealed class ArcanumA2ATaskStore(
                 History = [],
                 Artifacts = [],
             };
+
+            // Retained like any other live task. The SDK resolves the task on every request that names
+            // one, and this lookup has no indexed answer: the A2A task id lives inside the checkpoint
+            // blob, so FindParkedInboundAsync pages every open Sending row and deserializes each
+            // candidate. What it recovers cannot change until the peer answers or cancels, and both of
+            // those re-save this entry through the handler's own transitions — so a peer polling a parked
+            // Sending pays that scan once instead of once per request.
+            _live[taskId] = new RetainedTask(Interlocked.Increment(ref _saves), rehydrated);
+
+            Evict();
+
+            return rehydrated;
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

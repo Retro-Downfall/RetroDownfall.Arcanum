@@ -111,6 +111,88 @@ public sealed class A2AParkedSendingTests
     }
 
     [Fact]
+    public async Task ParkedContinuations_AreBounded_AndTheEvictedOneResolvesThroughItsDurableRecord()
+    {
+
+        Harness harness = new();
+
+        // Only an answer or a cancel ever retires a park, so every peer that escalates and then does
+        // neither leaves an entry behind for the life of the process. Both sibling A2A indices are capped
+        // (ArcanumA2ATaskStore.RetainedTaskCap, the push-notification registration ceiling); this one has
+        // to be too, on a key a peer chooses.
+        for (int index = 0; index <= ArcanumA2AAgentHandler.MaxParkedContinuations; index++)
+        {
+
+            harness.QueueEscalation("which environment should I deploy to?");
+
+            _ = await harness.RunAsync(harness.Request("deploy the service", taskId: $"task-{index}"));
+
+        }
+
+        Guid firstApprentice = harness.Archmage.Created[0].Id;
+
+        harness.QueueCompletion();
+
+        _ = await harness.RunAsync(harness.Request("use staging", taskId: "task-0"));
+
+        // Every Sending's accept path already asks the ledger once, before anything is parked, so a
+        // *second* lookup for the same task id is the eviction showing: the fast-path entry is gone and
+        // the answer resolves the way one that outlived its process does. It still lands on the very same
+        // Apprentice, which is why the ceiling costs the fast path rather than the work.
+        Assert.Equal(2, harness.Ledger.ParkedLookups.Count(static id => string.Equals(id, "task-0", StringComparison.Ordinal)));
+
+        Assert.Equal([firstApprentice], harness.Runtime.IntervenedApprenticeIds);
+
+        string newest = $"task-{ArcanumA2AAgentHandler.MaxParkedContinuations}";
+
+        harness.QueueCompletion();
+
+        _ = await harness.RunAsync(harness.Request("use staging", taskId: newest));
+
+        // The ceiling drops the least recently parked task, not the one the peer is most likely about to
+        // answer: the newest park is still on the fast path and needs no durable lookup at all.
+        Assert.Equal(1, harness.Ledger.ParkedLookups.Count(id => string.Equals(id, newest, StringComparison.Ordinal)));
+
+        Assert.Empty(harness.Archmage.Created.Skip(ArcanumA2AAgentHandler.MaxParkedContinuations + 1));
+
+    }
+
+    [Fact]
+    public async Task CancelRacingTheParkOfAnEscalation_StillDrivesTheTerminalTransitionItself()
+    {
+
+        Harness harness = new();
+
+        harness.QueueEscalation("which environment should I deploy to?");
+
+        AgentEventQueue cancelQueue = new();
+
+        // The escalation publishes the park before ExecuteAsync's finally drops the live mapping, and the
+        // durable park write sits inside that window. A tasks/cancel landing here is the one interleaving
+        // where both indices hold the task at once — and the relay has already committed to returning, so
+        // nothing else is left to drive this task's terminal transition.
+        harness.Ledger.OnMarkParked = () => harness.Handler.CancelAsync(
+            harness.Request("", taskId: "task-1"),
+            cancelQueue,
+            CancellationToken.None);
+
+        _ = await harness.RunAsync(harness.Request("deploy the service"));
+
+        Guid apprenticeId = Assert.Single(harness.Archmage.Created).Id;
+
+        Assert.Equal([apprenticeId], harness.Runtime.CancelledApprenticeIds);
+
+        // The peer asked for a cancel and its Apprentice really was cancelled; answering nothing leaves
+        // the task with no terminal state at all while the work behind it is already stopped.
+        Assert.Equal(TaskState.Canceled, await DrainStateAsync(cancelQueue));
+
+        // The park is gone with the cancel, so the durable record settles with it instead of staying open
+        // for reconciliation to keep re-examining.
+        Assert.NotEmpty(harness.Ledger.Released);
+
+    }
+
+    [Fact]
     public async Task CancelAfterARestart_CancelsTheParkedApprenticeAndAnswersThePeer()
     {
 
@@ -159,6 +241,33 @@ public sealed class A2AParkedSendingTests
         Assert.Equal("ctx-restored", rehydrated.ContextId);
 
         Assert.Equal(TaskState.InputRequired, rehydrated.Status.State);
+
+    }
+
+    [Fact]
+    public async Task TaskStore_RehydratesAParkedTaskOnce_AndThenServesItFromMemory()
+    {
+
+        FakeParkedLedger ledger = new();
+
+        ledger.Parked["task-1"] = new ParkedRow(Guid.NewGuid(), "ctx-restored", default);
+
+        ArcanumA2ATaskStore store = new(ScopeFactoryFor(ledger), NullLogger<ArcanumA2ATaskStore>.Instance);
+
+        AgentTask? first = await store.GetTaskAsync("task-1");
+
+        AgentTask? second = await store.GetTaskAsync("task-1");
+
+        Assert.Equal("ctx-restored", first!.ContextId);
+
+        Assert.Equal(TaskState.InputRequired, second!.Status.State);
+
+        // The SDK resolves the task on every request that names one, and this lookup has no indexed
+        // answer — the A2A task id lives inside the checkpoint blob, so it is a paged scan of every open
+        // Sending row in the ledger. What it recovers cannot change until the peer answers or cancels,
+        // and both of those re-save this entry through the handler, so a peer polling a parked Sending
+        // must not re-scan the whole ledger once per tasks/get.
+        Assert.Equal(["task-1"], ledger.ParkedLookups);
 
     }
 
@@ -828,7 +937,13 @@ public sealed class A2AParkedSendingTests
 
         }
 
-        public Task MarkParkedAsync(
+        /// <summary>
+        /// Runs inside <see cref="MarkParkedAsync"/>, so a test can land a peer request in the window
+        /// between the park being published and the relay's live mapping being dropped.
+        /// </summary>
+        public Func<Task>? OnMarkParked { get; set; }
+
+        public async Task MarkParkedAsync(
             A2ASendingLedgerEntry entry,
             string? contextId,
             CancellationToken cancellationToken = default)
@@ -842,17 +957,31 @@ public sealed class A2AParkedSendingTests
 
             }
 
-            return Task.CompletedTask;
+            if (OnMarkParked is { } hook)
+            {
+
+                await hook().ConfigureAwait(false);
+
+            }
 
         }
+
+        /// <summary>Every task id the durable park lookup was asked about, in order.</summary>
+        public List<string> ParkedLookups { get; } = [];
 
         public Task<A2AParkedSending?> FindParkedInboundAsync(
             string taskId,
             bool takeLease = true,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Parked.TryGetValue(taskId, out ParkedRow row)
+            CancellationToken cancellationToken = default)
+        {
+
+            ParkedLookups.Add(taskId);
+
+            return Task.FromResult(Parked.TryGetValue(taskId, out ParkedRow row)
                 ? new A2AParkedSending(row.ApprenticeId, row.ContextId, row.Ledger)
                 : (A2AParkedSending?)null);
+
+        }
 
         public Task<Guid?> FindInboundApprenticeAsync(string taskId, CancellationToken cancellationToken = default) =>
             Task.FromResult(Recovered.TryGetValue(taskId, out Guid id) ? id : (Guid?)null);

@@ -615,7 +615,7 @@ internal sealed class TapestryWeaver(
 
         }
 
-        MergeUndersized(scope, candidates, layer, bounds);
+        MergeUndersized(scope, candidates, layer, bounds, cancellationToken);
 
         candidates.Sort(static (left, right) =>
             StringComparer.Ordinal.Compare(left.Members[0].StableKey, right.Members[0].StableKey));
@@ -626,6 +626,10 @@ internal sealed class TapestryWeaver(
 
         foreach (PlanCandidate candidate in candidates)
         {
+
+            // Every singleton below costs a whole-cluster concatenation and tokenization, so this loop is
+            // part of the same uninterrupted stretch the token was threaded into clustering for.
+            cancellationToken.ThrowIfCancellationRequested();
 
             // A lone node whose own text exceeds one summary request cannot be partitioned further —
             // Arcanum does not re-chunk source material to make a model call fit. Carrying it to the
@@ -671,6 +675,11 @@ internal sealed class TapestryWeaver(
         int depth,
         CancellationToken cancellationToken)
     {
+
+        // Forwarding the token to SphericalKMeans below is not enough on its own: the fit estimate, the
+        // stable-id fallback, and the depth-limit arm all return without ever reaching it, so a recursion
+        // that keeps taking those arms would observe nothing at all.
+        cancellationToken.ThrowIfCancellationRequested();
 
         // The child-count bound is checked first and the fit estimate short-circuits behind it: a fit
         // estimate concatenates, hashes, and tokenizes every member's text, and on an oversized
@@ -775,11 +784,18 @@ internal sealed class TapestryWeaver(
     /// go stays as its own one-child summary and is recorded as a carry — it is never dropped and
     /// never skips a layer.
     /// </summary>
+    /// <remarks>
+    /// Takes the sweep's token for the same reason clustering does: this is O(singletons × candidates ×
+    /// members) cosine work with a whole-cluster tokenization behind every improved best, all of it
+    /// synchronous, and the layer boundary is far too coarse a place for it to first notice a shutdown
+    /// (DESIGN §21.11).
+    /// </remarks>
     private void MergeUndersized(
         TapestryScope scope,
         List<PlanCandidate> candidates,
         int layer,
-        Bounds bounds)
+        Bounds bounds,
+        CancellationToken cancellationToken)
     {
 
         if (candidates.Count < 2)
@@ -807,6 +823,11 @@ internal sealed class TapestryWeaver(
 
             for (int other = 0; other < candidates.Count; other++)
             {
+
+                // Inside the inner loop, not the outer one: a single orphan's scan is itself the whole
+                // candidate list of cosine comparisons plus up to one fit estimate per improved best, so
+                // checking only per orphan would leave the expensive unit uninterruptible.
+                cancellationToken.ThrowIfCancellationRequested();
 
                 if (other == index
                     || candidates[other].Members.Count + 1 > bounds.MaxChildrenPerSummary)

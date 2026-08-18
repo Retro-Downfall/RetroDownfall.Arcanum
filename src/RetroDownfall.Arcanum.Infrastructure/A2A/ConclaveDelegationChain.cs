@@ -35,6 +35,24 @@ public static class ConclaveDelegationChain
     public const string MetadataKey = "arcanum.conclave.delegationChain";
 
     /// <summary>
+    /// How many hops <see cref="Read"/> will materialize from an inbound chain.
+    /// </summary>
+    /// <remarks>
+    /// A ceiling on the <em>parse</em>, not on delegation depth (issue #55). One hop is one Arcanum
+    /// instance that actually ran the work, so no legitimate chain comes near this. What it refuses is a
+    /// remote handing this instance a megabyte-scale array under the 10 MiB request-body limit, which
+    /// would then be walked, copied, written into the Apprentice checkpoint, and re-serialized onto
+    /// every onward Sending for the rest of the chain's life.
+    /// </remarks>
+    public const int MaxParsedHops = 1_024;
+
+    /// <summary>
+    /// The longest string <see cref="Read"/> accepts as a hop. A node id is a 32-character GUID; this
+    /// leaves generous room for a peer that formats its own differently, and none for prose.
+    /// </summary>
+    public const int MaxHopLength = 64;
+
+    /// <summary>
     /// Opaque identifier for this Arcanum process within a delegation chain. Stable for the process
     /// lifetime and meaningless outside it.
     /// </summary>
@@ -89,7 +107,8 @@ public static class ConclaveDelegationChain
 
     /// <summary>
     /// Reads the delegation chain from inbound A2A metadata. Returns an empty chain for absent, malformed,
-    /// or hostile values rather than throwing.
+    /// or hostile values rather than throwing, and never materializes more than
+    /// <see cref="MaxParsedHops"/> hops of <see cref="MaxHopLength"/> characters each.
     /// </summary>
     public static string[] Read(IReadOnlyDictionary<string, JsonElement>? metadata)
     {
@@ -110,6 +129,8 @@ public static class ConclaveDelegationChain
 
         List<string> hops = [];
 
+        bool selfBeyondCeiling = false;
+
         foreach (JsonElement item in raw.EnumerateArray())
         {
 
@@ -122,12 +143,44 @@ public static class ConclaveDelegationChain
 
             string? value = item.GetString();
 
-            if (!string.IsNullOrWhiteSpace(value))
+            if (string.IsNullOrWhiteSpace(value))
             {
 
-                hops.Add(value.Trim());
+                continue;
 
             }
+
+            string hop = value.Trim();
+
+            if (hop.Length > MaxHopLength)
+            {
+
+                // Not a node id, so it says nothing about who handled this Sending — and it is the one
+                // shape a remote can use to make a chain of a handful of hops weigh megabytes.
+                continue;
+
+            }
+
+            if (hops.Count >= MaxParsedHops)
+            {
+
+                // Past the ceiling the hops stop being carried, but the single fact the chain exists to
+                // carry still is: a tail naming this node is still a loop, and silently dropping it would
+                // turn the refusal it should produce into an accepted cycle.
+                selfBeyondCeiling = selfBeyondCeiling || string.Equals(hop, NodeId, StringComparison.Ordinal);
+
+                continue;
+
+            }
+
+            hops.Add(hop);
+
+        }
+
+        if (selfBeyondCeiling)
+        {
+
+            hops.Add(NodeId);
 
         }
 
