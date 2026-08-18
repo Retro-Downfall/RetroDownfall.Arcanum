@@ -216,6 +216,68 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The coalesced scan used to run under whichever caller happened to win the miss race, so a leader
+    /// that aborted (client disconnect, Ctrl-C on `arcanum spell list`) faulted the shared task with its
+    /// own OperationCanceledException and every joined caller rethrew it. A follower's own token was
+    /// healthy, so ArcanumExceptionHandler did not treat that OCE as a client abort — it surfaced as a
+    /// 500 Hub.Unhandled for a request nobody cancelled. A joined caller must observe only its own token.
+    /// </summary>
+    [Fact]
+    public async Task ScanMetadataAsync_does_not_cancel_a_joined_caller_when_the_leader_cancels()
+    {
+
+        const int spellCount = 3000;
+
+        for (int i = 0; i < spellCount; i++)
+        {
+
+            _workspace.WriteFile(
+                $"spells/leader-cancel-{i:D4}/SPELL.md",
+                $"---\nname: leader-cancel-{i:D4}\ndescription: leader cancellation test {i}\n---\nbody");
+
+        }
+
+        using CancellationTokenSource leaderCts = new();
+
+        // ttlSeconds 0 is what SpellRepository / SpellSearchService / SpellDependencyResolver pass, so
+        // both callers are guaranteed single-flight participants rather than TTL-cache readers.
+        Task<IReadOnlyList<SpellMetadata>> leader = Task.Run(
+            () => SpellScanner.ScanMetadataAsync(_workspace.Root, leaderCts.Token, MaxFileSizeBytes),
+            CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(25));
+
+        Task<IReadOnlyList<SpellMetadata>> follower = Task.Run(
+            () => SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes),
+            CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(25));
+
+        await leaderCts.CancelAsync();
+
+        IReadOnlyList<SpellMetadata> followerResult = await follower;
+
+        Assert.Contains(followerResult, m => m.Name == "leader-cancel-0000");
+
+        Assert.Contains(followerResult, m => m.Name == $"leader-cancel-{spellCount - 1:D4}");
+
+        try
+        {
+
+            _ = await leader;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // Expected when the cancel lands before the scan finishes; the leader must observe its own
+            // cancellation, and only its own.
+
+        }
+
+    }
+
     [Fact]
     public async Task ScanSummariesAsync_with_ttl_serves_stale_within_ttl_then_refreshes()
     {
@@ -784,6 +846,158 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Contains(spells, s => s.Name == "fireball");
 
         Assert.DoesNotContain(spells, s => s.Name == "piped");
+
+    }
+
+    /// <summary>
+    /// The SPELL.md body is read through SecureFileReader, but the SPELL.json sidecar sixty lines below was
+    /// read with a plain File.ReadAllTextAsync behind the weak TryGetFileLength gate. A FIFO stats as length
+    /// 0, so the size gate passed and open(2) parked forever waiting for a writer — no CancellationToken can
+    /// interrupt an open, so GET /api/spells/{name} never returned and pinned a thread-pool thread per call.
+    /// </summary>
+    [SkippableFact]
+    public async Task LoadFullAsync_skips_a_fifo_sidecar_instead_of_blocking_forever()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
+
+        _workspace.WriteFile(
+            "spells/piped-sidecar/SPELL.md",
+            """
+            ---
+            name: piped-sidecar
+            description: the sidecar next to this spell is a FIFO
+            ---
+            body
+            """);
+
+        await CreateFifoAsync("spells/piped-sidecar/SPELL.json");
+
+        string spellPath = Path.Combine(_workspace.Root, "spells", "piped-sidecar", "SPELL.md");
+
+        // Offloaded so a regression blocks a pool thread rather than wedging the whole test run.
+        Task<ParsedSpell?> load = Task.Run(
+            () => SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes));
+
+        Task completed = await Task.WhenAny(load, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        Assert.Same(load, completed);
+
+        ParsedSpell? loaded = await load;
+
+        Assert.NotNull(loaded);
+
+        Assert.Equal("piped-sidecar", loaded!.Name);
+
+        Assert.Null(loaded.SkillMetadata);
+
+    }
+
+    /// <summary>
+    /// The full-parse walk supplies a non-null revalidation root, but RevalidatePathBeforeIo is a lexical and
+    /// symlink-containment check with no file-kind test, so an in-workspace FIFO sidecar sailed through it too
+    /// and wedged the whole catalog walk rather than one spell.
+    /// </summary>
+    [SkippableFact]
+    public async Task ScanAsync_skips_a_fifo_sidecar_instead_of_blocking_forever()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
+
+        _workspace.WriteFile(
+            "spells/piped-sidecar/SPELL.md",
+            """
+            ---
+            name: piped-sidecar
+            description: the sidecar next to this spell is a FIFO
+            ---
+            body
+            """);
+
+        await CreateFifoAsync("spells/piped-sidecar/SPELL.json");
+
+        Task<IReadOnlyList<ParsedSpell>> scan = Task.Run(
+            () => SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        Task completed = await Task.WhenAny(scan, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        Assert.Same(scan, completed);
+
+        IReadOnlyList<ParsedSpell> spells = await scan;
+
+        Assert.Contains(spells, s => s.Name == "fireball");
+
+        ParsedSpell piped = Assert.Single(spells, s => s.Name == "piped-sidecar");
+
+        Assert.Null(piped.SkillMetadata);
+
+    }
+
+    /// <summary>
+    /// DESIGN §11 promises every SPELL.md / sidecar read is proven to stay inside the workspace. The sidecar
+    /// read bypassed that, so a SPELL.json symlinked out of the workspace was opened and deserialized, merging
+    /// its tags and description into the catalog entry.
+    /// </summary>
+    [SkippableFact]
+    public async Task LoadFullAsync_rejects_a_sidecar_symlinked_outside_root()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "Symlink creation requires elevation on Windows.");
+
+        string outsideFile = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N") + ".json");
+
+        await File.WriteAllTextAsync(
+            outsideFile,
+            """
+            {
+              "name": "escaped-sidecar",
+              "version": "9.9.9",
+              "description": "should never be read through a symlink",
+              "tags": ["from-outside-the-workspace"],
+              "declaredTools": [],
+              "dependencies": []
+            }
+            """);
+
+        try
+        {
+
+            _workspace.WriteFile(
+                "spells/escaped-sidecar/SPELL.md",
+                """
+                ---
+                name: escaped-sidecar
+                description: the sidecar next to this spell escapes the workspace
+                ---
+                body
+                """);
+
+            File.CreateSymbolicLink(
+                Path.Combine(_workspace.Root, "spells", "escaped-sidecar", "SPELL.json"),
+                outsideFile);
+
+            string spellPath = Path.Combine(_workspace.Root, "spells", "escaped-sidecar", "SPELL.md");
+
+            ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+            Assert.NotNull(loaded);
+
+            Assert.Null(loaded!.SkillMetadata);
+
+            Assert.DoesNotContain("from-outside-the-workspace", loaded.Tags);
+
+        }
+        finally
+        {
+
+            if (File.Exists(outsideFile))
+            {
+
+                File.Delete(outsideFile);
+
+            }
+
+        }
 
     }
 

@@ -34,7 +34,29 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
             cursor: null,
             ct);
 
+    /// <summary>
+    /// Offloads the listing walk to the thread pool. A recursive listing is an unbounded synchronous
+    /// tree walk over the operator's workspace — the only heavy workspace walk that used to run inline
+    /// on the request thread, unlike <c>SpellScanner</c>'s tree walks and the MCP <c>list_directory</c>
+    /// tool, which both wrap theirs in <see cref="Task.Run(Func{Task})"/>.
+    /// </summary>
     public Task<Result<FileListResult>> ListAsync(
+        WorkspaceInfo workspace,
+        string? relativePath,
+        bool recursive,
+        string? searchPattern,
+        string? cursor,
+        CancellationToken ct)
+    {
+
+        ct.ThrowIfCancellationRequested();
+
+        return Task.Run(
+            () => List(workspace, relativePath, recursive, searchPattern, cursor, ct),
+            ct);
+    }
+
+    private static Result<FileListResult> List(
         WorkspaceInfo workspace,
         string? relativePath,
         bool recursive,
@@ -47,23 +69,21 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
         if (searchPattern is not null && (searchPattern.Contains('/') || searchPattern.Contains('\\')))
         {
-            return Task.FromResult<Result<FileListResult>>(
-                new Error("Workspace.InvalidSearchPattern", "Search pattern cannot contain path separators."));
+            return new Error("Workspace.InvalidSearchPattern", "Search pattern cannot contain path separators.");
         }
 
         Result<string> resolvedResult = WorkspacePathResolver.ResolveRelativePath(workspace, relativePath);
 
         if (resolvedResult.IsFailure)
         {
-            return Task.FromResult<Result<FileListResult>>(resolvedResult.Error);
+            return resolvedResult.Error;
         }
 
         string resolvedDir = resolvedResult.Value;
 
         if (!Directory.Exists(resolvedDir))
         {
-            return Task.FromResult<Result<FileListResult>>(
-                new Error("Workspace.FileNotFound", "The file or directory was not found."));
+            return new Error("Workspace.FileNotFound", "The file or directory was not found.");
         }
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
@@ -88,8 +108,7 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
                 ? "The continuation cursor belongs to different list arguments. Restart with cursor omitted."
                 : "The file-list continuation cursor is invalid. Restart with cursor omitted.";
 
-            return Task.FromResult<Result<FileListResult>>(
-                new Error(ErrorCodes.Workspace.ContinuationInvalid, message));
+            return new Error(ErrorCodes.Workspace.ContinuationInvalid, message);
 
         }
 
@@ -110,12 +129,28 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
             _ = visitedDirectories.Add(Path.GetFullPath(resolvedDir));
 
-            directoryEnumerators.Push(
-                Directory.EnumerateFileSystemEntries(
-                        resolvedDir,
-                        "*",
-                        SearchOption.TopDirectoryOnly)
-                    .GetEnumerator());
+            // Validate the starting directory's whole ancestor chain exactly once. Containment is
+            // "lexically under the root, with no symbolic link anywhere in the chain leaving it", so
+            // proving it here lets every non-link entry below inherit the result instead of re-walking
+            // every ancestor component (File.Exists + Directory.Exists + ResolveLinkTarget apiece) for
+            // each of its siblings. A starting directory that fails cannot have a contained child, so
+            // the walk is skipped and the page comes back empty, exactly as the per-entry check did.
+            bool startDirectoryContained = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                workspaceRoot,
+                resolvedDir,
+                out _);
+
+            if (startDirectoryContained)
+            {
+
+                directoryEnumerators.Push(
+                    Directory.EnumerateFileSystemEntries(
+                            resolvedDir,
+                            "*",
+                            SearchOption.TopDirectoryOnly)
+                        .GetEnumerator());
+
+            }
 
             while (directoryEnumerators.Count > 0)
             {
@@ -139,10 +174,16 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                 ct.ThrowIfCancellationRequested();
 
-                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                string? resolvedPath = null;
+
+                // Only a symbolic link can break the chain that the parent directory already proved,
+                // so the full containment walk is reserved for links. Everything else is contained by
+                // construction: its parent was proven, and it adds no link of its own.
+                if (IsSymbolicLinkEntry(fullPath)
+                    && !WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
                         workspaceRoot,
                         fullPath,
-                        out string? resolvedPath))
+                        out resolvedPath))
                 {
 
                     continue;
@@ -223,14 +264,12 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         }
         catch (DirectoryNotFoundException)
         {
-            return Task.FromResult<Result<FileListResult>>(
-                new Error("Workspace.FileNotFound", "The file or directory was not found."));
+            return new Error("Workspace.FileNotFound", "The file or directory was not found.");
         }
         catch (Exception ex) when (
             ex is UnauthorizedAccessException or SecurityException or IOException)
         {
-            return Task.FromResult<Result<FileListResult>>(
-                new Error("Workspace.AccessDenied", "Insufficient permissions to read the directory."));
+            return new Error("Workspace.AccessDenied", "Insufficient permissions to read the directory.");
         }
         finally
         {
@@ -247,10 +286,9 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         if (!continuationCheckpointFound)
         {
 
-            return Task.FromResult<Result<FileListResult>>(
-                new Error(
-                    ErrorCodes.Workspace.ContinuationCheckpointMissing,
-                    "The workspace changed and the continuation checkpoint no longer exists. Restart with cursor omitted."));
+            return new Error(
+                ErrorCodes.Workspace.ContinuationCheckpointMissing,
+                "The workspace changed and the continuation checkpoint no longer exists. Restart with cursor omitted.");
 
         }
 
@@ -270,14 +308,40 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
                 entries[^1])
             : null;
 
-        return Task.FromResult<Result<FileListResult>>(
-            new FileListResult(
-                entries.ToArray(),
-                parentPath,
-                nextCursor,
-                nextCursor is null
-                    ? null
-                    : "Call the workspace files endpoint again with cursor set to nextCursor and the same list arguments."));
+        return new FileListResult(
+            entries,
+            parentPath,
+            nextCursor,
+            nextCursor is null
+                ? null
+                : "Call the workspace files endpoint again with cursor set to nextCursor and the same list arguments.");
+    }
+
+    /// <summary>
+    /// Reports whether an enumerated entry is a symbolic link, failing closed (treating an entry it
+    /// cannot classify as a link) so an unclassifiable entry still gets the full containment walk.
+    /// </summary>
+    private static bool IsSymbolicLinkEntry(string fullPath)
+    {
+
+        try
+        {
+
+            FileSystemInfo info = Directory.Exists(fullPath)
+                ? new DirectoryInfo(fullPath)
+                : new FileInfo(fullPath);
+
+            return info.LinkTarget is not null;
+
+        }
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException or SecurityException or ArgumentException)
+        {
+
+            return true;
+
+        }
+
     }
 
     public async Task<Result<FileReadResult>> ReadAsync(

@@ -16,6 +16,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
 
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     public async Task<Result<FileWriteResult>> WriteFileAsync(
         WorkspaceInfo workspace,
         string relativePath,
@@ -47,6 +49,16 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         }
 
         byte[] contentBytes = Encoding.UTF8.GetBytes(content);
+
+        // Encoding.UTF8.GetBytes never emits the preamble, and the read side strips it before handing the
+        // caller FileReadResult.Content, so a read-modify-write through GET then PUT used to drop the
+        // destination's BOM silently. Re-apply it, exactly as ReplaceTextBlockAsync already does — but only
+        // when the caller's own content does not already start with U+FEFF, which GetBytes has itself
+        // encoded as EF BB BF, since prefixing unconditionally would double the preamble.
+        if (!contentBytes.AsSpan().StartsWith(Utf8Bom) && DestinationStartsWithUtf8Bom(workspaceRoot, resolvedPath))
+        {
+            contentBytes = [.. Utf8Bom, .. contentBytes];
+        }
 
         long maxWriteBytes = GetMaxFileWriteSizeBytes();
 
@@ -146,7 +158,30 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
                 hadBom = bytes.StartsWith(Utf8Bom);
 
-                text = Encoding.UTF8.GetString(hadBom ? bytes[Utf8Bom.Length..] : bytes);
+                ReadOnlySpan<byte> textBytes = hadBom ? bytes[Utf8Bom.Length..] : bytes;
+
+                // A NUL byte marks the payload as binary. The ordinal search can still match an ASCII
+                // run inside it, and the rewrite below would then persist the decoded text over the
+                // original bytes. WorkspaceTextFile.Decode rejects binary payloads on the MCP coding-tool
+                // path for the same reason; this path fails closed rather than mangling the file.
+                if (textBytes.IndexOf((byte)0) >= 0)
+                {
+                    return new Error(ErrorCodes.Workspace.PathNotAllowed, BinaryTargetMessage);
+                }
+
+                try
+                {
+                    // Decode strictly. The static Encoding.UTF8 singleton uses a REPLACEMENT decoder
+                    // fallback, so every invalid byte became U+FFFD and the atomic rewrite persisted
+                    // EF BF BD over the original bytes with no warning and no recoverable backup. The
+                    // sibling read paths (PhysicalFileSystemBrowser.ReadAsync, SandboxedFileIo) already
+                    // decode with StrictUtf8 and fail closed; this one is the path that persists.
+                    text = StrictUtf8.GetString(textBytes);
+                }
+                catch (DecoderFallbackException)
+                {
+                    return new Error(ErrorCodes.Workspace.PathNotAllowed, InvalidUtf8Message);
+                }
 
             }
 
@@ -480,6 +515,47 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     }
 
     /// <summary>
+    /// Reports whether an existing destination begins with a UTF-8 preamble, so an overwrite can carry it
+    /// across. The probe reuses the same handle-checked open as <c>ReplaceTextBlockAsync</c> — it proves the
+    /// object is an unaliased regular file before opening, so a FIFO cannot park it — and answers "no BOM"
+    /// for anything it cannot open. Nothing here decides the write: the destination is revalidated again,
+    /// with handle identity, inside <see cref="WriteAtomicallyAsync"/>.
+    /// </summary>
+    private static bool DestinationStartsWithUtf8Bom(string workspaceRoot, string absolutePath)
+    {
+
+        if (!File.Exists(absolutePath))
+        {
+            return false;
+        }
+
+        (FileStream? probeStream, Error? _) = TryOpenForHandleCheckedRead(workspaceRoot, absolutePath);
+
+        if (probeStream is null)
+        {
+            return false;
+        }
+
+        using (probeStream)
+        {
+
+            Span<byte> preamble = stackalloc byte[3];
+
+            try
+            {
+                return probeStream.ReadAtLeast(preamble, preamble.Length, throwOnEndOfStream: false) == preamble.Length
+                    && preamble.SequenceEqual(Utf8Bom);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+            {
+                return false;
+            }
+
+        }
+
+    }
+
+    /// <summary>
     /// Confirms the just-moved destination's handle identity matches the temp file's pre-move identity and that
     /// the opened path is still under the workspace, closing the TOCTOU window between the atomic rename and this
     /// post-move check (mirrors <c>SandboxedFileIo</c>'s post-move verification).
@@ -740,5 +816,9 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     private const string PathIsDirectoryMessage = "The target path is an existing directory; file content cannot be written to it.";
 
     private const string PathIsFileMessage = "The target path is an existing file; a directory cannot be created there.";
+
+    private const string InvalidUtf8Message = "The file is not valid UTF-8 text. This endpoint edits UTF-8 text files only.";
+
+    private const string BinaryTargetMessage = "The file contains NUL bytes and is treated as binary. This endpoint edits UTF-8 text files only.";
 
 }
