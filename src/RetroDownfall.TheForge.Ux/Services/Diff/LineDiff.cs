@@ -34,6 +34,14 @@ public sealed record SideBySideDiffRow(
 public static class LineDiff
 {
 
+    /// <summary>
+    /// Cell budget for the LCS table. <see cref="BuildLcsTable"/> allocates one contiguous
+    /// <c>int[left + 1, right + 1]</c> and fills every cell, and every call site runs on the Avalonia UI
+    /// thread, so an unbounded pair freezes the window for seconds and a large enough one throws
+    /// <see cref="OutOfMemoryException"/> where nothing catches it. 4M cells is ~16 MB.
+    /// </summary>
+    internal const long MaxLcsCells = 4_000_000;
+
     public static IReadOnlyList<DiffLineItem> Compare(string? left, string? right)
     {
 
@@ -45,6 +53,13 @@ public static class LineDiff
         {
 
             return [];
+
+        }
+
+        if ((long)leftLines.Length * rightLines.Length > MaxLcsCells)
+        {
+
+            return BuildWholeFileReplacement(leftLines, rightLines);
 
         }
 
@@ -157,6 +172,33 @@ public static class LineDiff
         }
 
         return rows;
+
+    }
+
+    /// <summary>
+    /// Alignment fallback for a pair too large to align: every left line removed, every right line added.
+    /// Linear in time and memory, and still a correct (if coarse) diff.
+    /// </summary>
+    private static List<DiffLineItem> BuildWholeFileReplacement(string[] leftLines, string[] rightLines)
+    {
+
+        List<DiffLineItem> result = new(leftLines.Length + rightLines.Length);
+
+        for (int i = 0; i < leftLines.Length; i++)
+        {
+
+            result.Add(new DiffLineItem(LineDiffKind.Removed, leftLines[i], i + 1, null));
+
+        }
+
+        for (int j = 0; j < rightLines.Length; j++)
+        {
+
+            result.Add(new DiffLineItem(LineDiffKind.Added, rightLines[j], null, j + 1));
+
+        }
+
+        return result;
 
     }
 

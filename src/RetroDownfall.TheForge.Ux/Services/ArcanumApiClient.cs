@@ -26,6 +26,12 @@ public sealed class ArcanumApiClient
 
     private const string ApiKeyHeaderName = "X-Arcanum-Key";
 
+    /// <summary>Envelope code for a <c>the-forge.json</c> <c>BaseUrl</c> that is not an absolute http/https URL.</summary>
+    internal const string InvalidBaseUrlCode = "Config.InvalidBaseUrl";
+
+    /// <summary>Envelope code for a stored master API key that cannot be sent as an HTTP header value.</summary>
+    internal const string InvalidApiKeyCode = "Config.InvalidApiKey";
+
     private static readonly MediaTypeHeaderValue JsonMediaType = new("application/json") { CharSet = "utf-8" };
 
     private readonly IHttpClientFactory _httpClientFactory;
@@ -94,10 +100,30 @@ public sealed class ArcanumApiClient
             return false;
 
         }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            _logger.LogError(ex, "DELETE {Path} aborted: {Code}.", path, ex.Code);
+
+            return false;
+
+        }
         catch (InvalidOperationException ex)
         {
 
             _logger.LogWarning(ex, "DELETE {Path} aborted: missing API key.", path);
+
+            return false;
+
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+
+            // A TaskCanceledException that did NOT originate from the caller's token is HttpClient's own
+            // request-timeout signal. Callers of this method have no failure channel other than the
+            // returned bool, so report it as a failed delete rather than letting it escape as if the
+            // caller had cancelled — see the matching clause in SendAsync.
+            _logger.LogWarning(ex, "DELETE {Path} timed out.", path);
 
             return false;
 
@@ -158,6 +184,14 @@ public sealed class ArcanumApiClient
         {
 
             client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            _logger.LogError(ex, "NDJSON stream POST {Path} aborted: {Code}.", path, ex.Code);
+
+            yield break;
 
         }
         catch (InvalidOperationException ex)
@@ -281,6 +315,14 @@ public sealed class ArcanumApiClient
             client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
 
         }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            _logger.LogError(ex, "SSE GET {Path} aborted: {Code}.", path, ex.Code);
+
+            yield break;
+
+        }
         catch (InvalidOperationException ex)
         {
 
@@ -341,9 +383,33 @@ public sealed class ArcanumApiClient
 
         }
 
+        // the-forge.json is reload-on-change and hand-editable, and only the Setup Wizard validates the
+        // URL. Without these guards a malformed value escapes as UriFormatException/FormatException —
+        // neither of which any caller catches — instead of the envelope this layer promises.
+        if (!Uri.TryCreate(settings.BaseUrl, UriKind.Absolute, out Uri? baseAddress)
+            || (baseAddress.Scheme != Uri.UriSchemeHttp && baseAddress.Scheme != Uri.UriSchemeHttps))
+        {
+
+            throw new ArcanumClientConfigurationException(
+                InvalidBaseUrlCode,
+                $"The Forge setting 'BaseUrl' is not an absolute http/https URL: '{settings.BaseUrl}'. "
+                + "Correct it in the-forge.json or re-run the setup wizard.");
+
+        }
+
+        if (apiKey.AsSpan().IndexOfAny('\r', '\n', '\0') >= 0)
+        {
+
+            throw new ArcanumClientConfigurationException(
+                InvalidApiKeyCode,
+                "The master API key contains a line break or NUL character and cannot be sent as an HTTP "
+                + "header. Re-enter the key on a single line.");
+
+        }
+
         HttpClient client = _httpClientFactory.CreateClient(HttpClientName);
 
-        client.BaseAddress = new Uri(settings.BaseUrl, UriKind.Absolute);
+        client.BaseAddress = baseAddress;
 
         client.DefaultRequestHeaders.Remove(ApiKeyHeaderName);
 
@@ -420,6 +486,15 @@ public sealed class ArcanumApiClient
             return response.IsSuccessStatusCode
                 ? null
                 : Failure(responseTypeInfo, $"Http.{(int)response.StatusCode}", response.ReasonPhrase ?? "Request failed.");
+
+        }
+        catch (ArcanumClientConfigurationException ex)
+        {
+
+            // Distinct from Security.MissingApiKey: the key is present, the-forge.json is malformed.
+            _logger.LogError(ex, "{Method} {Path} aborted: {Code}.", method, path, ex.Code);
+
+            return Failure(responseTypeInfo, ex.Code, ex.Message);
 
         }
         catch (InvalidOperationException ex)
@@ -518,5 +593,26 @@ public sealed class ArcanumApiClient
             return default;
         }
     }
+
+}
+
+/// <summary>
+/// A <c>the-forge.json</c> value that cannot be turned into a request (malformed <c>BaseUrl</c>, API key
+/// carrying a header-illegal character). Derives from <see cref="InvalidOperationException"/> so the
+/// streaming call sites' existing guard still stops the stream rather than letting the fault escape,
+/// while <see cref="Code"/> keeps the envelope distinct from <c>Security.MissingApiKey</c>.
+/// </summary>
+internal sealed class ArcanumClientConfigurationException : InvalidOperationException
+{
+
+    public ArcanumClientConfigurationException(string code, string message)
+        : base(message)
+    {
+
+        Code = code;
+
+    }
+
+    public string Code { get; }
 
 }

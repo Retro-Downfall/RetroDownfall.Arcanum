@@ -45,6 +45,14 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
     private readonly IDisposable? _settingsChangeSubscription;
 
+    /// <summary>
+    /// Guards every <see cref="_pollCts"/> transition and the <see cref="_lastConnectionSettings"/> swap.
+    /// Connect/Disconnect run on both the Avalonia UI thread and the <c>the-forge.json</c> reload thread
+    /// (<see cref="IOptionsMonitor{TOptions}.OnChange"/>), and cancelling an already-disposed
+    /// <see cref="CancellationTokenSource"/> throws.
+    /// </summary>
+    private readonly object _pollGate = new();
+
     private CancellationTokenSource? _pollCts;
 
     private int _consecutiveFailures;
@@ -102,23 +110,36 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
     public void Connect()
     {
 
-        if (_pollCts is not null)
+        CancellationToken pollToken;
+
+        lock (_pollGate)
         {
 
-            _pollCts.Cancel();
+            if (_pollCts is not null)
+            {
 
-            _pollCts.Dispose();
+                _pollCts.Cancel();
 
-            _pollCts = null;
+                _pollCts.Dispose();
+
+                _pollCts = null;
+
+            }
+
+            CancellationTokenSource cts = new();
+
+            _pollCts = cts;
+
+            // Capture from the local, not the field: re-reading _pollCts here would start the loop on a
+            // token another thread's Connect()/Disconnect() had already replaced or nulled.
+            pollToken = cts.Token;
 
         }
 
-        _pollCts = new CancellationTokenSource();
-
-        _consecutiveFailures = 0;
-
         PostToUi(() =>
         {
+            _consecutiveFailures = 0;
+
             State = ConnectionState.Connecting;
 
             LastErrorCode = null;
@@ -126,18 +147,23 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
             LastErrorMessage = null;
         });
 
-        _ = PollLoopAsync(_pollCts.Token);
+        _ = PollLoopAsync(pollToken);
 
     }
 
     public void Disconnect()
     {
 
-        _pollCts?.Cancel();
+        lock (_pollGate)
+        {
 
-        _pollCts?.Dispose();
+            _pollCts?.Cancel();
 
-        _pollCts = null;
+            _pollCts?.Dispose();
+
+            _pollCts = null;
+
+        }
 
         PostToUi(() => State = ConnectionState.Disconnected);
 
@@ -146,9 +172,16 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
     private void OnSettingsChanged(TheForgeSettings settings)
     {
 
-        TheForgeSettings previous = _lastConnectionSettings;
+        TheForgeSettings previous;
 
-        _lastConnectionSettings = settings;
+        lock (_pollGate)
+        {
+
+            previous = _lastConnectionSettings;
+
+            _lastConnectionSettings = settings;
+
+        }
 
         // the-forge.json also stores LayoutState, Theme, LastCampaignId, and may strip ApiKey after
         // keychain migration. Reloading those must not call Connect().

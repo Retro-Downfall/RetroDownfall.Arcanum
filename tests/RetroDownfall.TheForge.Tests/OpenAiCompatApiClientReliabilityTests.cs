@@ -30,6 +30,25 @@ public sealed class OpenAiCompatApiClientReliabilityTests
     }
 
     [Fact]
+    public async Task DeleteNoContentAsync_request_timeout_returns_false_instead_of_throwing()
+    {
+        ArcanumApiClient client = new(
+            new StaticHttpClientFactory(new TimingOutHandler()),
+            new StaticTheForgeSettingsMonitor(new TheForgeSettings
+            {
+                BaseUrl = "http://localhost:5001",
+            }),
+            new StaticApiKeyProvider(),
+            NullLogger<ArcanumApiClient>.Instance);
+
+        bool result = await client.DeleteNoContentAsync(
+            "/api/campaigns/test",
+            CancellationToken.None);
+
+        Assert.False(result);
+    }
+
+    [Fact]
     public async Task GetAsync_response_read_failure_returns_connection_failure()
     {
         OpenAiCompatApiClient client = CreateClient(new FaultingDownloadHandler());
@@ -119,6 +138,18 @@ public sealed class OpenAiCompatApiClientReliabilityTests
             {
                 BaseAddress = new Uri("http://localhost:5001"),
             };
+    }
+
+    /// <summary>Reproduces HttpClient's own request-timeout signal: a TaskCanceledException the caller never asked for.</summary>
+    private sealed class TimingOutHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromException<HttpResponseMessage>(
+                new TaskCanceledException(
+                    "The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.",
+                    new TimeoutException()));
     }
 
     private sealed class FaultingDownloadHandler : HttpMessageHandler

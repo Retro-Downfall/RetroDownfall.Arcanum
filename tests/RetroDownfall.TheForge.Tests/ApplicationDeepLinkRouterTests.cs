@@ -442,6 +442,63 @@ public sealed class ApplicationDeepLinkRouterTests
 
     }
 
+    [Fact]
+    public async Task Coordinator_RejectsWhenConnectionIsAlreadyInError()
+    {
+
+        // A rotated master key settles the health poller on Error with the bad key cached for the process
+        // lifetime, so waiting for Connected never returns and the caller's "could not be opened" whisper
+        // never fires.
+        MutableArcanumConnection connection = new(ConnectionState.Error);
+
+        RecordingDeepLinkTarget target = new();
+
+        TheForgeDeepLinkCoordinator coordinator = new(connection, new TheForgeDeepLinkRouter(target));
+
+        ApplicationDeepLink link = NewLink(
+            ApplicationResourceKind.Session,
+            "77777777-7777-7777-7777-777777777777");
+
+        TheForgeDeepLinkRouteResult result = await coordinator
+            .RouteAsync(link, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.Accepted);
+
+        Assert.False(target.HasCalls);
+
+    }
+
+    [Fact]
+    public async Task Coordinator_RejectsWhenConnectionTransitionsToError()
+    {
+
+        MutableArcanumConnection connection = new(ConnectionState.Connecting);
+
+        RecordingDeepLinkTarget target = new();
+
+        TheForgeDeepLinkCoordinator coordinator = new(connection, new TheForgeDeepLinkRouter(target));
+
+        ApplicationDeepLink link = NewLink(
+            ApplicationResourceKind.Session,
+            "88888888-8888-8888-8888-888888888888");
+
+        Task<TheForgeDeepLinkRouteResult> routing = coordinator.RouteAsync(link, CancellationToken.None);
+
+        await Task.Yield();
+
+        Assert.False(routing.IsCompleted);
+
+        connection.SetState(ConnectionState.Error);
+
+        TheForgeDeepLinkRouteResult result = await routing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.Accepted);
+
+        Assert.False(target.HasCalls);
+
+    }
+
     private static ApplicationDeepLink NewLink(
         ApplicationResourceKind resourceKind,
         string resourceId,
