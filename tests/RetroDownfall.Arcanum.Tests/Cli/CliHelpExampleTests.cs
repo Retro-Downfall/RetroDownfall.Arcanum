@@ -1,3 +1,4 @@
+using System.CommandLine;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -97,6 +98,57 @@ public sealed class CliHelpExampleTests
         Assert.Contains("Examples:", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Examples:", result.Error, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Help is what the parser resolved, not what argv happens to spell. <c>run</c>'s variadic
+    /// prompt absorbs everything after <c>--</c>, so a prompt containing a bare <c>-h</c> is an
+    /// ordinary turn — appending an <c>Examples:</c> block to it concatenates six lines of prose
+    /// onto the command's own output, which under <c>--json</c> means stdout carries a JSON
+    /// document followed by text no consumer can parse.
+    /// </summary>
+    [Theory]
+    [InlineData("-h")]
+    [InlineData("--help")]
+    [InlineData("-?")]
+    public void An_escaped_help_shaped_prompt_token_renders_no_examples(string token)
+    {
+
+        string[] arguments = ["run", "--json", "--", token];
+
+        Assert.Equal(string.Empty, AppendedExamples(arguments));
+
+    }
+
+    /// <summary>
+    /// The other half: an actual <c>--help</c> still renders, so the gate cannot be tightened into
+    /// silence.
+    /// </summary>
+    [Fact]
+    public void A_real_help_request_still_renders_the_examples()
+    {
+
+        Assert.Contains("Examples:", AppendedExamples(["run", "--help"]), StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The text <see cref="CliHelpExamples.Append"/> writes for one argv, isolated from the rest of
+    /// the invocation so the block is judged on its own.
+    /// </summary>
+    private static string AppendedExamples(string[] arguments)
+    {
+
+        using ServiceProvider provider = CreateServices().BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        StringWriter output = new();
+
+        CliHelpExamples.Append(root, root.Parse(arguments), output);
+
+        return output.ToString();
 
     }
 

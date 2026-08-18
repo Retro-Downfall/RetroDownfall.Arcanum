@@ -115,8 +115,10 @@ internal static class CliCompletionScriptWriter
             .SelectMany(static option => option.Aliases.Append(option.Name));
 
     /// <summary>
-    /// Option spellings at a path that take a closed value set or a dynamic provider, rendered as
-    /// <c>option=values</c> pairs the shell can look up after <c>--option </c>.
+    /// Options at a path that take a closed value set or a dynamic provider, for the shell to look
+    /// up after the option token. Every accepted spelling is yielded, not just the canonical one:
+    /// <c>-m</c> is as valid as <c>--model</c> and an operator who types the published short flag
+    /// is owed the same suggestions.
     /// </summary>
     private static IEnumerable<(string Option, string Values, string? Provider)> ValueSources(
         CompletionNode node)
@@ -132,22 +134,49 @@ internal static class CliCompletionScriptWriter
         foreach (CliSurfaceOption option in options)
         {
 
-            if (option.Values.Count > 0)
+            (string values, string? provider) = option.Values.Count > 0
+                ? (string.Join(' ', option.Values), null)
+                : (string.Empty, option.Completion);
+
+            if (values.Length == 0 && provider is null)
             {
 
-                yield return (option.Name, string.Join(' ', option.Values), null);
+                continue;
 
             }
-            else if (option.Completion is not null)
+
+            foreach (string spelling in Spellings(option))
             {
 
-                yield return (option.Name, string.Empty, option.Completion);
+                yield return (spelling, values, provider);
 
             }
 
         }
 
     }
+
+    /// <summary>
+    /// Every dash-prefixed spelling the parser accepts for an option, canonical name included, in
+    /// the same order the option lists use.
+    /// </summary>
+    private static IEnumerable<string> Spellings(CliSurfaceOption option) =>
+        option.Aliases
+            .Append(option.Name)
+            .Where(IsDashPrefixed)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static spelling => spelling, StringComparer.Ordinal);
+
+    /// <summary>
+    /// The dynamic source for a command's own positional, if it names a live resource. Keyed on the
+    /// command path alone, because a positional has no preceding option token to key on — which is
+    /// also why the shell has to know whether a positional has already been supplied before
+    /// offering it.
+    /// </summary>
+    private static string? ArgumentProvider(CompletionNode node) =>
+        node.Command?.Arguments
+            .Select(static argument => argument.Completion)
+            .FirstOrDefault(static completion => completion is not null);
 
     private static string WriteBash(CliSurfaceMap map)
     {
@@ -159,20 +188,22 @@ internal static class CliCompletionScriptWriter
             # arcanum bash completion. Generated from the canonical command tree.
             # Install: arcanum completion install bash
             _arcanum_complete() {
-              local cur prev path i words_seen
+              local cur prev path i words_seen extra
               COMPREPLY=()
               cur="${COMP_WORDS[COMP_CWORD]}"
               prev="${COMP_WORDS[COMP_CWORD-1]}"
               path=""
+              extra=0
               for (( i=1; i < COMP_CWORD; i++ )); do
                 case "${COMP_WORDS[i]}" in
                   -*) continue ;;
                 esac
                 if [[ -z "$path" ]]; then words_seen="${COMP_WORDS[i]}"; else words_seen="$path ${COMP_WORDS[i]}"; fi
-                case "$(_arcanum_children "$words_seen")$(_arcanum_options "$words_seen")" in
-                  "") break ;;
-                  *) path="$words_seen" ;;
-                esac
+                if [[ $extra -eq 0 && -n "$(_arcanum_children "$words_seen")$(_arcanum_options "$words_seen")" ]]; then
+                  path="$words_seen"
+                else
+                  extra=$(( extra + 1 ))
+                fi
               done
 
               local provider
@@ -191,7 +222,19 @@ internal static class CliCompletionScriptWriter
                 return 0
               fi
 
-              COMPREPLY=( $(compgen -W "$(_arcanum_children "$path") $(_arcanum_options "$path")" -- "$cur") )
+              # A resource positional is offered alongside this path's own words, because an option
+              # is as valid a next token as the name. `extra` is the count of words the walk could
+              # not fold into the path, so a non-zero count means the positional is already typed.
+              local argument_provider argument_values
+              argument_values=""
+              if [[ $extra -eq 0 ]]; then
+                argument_provider="$(_arcanum_argument_provider "$path")"
+                if [[ -n "$argument_provider" ]]; then
+                  argument_values="$(_arcanum_dynamic "$argument_provider")"
+                fi
+              fi
+
+              COMPREPLY=( $(compgen -W "$(_arcanum_children "$path") $(_arcanum_options "$path") $argument_values" -- "$cur") )
             }
 
             # Dynamic resources come from the running host only. A stopped or slow host produces no
@@ -214,6 +257,11 @@ internal static class CliCompletionScriptWriter
         AppendBashValueLookup(builder, "_arcanum_values", Flatten(map), dynamicSource: false);
 
         AppendBashValueLookup(builder, "_arcanum_value_provider", Flatten(map), dynamicSource: true);
+
+        AppendBashLookup(
+            builder,
+            "_arcanum_argument_provider",
+            Flatten(map).Select(static node => (node.Path, ArgumentProvider(node) ?? string.Empty)));
 
         builder.Append("complete -F _arcanum_complete arcanum\n");
 
@@ -308,17 +356,17 @@ internal static class CliCompletionScriptWriter
             # Install: arcanum completion install zsh
 
             _arcanum() {
-              local -a path_words
-              local path="" word provider values
-              integer i
+              local -a path_words argument_values
+              local path="" word provider values argument_provider
+              integer i extra=0
               for (( i = 2; i < CURRENT; i++ )); do
                 word="${words[i]}"
                 [[ "$word" == -* ]] && continue
                 if [[ -z "$path" ]]; then path_words="$word"; else path_words="$path $word"; fi
-                if [[ -n "${_arcanum_children[$path_words]}${_arcanum_options[$path_words]}" ]]; then
+                if (( extra == 0 )) && [[ -n "${_arcanum_children[$path_words]}${_arcanum_options[$path_words]}" ]]; then
                   path="$path_words"
                 else
-                  break
+                  (( extra += 1 ))
                 fi
               done
 
@@ -335,7 +383,17 @@ internal static class CliCompletionScriptWriter
                 return
               fi
 
-              compadd -- ${=_arcanum_children[$path]} ${=_arcanum_options[$path]}
+              # A resource positional is offered alongside this path's own words: an option is as
+              # valid a next token as the name. `extra` counts the words the walk could not fold
+              # into the path, so a non-zero count means the positional is already supplied.
+              if (( extra == 0 )); then
+                argument_provider="${_arcanum_arguments[$path]}"
+                if [[ -n "$argument_provider" ]]; then
+                  argument_values=( ${=$(arcanum completion resolve "$argument_provider" 2>/dev/null)} )
+                fi
+              fi
+
+              compadd -- ${=_arcanum_children[$path]} ${=_arcanum_options[$path]} $argument_values
             }
 
 
@@ -351,7 +409,26 @@ internal static class CliCompletionScriptWriter
 
         AppendZshValueMap(builder, "_arcanum_providers", nodes, dynamicSource: true);
 
-        builder.Append("compdef _arcanum arcanum\n");
+        AppendZshMap(
+            builder,
+            "_arcanum_arguments",
+            nodes.Select(static node => (node.Path, ArgumentProvider(node) ?? string.Empty)));
+
+        // Installed as `~/.zfunc/_arcanum` and autoloaded, so the whole file is the body of
+        // `_arcanum`: the maps and this line sit after the definition, which is exactly what rules
+        // out zsh's ksh-style "source the file, then call the function" shortcut. Without the
+        // self-call the invocation that triggered the autoload would define the function, add no
+        // candidates, and return — a dead first TAB in every new shell. `compdef` is the right call
+        // for the sourced install instead, and only exists once compinit has run.
+        builder.Append(
+            """
+            if [ "$funcstack[1]" = "_arcanum" ]; then
+              _arcanum "$@"
+            else
+              (( $+functions[compdef] )) && compdef _arcanum arcanum
+            fi
+
+            """);
 
         return builder.ToString();
 
@@ -434,23 +511,63 @@ internal static class CliCompletionScriptWriter
 
         StringBuilder builder = new();
 
+        IReadOnlyList<CompletionNode> nodes = Flatten(map);
+
         builder.Append(
             """
             # arcanum fish completion. Generated from the canonical command tree.
             # Install: arcanum completion install fish
 
-            function __arcanum_path
+            # Every command path in the tree. The walk below stops at the first word that is not one
+            # of them, the way bash, zsh and PowerShell all stop: concatenating every non-dash token
+            # instead lets a positional value — or any option's value — build a path no generated
+            # condition matches, and since every `complete` line carries `-f`, fish then offers
+            # filenames where the command's own flags belong.
+            set -g __arcanum_paths
+
+            """);
+
+        foreach (CompletionNode node in nodes.Where(static node => node.Path.Length > 0))
+        {
+
+            builder.Append("set -a __arcanum_paths '").Append(node.Path).Append("'\n");
+
+        }
+
+        builder.Append(
+            """
+
+            function __arcanum_walk
               set -l parts (commandline -opc)
               set -l path ""
+              set -l extra 0
               for word in $parts[2..-1]
                 string match -q -- '-*' $word; and continue
-                if test -z "$path"
-                  set path $word
+                set -l candidate $word
+                if test -n "$path"
+                  set candidate "$path $word"
+                end
+                if test $extra -eq 0; and contains -- $candidate $__arcanum_paths
+                  set path $candidate
                 else
-                  set path "$path $word"
+                  set extra (math $extra + 1)
                 end
               end
-              echo $path
+              if test "$argv[1]" = "extra"
+                echo $extra
+              else
+                echo $path
+              end
+            end
+
+            function __arcanum_path
+              __arcanum_walk path
+            end
+
+            # True until this command's positional has been supplied. A resource name is offered
+            # once and then gives way to the options that may follow it.
+            function __arcanum_positional_open
+              test (__arcanum_walk extra) -eq 0
             end
 
             # Dynamic resources are read from the running host only; an unavailable host yields
@@ -462,7 +579,7 @@ internal static class CliCompletionScriptWriter
 
             """);
 
-        foreach (CompletionNode node in Flatten(map))
+        foreach (CompletionNode node in nodes)
         {
 
             // fish substitutes a command only outside double quotes or through the `$(…)` form
@@ -487,8 +604,36 @@ internal static class CliCompletionScriptWriter
 
             }
 
+            if (ArgumentProvider(node) is { } argumentProvider)
+            {
+
+                // A positional has no preceding option token to key on, so the condition is the
+                // command path plus "the positional is still unsupplied" — otherwise the resource
+                // list would be offered again in the position after it.
+                builder
+                    .Append("complete -c arcanum -f -n '")
+                    .Append(condition)
+                    .Append("; and __arcanum_positional_open' -a '(__arcanum_resolve ")
+                    .Append(argumentProvider)
+                    .Append(")'\n");
+
+            }
+
+            List<(string Option, string Values, string? Provider)> valueSources = [.. ValueSources(node)];
+
+            HashSet<string> carriesValues = [.. valueSources.Select(static source => source.Option)];
+
             foreach (string option in node.Options.Where(static option => option.StartsWith("--", StringComparison.Ordinal)))
             {
+
+                // Registered once. An option declared both as a flag here and as taking a parameter
+                // below is a contradiction, and the parameter declaration is the true one.
+                if (carriesValues.Contains(option))
+                {
+
+                    continue;
+
+                }
 
                 builder
                     .Append("complete -c arcanum -f -n '")
@@ -499,11 +644,21 @@ internal static class CliCompletionScriptWriter
 
             }
 
-            foreach ((string option, string values, string? provider) in ValueSources(node))
+            foreach ((string option, string values, string? provider) in valueSources)
             {
 
+                // `-x` is `-r -f`: fish routes an `-a` list to the token after an option only when
+                // the option is declared as requiring a parameter. Without it the list is
+                // unreachable by any spelling, including `--option=value`.
+                if (!option.StartsWith("--", StringComparison.Ordinal))
+                {
+
+                    continue;
+
+                }
+
                 builder
-                    .Append("complete -c arcanum -f -n '")
+                    .Append("complete -c arcanum -x -n '")
                     .Append(condition)
                     .Append("' -l '")
                     .Append(option.TrimStart('-'))
@@ -533,6 +688,7 @@ internal static class CliCompletionScriptWriter
             $script:ArcanumOptions = @{}
             $script:ArcanumValues = @{}
             $script:ArcanumProviders = @{}
+            $script:ArcanumArguments = @{}
 
 
             """);
@@ -547,25 +703,40 @@ internal static class CliCompletionScriptWriter
 
         AppendPowerShellValueMap(builder, "ArcanumProviders", nodes, dynamicSource: true);
 
+        AppendPowerShellMap(
+            builder,
+            "ArcanumArguments",
+            nodes.Select(static node => (node.Path, ArgumentProvider(node) ?? string.Empty)));
+
         builder.Append(
             """
 
             Register-ArgumentCompleter -Native -CommandName arcanum -ScriptBlock {
               param($wordToComplete, $commandAst, $cursorPosition)
 
-              $tokens = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })
+              # A quoted element keeps its quotes in the extent text, and the map keys are unquoted.
+              $tokens = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $_.Value } else { $_.Extent.Text }
+              })
+
+              # CommandElements includes the word under the cursor, unlike bash's COMP_WORDS[COMP_CWORD-1]
+              # and zsh's words[CURRENT-1]. Walking it unfiltered makes a partially typed value its own
+              # preceding token, so `--model gp<TAB>` looks up `run|gp` and resolves nothing.
+              $walk = if ($wordToComplete) { @($tokens | Select-Object -First ([Math]::Max(0, $tokens.Count - 1))) } else { $tokens }
+
               $path = ''
-              foreach ($token in $tokens) {
+              $extra = 0
+              foreach ($token in $walk) {
                 if ($token.StartsWith('-')) { continue }
                 $candidate = if ($path) { "$path $token" } else { $token }
-                if ($script:ArcanumChildren.ContainsKey($candidate) -or $script:ArcanumOptions.ContainsKey($candidate)) {
+                if ($extra -eq 0 -and ($script:ArcanumChildren.ContainsKey($candidate) -or $script:ArcanumOptions.ContainsKey($candidate))) {
                   $path = $candidate
                 } else {
-                  break
+                  $extra++
                 }
               }
 
-              $previous = if ($tokens.Count -ge 1) { $tokens[$tokens.Count - 1] } else { '' }
+              $previous = if ($walk.Count -ge 1) { $walk[$walk.Count - 1] } else { '' }
               $key = "$path|$previous"
 
               if ($script:ArcanumProviders.ContainsKey($key)) {
@@ -588,6 +759,13 @@ internal static class CliCompletionScriptWriter
               $candidates = @()
               if ($script:ArcanumChildren.ContainsKey($path)) { $candidates += $script:ArcanumChildren[$path] -split ' ' }
               if ($script:ArcanumOptions.ContainsKey($path)) { $candidates += $script:ArcanumOptions[$path] -split ' ' }
+
+              # A resource positional is offered alongside this path's own words, and only while it
+              # is still unsupplied: $extra counts the words the walk could not fold into the path.
+              if ($extra -eq 0 -and $script:ArcanumArguments.ContainsKey($path)) {
+                $resolved = & arcanum completion resolve $script:ArcanumArguments[$path] 2>$null
+                if ($LASTEXITCODE -eq 0 -and $resolved) { $candidates += $resolved -split '\s+' }
+              }
 
               $candidates |
                 Where-Object { $_ -and $_ -like "$wordToComplete*" } |

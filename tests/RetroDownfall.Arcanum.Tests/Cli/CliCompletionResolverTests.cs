@@ -158,8 +158,11 @@ public sealed class CliCompletionResolverTests
     }
 
     /// <summary>
-    /// The binding table annotates which symbols have a live source. Both directions are checked so
-    /// it cannot drift from the tree: every binding must name a symbol that exists.
+    /// The binding table annotates which symbols have a live source. A binding that names a symbol
+    /// the tree no longer has is dead weight that reads as coverage, so the table is held to the
+    /// tree. The converse — that every resource-shaped symbol is annotated — is not machine
+    /// decidable here, because outside the recognised shapes "resource-shaped" is only visible in
+    /// the description prose; the shapes that are decidable are pinned by the two tests below.
     /// </summary>
     [Fact]
     public void Every_completion_binding_names_a_symbol_that_exists_in_the_tree()
@@ -192,6 +195,78 @@ public sealed class CliCompletionResolverTests
         ];
 
         Assert.Empty(stale);
+
+    }
+
+    /// <summary>
+    /// A generically named positional carries no resource of its own, so it resolves from the
+    /// command family it sits in. The <c>id</c> of <c>campaign delete</c> is a Campaign; the same
+    /// spelling on <c>batch cancel</c> names no catalog Arcanum publishes and must stay unbound,
+    /// because offering Campaign names there would be a suggestion the parser rejects. Keying by
+    /// name alone cannot express this — <c>id</c> appears on 43 commands across five unrelated
+    /// resource kinds.
+    /// </summary>
+    [Theory]
+    [InlineData("campaign delete", "id", CliCompletionProviders.Campaign)]
+    [InlineData("campaign codex put", "id", CliCompletionProviders.Campaign)]
+    [InlineData("apprentice start", "id", CliCompletionProviders.Apprentice)]
+    [InlineData("prompt render", "id", CliCompletionProviders.Prompt)]
+    [InlineData("spell delete", "name", CliCompletionProviders.Spell)]
+    [InlineData("spell version activate", "name", CliCompletionProviders.Spell)]
+    [InlineData("prompt versions", "name", CliCompletionProviders.Prompt)]
+    [InlineData("use campaign", "identifier", CliCompletionProviders.Campaign)]
+    [InlineData("use workspace", "identifier", CliCompletionProviders.Workspace)]
+    [InlineData("use model", "identifier", CliCompletionProviders.Model)]
+    [InlineData("use session", "identifier", CliCompletionProviders.Session)]
+    [InlineData("open prompt", "prompt", CliCompletionProviders.Prompt)]
+    [InlineData("batch cancel", "id", null)]
+    [InlineData("operation retry", "id", null)]
+    [InlineData("doctor explain", "id", null)]
+    [InlineData("ward show", "id", null)]
+    [InlineData("preset show", "name", null)]
+    [InlineData("memory lexicon delete", "name", null)]
+    [InlineData("run", "prompt", null)]
+    [InlineData("context inspect", "prompt", null)]
+    public void A_generic_positional_resolves_from_the_family_it_belongs_to(
+        string path,
+        string symbol,
+        string? expected)
+    {
+
+        Assert.Equal(expected, CliCompletionBindings.For(path, symbol));
+
+    }
+
+    /// <summary>
+    /// The other half: what the table resolves has to reach the projection the completion scripts
+    /// read. A binding that the surface builder never asks for is annotation nobody consumes.
+    /// </summary>
+    [Fact]
+    public void Every_symbol_the_table_binds_carries_that_source_in_the_surface_map()
+    {
+
+        List<string> missing = [];
+
+        foreach (CliSurfaceCommand command in CliSurfaceTests.Walk(CliSurfaceTests.BuildMap()))
+        {
+
+            foreach (CliSurfaceArgument argument in command.Arguments)
+            {
+
+                string? expected = CliCompletionBindings.For(command.Path, argument.Name);
+
+                if (expected is not null && argument.Completion != expected)
+                {
+
+                    missing.Add($"{command.Path} <{argument.Name}>");
+
+                }
+
+            }
+
+        }
+
+        Assert.Empty(missing);
 
     }
 
