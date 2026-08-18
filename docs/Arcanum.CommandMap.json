@@ -7169,7 +7169,7 @@
             {
               "name": "--scope",
               "aliases": [],
-              "description": "Required scope: entry, attachments, workspace, saga, or lexicon.",
+              "description": "Required scope: entry, attachments, workspace, saga, lexicon, or covenant.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,

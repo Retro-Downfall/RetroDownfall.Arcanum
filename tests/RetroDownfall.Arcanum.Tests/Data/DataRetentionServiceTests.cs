@@ -1250,6 +1250,18 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// Every typed class is reported exactly once, and the one conditional class is conditional for a
+    /// stated reason rather than by omission.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="RetentionDataClass.Covenant"/> is reported only when an installation read capability
+    /// can actually be taken, which requires the feature on and the canonical tier healthy. An
+    /// installation with no Covenant arm reports no Covenant row rather than a row of zeroes, because a
+    /// zero is a measurement and the honest answer there is that nothing was measured. That is asserted
+    /// here — and its positive case is asserted in <c>CovenantRetentionTests</c> — so the absence can
+    /// never be mistaken for a class somebody forgot to add (issue #116, §10.20.1).
+    /// </remarks>
     [SkippableFact]
 
     public async Task GetStatusAsync_ReportsEveryTypedRetentionClassExactlyOnce()
@@ -1262,7 +1274,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         DataRetentionStatus status = await service.GetStatusAsync(
             CancellationToken.None);
 
-        RetentionDataClass[] expected = Enum.GetValues<RetentionDataClass>();
+        RetentionDataClass[] expected =
+            [.. Enum.GetValues<RetentionDataClass>()
+                .Where(static dataClass => dataClass is not RetentionDataClass.Covenant)];
 
         Assert.Equal(
             expected.Order(),
@@ -1271,6 +1285,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(
             expected.Length,
             status.Items.Select(static item => item.DataClass).Distinct().Count());
+
+        Assert.Null(status.Covenant);
 
     }
 

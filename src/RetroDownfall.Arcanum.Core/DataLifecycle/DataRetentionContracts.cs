@@ -2,71 +2,92 @@ using System.Text.Json.Serialization;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.DataLifecycle;
 
+/// <summary>
+/// One inventoried class of Arcanum-owned persistent data.
+/// </summary>
+/// <remarks>
+/// Every code is written literally because the value is persisted — retention policy rows and durable
+/// operation checkpoints both store it — so reordering or removing a member repoints an existing row
+/// at a different class. A rule an operator wrote for <see cref="SagaMemories"/> would silently begin
+/// deleting something else, which is the one failure a retention enum must never have.
+///
+/// <para><see cref="Covenant"/> is inventoried and never swept. It has no
+/// <see cref="Core.Configuration.RetentionSettings"/> property and
+/// <see cref="DataRetentionSettingsCatalog.ResolveRule"/> resolves it to null, because its versions,
+/// heads, provenance, tombstones, and disclosure receipts are the evidence that makes an erasure claim
+/// checkable. A rule that could age them out would destroy the only record of what was destroyed
+/// (§10.20.1).</para>
+/// </remarks>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<RetentionDataClass>))]
 public enum RetentionDataClass
 {
 
-    ActiveSessions,
+    ActiveSessions = 0,
 
-    ArchivedSessions,
+    ArchivedSessions = 1,
 
-    Entries,
+    Entries = 2,
 
-    AttachmentVersions,
+    AttachmentVersions = 3,
 
-    AttachmentBytes,
+    AttachmentBytes = 4,
 
-    AttachmentChunks,
+    AttachmentChunks = 5,
 
-    AttachmentEmbeddings,
+    AttachmentEmbeddings = 6,
 
-    UploadedFiles,
+    UploadedFiles = 7,
 
-    BatchInputFiles,
+    BatchInputFiles = 8,
 
-    BatchOutputFiles,
+    BatchOutputFiles = 9,
 
-    BatchErrorFiles,
+    BatchErrorFiles = 10,
 
-    CompletedBatches,
+    CompletedBatches = 11,
 
-    SagaMemories,
+    SagaMemories = 12,
 
-    LexiconEntries,
+    LexiconEntries = 13,
 
-    WorkspaceChunks,
+    WorkspaceChunks = 14,
 
-    WorkspaceEmbeddings,
+    WorkspaceEmbeddings = 15,
 
-    SessionEntryEmbeddings,
+    SessionEntryEmbeddings = 16,
 
-    Tapestry,
+    Tapestry = 17,
 
-    AuditLogs,
+    AuditLogs = 18,
 
-    GuardrailLogs,
+    GuardrailLogs = 19,
 
-    IdempotencyClaims,
+    IdempotencyClaims = 20,
 
-    InferenceRuns,
+    InferenceRuns = 21,
 
-    BillableOperations,
+    BillableOperations = 22,
 
-    BudgetReservations,
+    BudgetReservations = 23,
 
-    CostAdjustments,
+    CostAdjustments = 24,
 
-    LongRunningOperations,
+    LongRunningOperations = 25,
 
-    SanctumBreaches,
+    SanctumBreaches = 26,
 
-    DaemonExecutions,
+    DaemonExecutions = 27,
+
+    /// <summary>The Covenant family. Inventoried, never aged out.</summary>
+    Covenant = 28,
 
 }
 
@@ -88,19 +109,33 @@ public enum DataRetentionOperation
 
 }
 
+/// <summary>
+/// The one named store a memory reset clears. There is deliberately no generic "all memory" arm.
+/// </summary>
+/// <remarks>
+/// Literal codes for the same reason <see cref="RetentionDataClass"/> has them: the value reaches a
+/// durable operation checkpoint, and a renumbered member would let a resumed reset clear a store the
+/// operator never selected.
+/// </remarks>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<MemoryResetScope>))]
 public enum MemoryResetScope
 {
 
-    Entry,
+    Entry = 0,
 
-    Attachments,
+    Attachments = 1,
 
-    Workspace,
+    Workspace = 2,
 
-    Saga,
+    Saga = 3,
 
-    Lexicon,
+    Lexicon = 4,
+
+    /// <summary>
+    /// The Covenant family. Inventoried and planned here; erasure is the exclusive erasure
+    /// coordinator's, and this build refuses to apply it (§10.20.1).
+    /// </summary>
+    Covenant = 5,
 
 }
 
@@ -130,6 +165,49 @@ public sealed record MemoryResetRequest(
 public sealed record FactoryResetRequest(
     [property: JsonRequired] string Confirmation);
 
+/// <summary>
+/// The retention conflict codes this assembly owns.
+/// </summary>
+public static class DataRetentionConflictCodes
+{
+
+    /// <summary>
+    /// A Covenant memory reset was planned but cannot be applied by this build.
+    /// </summary>
+    /// <remarks>
+    /// Erasing the Covenant family means draining admission, checkpointing exact phases, proving
+    /// storage health, and republishing authority. None of that exists yet, and running the ordinary
+    /// memory-reset path over the family instead would delete protected rows with live readers still
+    /// holding leases over them. Refusing is the only honest answer while the coordinator is unbuilt
+    /// (§10.20.1).
+    /// </remarks>
+    public const string CovenantResetRequiresErasureCoordinator =
+        "Data.CovenantResetRequiresErasureCoordinator";
+
+}
+
+/// <summary>
+/// The content-free installation inventory of the Covenant family.
+/// </summary>
+/// <remarks>
+/// Counts only. No subject text, key, digest preimage, path, or Campaign identity appears here,
+/// because <c>data status</c> and a retention rehearsal are both readable by anything that can reach
+/// the route and neither has any business carrying protected content (§10.20.1).
+///
+/// <para><paramref name="DisclosureCountKind"/> is carried rather than resolved away for the reason
+/// §10.18 gives: a joined bucket is a lower bound, and reporting a lower bound as exact would
+/// understate exposure in exactly the report an operator uses to decide. Only nonrevocable buckets
+/// are folded — a locally revocable effect is one Arcanum can still undo, and including it would
+/// inflate the number.</para>
+/// </remarks>
+public sealed record DataRetentionCovenantInventory(
+    long Rows,
+    long ManagedFiles,
+    long LocalArtifacts,
+    long AffectedSessions,
+    long PossibleDisclosures,
+    CovenantDisclosureCountKind DisclosureCountKind);
+
 public sealed record DataRetentionStatusItem(
     RetentionDataClass DataClass,
     long Rows,
@@ -146,7 +224,9 @@ public sealed record DataRetentionStatus(
     long Rows,
     long Files,
     long EstimatedBytes,
-    string[] PreservedOutsideSelectedRoot);
+    string[] PreservedOutsideSelectedRoot,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionCovenantInventory? Covenant = null);
 
 public sealed record DataRetentionPlanItem(
     RetentionDataClass DataClass,
@@ -178,7 +258,9 @@ public sealed record DataRetentionPlan(
     long EstimatedBytes,
     long DerivedRecords,
     string[] CandidateIds,
-    bool RequiresConfirmation);
+    bool RequiresConfirmation,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionCovenantInventory? Covenant = null);
 
 public sealed record DataRetentionApplyResult(
     Guid OperationId,
@@ -259,6 +341,10 @@ public static class DataRetentionSettingsCatalog
             RetentionDataClass.SanctumBreaches => settings.SanctumBreaches,
 
             RetentionDataClass.DaemonExecutions => settings.DaemonHistory,
+
+            // Explicit, not a fall-through. The Covenant family is inventoried and never aged out, and
+            // an arm that says so cannot be mistaken for a rule somebody forgot to wire.
+            RetentionDataClass.Covenant => null,
 
             _ => null,
 

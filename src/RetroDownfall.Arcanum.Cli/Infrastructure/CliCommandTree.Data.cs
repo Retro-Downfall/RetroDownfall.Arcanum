@@ -227,7 +227,8 @@ internal static partial class CliCommandTree
         Option<string> memoryScope = new("--scope")
         {
 
-            Description = "Required scope: entry, attachments, workspace, saga, or lexicon.",
+            Description =
+                "Required scope: entry, attachments, workspace, saga, lexicon, or covenant.",
 
             Required = true,
 

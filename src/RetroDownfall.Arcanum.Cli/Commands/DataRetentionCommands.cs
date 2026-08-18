@@ -213,7 +213,7 @@ internal sealed class DataRetentionCommands(
         {
 
             dispatcher.WriteDiagnostic(
-                "--scope must be entry, attachments, workspace, saga, or lexicon.");
+                "--scope must be entry, attachments, workspace, saga, lexicon, or covenant.");
 
             return (int)CliExitCode.ConfigurationError;
 

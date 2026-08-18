@@ -18,6 +18,8 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Daemons;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -56,7 +58,8 @@ internal sealed partial class DataRetentionService(
     ISessionAttachmentStore? attachmentStore = null,
     IDaemonExecutionRepository? daemonExecutions = null,
     IDaemonExecutionMutationGate? daemonMutationGate = null,
-    IManagedLogMutationGate? managedLogMutationGate = null) : IDataRetentionService
+    IManagedLogMutationGate? managedLogMutationGate = null,
+    ICovenantOperationGate? covenantGate = null) : IDataRetentionService
 {
 
     private static readonly int[] ActiveOperationStates =
@@ -376,9 +379,39 @@ internal sealed partial class DataRetentionService(
             "Volatile daemon execution summaries and durable schedule watermarks; active executions are protected.",
             retention);
 
+        DataRetentionCovenantInventory? covenant = null;
+
+        CovenantInstallationReadLease? covenantLease =
+            await TryAcquireCovenantInstallationReadAsync(cancellationToken).ConfigureAwait(false);
+
+        if (covenantLease is not null)
+        {
+
+            await using (covenantLease.ConfigureAwait(false))
+            {
+
+                covenant = await InventoryCovenantAsync(
+                    covenantLease,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            if (covenant is not null)
+            {
+
+                items.Add(CovenantStatusItem(covenant));
+
+            }
+
+        }
+
         DataRetentionStatusItem[] ordered =
             [.. items.OrderBy(static item => item.DataClass)];
 
+        // The exclusions are the reference-only batch roles, which alias one uploaded file and would
+        // otherwise be counted three times. The Covenant row is not one of them: its rows and managed
+        // files are owned exactly once and by nothing else, so it sums like every other physical owner
+        // even though no rule will ever select it.
         DataRetentionStatusItem[] physicallyOwned =
             [.. ordered.Where(static item => item.DataClass is not (
                 RetentionDataClass.BatchInputFiles
@@ -395,13 +428,91 @@ internal sealed partial class DataRetentionService(
                 "External backups and backup media",
                 "OS credential and Data Protection stores",
                 "Registered workspaces outside the Arcanum data root",
-            ]);
+            ],
+            covenant);
 
     }
 
-    public Task<DataRetentionPlan> PlanAsync(
+    /// <summary>
+    /// Builds the plan for one request, under at most one Covenant read capability.
+    /// </summary>
+    /// <remarks>
+    /// The capability is acquired here rather than inside each builder, so "exactly one, never nested"
+    /// is a property of the shape rather than a rule six methods have to keep remembering. The builders
+    /// receive no gate at all and therefore cannot take a second one.
+    ///
+    /// <para>The inventory is attached after the plan is fingerprinted and is deliberately outside
+    /// <c>ComputePlanId</c>. It is a report, not a candidate set: folding it into the identity would
+    /// make every prune plan expire the moment an unrelated turn wrote a Covenant version, and an
+    /// operator would be told their sweep changed when nothing it selects had moved.</para>
+    /// </remarks>
+    public async Task<DataRetentionPlan> PlanAsync(
         DataRetentionRequest request,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        ICovenantSnapshotReadLease? lease = await AcquireCovenantPlanningCapabilityAsync(
+            request,
+            cancellationToken).ConfigureAwait(false);
+
+        if (lease is null)
+        {
+
+            return await BuildPlanAsync(request, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        await using (lease.ConfigureAwait(false))
+        {
+
+            DataRetentionPlan plan = await BuildPlanAsync(
+                request,
+                cancellationToken).ConfigureAwait(false);
+
+            DataRetentionCovenantInventory? inventory = await InventoryCovenantAsync(
+                lease,
+                cancellationToken).ConfigureAwait(false);
+
+            return inventory is null ? plan : plan with { Covenant = inventory };
+
+        }
+
+    }
+
+    /// <summary>
+    /// Which Covenant read capability, if any, this request's inventory needs.
+    /// </summary>
+    /// <remarks>
+    /// A workspace reset names exactly one Campaign, so it takes the bounded scoped read. Prune,
+    /// factory reset, and a Covenant memory reset all inventory the whole installation and therefore
+    /// take the installation-wide capability. Every other operation reports no Covenant inventory at
+    /// all, because none of them is a decision an operator makes about the family.
+    /// </remarks>
+    private async ValueTask<ICovenantSnapshotReadLease?> AcquireCovenantPlanningCapabilityAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken) =>
+        request switch
+        {
+
+            { Operation: DataRetentionOperation.ResetWorkspace, Workspace: { } workspace } =>
+                await TryAcquireCovenantScopedReadAsync(
+                    workspace.CampaignId,
+                    cancellationToken).ConfigureAwait(false),
+
+            { Operation: DataRetentionOperation.Prune }
+                or { Operation: DataRetentionOperation.FactoryReset }
+                or { Operation: DataRetentionOperation.ResetMemory, MemoryScope: MemoryResetScope.Covenant } =>
+                await TryAcquireCovenantInstallationReadAsync(cancellationToken).ConfigureAwait(false),
+
+            _ => null,
+
+        };
+
+    private Task<DataRetentionPlan> BuildPlanAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken) =>
         request.Operation switch
         {
 
@@ -1248,6 +1359,15 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken)
     {
 
+        if (request.MemoryScope is MemoryResetScope.Covenant)
+        {
+
+            return await BuildCovenantResetMemoryPlanAsync(
+                request,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
         (RetentionDataClass dataClass, string[] tables) = request.MemoryScope switch
         {
 
@@ -1320,6 +1440,57 @@ internal sealed partial class DataRetentionService(
                 request.MemoryScope!.Value,
                 cancellationToken).ConfigureAwait(false),
             rows == 0 ? [] : [request.MemoryScope!.Value.ToString()],
+            requiresConfirmation: true);
+
+    }
+
+    /// <summary>
+    /// Plans a Covenant memory reset, and refuses it.
+    /// </summary>
+    /// <remarks>
+    /// The scope exists so the family is inventoried and so the route, the CLI, and the typed client
+    /// all speak the same word for it. Actually erasing it is a different operation entirely: admission
+    /// has to close, every live lease has to drain, exact phases have to be checkpointed, storage health
+    /// has to be proven, and authority has to be republished before anything reopens. Running the
+    /// ordinary memory-reset path over the family instead would delete protected rows while readers
+    /// still held leases over them, and would leave no evidence of what it removed.
+    ///
+    /// <para>The refusal is a plan conflict rather than an empty plan because an empty plan reads as
+    /// "there is nothing to erase", which is the opposite of true here. It is fingerprinted into the
+    /// plan id like any other conflict, so an apply cannot slip past it with a stale identity
+    /// (§10.20.1).</para>
+    /// </remarks>
+    private async Task<DataRetentionPlan> BuildCovenantResetMemoryPlanAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        long rows = 0;
+
+        foreach (string table in CovenantInventoryRowTables)
+        {
+
+            rows += await CountTableAsync(
+                table,
+                null,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
+        return FinalizePlan(
+            request,
+            rows == 0
+                ? []
+                : [new DataRetentionPlanItem(RetentionDataClass.Covenant, 0, 0, 0, rows)],
+            [],
+            [
+                new DataRetentionConflict(
+                    DataRetentionConflictCodes.CovenantResetRequiresErasureCoordinator,
+                    string.Empty,
+                    "Covenant erasure requires the exclusive erasure coordinator, which this build does "
+                        + "not have. No Covenant state was changed."),
+            ],
+            [],
             requiresConfirmation: true);
 
     }

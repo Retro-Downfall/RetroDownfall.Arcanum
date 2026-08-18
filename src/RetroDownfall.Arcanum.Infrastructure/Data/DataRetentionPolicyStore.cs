@@ -109,13 +109,12 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
                         if (!TryUpdateRule(
                                 current,
                                 request,
-                                out RetentionSettings updated))
+                                out RetentionSettings updated,
+                                out string refusal))
                         {
 
                             return Result<ArcanumSettings>.Failure(
-                                new Error(
-                                    ErrorCodes.Data.InvalidRequest,
-                                    "The retention data class is not recognized."));
+                                new Error(ErrorCodes.Data.InvalidRequest, refusal));
 
                         }
 
@@ -153,16 +152,28 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 
     }
 
+    /// <summary>
+    /// Applies one rule update, or names exactly why it could not be applied.
+    /// </summary>
+    /// <remarks>
+    /// The two refusals are separated because they mean opposite things to an operator. An unrecognized
+    /// name is a typo they should fix. A recognized class with no rule — <c>covenant</c> is the only one
+    /// — is a deliberate design property, and telling them it "is not recognized" would send them
+    /// hunting for a spelling mistake that does not exist (§10.20.1).
+    /// </remarks>
     private static bool TryUpdateRule(
         RetentionSettings current,
         RetentionRuleUpdateRequest request,
-        out RetentionSettings updated)
+        out RetentionSettings updated,
+        out string refusal)
     {
 
         if (!TryParseDataClass(request.DataClass, out RetentionDataClass dataClass))
         {
 
             updated = current;
+
+            refusal = "The retention data class is not recognized.";
 
             return false;
 
@@ -175,6 +186,11 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
         {
 
             updated = current;
+
+            refusal = dataClass is RetentionDataClass.Covenant
+                ? "The Covenant has no time-based retention rule and cannot be given one. It is "
+                    + "inventoried by 'data status' and removed only by an explicit reset."
+                : "The retention data class has no configurable rule.";
 
             return false;
 
@@ -276,11 +292,15 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
                 break;
 
             default:
+                refusal = "The retention data class has no configurable rule.";
+
                 return false;
 
         }
 
         updated = Normalize(updated);
+
+        refusal = string.Empty;
 
         return true;
 
