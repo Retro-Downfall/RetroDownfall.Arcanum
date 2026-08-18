@@ -930,10 +930,10 @@ public sealed class SessionCommands(
     }
 
     private void WriteError(Error error) =>
-        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(error));
+        CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(error));
 
     private void WriteArgumentError(string message) =>
-        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(message)));
+        CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(message)));
 
     private bool TryParseOptionalGuid(
         string? value,

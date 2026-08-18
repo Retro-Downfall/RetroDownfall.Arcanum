@@ -108,6 +108,39 @@ public sealed class CampaignScopedCommandTests
 
     }
 
+    /// <summary>
+    /// The wire contract allows a page that reports more rows without an advancing cursor: the
+    /// repository computes <c>hasMore</c> before reloading a tie group, and returns a null cursor
+    /// when that reload comes back empty. The paging footer used to index the last summary of an
+    /// empty array, which throws and surfaces as "An unexpected CLI error occurred."
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_reports_a_page_that_cannot_advance_instead_of_crashing()
+    {
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([], null, true),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains(
+            "Api.PaginationNoProgress",
+            result.Output + result.Error,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "An unexpected CLI error occurred.",
+            result.Output + result.Error,
+            StringComparison.Ordinal);
+
+    }
+
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 

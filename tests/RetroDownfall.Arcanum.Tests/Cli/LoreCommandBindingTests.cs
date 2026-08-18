@@ -59,6 +59,35 @@ public sealed class LoreCommandBindingTests
 
     }
 
+    /// <summary>
+    /// A stored lore value is read back to be used, not to be looked at. Rendering it inside a
+    /// Spectre panel drew a border box around it and re-flowed every line at the 80-column profile
+    /// width redirection falls back to, so `VALUE=$(arcanum lore get k)` captured box art and a
+    /// multi-line value could not survive a set/get round-trip.
+    /// </summary>
+    [Fact]
+    public void Lore_get_emits_the_stored_value_verbatim_without_panel_chrome()
+    {
+
+        string value = string.Join(
+            "\n",
+            new string('a', 120),
+            "second line with  doubled  spaces",
+            "third");
+
+        RecordingHandler handler = new(_ => CreateLoreResponse(new ApiResponse<LoreDto>(
+            new LoreDto("deploy.notes", value, DateTime.UtcNow),
+            true,
+            null)));
+
+        CliTestResult result = RunCommand(handler, ["lore", "get", "deploy.notes"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(value, result.Output.TrimEnd('\r', '\n'));
+
+    }
+
     [Fact]
     public void Lore_delete_binds_key_argument()
     {

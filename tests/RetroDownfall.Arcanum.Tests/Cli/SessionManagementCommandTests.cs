@@ -437,9 +437,14 @@ public sealed class SessionManagementCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Contains(error.Code, result.Output, StringComparison.Ordinal);
+        // The code and the message stay visible and actionable, on the diagnostic stream. They used
+        // to land on stdout, which under --output-format json meant the API's diagnostic was served
+        // to the consumer as the document's own payload with stderr left empty.
+        Assert.Contains(error.Code, result.Error, StringComparison.Ordinal);
 
-        Assert.Contains(error.Message, result.Output, StringComparison.Ordinal);
+        Assert.Contains(error.Message, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(error.Code, result.Output, StringComparison.Ordinal);
 
     }
 
@@ -624,6 +629,39 @@ public sealed class SessionManagementCommandTests
         }
 
         throw new InvalidOperationException($"Unexpected request: {request.Method} {request.RequestUri}");
+
+    }
+
+    /// <summary>
+    /// The payload/diagnostic split is absolute. A failure rendered through the global Spectre
+    /// console lands on stdout, so `arcanum session list &gt; sessions.txt 2&gt; errors.log` used to
+    /// write the error into the data file and leave the log empty — a wrapper that inspects only
+    /// stderr then reports a clean run over a file holding a diagnostic instead of a session table.
+    /// </summary>
+    [Fact]
+
+    public void Session_list_reports_a_failure_on_the_diagnostic_stream_only()
+    {
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                null,
+                false,
+                new Error("Grimoire.Unavailable", "The Grimoire is unavailable.")),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult,
+            HttpStatusCode.InternalServerError));
+
+        CliTestResult result = RunCommand(handler, ["session", "list"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.False(
+            string.IsNullOrWhiteSpace(result.Error),
+            "The failure must be reported on stderr.");
+
+        Assert.True(
+            string.IsNullOrWhiteSpace(result.Output),
+            $"stdout is the payload stream and must stay clean, got: {result.Output}");
 
     }
 

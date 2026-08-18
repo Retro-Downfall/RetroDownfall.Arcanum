@@ -665,11 +665,34 @@ public sealed class CampaignCommands(
         if (result.Value.HasMore)
         {
 
-            DateTimeOffset paginationCursor = result.Value.NextBeforeUpdatedAt ?? sessions[^1].UpdatedAt;
+            // The host is allowed to report more rows with no cursor and no rows: hasMore is
+            // computed before a tie group is reloaded, and the reload comes back empty if those
+            // sessions were archived or deleted in between. Indexing the last summary of an empty
+            // page throws, so the page is reported as unable to advance \u2014 the same typed
+            // no-progress fault the workspace and session-workspace consumers already raise.
+            if (result.Value.NextBeforeUpdatedAt is not { } cursor)
+            {
+
+                if (sessions.Length == 0)
+                {
+
+                    CliErrorOutput.WriteMarkupLine(
+                        themePalette.ErrorMarkup(
+                            Markup.Escape(
+                                "Api.PaginationNoProgress: the host reported more sessions without "
+                                + "an advancing cursor. Re-run the command.")));
+
+                    return 1;
+
+                }
+
+                cursor = sessions[^1].UpdatedAt;
+
+            }
 
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(
-                    Markup.Escape($"More results available \u2014 use --before-updated-at {paginationCursor:O} to page")));
+                    Markup.Escape($"More results available \u2014 use --before-updated-at {cursor:O} to page")));
 
         }
 
