@@ -210,6 +210,125 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
     }
 
     [Fact]
+    public void EnforceAllowedRoots_SymlinkOnIntermediateComponent_Denies()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(outside, "secret"));
+
+        try
+        {
+
+            string linkPath = Path.Combine(_workspace.Root, "intermediate-link");
+
+            Directory.CreateSymbolicLink(linkPath, outside);
+
+            Result<string> result = WorkspaceRootPolicy.EnforceAllowedRoots(
+                Path.Combine(linkPath, "secret"),
+                [_workspace.Root],
+                "Path.NotAllowed",
+                "Path is not allowed.");
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Path.NotAllowed", result.Error.Code);
+
+        }
+        finally
+        {
+
+            Directory.Delete(outside, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void IsStrictChildPath_SymlinkOnIntermediateComponent_ReturnsFalse()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(outside, "spells"));
+
+        try
+        {
+
+            string linkPath = Path.Combine(_workspace.Root, "strict-intermediate-link");
+
+            Directory.CreateSymbolicLink(linkPath, outside);
+
+            bool isChild = WorkspaceRootPolicy.IsStrictChildPath(
+                _workspace.Root,
+                Path.Combine(linkPath, "spells"));
+
+            Assert.False(isChild);
+
+        }
+        finally
+        {
+
+            Directory.Delete(outside, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void IsUnderAnyAllowedRoot_SymlinkOnIntermediateComponentPointingBackInside_Allows()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string realDir = _workspace.CreateSubdir("intermediate-real-target");
+
+        Directory.CreateDirectory(Path.Combine(realDir, "nested"));
+
+        string linkPath = Path.Combine(_workspace.Root, "inside-intermediate-link");
+
+        Directory.CreateSymbolicLink(linkPath, realDir);
+
+        bool allowed = WorkspaceRootPolicy.IsUnderAnyAllowedRoot(
+            Path.Combine(linkPath, "nested"),
+            [_workspace.Root]);
+
+        Assert.True(allowed);
+
+    }
+
+    [Fact]
+    public void IsUnderAnyAllowedRoot_NonExistentDescendant_Allows()
+    {
+
+        string candidate = Path.Combine(_workspace.Root, "not-created-yet", "deeper");
+
+        bool allowed = WorkspaceRootPolicy.IsUnderAnyAllowedRoot(candidate, [_workspace.Root]);
+
+        Assert.True(allowed);
+
+    }
+
+    [Fact]
     public void EnforceAllowedRoots_SymlinkInsideRoot_Allows()
     {
 

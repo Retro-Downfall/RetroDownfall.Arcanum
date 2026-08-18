@@ -43,8 +43,11 @@ public static class ConfigurationBootstrapper
                 environment.EffectiveSettings,
                 item.Path);
 
-            projected[$"Arcanum:{item.Path.Replace('.', ':')}"] =
-                ConfigurationValue(canonical);
+            ProjectOverride(
+                projected,
+                $"Arcanum:{item.Path.Replace('.', ':')}",
+                canonical,
+                TryReadPersistedCanonicalValue(persisted, item.Path));
 
         }
 
@@ -177,17 +180,144 @@ public static class ConfigurationBootstrapper
 
     }
 
-    private static string? ConfigurationValue(string canonical)
+    /// <summary>
+    /// Writes one effective override into the in-memory provider the way the JSON provider would have
+    /// written the same value: an array becomes indexed child keys and an object becomes nested keys,
+    /// so a consumer enumerating <c>GetChildren()</c> sees the override rather than the file it replaces.
+    /// Emitting the raw JSON text at the parent key instead would leave the file's children in place and
+    /// silently drop the override.
+    /// </summary>
+    /// <remarks>
+    /// <c>ConfigurationRoot.GetChildren</c> unions child keys across providers, so an override that
+    /// shortens a list cannot remove the file's surplus entries by omission. Every key the persisted
+    /// value would have produced but the override does not is written back as null, shadowing the stale
+    /// entry rather than leaving it to be read as part of the effective list.
+    /// </remarks>
+    private static void ProjectOverride(
+        Dictionary<string, string?> projected,
+        string key,
+        string canonical,
+        string? persistedCanonical)
     {
 
-        using JsonDocument document = JsonDocument.Parse(canonical);
+        Dictionary<string, string?> effectiveKeys = new(StringComparer.OrdinalIgnoreCase);
 
-        return document.RootElement.ValueKind switch
+        using (JsonDocument document = JsonDocument.Parse(canonical))
         {
-            JsonValueKind.String => document.RootElement.GetString(),
-            JsonValueKind.Null => null,
-            _ => document.RootElement.GetRawText(),
-        };
+
+            FlattenConfigurationValue(effectiveKeys, key, document.RootElement);
+
+        }
+
+        foreach ((string effectiveKey, string? value) in effectiveKeys)
+        {
+
+            projected[effectiveKey] = value;
+
+        }
+
+        if (persistedCanonical is null)
+        {
+
+            return;
+
+        }
+
+        Dictionary<string, string?> persistedKeys = new(StringComparer.OrdinalIgnoreCase);
+
+        using (JsonDocument persistedDocument = JsonDocument.Parse(persistedCanonical))
+        {
+
+            FlattenConfigurationValue(persistedKeys, key, persistedDocument.RootElement);
+
+        }
+
+        foreach (string staleKey in persistedKeys.Keys)
+        {
+
+            if (!effectiveKeys.ContainsKey(staleKey))
+            {
+
+                projected[staleKey] = null;
+
+            }
+
+        }
+
+    }
+
+    private static void FlattenConfigurationValue(
+        Dictionary<string, string?> projected,
+        string key,
+        JsonElement element)
+    {
+
+        switch (element.ValueKind)
+        {
+
+            case JsonValueKind.String:
+
+                projected[key] = element.GetString();
+
+                return;
+
+            case JsonValueKind.Null:
+
+                projected[key] = null;
+
+                return;
+
+            case JsonValueKind.Array:
+
+                int index = 0;
+
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+
+                    FlattenConfigurationValue(projected, $"{key}:{index}", item);
+
+                    index++;
+
+                }
+
+                return;
+
+            case JsonValueKind.Object:
+
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+
+                    FlattenConfigurationValue(projected, $"{key}:{property.Name}", property.Value);
+
+                }
+
+                return;
+
+            default:
+
+                projected[key] = element.GetRawText();
+
+                return;
+
+        }
+
+    }
+
+    private static string? TryReadPersistedCanonicalValue(ArcanumSettings persisted, string path)
+    {
+
+        try
+        {
+
+            return ConfigurationPathAccessor.GetCanonicalValue(persisted, path);
+
+        }
+        catch (ArgumentException)
+        {
+
+            return null;
+
+        }
 
     }
 

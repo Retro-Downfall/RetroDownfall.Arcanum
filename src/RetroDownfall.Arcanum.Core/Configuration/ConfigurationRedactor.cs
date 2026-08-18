@@ -15,10 +15,7 @@ public static class ConfigurationRedactor
         ProviderSettings[] providers = settings.Providers ?? [];
 
         ProviderSettings[] redactedProviders = providers
-            .Select(static p => p with
-            {
-                Endpoint = MaskRequired(p.Endpoint),
-            })
+            .Select(static p => RedactProvider(p))
             .ToArray();
 
         return Clone(settings) with
@@ -33,16 +30,26 @@ public static class ConfigurationRedactor
 
         ProviderSettings[] currentProviders = current.Providers ?? [];
 
-        Dictionary<string, ProviderSettings> currentByName = currentProviders
-            .ToDictionary(static p => p.Name, static p => p, StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, ProviderSettings> currentByName = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (ProviderSettings? persisted in currentProviders)
+        {
+            ProviderSettings currentProvider = Normalize(persisted);
+
+            if (string.IsNullOrWhiteSpace(currentProvider.Name))
+            {
+                continue;
+            }
+
+            // A hand-edited arcanum.json can carry the same provider name twice, and nothing validates
+            // the persisted file semantically before it reaches this merge. First-wins keeps the merge
+            // total so ConfigurationValidator reports "configured more than once" with a pointer instead
+            // of ToDictionary throwing on the duplicate key.
+            currentByName.TryAdd(currentProvider.Name, currentProvider);
+        }
 
         ProviderSettings[] mergedProviders = requestProviders
-            .Select(p => currentByName.TryGetValue(p.Name, out ProviderSettings? currentProvider)
-                ? p with
-                {
-                    Endpoint = RestoreMaskRequired(p.Endpoint, currentProvider.Endpoint),
-                }
-                : p)
+            .Select(p => MergeProvider(Normalize(p), currentByName))
             .ToArray();
 
         return Clone(request) with
@@ -58,8 +65,10 @@ public static class ConfigurationRedactor
 
         ProviderSettings[] providers = merged.Providers ?? [];
 
-        foreach (ProviderSettings provider in providers)
+        foreach (ProviderSettings? entry in providers)
         {
+
+            ProviderSettings provider = Normalize(entry);
 
             if (provider.Endpoint == MaskSentinel)
             {
@@ -87,6 +96,39 @@ public static class ConfigurationRedactor
             ConfigurationJsonContext.Default.ArcanumConfigurationFile);
 
         return wrapper?.Arcanum ?? source;
+    }
+
+    // System.Text.Json writes a null element for a JSON null inside "providers", and a null value for an
+    // explicit "name": null, however the POCO declares them. Normalizing to an empty provider keeps the
+    // array index aligned with the file, so ConfigurationValidator can answer with "providers[i].name"
+    // rather than every caller of this class throwing first.
+    private static ProviderSettings Normalize(ProviderSettings? provider) =>
+        provider ?? new ProviderSettings();
+
+    private static ProviderSettings RedactProvider(ProviderSettings? provider)
+    {
+        ProviderSettings normalized = Normalize(provider);
+
+        return normalized with
+        {
+            Endpoint = MaskRequired(normalized.Endpoint),
+        };
+    }
+
+    private static ProviderSettings MergeProvider(
+        ProviderSettings provider,
+        Dictionary<string, ProviderSettings> currentByName)
+    {
+        if (string.IsNullOrWhiteSpace(provider.Name)
+            || !currentByName.TryGetValue(provider.Name, out ProviderSettings? currentProvider))
+        {
+            return provider;
+        }
+
+        return provider with
+        {
+            Endpoint = RestoreMaskRequired(provider.Endpoint, currentProvider.Endpoint),
+        };
     }
 
     private static string MaskRequired(string value) =>

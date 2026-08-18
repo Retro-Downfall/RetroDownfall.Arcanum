@@ -973,6 +973,20 @@ public sealed class ConfigurationValidator(
 
             string providerPointer = $"providers[{providerIndex}]";
 
+            // A JSON null in the providers array deserializes to a null element and the tree gate lets it
+            // through, so name the offending pointer here rather than aborting the whole validation pass
+            // with a NullReferenceException that says nothing about which key is wrong.
+            if (provider is null)
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    providerPointer,
+                    "Provider entry must be a JSON object."));
+
+                continue;
+
+            }
+
             if (string.IsNullOrWhiteSpace(provider.Name))
             {
                 errors.Add(new ConfigurationValidationError(
@@ -1030,8 +1044,19 @@ public sealed class ConfigurationValidator(
 
             for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
             {
+                ModelEntry model = models[modelIndex];
+
+                if (model is null)
+                {
+                    errors.Add(new ConfigurationValidationError(
+                        $"{providerPointer}.models[{modelIndex}]",
+                        "Model entry must be a JSON object or a model name string."));
+
+                    continue;
+                }
+
                 ValidateReasoningFacts(
-                    models[modelIndex].Reasoning,
+                    model.Reasoning,
                     $"{providerPointer}.models[{modelIndex}].reasoning",
                     errors);
             }
@@ -1867,10 +1892,12 @@ public sealed class ConfigurationValidator(
         }
 
         // The adapter enforces this at request time; validating it at config load gives a clearer
-        // operator-facing error and rejects a silently unusable combination.
+        // operator-facing error and rejects a silently unusable combination. An omitted wireDialect is
+        // the same unusable combination as an explicit "standard": ReasoningRequestValidator treats a
+        // null dialect as "declares no reasoning capability", so the configured budget can never apply.
         if (validWireDialect
             && reasoning.MaxBudgetTokens is not null
-            && reasoning.WireDialect == ReasoningWireDialect.Standard)
+            && reasoning.WireDialect is null or ReasoningWireDialect.Standard)
         {
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.wireDialect",
@@ -2108,6 +2135,17 @@ public sealed class ConfigurationValidator(
         {
 
             A2ASkillSettings skill = skills[index];
+
+            if (skill is null)
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    $"integrations.a2A.skills[{index}]",
+                    "An advertised A2A skill must be a JSON object."));
+
+                continue;
+
+            }
 
             if (string.IsNullOrWhiteSpace(skill.Id))
             {

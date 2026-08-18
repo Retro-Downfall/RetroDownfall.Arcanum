@@ -117,6 +117,115 @@ public sealed class ConfigurationRedactorTests : IDisposable
         Assert.True(ConfigurationRedactor.ValidateNoResidualMask(merged).IsSuccess);
     }
 
+    [Fact]
+    public void MergeRedactedSecretsWithNullProviderNamePassesTheRowThroughForValidation()
+    {
+        ArcanumSettings current = Settings();
+        ArcanumSettings request = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = null!,
+                    Endpoint = "https://x.test/v1",
+                    Models = ["m"],
+                },
+            ],
+        };
+
+        ArcanumSettings merged =
+            ConfigurationRedactor.MergeRedactedSecrets(request, current);
+
+        Assert.Single(merged.Providers);
+        Assert.Equal("https://x.test/v1", merged.Providers[0].Endpoint);
+
+        Result validation = new ConfigurationValidator().Validate(merged);
+
+        Assert.True(validation.IsFailure);
+        Assert.Contains(
+            validation.Error.Details!,
+            static detail => detail.Pointer == "providers[0].name");
+    }
+
+    [Fact]
+    public void MergeRedactedSecretsWithNullProviderElementPassesTheRowThroughForValidation()
+    {
+        ArcanumSettings current = Settings();
+        ArcanumSettings request = new()
+        {
+            Providers = [null!],
+        };
+
+        ArcanumSettings merged =
+            ConfigurationRedactor.MergeRedactedSecrets(request, current);
+
+        Assert.Single(merged.Providers);
+
+        Result validation = new ConfigurationValidator().Validate(merged);
+
+        Assert.True(validation.IsFailure);
+        Assert.Contains(
+            validation.Error.Details!,
+            static detail => detail.Pointer == "providers[0].name");
+    }
+
+    [Fact]
+    public void MergeRedactedSecretsWithDuplicateCurrentProviderNamesRestoresTheFirstEndpoint()
+    {
+        ArcanumSettings current = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "openai",
+                    Endpoint = "https://first.test/v1",
+                    Models = ["m"],
+                },
+                new ProviderSettings
+                {
+                    Name = "openai",
+                    Endpoint = "https://second.test/v1",
+                    Models = ["m"],
+                },
+            ],
+        };
+
+        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(
+            ConfigurationRedactor.Redact(current),
+            current);
+
+        Assert.Equal("https://first.test/v1", merged.Providers[0].Endpoint);
+        Assert.Equal("https://first.test/v1", merged.Providers[1].Endpoint);
+    }
+
+    [Fact]
+    public void RedactWithNullProviderElementMasksAnEmptyRow()
+    {
+        ArcanumSettings settings = new()
+        {
+            Providers = [null!],
+        };
+
+        ArcanumSettings redacted = ConfigurationRedactor.Redact(settings);
+
+        Assert.Single(redacted.Providers);
+        Assert.Equal(string.Empty, redacted.Providers[0].Name);
+        Assert.Equal(string.Empty, redacted.Providers[0].Endpoint);
+    }
+
+    [Fact]
+    public void ValidateNoResidualMaskWithNullProviderElementSucceeds()
+    {
+        ArcanumSettings merged = new()
+        {
+            Providers = [null!],
+        };
+
+        Assert.True(ConfigurationRedactor.ValidateNoResidualMask(merged).IsSuccess);
+    }
+
     public void Dispose()
     {
         System.Environment.SetEnvironmentVariable(
