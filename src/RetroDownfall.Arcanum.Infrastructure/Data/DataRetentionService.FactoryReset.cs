@@ -660,22 +660,15 @@ internal sealed partial class DataRetentionService
 
         }
 
-        Result<DataRetentionFactoryResetCheckpointV1> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(
+        // The same projection the reset arm uses and the erasure coordinator resumes from. The two
+        // journals differ only in their headers, and one reader is what keeps them agreeing about
+        // what a phase means.
+        Result<CovenantErasureCheckpointState> state =
+            CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
+                operation.Id,
                 operation.CheckpointPayload);
 
-        if (decoded.IsFailure)
-        {
-
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Covenant.ManualRecoveryRequired);
-
-        }
-
-        Result<CovenantExclusiveRecoveryOwner> owner =
-            CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value);
-
-        if (owner.IsFailure || owner.Value.OperationId != operation.Id)
+        if (state.IsFailure)
         {
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
@@ -686,7 +679,7 @@ internal sealed partial class DataRetentionService
         logger.LogWarning(
             "A healthy-catalog Covenant factory erasure was interrupted at phase {ResetPhase} for "
             + "durable operation {OperationId}; admission stays closed until it is resumed.",
-            decoded.Value.Phase,
+            state.Value.Phase,
             operation.Id);
 
         return LongRunningOperationRecoveryResult.RequiresAttention(

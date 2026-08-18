@@ -5792,31 +5792,27 @@ internal sealed partial class DataRetentionService(
         LongRunningOperation operation)
     {
 
-        Result<DataRetentionMutationCheckpointV3> decoded =
-            CovenantRecoveryCheckpointCodec.DecodeDataRetentionMutation(operation.CheckpointPayload!);
+        // The same projection the erasure coordinator resumes from, so the handler and the coordinator
+        // cannot drift about what a durable checkpoint means. It rebuilds the owner from the
+        // checkpoint alone — never from a live plan, a request body, or the request-identity row.
+        Result<CovenantErasureCheckpointState> state =
+            CovenantErasureCheckpointState.FromMutationCheckpoint(
+                operation.Id,
+                operation.CheckpointPayload!,
+                out bool describesCovenantErasure);
 
-        if (decoded.IsFailure)
-        {
-
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Covenant.ManualRecoveryRequired);
-
-        }
-
-        if (decoded.Value.Covenant is not { } arm)
+        if (!describesCovenantErasure)
         {
 
             // A version-3 row with no arm describes a mutation that closed nothing. There is no
-            // exclusive scope to adopt and no storage effect this build can attribute to it.
+            // exclusive scope to adopt and no storage effect this build can attribute to it, so it
+            // reconciles as the ordinary mutation it is rather than parking behind closed admission.
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
 
         }
 
-        Result<CovenantExclusiveRecoveryOwner> owner =
-            CovenantRecoveryCheckpointCodec.RecoveryOwner(arm);
-
-        if (owner.IsFailure || owner.Value.OperationId != operation.Id)
+        if (state.IsFailure)
         {
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
@@ -5827,7 +5823,7 @@ internal sealed partial class DataRetentionService(
         logger.LogWarning(
             "A Covenant reset was interrupted at phase {ResetPhase} for durable operation "
             + "{OperationId}; admission stays closed until it is resumed.",
-            arm.Phase,
+            state.Value.Phase,
             operation.Id);
 
         return LongRunningOperationRecoveryResult.RequiresAttention(
