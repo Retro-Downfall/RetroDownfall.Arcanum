@@ -1,6 +1,7 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
@@ -35,7 +36,8 @@ public sealed class ChatClientFactory(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IProviderApiKeyResolver? apiKeyResolver = null,
-    IFamiliarProcessRunner? familiarProcessRunner = null) : IChatClientFactory
+    IFamiliarProcessRunner? familiarProcessRunner = null,
+    ILoggerFactory? loggerFactory = null) : IChatClientFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
@@ -109,8 +111,16 @@ public sealed class ChatClientFactory(
             AiProviderKind.ClaudeCodeCli =>
                 new ClaudeCodeCliChatClient(_familiarProcessRunner, provider, resolvedModel, denied),
 
+            // The Familiar adapters take an optional logger rather than requiring one, so a test or a
+            // composition without logging still constructs them; here, where the real DI container is,
+            // one is always available.
             AiProviderKind.CodexCli =>
-                new CodexCliChatClient(_familiarProcessRunner, provider, resolvedModel, denied),
+                new CodexCliChatClient(
+                    _familiarProcessRunner,
+                    provider,
+                    resolvedModel,
+                    denied,
+                    loggerFactory?.CreateLogger<CodexCliChatClient>()),
 
             _ => throw new InvalidOperationException(
                 $"Unsupported Familiar type '{provider.Type}' for provider '{provider.Name}'."),

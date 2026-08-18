@@ -129,6 +129,48 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The cap can only protect what it is consulted about. <c>GetAsync</c>'s default
+    /// <c>ResponseContentRead</c> buffers the whole body — pre-sized to the declared Content-Length —
+    /// before the handler ever reaches <c>TryReadCappedStringAsync</c>, so a provider that announces a
+    /// gigantic body forces that allocation and then the probe merely reports it. Reading headers first
+    /// is what makes the announced length refusable before a byte of it is held.
+    /// </summary>
+    [SkippableFact]
+    public async Task Test_HugeDeclaredContentLength_IsRefusedFromHeadersWithoutAwaitingTheBody()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string baseUrl = StartStalledListener(declaredLength: 512L * 1024 * 1024);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        ProviderTestRequest request = new(baseUrl, null, AiProviderKind.OpenAICompatible);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/providers/test",
+            new StringContent(
+                JsonSerializer.Serialize(request, ArcanumJsonContext.Default.ProviderTestRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<ProviderTestResult>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseProviderTestResult);
+
+        Assert.NotNull(body);
+
+        Assert.False(body!.Data!.IsReachable, $"Expected the size cap to reject the probe.{ServingDetail}");
+
+        Assert.True(
+            body.Data.Error?.Contains("exceeded the maximum allowed size", StringComparison.OrdinalIgnoreCase) == true,
+            $"Expected the declared length to be refused from the headers, got: {body.Data.Error}.{ServingDetail}");
+
+    }
+
     [SkippableFact]
     public async Task Test_WithinCapResponse_IsReachableAndParsesModels()
     {
@@ -291,6 +333,75 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
             }
 
         }
+
+    }
+
+    /// <summary>
+    /// Starts a loopback listener that announces <paramref name="declaredLength"/> bytes and then sends
+    /// almost none of them. The declared length alone is enough for the cap to refuse the probe, so a
+    /// reader that consults the headers answers immediately; one that buffers the body first waits for
+    /// bytes that never arrive.
+    /// </summary>
+    private string StartStalledListener(long declaredLength)
+    {
+
+        (HttpListener listener, int port) = BindLoopbackListener(GetFreeTcpPort, attempts: 5);
+
+        _listener = listener;
+
+        _ = Task.Run(async () =>
+        {
+
+            HttpListenerContext ctx;
+
+            try
+            {
+
+                ctx = await listener.GetContextAsync().ConfigureAwait(false);
+
+            }
+            catch (Exception ex)
+            {
+
+                if (!_tearingDown)
+                {
+
+                    _acceptFailure = ex;
+
+                }
+
+                return;
+
+            }
+
+            try
+            {
+
+                ctx.Response.StatusCode = 200;
+
+                ctx.Response.ContentType = "application/json";
+
+                ctx.Response.ContentLength64 = declaredLength;
+
+                await ctx.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("{")).ConfigureAwait(false);
+
+                await ctx.Response.OutputStream.FlushAsync().ConfigureAwait(false);
+
+                // Never completes the announced body; the probe's own 5 s timeout is the only exit for
+                // a client that insists on reading it all.
+                await Task.Delay(TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+
+            }
+            catch (Exception)
+            {
+
+                // Expected: the endpoint aborts the read as soon as the declared length passes the cap.
+
+            }
+
+        });
+
+        return $"http://127.0.0.1:{port}/v1";
 
     }
 

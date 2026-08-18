@@ -131,8 +131,12 @@ public sealed class WebResearchWorkflowService(
             FormatSearchMarkdown(result),
             cancellationToken).ConfigureAwait(false);
 
+        // The provider call above is already billed. Failing the whole workflow because the attachment
+        // could not be written discards an answer the caller paid for; the answer is returned and the
+        // attachment failure travels with it as a non-fatal field.
         return attached.IsFailure
-            ? Result<WebSearchWorkflowResult>.Failure(attached.Error)
+            ? Result<WebSearchWorkflowResult>.Success(
+                result with { AttachmentId = null, AttachmentError = attached.Error.Message })
             : Result<WebSearchWorkflowResult>.Success(
                 result with { AttachmentId = attached.Value });
 
@@ -265,8 +269,11 @@ public sealed class WebResearchWorkflowService(
             result.Markdown,
             cancellationToken).ConfigureAwait(false);
 
+        // Same reasoning as SearchAsync: the fetch is already billed, so the page is returned and the
+        // attachment failure is reported alongside it rather than replacing it.
         return attached.IsFailure
-            ? Result<WebBrowseWorkflowResult>.Failure(attached.Error)
+            ? Result<WebBrowseWorkflowResult>.Success(
+                result with { AttachmentId = null, AttachmentError = attached.Error.Message })
             : Result<WebBrowseWorkflowResult>.Success(
                 result with { AttachmentId = attached.Value });
 
@@ -693,12 +700,17 @@ public sealed class WebResearchWorkflowService(
 
     }
 
+    /// <remarks>
+    /// The domain parameters are nullable because they can be: the request record declares them
+    /// non-nullable with an empty-array initializer, and System.Text.Json writes an explicit JSON
+    /// <c>null</c> straight over that initializer.
+    /// </remarks>
     private Result<WebSearchOptions> BuildSearchOptions(
         string query,
         int resultCount,
         string? freshness,
-        string[] includeDomains,
-        string[] excludeDomains)
+        string[]? includeDomains,
+        string[]? excludeDomains)
     {
 
         WebBrowsingSettings web = settings.Value.ResolveWebBrowsing();
@@ -758,9 +770,11 @@ public sealed class WebResearchWorkflowService(
                     ? null
                     : freshness.Trim().ToLowerInvariant(),
 
-                IncludeDomains = includeDomains,
+                // Coalesced here rather than only in each provider: the request record cannot guarantee
+                // these are arrays, and every provider that reads them would otherwise repeat the guard.
+                IncludeDomains = includeDomains ?? [],
 
-                ExcludeDomains = excludeDomains,
+                ExcludeDomains = excludeDomains ?? [],
 
             });
 

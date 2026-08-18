@@ -255,9 +255,14 @@ public sealed class MemoryEndpointTests
 
         Assert.NotNull(envelope?.Data);
 
-        Assert.Equal(MemoryEndpoints.SearchResultLimit, saga.RequestedLimit);
+        // Budget + 1: the probe row is what separates "this scope filled its slice exactly" from
+        // "this scope had more", and it is trimmed before the response is built. The bound that
+        // matters — what the caller is made to hold in memory — is still exactly the budget.
+        Assert.Equal(MemoryEndpoints.SearchResultLimit + 1, saga.RequestedLimit);
 
         Assert.Equal(MemoryEndpoints.SearchResultLimit, envelope.Data.Results.Length);
+
+        Assert.True(envelope.Data.HasMore);
 
     }
 
@@ -314,6 +319,123 @@ public sealed class MemoryEndpointTests
         Assert.True(
             envelope.Data.Results.Length <= MemoryEndpoints.SearchResultLimit,
             $"scope=all returned {envelope.Data.Results.Length} results, above the {MemoryEndpoints.SearchResultLimit} budget.");
+
+    }
+
+    /// <summary>
+    /// The server-side budget alone truncates without any machine-readable signal, and gives a caller
+    /// that only wants ten rows no way to say so. <c>limit</c> is the ask, <c>hasMore</c> is the answer.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Search_honours_a_caller_supplied_limit_and_reports_which_scopes_had_more()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeLexiconService lexicon = new();
+
+        for (int index = 0; index < 5; index++)
+        {
+
+            _ = await lexicon.UpsertAsync(
+                $"Moonlit-{index}",
+                "Person",
+                ["Works by moonlight."],
+                CancellationToken.None);
+
+        }
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                services.RemoveAll<ILexiconService>();
+
+                services.AddSingleton<ILexiconService>(lexicon);
+
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage capped = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("moonlight", MemorySearchScope.Lexicon, Limit: 2),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, capped.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? truncated = await ReadAsync(
+            capped,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        Assert.NotNull(truncated?.Data);
+
+        Assert.Equal(2, truncated.Data.Results.Length);
+
+        Assert.True(truncated.Data.HasMore);
+
+        MemorySearchScopeStatusDto truncatedScope = Assert.Single(truncated.Data.Scopes!);
+
+        Assert.Equal(MemorySearchScope.Lexicon, truncatedScope.Scope);
+
+        Assert.Equal(2, truncatedScope.Count);
+
+        Assert.True(truncatedScope.HasMore);
+
+        HttpResponseMessage roomy = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("moonlight", MemorySearchScope.Lexicon, Limit: 10),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        ApiResponse<MemorySearchResponse>? complete = await ReadAsync(
+            roomy,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        Assert.NotNull(complete?.Data);
+
+        Assert.Equal(5, complete.Data.Results.Length);
+
+        Assert.False(complete.Data.HasMore);
+
+        Assert.False(Assert.Single(complete.Data.Scopes!).HasMore);
+
+    }
+
+    /// <summary>
+    /// Refused rather than clamped: a caller that asked for 50,000 and silently received the budget
+    /// would read a full <c>hasMore: false</c> page as "that is everything".
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(MemoryEndpoints.SearchResultLimit + 1)]
+
+    public async Task Search_refuses_a_limit_outside_the_server_budget(int limit)
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("anything", MemorySearchScope.All, Limit: limit),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, envelope?.Error?.Code);
 
     }
 

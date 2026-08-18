@@ -112,6 +112,17 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.ClientTools.InvalidSchema, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Guardrails.PiiDetected, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Guardrails.Blocked, StatusCodes.Status400BadRequest)]
+    // The durable-operation, perception and codex routes each spelled their code out as a literal and
+    // chose their own status, so nothing held code and status in agreement. The mapper owns all six now.
+    [InlineData(ErrorCodes.Operation.NotFound, StatusCodes.Status404NotFound)]
+    [InlineData(ErrorCodes.Operation.StateConflict, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Operation.InvalidState, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Perception.InvalidPath, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Perception.PathNotAllowed, StatusCodes.Status403Forbidden)]
+    [InlineData(ErrorCodes.Codex.PathNotContained, StatusCodes.Status400BadRequest)]
+    // A spell write that failed is an infrastructure fault, exactly like Workspace.WriteFailed, and
+    // must reach the caller as one rather than as the caller's own 400.
+    [InlineData(ErrorCodes.Spell.WriteFailed, StatusCodes.Status500InternalServerError)]
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]
     public void ResolveStatusCode_MapsExpectedValue(string code, int expected)
     {
@@ -137,6 +148,21 @@ public sealed class ArcanumErrorMapperTests
     {
 
         int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.ProvingGrounds.InferenceFailed);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, actual);
+
+    }
+
+    /// <summary>
+    /// Every spell route resolves through <c>ResolveStatusCodeDefaultBadRequest</c>, so an explicit
+    /// 500 that is not on its no-downgrade list is silently turned back into the 400 the mapping was
+    /// added to replace.
+    /// </summary>
+    [Fact]
+    public void ResolveStatusCodeDefaultBadRequest_SpellWriteFailed_IsNotDowngradedTo400()
+    {
+
+        int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.Spell.WriteFailed);
 
         Assert.Equal(StatusCodes.Status500InternalServerError, actual);
 
