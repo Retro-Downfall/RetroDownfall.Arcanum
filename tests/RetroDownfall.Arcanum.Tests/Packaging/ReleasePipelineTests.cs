@@ -126,8 +126,16 @@ public sealed class ReleasePipelineTests
     /// with — and a key that signs anything Gatekeeper then trusts on every operator's machine. A
     /// commit SHA is immutable, so the reference means one specific tree forever.
     /// </summary>
+    /// <remarks>
+    /// Every workflow, not only the ones that read <c>secrets.</c>. A holder of no secret still
+    /// checks out this repository's source and runs a third-party binary over it on a runner that
+    /// reaches the network, so an upstream compromise gets arbitrary code execution against the
+    /// tree the release is cut from — and the workflow one commit later may be the one that gains
+    /// a secret. The single-maintainer third-party action is the reference the tj-actions threat
+    /// model applies to literally, and it lives in the workflow that builds the native runtime.
+    /// </remarks>
     [Fact]
-    public void Workflows_holding_repository_secrets_pin_every_action_to_a_commit()
+    public void Workflows_pin_every_third_party_action_to_a_commit()
     {
 
         List<string> offenders = [];
@@ -136,13 +144,6 @@ public sealed class ReleasePipelineTests
         {
 
             string[] lines = File.ReadAllLines(workflow);
-
-            if (!lines.Any(static line => line.Contains("secrets.", StringComparison.Ordinal)))
-            {
-
-                continue;
-
-            }
 
             for (int i = 0; i < lines.Length; i++)
             {
@@ -183,9 +184,9 @@ public sealed class ReleasePipelineTests
 
         Assert.True(
             offenders.Count == 0,
-            "A workflow with access to repository secrets runs an action from a mutable tag, so "
-            + "upstream can change the code that executes alongside the signing key. Pin the full "
-            + "40-character commit SHA and keep the version in a trailing comment:"
+            "A workflow runs an action from a mutable tag, so upstream decides what code executes "
+            + "against this repository's source on the next run. Pin the full 40-character commit "
+            + "SHA and keep the version in a trailing comment:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
 

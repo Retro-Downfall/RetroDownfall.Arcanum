@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Offline by design: provenance, digest shape, license and SBOM hashes only. No binary is
       # required, so this runs anywhere and fails fast on a malformed manifest.
@@ -47,7 +47,7 @@ jobs:
             runner: macos-14
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install verification tools
         run: brew install gnupg shellcheck jq
@@ -83,7 +83,7 @@ jobs:
           fi
 
       - name: Upload the rebuilt asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-sqlcipher-${{ matrix.rid }}
           path: |
@@ -99,10 +99,10 @@ jobs:
         rid: [win-x64, win-arm64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up the MSVC toolchain
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: ${{ matrix.rid == 'win-arm64' && 'amd64_arm64' || 'amd64' }}
 
@@ -139,7 +139,7 @@ jobs:
           }
 
       - name: Upload the built asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-sqlcipher-${{ matrix.rid }}
           path: |
