@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Reflection;
 using System.Text.Json;
@@ -228,6 +229,62 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
     }
 
     /// <summary>
+    /// A dated file the reader cannot open is dropped from the result and the page still comes back
+    /// <c>Success</c>, so <c>GET /api/guardrails/audit</c> answers "no violations that day" with full
+    /// confidence. The only diagnostic was <c>LogDebug</c>, and the Serilog pipeline floor is a
+    /// hardcoded <c>MinimumLevel.Information()</c> — no sink, no rolling file, no ring buffer, nothing
+    /// in <c>arcanum logs</c>. Silent incompleteness on a security audit surface needs a signal.
+    /// </summary>
+    [Fact]
+    public async Task QueryPageAsync_WhenADatedFileCannotBeRead_ReportsItAboveTheLogFloor()
+    {
+
+        TestCapturingLogger<GuardrailAuditLogger> diagnostics = new();
+
+        GuardrailAuditLogger logger = CreateLogger(enabled: true, diagnostics: diagnostics);
+
+        await logger.LogAsync(MakeRecord("today"), CancellationToken.None);
+
+        string yesterday = DateTime.UtcNow.AddDays(-1).ToString("yyyyMMdd");
+
+        string yesterdayFile = Path.Combine(_tempDirectory, $"guardrails-{yesterday}.jsonl");
+
+        await File.WriteAllTextAsync(
+            yesterdayFile,
+            JsonSerializer.Serialize(
+                MakeRecord("yesterday"),
+                AuditJsonContext.Default.GuardrailAuditRecord) + "\n");
+
+        // FileShare.None takes an exclusive advisory lock, so the reader's OpenRead (FileShare.ReadWrite
+        // | FileShare.Delete) fails exactly the way a mode/ACL change or a disk error makes it fail.
+        await using (FileStream _ = new(yesterdayFile, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+
+            Result<AuditQueryPage<GuardrailAuditRecord>> page = await logger.QueryPageAsync(
+                null,
+                null,
+                null,
+                null,
+                null,
+                100,
+                cursor: null,
+                CancellationToken.None);
+
+            Assert.True(page.IsSuccess);
+
+            Assert.Equal(["today"], page.Value.Records.Select(static record => record.ViolationType));
+
+        }
+
+        TestLogEntry warning = Assert.Single(
+            diagnostics.Entries,
+            static entry => entry.Level >= LogLevel.Warning);
+
+        Assert.Contains(yesterdayFile, warning.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
     /// <see cref="AuditLogPageReader"/> is the sole owner of dated-file discovery — QueryPageAsync
     /// delegates to it wholesale. A private copy on the logger is unreachable code that parses file
     /// stamps by different rules, so a maintainer editing the copy changes nothing at runtime.
@@ -255,7 +312,8 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         bool enabled,
         bool automaticSweepsEnabled = true,
         bool unifiedRetentionEnabled = true,
-        int unifiedRetentionDays = 7)
+        int unifiedRetentionDays = 7,
+        ILogger<GuardrailAuditLogger>? diagnostics = null)
     {
 
         ArcanumSettings settings = new()
@@ -284,7 +342,7 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
 
         return new GuardrailAuditLogger(
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            NullLogger<GuardrailAuditLogger>.Instance,
+            diagnostics ?? NullLogger<GuardrailAuditLogger>.Instance,
             Path.Combine(_tempDirectory, "guardrails.jsonl"));
 
     }

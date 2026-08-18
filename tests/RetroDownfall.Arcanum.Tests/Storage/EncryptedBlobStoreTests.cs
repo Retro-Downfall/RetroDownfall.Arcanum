@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
 
@@ -194,6 +195,54 @@ public sealed class EncryptedBlobStoreTests : IDisposable
 
         byte[][] results = await Task.WhenAll(reads);
         Assert.All(results, result => Assert.Equal(plaintext, result));
+    }
+
+    // OpenReadAsync hands out a public Stream and CreateWriterAsync hands out a public
+    // EncryptedBlobWriter, so a synchronous consumer lands on Read/Write/Dispose — StreamWriter's own
+    // synchronous Flush and Dispose are exactly that, and BatchProcessingService wraps this writer in
+    // one. Those overrides blocked on the async path with GetAwaiter().GetResult() over handles opened
+    // FileOptions.Asynchronous, pinning a pool thread for the duration of real file I/O.
+    [Fact]
+    public void Encrypted_blob_streams_have_no_sync_over_async_overrides()
+    {
+        ProductionSource source = Assert.Single(
+            ProductionSourceInventory.Sources(),
+            static candidate => candidate.Is("EncryptedBlobStore.cs"));
+
+        Assert.DoesNotContain("GetAwaiter().GetResult()", source.Text, StringComparison.Ordinal);
+    }
+
+    // The synchronous overrides are separate code paths through the same AEAD seal/open, so they need
+    // their own round-trip: a chunk-straddling payload written through Stream.Write and read back
+    // through Stream.CopyTo, which is Stream.Read underneath.
+    [Fact]
+    public async Task Streaming_writer_and_reader_round_trip_through_the_synchronous_stream_api()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "synchronous-round-trip");
+        byte[] plaintext = RandomNumberGenerator.GetBytes(205);
+        EncryptedBlobDescriptor descriptor;
+
+        await using (EncryptedBlobWriter writer = await store.CreateWriterAsync(
+                         path,
+                         EncryptedBlobPurpose.BatchArtifact))
+        {
+            for (int offset = 0; offset < plaintext.Length; offset += 7)
+            {
+                writer.Write(plaintext, offset, Math.Min(7, plaintext.Length - offset));
+            }
+
+            writer.Flush();
+            descriptor = await writer.CompleteAsync();
+        }
+
+        Assert.Equal(plaintext.Length, descriptor.PlaintextLength);
+        await using Stream reader = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+        using MemoryStream roundTrip = new();
+        reader.CopyTo(roundTrip);
+        Assert.Equal(plaintext, roundTrip.ToArray());
     }
 
     [Fact]

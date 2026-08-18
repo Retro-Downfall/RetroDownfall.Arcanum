@@ -151,7 +151,7 @@ internal sealed class LexiconService(
                     }
                     catch
                     {
-                        await TryRollbackAsync(connection, cancellationToken).ConfigureAwait(false);
+                        await TryRollbackAsync(connection, trimmedName).ConfigureAwait(false);
 
                         throw;
                     }
@@ -213,7 +213,7 @@ internal sealed class LexiconService(
                     }
                     catch
                     {
-                        await TryRollbackAsync(connection, cancellationToken).ConfigureAwait(false);
+                        await TryRollbackAsync(connection, trimmedName).ConfigureAwait(false);
 
                         throw;
                     }
@@ -826,8 +826,13 @@ internal sealed class LexiconService(
         CancellationToken cancellationToken)
     {
 
+        // MergeFacts is an uncapped union, so `retained` grows monotonically over an entry's life.
+        // Probing it with Enumerable.Contains made both loops below O(existing x retained) ordinal
+        // scans inside the BEGIN IMMEDIATE critical section.
+        HashSet<string> retainedSet = new(retained, StringComparer.Ordinal);
+
         Dictionary<string, AttachmentMemoryProvenance> sources = existing
-            .Where(item => retained.Contains(item.Fact, StringComparer.Ordinal))
+            .Where(item => retainedSet.Contains(item.Fact))
             .ToDictionary(item => item.Fact, item => item.Source, StringComparer.Ordinal);
 
         if (provenance is not null)
@@ -836,7 +841,7 @@ internal sealed class LexiconService(
             foreach (string fact in incoming)
             {
 
-                if (retained.Contains(fact, StringComparer.Ordinal))
+                if (retainedSet.Contains(fact))
                 {
 
                     sources[fact] = provenance;
@@ -847,21 +852,24 @@ internal sealed class LexiconService(
 
         }
 
-        await using (DbCommand delete = connection.CreateCommand())
+        if (HasProvenanceChanged(existing, sources))
         {
 
-            delete.CommandText =
-                "DELETE FROM lexicon_fact_attachment_provenance WHERE EntryId = @entryId";
+            await using (DbCommand delete = connection.CreateCommand())
+            {
 
-            AddParameter(delete, "@entryId", entryId.ToString("N"));
+                delete.CommandText =
+                    "DELETE FROM lexicon_fact_attachment_provenance WHERE EntryId = @entryId";
 
-            _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                AddParameter(delete, "@entryId", entryId.ToString("N"));
 
-        }
+                _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach ((string fact, AttachmentMemoryProvenance source) in sources)
-        {
+            }
 
+            // One command, re-executed with fresh parameter values per row. A multi-row INSERT would
+            // bind ten parameters per fact and collide with SQLite's bound-parameter ceiling at exactly
+            // the entry sizes that make this loop worth caring about.
             await using DbCommand insert = connection.CreateCommand();
 
             insert.CommandText =
@@ -874,15 +882,22 @@ internal sealed class LexiconService(
                     @version, @contentHash, @materializedAt, @sourceType)
                 """;
 
-            AddParameter(insert, "@entryId", entryId.ToString("N"));
+            foreach ((string fact, AttachmentMemoryProvenance source) in sources)
+            {
 
-            AddParameter(insert, "@factHash", HashFact(fact));
+                insert.Parameters.Clear();
 
-            AddParameter(insert, "@fact", fact);
+                AddParameter(insert, "@entryId", entryId.ToString("N"));
 
-            AddProvenanceParameters(insert, source);
+                AddParameter(insert, "@factHash", HashFact(fact));
 
-            _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                AddParameter(insert, "@fact", fact);
+
+                AddProvenanceParameters(insert, source);
+
+                _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            }
 
         }
 
@@ -893,6 +908,41 @@ internal sealed class LexiconService(
                     pair.Key,
                     pair.Value with { Availability = AttachmentSourceAvailability.Available })),
         ];
+
+    }
+
+    /// <summary>
+    /// Whether the provenance rows on disk already say exactly what <paramref name="sources"/> says.
+    /// </summary>
+    /// <remarks>
+    /// <c>Availability</c> is deliberately excluded: it is never stored, it is recomputed on every read
+    /// by the <c>EXISTS(... State = 'Bound')</c> subquery, so a difference in it is not a difference in
+    /// the rows. Skipping the rewrite also preserves the per-entry rowid contiguity that the
+    /// <c>ORDER BY p.rowid</c> hydration relies on for insertion order.
+    /// </remarks>
+    private static bool HasProvenanceChanged(
+        IReadOnlyList<LexiconFactProvenance> existing,
+        Dictionary<string, AttachmentMemoryProvenance> sources)
+    {
+
+        if (existing.Count != sources.Count)
+        {
+            return true;
+        }
+
+        foreach (LexiconFactProvenance item in existing)
+        {
+
+            if (!sources.TryGetValue(item.Fact, out AttachmentMemoryProvenance? source)
+                || item.Source with { Availability = AttachmentSourceAvailability.Available }
+                    != source with { Availability = AttachmentSourceAvailability.Available })
+            {
+                return true;
+            }
+
+        }
+
+        return false;
 
     }
 
@@ -1169,16 +1219,36 @@ internal sealed class LexiconService(
 
     }
 
-    private static async Task TryRollbackAsync(DbConnection connection, CancellationToken cancellationToken)
+    /// <summary>
+    /// Releases the <c>BEGIN IMMEDIATE</c> write lock on the shared scoped connection.
+    /// </summary>
+    /// <remarks>
+    /// The <c>ROLLBACK</c> is deliberately issued on <see cref="CancellationToken.None"/>. Cancellation
+    /// is the main reason this path runs at all — an aborted <c>DELETE /api/memory/lexicon/{name}</c>
+    /// hands the handler <c>RequestAborted</c> — and <c>DbCommand.ExecuteNonQueryAsync</c> returns a
+    /// cancelled task before issuing any SQL when the token is already signalled, so rolling back on the
+    /// caller's token would skip the release on exactly the path it exists for. This matches
+    /// <c>CampaignRepository.TryRollbackAsync</c> and <c>SessionEntryPersistence</c>, which both clean up
+    /// on a token the caller cannot cancel.
+    /// </remarks>
+    private async Task TryRollbackAsync(DbConnection connection, string entityName)
     {
 
         try
         {
-            await ExecuteNonQueryAsync(connection, cancellationToken, "ROLLBACK").ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, CancellationToken.None, "ROLLBACK").ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception ex) when (
+            ex is SqliteException
+                or InvalidOperationException
+                or ObjectDisposedException)
         {
-            // Best-effort rollback: a failed BEGIN or already-closed connection is not actionable here.
+            // Best-effort rollback: a failed BEGIN or an already-closed connection leaves nothing to
+            // release. Anything outside these three is unexpected and must not be swallowed silently.
+            logger.LogWarning(
+                ex,
+                "Lexicon rollback failed for entity {Name}; the write transaction was left to the connection reset.",
+                entityName);
         }
 
     }
