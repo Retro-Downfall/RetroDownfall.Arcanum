@@ -1026,9 +1026,12 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient(
             ArcanumBrowseWebConstants.HttpClientName,
+            // Infinite by design, not by omission: HttpClient.Timeout bounds the whole request and
+            // would cut a slow but still-progressing download, so ArcanumBrowseWebTool imposes an
+            // IDLE deadline of its own (WebBrowsingIdleTimeoutSeconds) around the read instead.
             static client => client.Timeout = Timeout.InfiniteTimeSpan)
-            // Legacy embedder fallback only. URLs may contain credentials in
-            // path/query data, so suppress IHttpClientFactory URI logging.
+            // Browsed URLs may carry credentials in path/query data, so suppress
+            // IHttpClientFactory's URI logging; the tool logs the host only.
             .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
 

@@ -11,18 +11,18 @@ internal static class SpellMarkdownGenerator
         string description = metadata.Description ?? string.Empty;
 
         string tagsLine = metadata.Tags.Count > 0
-            ? string.Join(", ", metadata.Tags)
+            ? string.Join(", ", metadata.Tags.Select(SpellFileParser.SingleFrontmatterLine))
             : string.Empty;
 
         var lines = new List<string>
         {
             "---",
-            $"name: {metadata.Name}",
+            $"name: {SpellFileParser.SingleFrontmatterLine(metadata.Name)}",
         };
 
         if (!string.IsNullOrWhiteSpace(description))
         {
-            lines.Add($"description: {description.Trim()}");
+            lines.Add($"description: {SpellFileParser.SingleFrontmatterLine(description)}");
         }
 
         if (tagsLine.Length > 0)
@@ -32,12 +32,12 @@ internal static class SpellMarkdownGenerator
 
         if (!string.IsNullOrWhiteSpace(metadata.Model))
         {
-            lines.Add($"model: {metadata.Model.Trim()}");
+            lines.Add($"model: {SpellFileParser.SingleFrontmatterLine(metadata.Model)}");
         }
 
         if (!string.IsNullOrWhiteSpace(metadata.Provider))
         {
-            lines.Add($"provider: {metadata.Provider.Trim()}");
+            lines.Add($"provider: {SpellFileParser.SingleFrontmatterLine(metadata.Provider)}");
         }
 
         lines.Add("---");

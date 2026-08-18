@@ -97,6 +97,29 @@ public sealed class CampaignSettingsTests
 
     }
 
+    /// <summary>
+    /// A Settings column that says nothing readable still reads as warded.
+    /// </summary>
+    /// <remarks>
+    /// The column is declared <c>TEXT NOT NULL</c> and both construction sites write a serialized
+    /// default, so these fallbacks are defence in depth rather than a live hole. But the whole point
+    /// of the Ward default is that absence means warded: a fallback that hand-builds the record with
+    /// <c>RequireWardForForbiddenArts: false</c> reintroduces exactly the fail-open the constructor
+    /// default exists to close, on the one path that runs when the stored value cannot be trusted.
+    /// </remarks>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("null")]
+    public void A_campaign_row_whose_settings_column_is_empty_or_unparsable_still_reads_as_warded(string stored)
+    {
+
+        CampaignSettings settings = CampaignRepository.DeserializeSettings(stored);
+
+        Assert.True(settings.RequireWardForForbiddenArts);
+
+    }
+
     [Fact]
     public void Default_settings_round_trip_through_the_persisted_json_shape()
     {

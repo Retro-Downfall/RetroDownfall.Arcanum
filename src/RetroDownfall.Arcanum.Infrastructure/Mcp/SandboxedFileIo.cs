@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 
+using System.Text;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -13,6 +15,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal static class SandboxedFileIo
 {
+
+    /// <summary>
+    /// Emits the UTF-8 preamble, used only to carry an existing destination BOM across an overwrite.
+    /// </summary>
+    private static readonly UTF8Encoding PreambleUtf8 = new(encoderShouldEmitUTF8Identifier: true);
 
     internal static bool TryOpenForRead(
         string workspaceRoot,
@@ -148,6 +155,17 @@ internal static class SandboxedFileIo
 
         string tempPath = Path.Combine(directory, $".arcanum-{Guid.NewGuid():N}.tmp");
 
+        // StreamWriter's implicit encoding is UTF8NoBOM, and the read side
+        // (SecureFileReader.ReadUtf8TextAsync) strips the preamble before the model ever sees the
+        // text, so a read_file/write_file round-trip used to drop the destination's BOM silently —
+        // an unrequested re-encoding of a file the model only meant to edit. Carry it across, the
+        // same way PhysicalFileSystemWriter and WorkspaceTextFile already do, but only when the
+        // caller's own content does not already begin with U+FEFF, since emitting the preamble on
+        // top of that would double it.
+        bool preserveDestinationPreamble =
+            !content.StartsWith('\uFEFF')
+            && DestinationStartsWithUtf8Preamble(workspaceRoot, absolutePath);
+
         // The bare temp+flush+rename mechanics (and temp cleanup on failure) are shared via
         // AtomicFile.ReplaceAsync; this wrapper keeps the sandbox revalidations interleaved around
         // the write and rename. The write callback intentionally leaves the stream open so the
@@ -163,7 +181,11 @@ internal static class SandboxedFileIo
                 async (stream, ct) =>
                 {
 
-                    await using StreamWriter writer = new(stream, encoding: null, bufferSize: -1, leaveOpen: true);
+                    await using StreamWriter writer = new(
+                        stream,
+                        encoding: preserveDestinationPreamble ? PreambleUtf8 : null,
+                        bufferSize: -1,
+                        leaveOpen: true);
 
                     await writer.WriteAsync(content.AsMemory(), ct).ConfigureAwait(false);
 
@@ -217,6 +239,57 @@ internal static class SandboxedFileIo
         {
 
             return (false, ToolError("An I/O error occurred writing. See server logs."));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Reports whether an existing destination begins with a UTF-8 preamble, so an overwrite can
+    /// carry it across.
+    /// </summary>
+    /// <remarks>
+    /// The probe goes through the same handle-checked <see cref="TryOpenForRead"/> the read tools
+    /// use — it proves the object is a contained, unaliased regular file before opening, so a FIFO
+    /// cannot park it — and answers "no preamble" for anything it cannot open. Nothing here decides
+    /// the write: the destination is revalidated again, with handle identity, inside the atomic
+    /// replace. Mirrors <c>PhysicalFileSystemWriter.DestinationStartsWithUtf8Bom</c>.
+    /// </remarks>
+    private static bool DestinationStartsWithUtf8Preamble(string workspaceRoot, string absolutePath)
+    {
+
+        if (!File.Exists(absolutePath))
+        {
+
+            return false;
+
+        }
+
+        if (!TryOpenForRead(workspaceRoot, absolutePath, out FileStream? stream, out _))
+        {
+
+            return false;
+
+        }
+
+        using (stream)
+        {
+
+            Span<byte> head = stackalloc byte[3];
+
+            try
+            {
+
+                return stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false) == head.Length
+                    && head.SequenceEqual(Encoding.UTF8.Preamble);
+
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+
+                return false;
+
+            }
 
         }
 

@@ -359,8 +359,10 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         IReadOnlyDictionary<string, FileEncryptionKeyMaterial> keys,
         string activeKeyId)
     {
-        // Always LF: AppendLine emits CRLF on Windows, which every key-ring reader
-        // (this type, BackupSecretSnapshotReader, BackupSecretRewrapper) rejects.
+        // Always LF, never AppendLine, which emits CRLF on Windows. Every key-ring reader (this type,
+        // BackupSecretSnapshotReader, BackupSecretRewrapper) tolerates CRLF so that rings an older
+        // Windows build already persisted still load — but tolerance is for what is already on disk.
+        // This writer emits the one canonical form, so no ring it produces ever depends on it.
         System.Text.StringBuilder encoded = new();
         _ = encoded.Append(KeyRingHeader).Append('\n');
         _ = encoded.Append("active=").Append(activeKeyId).Append('\n');

@@ -242,7 +242,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         Assert.True(File.Exists(Path.Combine(
             _destinationAttachments,
-            request.DestinationSessionId.ToString("D"),
+            request.DestinationSessionId.ToString("N"),
             "note.txt")));
 
         // Pending until the caller spends its lease decision.
@@ -253,6 +253,46 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             CancellationToken.None)).IsSuccess);
 
         Assert.Equal(5, await DestinationPhaseAsync());
+
+    }
+
+    /// <summary>
+    /// Every import re-owns its blobs onto the Session id the destination row is written under.
+    /// </summary>
+    /// <remarks>
+    /// A remap that never matches is not a cosmetic defect: the bytes land under the SOURCE Session's
+    /// directory in the destination tree, the row stores that leaf, and
+    /// <c>TryDeleteSessionDirectory(importedSessionId)</c> then reclaims a directory that was never
+    /// created — so every non-colliding import leaks its attachments permanently.
+    /// </remarks>
+    [Fact]
+    public async Task An_import_never_writes_its_blobs_under_the_source_sessions_owner_segment()
+    {
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
+            await CommitAsync(request);
+
+        Assert.True(
+            completion.Result.IsSuccess,
+            completion.Result.IsFailure ? completion.Result.Error.Message : string.Empty);
+
+        Assert.False(
+            Directory.Exists(Path.Combine(_destinationAttachments, _sourceSessionId.ToString("N"))),
+            "The destination tree must carry no directory named after the source Session.");
+
+        Assert.True(File.Exists(Path.Combine(
+            _destinationAttachments,
+            request.DestinationSessionId.ToString("N"),
+            "note.txt")));
+
+        // The stored leaf has to agree with the bytes, or the row points at nothing.
+        Assert.Equal(
+            request.DestinationSessionId.ToString("N") + "/note.txt",
+            await _destination.ScalarStringAsync(
+                "SELECT \"RelativePath\" FROM \"SessionAttachments\";",
+                CancellationToken.None));
 
     }
 
@@ -576,7 +616,13 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
              """,
             CancellationToken.None);
 
-        string payload = Path.Combine(_sourceAttachments, session, "note.txt");
+        // The owner segment is seeded exactly as SessionAttachmentStore.BuildRelativePath writes it —
+        // ToString("N") — because the archive under import was produced by that writer. Seeding the
+        // dashed form instead would agree with the remap's own spelling and hide whether the remap
+        // ever matches a real attachment tree.
+        string owner = _sourceSessionId.ToString("N");
+
+        string payload = Path.Combine(_sourceAttachments, owner, "note.txt");
 
         Directory.CreateDirectory(Path.GetDirectoryName(payload)!);
 
@@ -593,7 +639,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                   "OriginalFileName", "Version", "RelativePath", "ContentSha256", "MimeType",
                   "ByteLength", "Kind", "CreatedAt", "SourceKind", "SourceStatus", "EncryptionVersion")
              VALUES ('{Guid.Parse("cccccccc-1111-4222-8333-444444444444")}', '{session}', NULL, NULL,
-                     0, 'note', 'note.txt', 1, '{session}/note.txt', '{hash}', 'text/plain',
+                     0, 'note', 'note.txt', 1, '{owner}/note.txt', '{hash}', 'text/plain',
                      {bytes.Length}, 0, '{now}', 'SnapshotOnly', 'NotApplicable', 0);
              """,
             CancellationToken.None);
