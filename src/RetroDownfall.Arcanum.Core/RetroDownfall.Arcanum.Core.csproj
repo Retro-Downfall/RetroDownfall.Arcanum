@@ -14,11 +14,21 @@
 
     </PropertyGroup>
 
-    <WriteLinesToFile File="$(_ArcanumBuildInfoGenerated)" Overwrite="true" Lines="namespace RetroDownfall.Arcanum.Core%3B%0A%0Apublic static partial class ArcanumBuildInfo%0A{%0A%0A    public const string InformationalVersion = &quot;$(Version)&quot;%3B%0A%0A}" />
+    <!--
+      WriteOnlyWhenDifferent is load-bearing, not tidiness. This target runs BeforeCompile and adds
+      its output to @(Compile), so an unconditional rewrite stamps a fresh mtime on an input of
+      CoreCompile every single build and Core's up-to-date check can never succeed. The version is a
+      static property, so the content is byte-identical run to run and the file should only ever be
+      touched when $(Version) actually changes. The task requires Overwrite="true" to honour it.
+    -->
+    <WriteLinesToFile File="$(_ArcanumBuildInfoGenerated)" Overwrite="true" WriteOnlyWhenDifferent="true" Lines="namespace RetroDownfall.Arcanum.Core%3B%0A%0Apublic static partial class ArcanumBuildInfo%0A{%0A%0A    public const string InformationalVersion = &quot;$(Version)&quot;%3B%0A%0A}" />
 
     <ItemGroup>
 
       <Compile Include="$(_ArcanumBuildInfoGenerated)" />
+
+      <!-- Tracked in the incremental-clean cache so `dotnet clean` removes the generated source. -->
+      <FileWrites Include="$(_ArcanumBuildInfoGenerated)" />
 
     </ItemGroup>
 

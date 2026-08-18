@@ -219,6 +219,117 @@ public sealed class HostProcessToolsMarkerPairJoinerTests
 
     }
 
+    /// <summary>
+    /// The identity is the one field whose decode is lossy, so it is the one field a refusal
+    /// contract has to fuzz.
+    /// </summary>
+    /// <remarks>
+    /// <c>Encoding.UTF8.GetString</c> substitutes U+FFFD for each invalid byte and that replacement
+    /// re-encodes to three bytes, so a structurally valid payload carrying non-UTF-8 identity bytes
+    /// decodes to a string the marker cannot re-encode. A <c>TryDecode</c> that accepts it hands
+    /// <see cref="HostProcessToolsOsMarkerEvidence"/> an identity its constructor rejects, turning a
+    /// designed block into an <see cref="ArgumentException"/> thrown out of the startup gate's very
+    /// first statement. Refusing here keeps the failure a classification rather than a crash.
+    /// </remarks>
+    [Theory]
+    [InlineData(128, (byte)0xFF)]
+    [InlineData(43, (byte)0xFF)]
+    [InlineData(1, (byte)0x80)]
+    public void An_identity_field_that_is_not_valid_utf8_is_refused_rather_than_replacement_decoded(
+        int identityLength,
+        byte fill)
+    {
+
+        byte[] payload = CorruptedIdentityPayload(identityLength, fill);
+
+        Assert.False(HostProcessToolsMarkerPayload.TryDecode(payload, out _));
+
+    }
+
+    /// <summary>
+    /// A whitespace-only identity round-trips through UTF-8 perfectly and still fails the evidence
+    /// constructor's first statement, so byte fidelity alone is not the whole predicate.
+    /// </summary>
+    [Theory]
+    [InlineData((byte)0x20)]
+    [InlineData((byte)0x09)]
+    public void A_blank_identity_field_is_refused_rather_than_carried_into_the_evidence(byte fill)
+    {
+
+        byte[] payload = CorruptedIdentityPayload(identityLength: 4, fill);
+
+        Assert.False(HostProcessToolsMarkerPayload.TryDecode(payload, out _));
+
+    }
+
+    /// <summary>
+    /// Everything <c>TryDecode</c> accepts must construct, or the refusal contract is decorative.
+    /// </summary>
+    [Fact]
+    public void Every_accepted_payload_constructs_its_evidence_without_throwing()
+    {
+
+        byte[] payload = HostProcessToolsMarkerPayload.Encode(
+            Installation,
+            Transition,
+            taintMasterKeyVersion: 3,
+            Fingerprint(11));
+
+        foreach (byte fill in new byte[] { 0x00, 0x09, 0x20, 0x41, 0x80, 0xC0, 0xED, 0xF5, 0xFE, 0xFF })
+        {
+
+            for (int identityLength = 1; identityLength <= HostProcessToolsMarkerPayload.InstallationIdentityFieldBytes; identityLength++)
+            {
+
+                byte[] candidate = CorruptedIdentityPayload(identityLength, fill);
+
+                if (!HostProcessToolsMarkerPayload.TryDecode(candidate, out HostProcessToolsMarkerFields fields))
+                {
+
+                    continue;
+
+                }
+
+                _ = new HostProcessToolsOsMarkerEvidence(
+                    fields.InstallationIdentity,
+                    fields.TransitionId,
+                    fields.TaintMasterKeyVersion,
+                    fields.TaintFingerprint,
+                    HostProcessToolsMarkerPayload.DigestOf(candidate),
+                    Fingerprint(5));
+
+            }
+
+        }
+
+        Assert.True(HostProcessToolsMarkerPayload.TryDecode(payload, out _));
+
+    }
+
+    /// <summary>
+    /// A structurally valid payload whose identity field is <paramref name="identityLength"/> bytes
+    /// of <paramref name="fill"/>, with correct version, zero padding, and non-empty transition,
+    /// key version, and fingerprint — everything <c>TryDecode</c> checks except the identity itself.
+    /// </summary>
+    private static byte[] CorruptedIdentityPayload(int identityLength, byte fill)
+    {
+
+        byte[] payload = HostProcessToolsMarkerPayload.Encode(
+            Installation,
+            Transition,
+            taintMasterKeyVersion: 3,
+            Fingerprint(11));
+
+        payload[1] = (byte)identityLength;
+
+        payload.AsSpan(2, HostProcessToolsMarkerPayload.InstallationIdentityFieldBytes).Clear();
+
+        payload.AsSpan(2, identityLength).Fill(fill);
+
+        return payload;
+
+    }
+
     [Fact]
     public void Two_payloads_that_differ_in_any_field_digest_differently()
     {

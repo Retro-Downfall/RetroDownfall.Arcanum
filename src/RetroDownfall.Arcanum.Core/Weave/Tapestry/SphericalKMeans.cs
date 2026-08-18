@@ -290,6 +290,11 @@ public static class SphericalKMeans
 
         Array.Fill(assignments, -1);
 
+        // Assign already computes each point's similarity to the centroid it wins; keeping it here
+        // is what lets the empty-cluster repair pick a donor without a second O(n*d) pass per empty
+        // centroid. Written every iteration before any reader runs.
+        double[] assignedSimilarity = new double[usableIds.Count];
+
         int iterations = 0;
 
         SphericalKMeansTermination termination = SphericalKMeansTermination.IterationCap;
@@ -303,9 +308,9 @@ public static class SphericalKMeans
 
             iterations++;
 
-            bool changed = Assign(usableVectors, centroids, assignments);
+            bool changed = Assign(usableVectors, centroids, assignments, assignedSimilarity);
 
-            RepairEmptyClusters(usableVectors, centroids, assignments);
+            RepairEmptyClusters(usableVectors, centroids, assignments, assignedSimilarity);
 
             double shift = UpdateCentroids(usableVectors, assignments, centroids);
 
@@ -622,12 +627,15 @@ public static class SphericalKMeans
     /// <summary>
     /// Assigns every point to its most similar centroid. Ties break toward the lowest centroid
     /// ordinal, and points are visited in stable-id order, so the assignment is a pure function of
-    /// the inputs.
+    /// the inputs. The winning similarity of each point is recorded into
+    /// <paramref name="assignedSimilarity"/> rather than discarded, because
+    /// <see cref="RepairEmptyClusters"/> needs exactly that value.
     /// </summary>
     private static bool Assign(
         IReadOnlyList<float[]> vectors,
         float[][] centroids,
-        int[] assignments)
+        int[] assignments,
+        double[] assignedSimilarity)
     {
 
         bool changed = false;
@@ -655,6 +663,8 @@ public static class SphericalKMeans
 
             }
 
+            assignedSimilarity[index] = bestSimilarity;
+
             if (assignments[index] != best)
             {
 
@@ -676,10 +686,20 @@ public static class SphericalKMeans
     /// <c>vectors</c> is already in stable-id order, is the lowest index. A donor cluster is never
     /// emptied to fill another.
     /// </summary>
+    /// <remarks>
+    /// The donor scan reads <paramref name="assignedSimilarity"/> instead of re-deriving each point's
+    /// similarity to its own centroid, which would be an O(n*d) pass per empty centroid on top of the
+    /// assignment pass that just computed the identical value. Reading it is exact, not an
+    /// approximation: the only centroids this method overwrites were empty, so no point is assigned
+    /// to one, and the single donor it moves lands in a size-1 cluster that the guard below then
+    /// skips. Every entry the scan actually reads therefore still describes the centroid the point
+    /// is assigned to, bit for bit.
+    /// </remarks>
     private static void RepairEmptyClusters(
         IReadOnlyList<float[]> vectors,
         float[][] centroids,
-        int[] assignments)
+        int[] assignments,
+        double[] assignedSimilarity)
     {
 
         int[] sizes = new int[centroids.Length];
@@ -715,7 +735,7 @@ public static class SphericalKMeans
 
                 }
 
-                double similarity = Dot(vectors[index], centroids[assignments[index]]);
+                double similarity = assignedSimilarity[index];
 
                 if (similarity < worstSimilarity)
                 {

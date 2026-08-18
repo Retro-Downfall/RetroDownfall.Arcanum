@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -277,6 +278,74 @@ public sealed class TapestryConfigurationTests
             ]));
 
         Assert.NotEqual(baseline, TapestryHash.OfCorpus([leaves[0]]));
+
+    }
+
+    /// <summary>
+    /// SHA-256 is a streaming primitive, so fingerprinting a corpus must not first assemble the
+    /// whole corpus as one string and then again as one byte array — two large-object-heap
+    /// allocations per sweep, per scope, purely to decide that nothing changed.
+    /// </summary>
+    [Fact]
+    public void PartsFingerprint_DoesNotMaterializeTheWholeInputBeforeHashing()
+    {
+
+        string[] parts = [.. Enumerable.Range(0, 20_000).Select(index => $"s{index:D6}{index:D64}")];
+
+        long partBytes = parts.Sum(static part => (long)Encoding.UTF8.GetByteCount(part) + 1);
+
+        // Warm the enumeration and the hashing path so the measurement excludes one-time JIT costs.
+        _ = TapestryHash.OfParts(parts);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        _ = TapestryHash.OfParts(parts);
+
+        long hashingAllocation = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(
+            hashingAllocation < partBytes / 2,
+            $"Fingerprinting allocated {hashingAllocation} bytes for a {partBytes}-byte corpus.");
+
+    }
+
+    /// <summary>
+    /// The digest is a persisted generation identity, so a streaming rewrite must reproduce it
+    /// exactly: same bytes, same order, same U+001F separator after every part including the last.
+    /// </summary>
+    [Fact]
+    public void PartsFingerprint_MatchesTheConcatenatedEncoding()
+    {
+
+        string[][] cases =
+        [
+            [],
+            [""],
+            ["ab", "c"],
+            ["a", "bc"],
+            ["alpha", "", "beta"],
+
+            // A part ending in an unpaired high surrogate: because a separator follows every part,
+            // per-part encoding can never pair it with a leading low surrogate from the next part.
+            ["x\ud800", "\udc00y"],
+            ["\u00e9\u4e2d\U0001F600"],
+        ];
+
+        foreach (string[] parts in cases)
+        {
+
+            StringBuilder concatenated = new();
+
+            foreach (string part in parts)
+            {
+
+                concatenated.Append(part).Append('\u001f');
+
+            }
+
+            Assert.Equal(TapestryHash.OfContent(concatenated.ToString()), TapestryHash.OfParts(parts));
+
+        }
 
     }
 
