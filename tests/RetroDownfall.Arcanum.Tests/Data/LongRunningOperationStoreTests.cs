@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -45,6 +46,61 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         {
             File.Delete(_dbPath);
         }
+    }
+
+    /// <summary>
+    /// Issue #118 — the request-identity row reads back into the right properties.
+    /// </summary>
+    /// <remarks>
+    /// The three digests are deliberately distinct, because the projection reads its two BLOB
+    /// columns positionally: transposing them would leave the round trip looking healthy while
+    /// `CovenantResetCheckpointInitiator` compared a derived erasure digest against the caller's
+    /// apply-request digest and refused every legitimate named reset.
+    /// </remarks>
+    [SkippableFact]
+    public async Task FindRequestIdentityAsync_ReadsBackEachDigestIntoItsOwnProperty()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+        DateTimeOffset now = new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero);
+
+        Guid requested = Guid.Parse("31313131-3131-4131-8131-313131313131");
+        CovenantDigest apply = new([.. Enumerable.Repeat((byte)0x11, 32)]);
+        CovenantDigest effect = new([.. Enumerable.Repeat((byte)0x22, 32)]);
+
+        LongRunningOperationRequestIdentityResult created = await store.ResolveOrCreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionMutation,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                "Named Covenant reset.",
+                now),
+            new LongRunningOperationRequestIdentity(requested, apply, effect));
+
+        Assert.Equal(LongRunningOperationRequestIdentityOutcome.Created, created.Outcome);
+
+        LongRunningOperationRequestIdentity? read =
+            await store.FindRequestIdentityAsync(created.Operation!.Id);
+
+        Assert.NotNull(read);
+        Assert.Equal(requested, read!.RequestedOperationId);
+        Assert.Equal(apply, read.ApplyRequestDigest);
+        Assert.Equal(effect, read.EffectDigest);
+        Assert.NotEqual(read.ApplyRequestDigest, read.EffectDigest);
+    }
+
+    /// <summary>
+    /// A server-generated operation has no identity row, and absence is an ordinary answer. Treating
+    /// it as corruption would turn every unnamed reset into a recovery escalation.
+    /// </summary>
+    [SkippableFact]
+    public async Task FindRequestIdentityAsync_ReturnsNullForAnOperationCreatedWithoutOne()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+        LongRunningOperation operation = await CreateAsync(store, new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero));
+
+        Assert.Null(await store.FindRequestIdentityAsync(operation.Id));
+        Assert.Null(await store.FindRequestIdentityAsync(Guid.NewGuid()));
     }
 
     [SkippableFact]

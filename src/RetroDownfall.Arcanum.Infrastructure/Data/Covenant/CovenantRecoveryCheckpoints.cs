@@ -72,6 +72,72 @@ public sealed record CovenantFamilyReinitializeCheckpointV1(
 }
 
 /// <summary>
+/// The bounded optional Covenant arm of a data-retention mutation checkpoint.
+/// </summary>
+/// <remarks>
+/// Present only when the mutation is a Covenant reset. Recovery rebuilds its exclusive owner from
+/// exactly these three fields — the immutable server <c>LongRunningOperation.OperationId</c>, the
+/// canonical 32-byte reset effect digest, and the exact operation code — and from nothing else, so a
+/// payload that decoded with one of them altered would adopt a closed scope belonging to a different
+/// operation. The optional caller-supplied requested id is deliberately absent: it is a replay key
+/// rather than a gate identity, and storing it here would invite recovery to prefer it (§10.20.3).
+/// </remarks>
+public sealed record CovenantResetEffectArmV1(
+    Guid OperationId,
+    string EffectDigest,
+    CovenantExclusiveOperation Operation,
+    CovenantResetPhase Phase);
+
+/// <summary>
+/// The durable checkpoint of a data-retention mutation that may be a Covenant reset.
+/// </summary>
+/// <remarks>
+/// V3 exists because V2 has nowhere to put an exclusive owner. The ordinary journal header travels
+/// unchanged, so a V3 row still says which mutation it is; the <see cref="Covenant"/> arm is what
+/// turns it into an erasure that closed admission. The arm is optional rather than required because
+/// the shape has to be able to describe the mutation it is a checkpoint of even when no Covenant
+/// state is involved.
+///
+/// <para>It carries no file-entry vector. The one mutation that writes V3 is the Covenant memory
+/// reset, which captures no attachment, and a variable-length array inside a fixed decode bound
+/// would turn the safety cap into an outage the first time an installation grew past it. Ordinary
+/// mutations keep writing the V2 journal, which is why a V2 payload still decodes and resumes.</para>
+/// </remarks>
+public sealed record DataRetentionMutationCheckpointV3(
+    int Version,
+    string Subtype,
+    string Target,
+    CovenantResetEffectArmV1? Covenant)
+{
+
+    /// <summary>The only mutation checkpoint version this build writes for a Covenant reset.</summary>
+    public const int CurrentVersion = 3;
+
+}
+
+/// <summary>
+/// The durable checkpoint of a healthy-catalog factory erasure.
+/// </summary>
+/// <remarks>
+/// The same ten storage phases as a reset, because the two operations do the same thing to storage
+/// and differ only in what they preserve. A factory-reset row that carries no payload at all is the
+/// documented legacy V0 arm, which is restarted idempotently from durable quarantine state rather
+/// than resumed from a phase (§10.20.3).
+/// </remarks>
+public sealed record DataRetentionFactoryResetCheckpointV1(
+    int Version,
+    Guid OperationId,
+    string EffectDigest,
+    CovenantExclusiveOperation Operation,
+    CovenantResetPhase Phase)
+{
+
+    /// <summary>The only factory-erasure checkpoint version this build writes.</summary>
+    public const int CurrentVersion = 1;
+
+}
+
+/// <summary>
 /// The Infrastructure-owned serialization context for durable Covenant recovery payloads.
 /// </summary>
 /// <remarks>
@@ -91,6 +157,8 @@ public sealed record CovenantFamilyReinitializeCheckpointV1(
     WriteIndented = false)]
 [JsonSerializable(typeof(CovenantIndexRebuildCheckpointV1))]
 [JsonSerializable(typeof(CovenantFamilyReinitializeCheckpointV1))]
+[JsonSerializable(typeof(DataRetentionMutationCheckpointV3))]
+[JsonSerializable(typeof(DataRetentionFactoryResetCheckpointV1))]
 public sealed partial class CovenantRecoveryJsonContext : JsonSerializerContext
 {
 
@@ -145,6 +213,106 @@ public static class CovenantRecoveryCheckpointCodec
                 bytes,
                 CovenantRecoveryJsonContext.Default.CovenantFamilyReinitializeCheckpointV1),
             static checkpoint => checkpoint.Version == CovenantFamilyReinitializeCheckpointV1.CurrentVersion);
+
+    public static byte[] Encode(DataRetentionMutationCheckpointV3 checkpoint) =>
+        JsonSerializer.SerializeToUtf8Bytes(
+            checkpoint,
+            CovenantRecoveryJsonContext.Default.DataRetentionMutationCheckpointV3);
+
+    public static byte[] Encode(DataRetentionFactoryResetCheckpointV1 checkpoint) =>
+        JsonSerializer.SerializeToUtf8Bytes(
+            checkpoint,
+            CovenantRecoveryJsonContext.Default.DataRetentionFactoryResetCheckpointV1);
+
+    public static Result<DataRetentionMutationCheckpointV3> DecodeDataRetentionMutation(
+        ReadOnlySpan<byte> payload) =>
+        Decode(
+            payload,
+            static bytes => JsonSerializer.Deserialize(
+                bytes,
+                CovenantRecoveryJsonContext.Default.DataRetentionMutationCheckpointV3),
+            static checkpoint =>
+                checkpoint.Version == DataRetentionMutationCheckpointV3.CurrentVersion
+                && !string.IsNullOrWhiteSpace(checkpoint.Subtype)
+                && checkpoint.Target is not null
+                && (checkpoint.Covenant is null
+                    || IsResumableArm(checkpoint.Covenant, CovenantExclusiveOperation.CovenantReset)));
+
+    public static Result<DataRetentionFactoryResetCheckpointV1> DecodeDataRetentionFactoryReset(
+        ReadOnlySpan<byte> payload) =>
+        Decode(
+            payload,
+            static bytes => JsonSerializer.Deserialize(
+                bytes,
+                CovenantRecoveryJsonContext.Default.DataRetentionFactoryResetCheckpointV1),
+            static checkpoint =>
+                checkpoint.Version == DataRetentionFactoryResetCheckpointV1.CurrentVersion
+                && IsResumableArm(
+                    new CovenantResetEffectArmV1(
+                        checkpoint.OperationId,
+                        checkpoint.EffectDigest,
+                        checkpoint.Operation,
+                        checkpoint.Phase),
+                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure));
+
+    /// <summary>
+    /// The exclusive owner a recovery pass adopts, rebuilt from the checkpoint and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// Recovery may never consult a live plan, a request body, or the request-identity row to fill a
+    /// field in: a retry with a changed plan would then rebuild an owner that matched the closed
+    /// scope it had no right to adopt.
+    /// </remarks>
+    public static Result<CovenantExclusiveRecoveryOwner> RecoveryOwner(CovenantResetEffectArmV1 arm) =>
+        arm is not null && IsResumableArm(arm, CovenantExclusiveOperation.CovenantReset)
+            ? Result<CovenantExclusiveRecoveryOwner>.Success(
+                new CovenantExclusiveRecoveryOwner(
+                    arm.OperationId,
+                    arm.Operation,
+                    new CovenantDigest(Convert.FromHexString(arm.EffectDigest))))
+            : Unrecoverable<CovenantExclusiveRecoveryOwner>();
+
+    public static Result<CovenantExclusiveRecoveryOwner> RecoveryOwner(
+        DataRetentionFactoryResetCheckpointV1 checkpoint) =>
+        checkpoint is not null
+        && IsResumableArm(
+            new CovenantResetEffectArmV1(
+                checkpoint.OperationId,
+                checkpoint.EffectDigest,
+                checkpoint.Operation,
+                checkpoint.Phase),
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
+            ? Result<CovenantExclusiveRecoveryOwner>.Success(
+                new CovenantExclusiveRecoveryOwner(
+                    checkpoint.OperationId,
+                    checkpoint.Operation,
+                    new CovenantDigest(Convert.FromHexString(checkpoint.EffectDigest))))
+            : Unrecoverable<CovenantExclusiveRecoveryOwner>();
+
+    /// <summary>
+    /// The canonical encoding of a 32-byte effect digest: exactly 64 lowercase hexadecimal
+    /// characters.
+    /// </summary>
+    /// <remarks>
+    /// Lowercase rather than case-insensitive, so one effect has one encoding. Two spellings of the
+    /// same digest would compare unequal as durable text while denoting the same destructive plan,
+    /// and the adoption check is the one place that must never be nearly right.
+    /// </remarks>
+    public static string EncodeEffectDigest(CovenantDigest digest) =>
+        Convert.ToHexStringLower(digest.Bytes);
+
+    private static bool IsResumableArm(
+        CovenantResetEffectArmV1 arm,
+        CovenantExclusiveOperation expected) =>
+        arm.OperationId != Guid.Empty
+        && arm.Operation == expected
+        && CovenantResetPhaseMachine.IsDeclared(arm.Phase)
+        && IsCanonicalEffectDigest(arm.EffectDigest);
+
+    private static bool IsCanonicalEffectDigest(string? digest) =>
+        digest is { Length: 64 }
+        && digest.All(static character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static Result<T> Decode<T>(
         ReadOnlySpan<byte> payload,

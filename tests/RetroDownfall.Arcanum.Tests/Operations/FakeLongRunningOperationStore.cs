@@ -15,7 +15,9 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
     private readonly Lock _gate = new();
 
-    private readonly Dictionary<Guid, (CovenantDigest Digest, Guid OperationId)> _requestIdentities = [];
+    private readonly Dictionary<Guid, LongRunningOperationRequestIdentity> _requestIdentities = [];
+
+    private int _requestIdentityLookupCount;
 
     private int _listCallCount;
 
@@ -99,16 +101,19 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         lock (_gate)
         {
 
-            if (_requestIdentities.TryGetValue(
-                    identity.RequestedOperationId,
-                    out (CovenantDigest Digest, Guid OperationId) existing))
+            // Keyed by the durable operation id, because that is the direction
+            // FindRequestIdentityAsync reads. The requested name is still unique, so resolving it
+            // is one scan over a map that never holds more than a handful of rows in a test.
+            if (_requestIdentities.FirstOrDefault(
+                    pair => pair.Value.RequestedOperationId == identity.RequestedOperationId)
+                is { Value: not null } existing)
             {
 
                 return Task.FromResult(
-                    existing.Digest == identity.ApplyRequestDigest
+                    existing.Value.ApplyRequestDigest == identity.ApplyRequestDigest
                         ? new LongRunningOperationRequestIdentityResult(
                             LongRunningOperationRequestIdentityOutcome.Replayed,
-                            _operations[existing.OperationId])
+                            _operations[existing.Key])
                         : new LongRunningOperationRequestIdentityResult(
                             LongRunningOperationRequestIdentityOutcome.DigestConflict,
                             Operation: null));
@@ -120,7 +125,7 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
                 request.RecoveryPolicy,
                 LongRunningOperationState.Pending);
 
-            _requestIdentities[identity.RequestedOperationId] = (identity.ApplyRequestDigest, created.Id);
+            _requestIdentities[created.Id] = identity;
 
             return Task.FromResult(
                 new LongRunningOperationRequestIdentityResult(
@@ -141,6 +146,33 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
     public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default) =>
         Task.FromResult(_operations.TryGetValue(operationId, out LongRunningOperation? operation) ? operation : null);
+
+    /// <summary>
+    /// How many times a caller asked for a request-identity row, so a test can prove the all-null
+    /// requested arm never reads one that was never written.
+    /// </summary>
+    public int RequestIdentityLookupCount => Volatile.Read(ref _requestIdentityLookupCount);
+
+    public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default)
+    {
+
+        Interlocked.Increment(ref _requestIdentityLookupCount);
+
+        lock (_gate)
+        {
+
+            return Task.FromResult(
+                _requestIdentities.TryGetValue(
+                    operationId,
+                    out LongRunningOperationRequestIdentity? identity)
+                    ? identity
+                    : null);
+
+        }
+
+    }
 
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,
@@ -384,6 +416,11 @@ internal sealed class PagingOnlyOperationStore(ILongRunningOperationStore inner)
         throw OutsideItsScope();
 
     public Task<LongRunningOperation?> GetAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
         Guid operationId,
         CancellationToken cancellationToken = default) =>
         throw OutsideItsScope();

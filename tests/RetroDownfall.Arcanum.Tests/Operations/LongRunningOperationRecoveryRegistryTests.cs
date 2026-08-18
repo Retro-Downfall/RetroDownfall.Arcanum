@@ -94,6 +94,53 @@ public sealed class LongRunningOperationRecoveryRegistryTests
     }
 
     /// <summary>
+    /// Issue #118: a V3 data-retention mutation is a Covenant reset caught between canonical erasure
+    /// and its verified reopen, so it cannot share a startup phase with everyday reconciliation. The
+    /// priority belongs to the kind rather than to a checkpoint version, so the legacy V0 and V2
+    /// arms move with it and stay compatible.
+    /// </summary>
+    [Fact]
+    public void Data_retention_mutation_runs_v3_recovery_before_ordinary_state_writes()
+    {
+        LongRunningOperationRecoveryDescriptor[] mutation =
+        [
+            .. LongRunningOperationRecoveryRegistry.Descriptors.Values
+                .Where(static descriptor =>
+                    descriptor.Kind == LongRunningOperationKinds.DataRetentionMutation),
+        ];
+
+        LongRunningOperationRecoveryDescriptor single = Assert.Single(mutation);
+
+        Assert.Equal(LongRunningOperationStartupPriority.BeforeStateWrites, single.StartupPriority);
+
+        Assert.Equal(0, single.MinCheckpointVersion);
+
+        Assert.Equal(3, single.MaxCheckpointVersion);
+
+        Assert.Equal(LongRunningOperationRecoveryPolicy.ReconcileAndComplete, single.Policy);
+    }
+
+    /// <summary>
+    /// Issue #118: the factory-reset kind gains its own V1 erasure checkpoint while keeping the
+    /// documented legacy V0 arm, whose rows carry no payload and are restarted idempotently.
+    /// </summary>
+    [Fact]
+    public void Data_retention_factory_reset_pins_its_v1_checkpoint_and_keeps_the_legacy_v0_arm()
+    {
+        LongRunningOperationRecoveryDescriptor factory =
+            LongRunningOperationRecoveryRegistry.Descriptors[
+                LongRunningOperationKinds.DataRetentionFactoryReset];
+
+        Assert.Equal(0, factory.MinCheckpointVersion);
+
+        Assert.Equal(1, factory.MaxCheckpointVersion);
+
+        Assert.Equal(LongRunningOperationStartupPriority.BeforeStateWrites, factory.StartupPriority);
+
+        Assert.Equal(LongRunningOperationRecoveryPolicy.RestartIdempotently, factory.Policy);
+    }
+
+    /// <summary>
     /// A crashed host can never prove a child process, peer relay, or operator approval survived,
     /// so those kinds must not claim a resumable checkpoint.
     /// </summary>
