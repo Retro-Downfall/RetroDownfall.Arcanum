@@ -40,6 +40,16 @@ internal sealed class ShellCommandDispatcher(
     internal const string NoActiveSessionMessage =
         $"No active session. Send a message or `{ResumeUsage}` before using /attachments.";
 
+    /// <summary>The canonical pin spellings; <c>/context pin|unpin|list</c> were removed.</summary>
+    internal const string PinUsage = "/pin <kind> <target>";
+
+    internal const string UnpinUsage = "/unpin <pin-id>";
+
+    internal const string PinUsageMessage =
+        $"Usage: {PinUsage}  ·  Kinds: file, directorySnapshot, symbolRange, sessionEntry, attachment, url, diagnostic.";
+
+    internal const string UnpinUsageMessage = $"Usage: {UnpinUsage}";
+
     public async Task<ShellDispatchResult> DispatchAsync(
         string input,
         CommandCenterState state,
@@ -822,9 +832,7 @@ internal sealed class ShellCommandDispatcher(
         if (!Enum.TryParse(kindText, ignoreCase: true, out SessionContextPinKind kind)
             || string.IsNullOrWhiteSpace(targetText))
         {
-            state.Log.Append(
-                SessionLogEntryKind.Error,
-                "Kinds: file, directorySnapshot, symbolRange, sessionEntry, attachment, url, diagnostic.");
+            state.Log.Append(SessionLogEntryKind.Error, PinUsageMessage);
             return ShellDispatchResult.Continue;
         }
 
@@ -869,7 +877,7 @@ internal sealed class ShellCommandDispatcher(
         }
         if (!Guid.TryParse(idText, out Guid pinId))
         {
-            state.Log.Append(SessionLogEntryKind.Error, "Usage: /context unpin <pin-id>");
+            state.Log.Append(SessionLogEntryKind.Error, UnpinUsageMessage);
             return ShellDispatchResult.Continue;
         }
         Result result = await apiClient.DeleteSessionContextPinAsync(sessionId, pinId, cancellationToken)

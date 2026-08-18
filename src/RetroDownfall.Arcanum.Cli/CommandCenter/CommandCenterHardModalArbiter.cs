@@ -19,7 +19,7 @@ internal sealed class CommandCenterHardModalArbiter
 
     private sealed record ActiveHardModal(CommandCenterHardModalKind Kind, string Id);
 
-    private sealed record QueuedHardModal(CommandCenterHardModalKind Kind, string Id, Action Show);
+    private sealed record QueuedHardModal(CommandCenterHardModalKind Kind, string Id, Func<bool> Show);
 
     public bool HasActiveHardModal
     {
@@ -79,13 +79,16 @@ internal sealed class CommandCenterHardModalArbiter
 
     /// <summary>
     /// Shows immediately when idle; otherwise queues. Returns <c>true</c> when shown now.
+    /// The callback returns <c>false</c> to decline the slot it was handed — the owner resolved
+    /// before the display reached it — and the arbiter then releases the slot and promotes the next
+    /// entry instead of staying active forever.
     /// </summary>
-    public bool RequestShow(CommandCenterHardModalKind kind, string id, Action show)
+    public bool RequestShow(CommandCenterHardModalKind kind, string id, Func<bool> show)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentNullException.ThrowIfNull(show);
 
-        Action? showNow;
+        Func<bool>? showNow;
         lock (_gate)
         {
             if (_active is null)
@@ -100,8 +103,7 @@ internal sealed class CommandCenterHardModalArbiter
             }
         }
 
-        showNow?.Invoke();
-        return showNow is not null;
+        return showNow is not null && ShowOrRelease(kind, id, showNow);
     }
 
     /// <summary>
@@ -115,7 +117,7 @@ internal sealed class CommandCenterHardModalArbiter
             return false;
         }
 
-        Action? nextShow;
+        QueuedHardModal? next;
         lock (_gate)
         {
             if (_active is null
@@ -126,10 +128,14 @@ internal sealed class CommandCenterHardModalArbiter
             }
 
             _active = null;
-            nextShow = PromoteNextUnlocked();
+            next = PromoteNextUnlocked();
         }
 
-        nextShow?.Invoke();
+        if (next is not null)
+        {
+            _ = ShowOrRelease(next.Kind, next.Id, next.Show);
+        }
+
         return true;
     }
 
@@ -186,7 +192,62 @@ internal sealed class CommandCenterHardModalArbiter
         }
     }
 
-    private Action? PromoteNextUnlocked()
+    /// <summary>
+    /// Invokes a show callback that already owns the active slot, outside <c>_gate</c> (the callbacks
+    /// take the coordinators' own locks, so holding this one across them would invert the lock order).
+    /// A callback that declines — its owner resolved in the window between being dequeued and being
+    /// shown — releases the slot and promotes the next entry, so an abandoned modal can never leave
+    /// <c>_active</c> set with nothing on screen to close it.
+    /// </summary>
+    private bool ShowOrRelease(CommandCenterHardModalKind kind, string id, Func<bool> show)
+    {
+        CommandCenterHardModalKind currentKind = kind;
+        string currentId = id;
+        Func<bool> currentShow = show;
+        bool firstShown = false;
+        bool first = true;
+
+        while (true)
+        {
+            bool shown = currentShow();
+            if (first)
+            {
+                firstShown = shown;
+                first = false;
+            }
+
+            if (shown)
+            {
+                return firstShown;
+            }
+
+            QueuedHardModal? next;
+            lock (_gate)
+            {
+                if (_active is null
+                    || _active.Kind != currentKind
+                    || !string.Equals(_active.Id, currentId, StringComparison.Ordinal))
+                {
+                    // Someone else already re-owned the slot; leave it alone.
+                    return firstShown;
+                }
+
+                _active = null;
+                next = PromoteNextUnlocked();
+            }
+
+            if (next is null)
+            {
+                return firstShown;
+            }
+
+            currentKind = next.Kind;
+            currentId = next.Id;
+            currentShow = next.Show;
+        }
+    }
+
+    private QueuedHardModal? PromoteNextUnlocked()
     {
         if (_queue.Count == 0)
         {
@@ -199,6 +260,6 @@ internal sealed class CommandCenterHardModalArbiter
         QueuedHardModal next = _queue[index];
         _queue.RemoveAt(index);
         _active = new ActiveHardModal(next.Kind, next.Id);
-        return next.Show;
+        return next;
     }
 }

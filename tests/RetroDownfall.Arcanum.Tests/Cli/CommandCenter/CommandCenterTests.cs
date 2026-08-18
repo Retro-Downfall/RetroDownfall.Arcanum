@@ -48,6 +48,30 @@ public sealed class ShellCommandParserTests
         Assert.Equal("src/App.cs:10-20", parsed.SecondaryArgument);
     }
 
+    /// <summary>
+    /// <c>/context pin|unpin|list</c> are removed spellings. Accepting the head and ignoring the rest
+    /// runs the token readout instead, so the pin the operator asked to remove is still pinned and the
+    /// transcript shows a successful-looking command response.
+    /// </summary>
+    [Theory]
+    [InlineData("/context unpin 11111111-1111-1111-1111-111111111111")]
+    [InlineData("/context pin file src/App.cs")]
+    [InlineData("/context list")]
+    public void Removed_context_sub_commands_are_denied_and_name_their_replacement(string input)
+    {
+
+        ParsedShellCommand parsed = _parser.Parse(input);
+
+        Assert.Equal(ShellCommandKind.Denied, parsed.Kind);
+
+        Assert.Contains("/pins", parsed.DenialMessage, StringComparison.Ordinal);
+
+        Assert.Contains("/pin <kind> <target>", parsed.DenialMessage, StringComparison.Ordinal);
+
+        Assert.Contains("/unpin <pin-id>", parsed.DenialMessage, StringComparison.Ordinal);
+
+    }
+
     [Theory]
     [InlineData("/help", "Help")]
     [InlineData("/exit", "Exit")]
@@ -593,6 +617,35 @@ public sealed class ShellCommandDispatcherTests
         string text = state.Log.RenderPlainText();
         Assert.Contains("compact", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("arcanum doctor", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A malformed <c>/unpin</c> has to name a spelling the parser still accepts. <c>/context unpin
+    /// &lt;id&gt;</c> is a removed form, so an operator who copies it gets the token readout while the
+    /// pin they asked to remove is still pinned.
+    /// </summary>
+    [Fact]
+    public async Task Unpin_rejects_a_non_guid_by_naming_the_live_spelling()
+    {
+
+        ShellCommandDispatcher dispatcher = CreateDispatcher();
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(
+            Guid.Parse("11111111-2222-3333-4444-555555555555"),
+            "S",
+            "Active",
+            1);
+
+        _ = await dispatcher.DispatchAsync("/unpin 12345", state, CancellationToken.None);
+
+        string text = state.Log.RenderPlainText();
+
+        Assert.Contains("Usage: /unpin <pin-id>", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("/context unpin", text, StringComparison.Ordinal);
+
     }
 
     private static ShellCommandDispatcher CreateDispatcher() =>

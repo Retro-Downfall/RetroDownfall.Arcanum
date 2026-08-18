@@ -84,28 +84,29 @@ internal sealed class CommandCenterWardCoordinator(CommandCenterHardModalArbiter
             onHide = _onHide;
         }
 
-        bool shown = hardModalArbiter.RequestShow(
+        _ = hardModalArbiter.RequestShow(
             CommandCenterHardModalKind.WardConfirm,
             request.WardId,
             () =>
             {
                 lock (_gate)
                 {
+                    // Promotion hands over the slot before this callback runs, so the wait can already
+                    // have completed and torn this entry down. Decline rather than paint a modal for a
+                    // ward nobody can answer — the arbiter then promotes the next entry instead.
+                    if (!_pendingById.TryGetValue(request.WardId, out PendingWard? live)
+                        || !ReferenceEquals(live, pending))
+                    {
+                        return false;
+                    }
+
                     pending.WasShown = true;
                     _displayedWardId = request.WardId;
                 }
 
                 onShow?.Invoke(request);
+                return true;
             });
-
-        if (shown)
-        {
-            lock (_gate)
-            {
-                pending.WasShown = true;
-                _displayedWardId = request.WardId;
-            }
-        }
 
         try
         {
@@ -126,7 +127,12 @@ internal sealed class CommandCenterWardCoordinator(CommandCenterHardModalArbiter
             {
                 wasShown = pending.WasShown;
                 wasDisplayed = string.Equals(_displayedWardId, request.WardId, StringComparison.Ordinal);
-                _ = _pendingById.Remove(request.WardId);
+                if (_pendingById.TryGetValue(request.WardId, out PendingWard? current)
+                    && ReferenceEquals(current, pending))
+                {
+                    _ = _pendingById.Remove(request.WardId);
+                }
+
                 if (wasDisplayed)
                 {
                     _displayedWardId = null;
@@ -138,10 +144,12 @@ internal sealed class CommandCenterWardCoordinator(CommandCenterHardModalArbiter
                 onHide?.Invoke();
                 _ = hardModalArbiter.TryClose(CommandCenterHardModalKind.WardConfirm, request.WardId);
             }
-            else
+            else if (!hardModalArbiter.TryRemoveQueued(CommandCenterHardModalKind.WardConfirm, request.WardId))
             {
-                // Queued Ward resolved/denied/timed out before display — remove from queue.
-                _ = hardModalArbiter.TryRemoveQueued(CommandCenterHardModalKind.WardConfirm, request.WardId);
+                // Neither displayed nor still queued: promotion landed in the window between "removed
+                // from the queue" and "shown", so this ward silently owns the active slot. Release it
+                // (id-matched, so a no-op otherwise) instead of wedging every later hard modal.
+                _ = hardModalArbiter.TryClose(CommandCenterHardModalKind.WardConfirm, request.WardId);
             }
         }
     }

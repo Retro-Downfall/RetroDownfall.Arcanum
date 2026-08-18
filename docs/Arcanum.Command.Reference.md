@@ -180,11 +180,13 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/unpin <id>` | Remove one context pin. |
 | `/spell list [cursor]` | List a 50-line terminal page of spells with exact next-cursor continuation. |
 | `/ward list [offset]` | List a 50-line terminal page of open Wards with exact next-offset continuation. |
-| `/ward allow [<id>]` | Allow the supplied or currently prompted Ward. |
-| `/ward deny [<id>]` | Deny the supplied or currently prompted Ward. |
+| `/ward allow [<id>]` | Allow the supplied Ward. |
+| `/ward deny [<id>]` | Deny the supplied Ward. |
 | `/exit`, `/quit` | Leave Command Center. |
 
-Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/context`, because `/context` is the Claude-aligned context-window view. An unrecognized slash command names the canonical replacement when the spelling was removed, and otherwise suggests the nearest registered name; it is never executed automatically.
+The Ward confirmation modal is answered with its own keys — `Enter`/`A` always allow this tool for the session, `O` allow once, `Esc`/`D` deny — never with a slash command: while the modal is displayed it owns the keyboard and swallows every printable key, so its choice list names only keys it actually handles.
+
+Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/context`, because `/context` is the Claude-aligned context-window view. An unrecognized slash command names the canonical replacement when the spelling was removed, and otherwise suggests the nearest registered name; it is never executed automatically. `/context` takes no sub-command: the removed `/context list|pin|unpin` forms are denied with a message naming `/pins`, `/pin <kind> <target>`, and `/unpin <pin-id>`.
 
 List offsets must be nonnegative integers. Campaign pages are fetched from the API at the requested offset; Spell and Ward pages slice the complete fetched state for terminal rendering. When another page exists, Command Center states that server/durable state was not changed and prints the exact next command instead of silently truncating the list.
 
