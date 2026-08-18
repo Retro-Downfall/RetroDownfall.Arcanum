@@ -213,6 +213,170 @@ public class SpellEditorViewModelTests
     }
 
     [Fact]
+    public async Task ActivateVersionAsync_WithUnsavedEdits_RefusesInsteadOfDiscardingThem()
+    {
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            Versions = [new SpellVersionDto("v2", false, DateTimeOffset.UtcNow, "Second")],
+            ActivateResult = new SpellVersionDto("v2", true, DateTimeOffset.UtcNow, "Second", PreviousVersion: "v1"),
+        };
+
+        FakeWhispersService whispers = new();
+
+        SpellEditorViewModel viewModel = NewViewModel("mend-armor", dataSource, whispers: whispers);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.MarkdownBody = "unsaved operator work";
+
+        Assert.True(viewModel.IsEditorDirty);
+
+        await viewModel.ActivateVersionAsync(viewModel.Versions.Single(), CancellationToken.None);
+
+        Assert.Equal("unsaved operator work", viewModel.MarkdownBody);
+
+        Assert.Null(dataSource.ActivatedVersion);
+
+        Assert.Equal(1, dataSource.LoadCallCount);
+
+        Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Warning);
+
+    }
+
+    [Fact]
+    public async Task LoadAsync_WithUnsavedEdits_RefusesInsteadOfDiscardingThem()
+    {
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+        };
+
+        FakeWhispersService whispers = new();
+
+        SpellEditorViewModel viewModel = NewViewModel("mend-armor", dataSource, whispers: whispers);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.MarkdownBody = "unsaved operator work";
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        Assert.Equal("unsaved operator work", viewModel.MarkdownBody);
+
+        Assert.Equal(1, dataSource.LoadCallCount);
+
+        Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Warning);
+
+    }
+
+    [Fact]
+    public async Task Dispose_WhileExecuting_StopsTheStreamAndSkipsSessionNavigation()
+    {
+
+        NavigationService navigation = new();
+
+        (DocumentKind Kind, string Id)? opened = null;
+
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
+
+        TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            ExecutionEvents =
+            [
+                new IntelligenceEvent(IntelligenceEventType.Token, "", "hello"),
+                new IntelligenceEvent(IntelligenceEventType.SessionBound, Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").ToString()),
+            ],
+            ExecutionGate = gate.Task,
+        };
+
+        SpellEditorViewModel viewModel = NewViewModel("mend-armor", dataSource, navigation);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        Task execution = viewModel.ExecuteAsync(CancellationToken.None);
+
+        IDisposable disposable = Assert.IsAssignableFrom<IDisposable>(viewModel);
+
+        disposable.Dispose();
+
+        gate.SetResult();
+
+        await execution;
+
+        Assert.Null(opened);
+
+        Assert.False(viewModel.IsExecuting);
+
+        Assert.Single(viewModel.ExecutionEvents);
+
+        disposable.Dispose();
+
+    }
+
+    [Fact]
+    public async Task Mirror_RapidVersionSelection_KeepsOnlyTheLastSelectionsDiff()
+    {
+
+        TaskCompletionSource alphaGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource betaGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            Versions =
+            [
+                new SpellVersionDto("v2", false, DateTimeOffset.UtcNow, "Second"),
+                new SpellVersionDto("v3", false, DateTimeOffset.UtcNow, "Third"),
+            ],
+            VersionDetails =
+            {
+                ["v2"] = new SpellVersionDetailDto("v2", false, DateTimeOffset.UtcNow, "Second", "AAA-unique-alpha"),
+                ["v3"] = new SpellVersionDetailDto("v3", false, DateTimeOffset.UtcNow, "Third", "BBB-unique-beta"),
+            },
+            VersionDetailGates =
+            {
+                ["v2"] = alphaGate.Task,
+                ["v3"] = betaGate.Task,
+            },
+        };
+
+        SpellEditorViewModel viewModel = NewViewModel("mend-armor", dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        // Two selections inside one round trip — the operator arrowing down the version list.
+        viewModel.SelectedVersion = viewModel.Versions[0];
+
+        Task alpha = viewModel.RefreshMirrorDiffAsync(CancellationToken.None);
+
+        viewModel.SelectedVersion = viewModel.Versions[1];
+
+        Task beta = viewModel.RefreshMirrorDiffAsync(CancellationToken.None);
+
+        alphaGate.SetResult();
+
+        betaGate.SetResult();
+
+        await alpha;
+
+        await beta;
+
+        Assert.Contains(viewModel.DiffLines, static line => line.Text.Contains("BBB-unique-beta", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(viewModel.DiffLines, static line => line.Text.Contains("AAA-unique-alpha", StringComparison.Ordinal));
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
     public async Task Mirror_SelectingVersion_ComparesAgainstPersistedActiveBody_NotDirtyEditor()
     {
 
@@ -815,11 +979,17 @@ public class SpellEditorViewModelTests
 
         public Dictionary<string, SpellVersionDetailDto> VersionDetails { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>Per-version gates so mirror fetches can be held in flight and released in order.</summary>
+        public Dictionary<string, Task> VersionDetailGates { get; } = new(StringComparer.Ordinal);
+
         public SpellCastResult? CastResult { get; init; }
 
         public ManaCountResult? ManaCount { get; init; }
 
         public IReadOnlyList<IntelligenceEvent> ExecutionEvents { get; init; } = [];
+
+        /// <summary>Holds the stream open after the first event so a close can land mid-execution.</summary>
+        public Task? ExecutionGate { get; set; }
 
         public SpellExportDto? ExportResult { get; init; }
 
@@ -871,14 +1041,21 @@ public class SpellEditorViewModelTests
         public Task<IReadOnlyList<SpellVersionDto>> ListVersionsAsync(string name, string? workspace, CancellationToken cancellationToken) =>
             Task.FromResult(Versions);
 
-        public Task<SpellVersionDetailDto?> GetVersionDetailAsync(string name, string version, string? workspace, CancellationToken cancellationToken)
+        public async Task<SpellVersionDetailDto?> GetVersionDetailAsync(string name, string version, string? workspace, CancellationToken cancellationToken)
         {
 
             GetVersionDetailCallCount++;
 
+            if (VersionDetailGates.TryGetValue(version, out Task? gate))
+            {
+
+                await gate.ConfigureAwait(false);
+
+            }
+
             VersionDetails.TryGetValue(version, out SpellVersionDetailDto? detail);
 
-            return Task.FromResult(detail);
+            return detail;
 
         }
 
@@ -958,9 +1135,26 @@ public class SpellEditorViewModelTests
             foreach (IntelligenceEvent ev in ExecutionEvents)
             {
 
+                cancellationToken.ThrowIfCancellationRequested();
+
                 yield return ev;
 
-                await Task.Yield();
+                if (ExecutionGate is not null)
+                {
+
+                    Task gate = ExecutionGate;
+
+                    ExecutionGate = null;
+
+                    await gate.ConfigureAwait(false);
+
+                }
+                else
+                {
+
+                    await Task.Yield();
+
+                }
 
             }
 

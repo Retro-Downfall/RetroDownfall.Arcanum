@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
@@ -265,15 +266,66 @@ public class AtelierViewModelTests
 
     }
 
-    private static AtelierViewModel CreateAtelier(FakeAtelierDataSource dataSource, NavigationService navigation)
+    [Fact]
+    public async Task SelectingCampaignNode_ReportsAFailedActiveCampaignWrite()
     {
 
+        Guid campaignId = Guid.NewGuid();
+
+        FakeAtelierDataSource dataSource = new()
+        {
+            Campaigns = [NewCampaign("Autumnfall", campaignId)],
+        };
+
+        FakeActiveCampaignService activeCampaign = new()
+        {
+            SetFailure = new IOException("the settings volume is read-only"),
+        };
+
+        FakeWhispersService whispers = new();
+
         FoundryFloorViewModel foundryFloor = new(new NullLogService());
+
+        AtelierViewModel viewModel = CreateAtelier(
+            dataSource,
+            new NavigationService(),
+            activeCampaign,
+            whispers,
+            foundryFloor);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        AtelierNodeViewModel campaignsRoot = viewModel.Roots.Single(static r => r.Label == "Campaigns");
+
+        await campaignsRoot.ExpandAsync(CancellationToken.None);
+
+        viewModel.SelectedNode = campaignsRoot.Children[0];
+
+        for (int attempt = 0; attempt < 100 && whispers.Calls.Count == 0; attempt++)
+        {
+
+            await Task.Delay(10);
+
+        }
+
+        Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Error);
+
+        Assert.Contains(foundryFloor.Lines, static line => line.Contains("read-only", StringComparison.Ordinal));
+
+    }
+
+    private static AtelierViewModel CreateAtelier(
+        FakeAtelierDataSource dataSource,
+        NavigationService navigation,
+        FakeActiveCampaignService? activeCampaign = null,
+        FakeWhispersService? whispers = null,
+        FoundryFloorViewModel? foundryFloor = null)
+    {
 
         return new AtelierViewModel(
             dataSource,
             navigation,
-            new FakeActiveCampaignService(),
+            activeCampaign ?? new FakeActiveCampaignService(),
             new NullCampaignCommandCoordinator(),
             new NullArtifactCreationDataSource(),
             new NullArtifactCreationDialogService(),
@@ -281,8 +333,8 @@ public class AtelierViewModelTests
             new NullCampaignDialogService(),
             new NullConfirmationDialogService(),
             new NullArtifactFileDialogService(),
-            new FakeWhispersService(),
-            foundryFloor,
+            whispers ?? new FakeWhispersService(),
+            foundryFloor ?? new FoundryFloorViewModel(new NullLogService()),
             new ConnectedArcanumConnection());
 
     }

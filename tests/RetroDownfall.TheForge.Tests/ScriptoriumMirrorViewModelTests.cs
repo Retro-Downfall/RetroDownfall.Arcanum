@@ -65,6 +65,77 @@ public class ScriptoriumMirrorViewModelTests
 
     }
 
+    [Fact]
+    public async Task RefreshMirrorDiff_RapidVersionSelection_KeepsOnlyTheLastSelectionsDiff()
+    {
+
+        Guid currentId = Guid.NewGuid();
+
+        Guid alphaId = Guid.NewGuid();
+
+        Guid betaId = Guid.NewGuid();
+
+        PromptDetailDto current = SamplePrompt(currentId, "v1", "Hello {{name}}");
+
+        PromptDetailDto alpha = SamplePrompt(alphaId, "v2", "AAA-unique-alpha");
+
+        PromptDetailDto beta = SamplePrompt(betaId, "v3", "BBB-unique-beta");
+
+        TaskCompletionSource alphaGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource betaGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = current,
+            Versions =
+            [
+                new PromptVersionDto(currentId, "v1", DateTimeOffset.UtcNow),
+                new PromptVersionDto(alphaId, "v2", DateTimeOffset.UtcNow),
+                new PromptVersionDto(betaId, "v3", DateTimeOffset.UtcNow),
+            ],
+            PromptsById =
+            {
+                [currentId] = current,
+                [alphaId] = alpha,
+                [betaId] = beta,
+            },
+        };
+
+        ScriptoriumViewModel vm = Create(currentId, dataSource);
+
+        await vm.LoadCommand.ExecuteAsync(null);
+
+        dataSource.Gates[alphaId] = alphaGate.Task;
+
+        dataSource.Gates[betaId] = betaGate.Task;
+
+        // Two selections inside one round trip — the operator arrowing down the version list.
+        vm.SelectedVersion = dataSource.Versions[1];
+
+        vm.SelectedVersion = dataSource.Versions[2];
+
+        alphaGate.SetResult();
+
+        betaGate.SetResult();
+
+        for (int attempt = 0; attempt < 100 && vm.MirrorComparedPrompt?.Version != "v3"; attempt++)
+        {
+
+            await Task.Delay(10);
+
+        }
+
+        Assert.Equal("v3", vm.MirrorComparedPrompt!.Version);
+
+        Assert.Contains(vm.MirrorDiffLines, static l => l.Text.Contains("BBB-unique-beta", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(vm.MirrorDiffLines, static l => l.Text.Contains("AAA-unique-alpha", StringComparison.Ordinal));
+
+        vm.Dispose();
+
+    }
+
     private static ScriptoriumViewModel Create(Guid id, IPromptEditorDataSource dataSource) =>
         new(
             id,
@@ -104,8 +175,22 @@ public class ScriptoriumMirrorViewModelTests
 
         public Dictionary<Guid, PromptDetailDto> PromptsById { get; } = [];
 
-        public Task<PromptDetailDto?> LoadPromptAsync(Guid id, CancellationToken cancellationToken) =>
-            Task.FromResult(PromptsById.TryGetValue(id, out PromptDetailDto? detail) ? detail : Prompt);
+        /// <summary>Per-version gates so mirror fetches can be held in flight and released in order.</summary>
+        public Dictionary<Guid, Task> Gates { get; } = [];
+
+        public async Task<PromptDetailDto?> LoadPromptAsync(Guid id, CancellationToken cancellationToken)
+        {
+
+            if (Gates.TryGetValue(id, out Task? gate))
+            {
+
+                await gate.ConfigureAwait(false);
+
+            }
+
+            return PromptsById.TryGetValue(id, out PromptDetailDto? detail) ? detail : Prompt;
+
+        }
 
         public Task<PromptDetailDto?> SaveAsync(Guid id, UpdatePromptRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(Prompt);

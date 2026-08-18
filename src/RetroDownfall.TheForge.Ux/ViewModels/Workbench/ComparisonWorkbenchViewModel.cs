@@ -267,8 +267,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         Trace.BeginCapture("comparison", SingletonDocumentId);
 
-        _pricing ??= await _dataSource.GetPricingAsync(runToken).ConfigureAwait(true);
-
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
 
         Guid runId = Guid.NewGuid();
@@ -277,6 +275,8 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         try
         {
+
+            _pricing ??= await _dataSource.GetPricingAsync(runToken).ConfigureAwait(true);
 
             foreach (ComparisonVariantDraftViewModel variant in Variants.ToArray())
             {
@@ -431,7 +431,12 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         string json = JsonSerializer.Serialize(run, TheForgeComparisonsJsonContext.Default.ComparisonRunRecord);
 
-        await File.WriteAllTextAsync(path, json, Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        if (!await TryWriteExportAsync(path, json, "JSON", cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         StatusText = "Comparison exported (JSON).";
 
@@ -489,7 +494,12 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         }
 
-        await File.WriteAllTextAsync(path, sb.ToString(), Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        if (!await TryWriteExportAsync(path, sb.ToString(), "Markdown", cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         StatusText = "Comparison exported (Markdown).";
 
@@ -533,9 +543,58 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         }
 
-        await File.WriteAllTextAsync(path, sb.ToString(), Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+        if (!await TryWriteExportAsync(path, sb.ToString(), "CSV", cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         StatusText = "Comparison exported (CSV).";
+
+    }
+
+    /// <summary>
+    /// Writes an export to the operator's chosen path. A destination that turns out to be unwritable
+    /// is reported like every other command failure rather than escaping the command.
+    /// </summary>
+    private async Task<bool> TryWriteExportAsync(
+        string path,
+        string contents,
+        string format,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await File.WriteAllTextAsync(path, contents, Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+
+            return true;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            StatusText = "Comparison export cancelled.";
+
+            return false;
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = $"Comparison export failed ({format}).";
+
+            _foundryFloor.AppendLine($"Comparison Workbench export error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Comparison export failed.");
+
+            return false;
+
+        }
 
     }
 
