@@ -266,6 +266,8 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 
         bool first = true;
 
+        int ordinal = 0;
+
         foreach (Block child in list)
         {
             if (child is not ListItemBlock item)
@@ -282,12 +284,33 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 
             sb.Append(indent);
 
-            sb.Append("- ");
+            sb.Append(ItemMarker(list, ordinal));
+
+            ordinal++;
 
             sb.Append(ListItemToMarkup(item, depth));
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The marker an item is introduced with. An ordered list carries its own start value and
+    /// delimiter, and that numbering is content: a set of steps flattened to bullets no longer tells
+    /// the operator what order to perform them in.
+    /// </summary>
+    private static string ItemMarker(ListBlock list, int ordinal)
+    {
+        if (!list.IsOrdered)
+        {
+            return "- ";
+        }
+
+        int start = int.TryParse(list.OrderedStart, out int parsed) ? parsed : 1;
+
+        char delimiter = list.OrderedDelimiter is '.' or ')' ? list.OrderedDelimiter : '.';
+
+        return $"{start + ordinal}{delimiter} ";
     }
 
     private string ListItemToMarkup(ListItemBlock item, int depth)
@@ -373,6 +396,11 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
                     sb.Append(autolink.Url);
                     break;
 
+                case LinkInline link:
+                    AppendInlinesPlain(link, sb);
+                    AppendLinkTarget(link, sb, InlineToPlain(link), escape: false);
+                    break;
+
                 case ContainerInline child:
                     AppendInlinesPlain(child, sb);
                     break;
@@ -440,6 +468,11 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
                     sb.Append(Markup.Escape(autolink.Url));
                     break;
 
+                case LinkInline link:
+                    AppendInlinesMarkup(link, sb);
+                    AppendLinkTarget(link, sb, InlineToPlain(link), escape: true);
+                    break;
+
                 case ContainerInline child:
                     AppendInlinesMarkup(child, sb);
                     break;
@@ -450,6 +483,27 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Appends a link's destination after its already-rendered text. A terminal cannot be clicked, so
+    /// a link that renders as text alone leaves the operator with nothing to act on. Markdig models
+    /// an image as a <see cref="LinkInline"/> too, so this is also what keeps an image source from
+    /// being reduced to its alt text. A link whose text is already its destination is left alone
+    /// rather than printed twice.
+    /// </summary>
+    private static void AppendLinkTarget(LinkInline link, StringBuilder sb, string text, bool escape)
+    {
+        string? url = link.Url;
+
+        if (string.IsNullOrWhiteSpace(url) || string.Equals(text, url, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        string target = text.Length == 0 ? url : $" ({url})";
+
+        sb.Append(escape ? Markup.Escape(target) : target);
     }
 
     /// <summary>

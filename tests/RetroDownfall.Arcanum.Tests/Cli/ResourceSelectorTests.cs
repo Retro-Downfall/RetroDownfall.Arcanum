@@ -90,9 +90,34 @@ public sealed class ResourceSelectorTests
         ResourceSelectionResult<Candidate> result = await fixture.SelectAsync(null, interactive: false);
 
         Assert.Equal(ResourceSelectionStatus.Error, result.Status);
-        Assert.Contains("required when input or output is redirected", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("identifier or name is required", result.Error, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Mordain", result.Error, StringComparison.Ordinal);
         Assert.Equal(0, fixture.Picker.CallCount);
+    }
+
+    /// <summary>
+    /// The selector is told only that no picker is available, never why. `--json` and `--print` make
+    /// a real terminal report itself non-interactive, so a message that states redirection as fact
+    /// asserts something about the operator's shell that is false, and hides the flag that actually
+    /// suppressed the picker.
+    /// </summary>
+    [Fact]
+    public async Task Omitted_identifier_does_not_blame_redirection_for_a_headless_flag()
+    {
+        SelectionFixture fixture = new(
+            new Candidate("one", "Mordain", "active"),
+            new Candidate("two", "Selene", "paused"));
+
+        ResourceSelectionResult<Candidate> result = await fixture.SelectAsync(null, interactive: false);
+
+        Assert.Equal(ResourceSelectionStatus.Error, result.Status);
+        Assert.Contains("no interactive picker is available", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--json", result.Error, StringComparison.Ordinal);
+        Assert.Contains("--print", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "required when input or output is redirected",
+            result.Error,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
