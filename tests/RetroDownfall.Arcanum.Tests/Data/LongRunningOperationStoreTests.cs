@@ -234,6 +234,51 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+
+    public async Task RenewLeaseAsync_AppliesConnectionPolicyToItsIndependentConnection()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!);
+
+        DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = Assert.IsType<LongRunningOperation>(
+            await store.TryStartSingleFlightAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionPrune,
+                    LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                    "Apply one bounded retention sweep.",
+                    startedAt),
+                "retention-owner",
+                startedAt,
+                startedAt.AddMinutes(5)));
+
+        // The heartbeat writes on a connection this store opens itself, so the only way to observe
+        // that connection's policy is from inside the statement it runs.
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER assert_heartbeat_connection_policy
+            BEFORE UPDATE ON "LongRunningOperations"
+            BEGIN
+                SELECT RAISE(ABORT, 'the heartbeat connection never had Covenant policy applied')
+                WHERE (SELECT "secure_delete" FROM pragma_secure_delete) = 0
+                   OR (SELECT "timeout" FROM pragma_busy_timeout) = 0;
+            END;
+            """);
+
+        bool renewed = await store.RenewLeaseAsync(
+            operation.Id,
+            "retention-owner",
+            startedAt.AddMinutes(1),
+            startedAt.AddMinutes(6));
+
+        Assert.True(renewed);
+
+    }
+
+    [SkippableFact]
     public async Task SaveCheckpointAsync_IsMonotonicAndRejectsDuplicateVersion()
     {
         RequireSqlCipher();
@@ -735,6 +780,16 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+    private async Task ExecuteAsync(string sql)
+    {
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync();
+    }
 
     private sealed class CompletingRecoveryHandler(string kind) : ILongRunningOperationRecoveryHandler
     {

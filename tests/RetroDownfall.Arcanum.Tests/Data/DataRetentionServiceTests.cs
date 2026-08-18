@@ -266,6 +266,81 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     [SkippableFact]
 
+    public async Task ApplyAsync_DeleteSession_TouchesTheDerivedVectorTableABoundedNumberOfTimes()
+    {
+
+        RequireSqlCipher();
+
+        const int entryCount = 40;
+
+        Guid[] entryIds = await SeedEntryEmbeddingBatchAsync(entryCount);
+
+        Guid sessionId = await ReadEntrySessionIdAsync(entryIds[0]);
+
+        int vectorStatements = 0;
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        connection.CreateFunction(
+            "count_vector_statement",
+            () =>
+            {
+
+                _ = Interlocked.Increment(ref vectorStatements);
+
+                return "no-such-entry";
+
+            });
+
+        // Stands in for the sqlite-vec shadow table. It yields exactly one row per statement that
+        // touches it, so the counter measures SQL statements rather than rows, and the INSTEAD OF
+        // trigger keeps the production DELETE working against a view.
+        await ExecuteAsync(
+            """
+            CREATE VIEW entry_embeddings_vec AS
+            SELECT count_vector_statement() AS EntryId;
+            """);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER entry_embeddings_vec_instead_of_delete
+            INSTEAD OF DELETE ON entry_embeddings_vec
+            BEGIN
+                SELECT 1;
+            END;
+            """);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            TargetId: sessionId,
+            MemoryScope: null);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.True(applied.Value.Reconciled);
+
+        Assert.Equal(0, await CountAllAsync("entry_embeddings"));
+
+        Assert.True(
+            vectorStatements < entryCount,
+            "Deleting a session must not issue derived-index work per entry, but it touched "
+                + $"entry_embeddings_vec {vectorStatements} times for {entryCount} entries.");
+
+    }
+
+    [SkippableFact]
+
     public async Task ApplyAsync_DeleteSession_WhenReconciliationFails_DoesNotCompleteDurableOperation()
     {
 
@@ -685,6 +760,162 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations.Heartbeats > 0,
             "A sweep that preserved one candidate must keep renewing its durable lease for the "
                 + $"remaining {candidateCount - 1} candidates, but it renewed nothing.");
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenCandidatesOutlastTheLeaseBeforeACheckpointBoundary_KeepsRenewingTheDurableLease()
+    {
+
+        RequireSqlCipher();
+
+        // Fewer candidates than PruneCheckpointInterval, each slower than the heartbeat interval:
+        // renewal has to be wall-clock driven, because no candidate-count boundary is ever reached.
+        const int candidateCount = 4;
+
+        _ = await SeedEntryEmbeddingBatchAsync(candidateCount);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        FakeTimeProvider time = new();
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        connection.CreateFunction(
+            "advance_retention_clock",
+            () =>
+            {
+
+                time.Advance(TimeSpan.FromMinutes(2));
+
+                return 1L;
+
+            });
+
+        HeartbeatCountingOperationStore operations = new(
+            new LongRunningOperationStore(_db!));
+
+        IDataRetentionService service = CreateService(
+            settings,
+            timeProvider: time,
+            operationStore: operations);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(candidateCount, plan.CandidateIds.Length);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER advance_clock_after_embedding_delete
+            AFTER DELETE ON "entry_embeddings"
+            BEGIN
+                SELECT advance_retention_clock();
+            END;
+            """);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, await CountAllAsync("entry_embeddings"));
+
+        Assert.True(
+            operations.Heartbeats > 0,
+            "A sweep whose candidates outlast the heartbeat interval must renew its durable lease "
+                + "before the next candidate, but it renewed nothing.");
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenCancelled_ReleasesTheDurableLeaseAndNamesItselfInTheNextConflict()
+    {
+
+        RequireSqlCipher();
+
+        _ = await SeedEntryEmbeddingBatchAsync(4);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        using CancellationTokenSource cancellation = new();
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        connection.CreateFunction(
+            "cancel_retention_apply",
+            () =>
+            {
+
+                cancellation.Cancel();
+
+                return 1L;
+
+            });
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER cancel_apply_after_retention_start
+            AFTER INSERT ON "LongRunningOperations"
+            WHEN NEW."Kind" = '{LongRunningOperationKinds.DataRetentionPrune}'
+            BEGIN
+                SELECT cancel_retention_apply();
+            END;
+            """);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        IDataRetentionService service = CreateService(
+            settings,
+            operationStore: operations);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.ApplyAsync(
+                new DataRetentionApplyRequest(request, plan.PlanId),
+                cancellation.Token));
+
+        await ExecuteAsync("DROP TRIGGER cancel_apply_after_retention_start;");
+
+        LongRunningOperation stranded = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        // The lease must be surrendered so the background reconciler can adopt the row on its very
+        // next pass instead of waiting out a five-minute lease nobody is holding.
+        Assert.Null(stranded.LeaseOwner);
+
+        Assert.Null(stranded.LeaseExpiresAt);
+
+        Result<DataRetentionApplyResult> blocked = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(blocked.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.Conflict, blocked.Error.Code);
+
+        Assert.Contains(
+            stranded.Id.ToString("D"),
+            blocked.Error.Message,
+            StringComparison.Ordinal);
 
     }
 
@@ -3870,6 +4101,32 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         object? value = await command.ExecuteScalarAsync();
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+
+    }
+
+    private async Task<Guid> ReadEntrySessionIdAsync(Guid entryId)
+    {
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            SELECT "SessionId"
+            FROM "Entries"
+            WHERE lower(replace("Id", '-', '')) = @id
+            LIMIT 1
+            """;
+
+        _ = command.Parameters.AddWithValue("@id", entryId.ToString("N"));
+
+        object? value = await command.ExecuteScalarAsync();
+
+        return Guid.Parse(
+            Convert.ToString(value, CultureInfo.InvariantCulture)!,
+            CultureInfo.InvariantCulture);
 
     }
 
