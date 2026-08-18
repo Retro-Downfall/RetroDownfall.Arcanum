@@ -5,10 +5,11 @@ using Xunit;
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 /// <summary>
-/// Executes <c>sign_publish_dir</c> from scripts/packaging/macos/common.sh against a staged tree of
-/// real Mach-O files with <c>codesign</c> stubbed out. The release lane is the only place this code
-/// ever runs, so a static read of the script is not enough: the failure this pins is a GNU-only
-/// pipeline that produced an empty result under BSD userland, which reads as correct until it runs.
+/// Executes <c>sign_publish_dir</c> and <c>sign_app_bundle</c> from scripts/packaging/macos/common.sh
+/// against staged trees of real Mach-O files with <c>codesign</c> stubbed out. The release lane is the
+/// only place this code ever runs, so a static read of the script is not enough: the failure this pins
+/// is a GNU-only pipeline that produced an empty result under BSD userland, which reads as correct
+/// until it runs.
 /// </summary>
 public sealed class MacOsSigningScriptTests
 {
@@ -69,9 +70,125 @@ public sealed class MacOsSigningScriptTests
     }
 
     /// <summary>
+    /// The <c>.app</c> path signs the same tree: build-app-dmg.sh copies the publish directory verbatim
+    /// into <c>Contents/MacOS/</c>, so a nested dylib is exactly as deep there as it is in the CLI zip.
+    /// A plain <c>find</c> walk is pre-order, not depth-first, so it hands back shallow files before the
+    /// subdirectories it has not descended into yet; ordering has to be imposed after the walk, and
+    /// every Mach-O has to be signed, not merely most of them.
+    /// </summary>
+    [SkippableFact]
+    public void Sign_app_bundle_signs_every_nested_macho_deepest_first()
+    {
+
+        Skip.IfNot(OperatingSystem.IsMacOS(), "sign_app_bundle is a macOS packaging primitive.");
+
+        string root = Directory.CreateTempSubdirectory("arcanum-sign-app-").FullName;
+
+        try
+        {
+
+            string appPath = Path.Combine(root, "Arcanum.app");
+
+            string macosDirectory = Path.Combine(appPath, "Contents", "MacOS");
+
+            _ = Directory.CreateDirectory(macosDirectory);
+
+            File.WriteAllText(
+                Path.Combine(appPath, "Contents", "Info.plist"),
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0">
+                <dict>
+                    <key>CFBundleExecutable</key>
+                    <string>arcanum</string>
+                    <key>CFBundleIdentifier</key>
+                    <string>com.retrodownfall.arcanum.probe</string>
+                </dict>
+                </plist>
+                """);
+
+            string main = Path.Combine(macosDirectory, "arcanum");
+
+            List<string> shallow = [];
+
+            foreach (string name in new[] { "libalpha.dylib", "libbeta.dylib", "libgamma.dylib" })
+            {
+
+                shallow.Add(Path.Combine(macosDirectory, name));
+
+            }
+
+            List<string> deep = [];
+
+            foreach (string name in new[] { "one", "two", "three" })
+            {
+
+                string directory = Path.Combine(macosDirectory, "nested-" + name, "native");
+
+                _ = Directory.CreateDirectory(directory);
+
+                deep.Add(Path.Combine(directory, "lib" + name + ".dylib"));
+
+            }
+
+            // /bin/echo is a real Mach-O, which is what the `file -b | grep Mach-O` filter selects on.
+            foreach (string target in shallow.Concat(deep).Append(main))
+            {
+
+                File.Copy("/bin/echo", target);
+
+            }
+
+            // A managed assembly is not Mach-O and must never reach codesign.
+            File.WriteAllText(Path.Combine(macosDirectory, "RetroDownfall.Arcanum.Cli.dll"), "not mach-o");
+
+            IReadOnlyList<string> signed = RunSigningFunction(root, "sign_app_bundle", appPath);
+
+            // The bundle is sealed last, over an apphost that is itself signed after everything it loads.
+            Assert.Equal(appPath, signed[^1]);
+
+            Assert.Equal(main, signed[^2]);
+
+            string[] nested = [.. signed.Take(signed.Count - 2)];
+
+            Assert.Equal(
+                [.. shallow.Concat(deep).Order(StringComparer.Ordinal)],
+                [.. nested.Order(StringComparer.Ordinal)]);
+
+            int[] depths = [.. nested.Select(static path => path.Count(static c => c == '/'))];
+
+            for (int index = 1; index < depths.Length; index++)
+            {
+
+                Assert.True(
+                    depths[index] <= depths[index - 1],
+                    $"'{nested[index]}' was signed after the shallower '{nested[index - 1]}', so a dependent "
+                    + "was sealed before the library it loads.");
+
+            }
+
+        }
+        finally
+        {
+
+            Directory.Delete(root, recursive: true);
+
+        }
+
+    }
+
+    /// <summary>
     /// Runs the harness and returns the paths handed to <c>codesign</c> for signing, in order.
     /// </summary>
-    private static IReadOnlyList<string> RunSignPublishDir(string root, string stage)
+    private static IReadOnlyList<string> RunSignPublishDir(string root, string stage) =>
+        RunSigningFunction(root, "sign_publish_dir", stage);
+
+    /// <summary>
+    /// Sources common.sh under <c>/bin/bash</c>, calls one signing function against <paramref name="target"/>
+    /// with <c>codesign</c> stubbed out, and returns the paths it was asked to sign, in order.
+    /// </summary>
+    private static IReadOnlyList<string> RunSigningFunction(string root, string function, string target)
     {
 
         string binDirectory = Path.Combine(root, "bin");
@@ -105,7 +222,7 @@ public sealed class MacOsSigningScriptTests
             export APPLE_SIGNING_IDENTITY="Developer ID Application: Probe (PROBETEAM)"
             # shellcheck source=/dev/null
             source "$3"
-            sign_publish_dir "$1" ""
+            "$4" "$1" ""
             """);
 
         ProcessStartInfo startInfo = new("/bin/bash")
@@ -117,11 +234,13 @@ public sealed class MacOsSigningScriptTests
 
         startInfo.ArgumentList.Add(harness);
 
-        startInfo.ArgumentList.Add(stage);
+        startInfo.ArgumentList.Add(target);
 
         startInfo.ArgumentList.Add(binDirectory);
 
         startInfo.ArgumentList.Add(CommonScript());
+
+        startInfo.ArgumentList.Add(function);
 
         startInfo.Environment["CODESIGN_LOG"] = log;
 
@@ -135,7 +254,7 @@ public sealed class MacOsSigningScriptTests
 
         Assert.True(
             process.ExitCode == 0,
-            $"sign_publish_dir exited {process.ExitCode}, so the release lane produces no artifact."
+            $"{function} exited {process.ExitCode}, so the release lane produces no artifact."
             + global::System.Environment.NewLine
             + standardOutput
             + standardError);

@@ -69,7 +69,58 @@ codesign_item() {
   codesign "${args[@]}" "$target"
 }
 
+# Reorders MACHO_PATHS deepest-first into MACHO_PATHS_ORDERED. Globals rather than parameters because
+# macOS ships bash 3.2, which has no namerefs and no way to return an array; $1 names the caller for
+# the error message. `find` alone will not do: its walk is pre-order, not depth-first, so it emits a
+# directory's own files before descending into that directory's subdirectories, and the shallow
+# dependents come back before the libraries they load.
+#
+# The ordering is done in-shell rather than through a NUL-delimited pipeline: BSD `cut` has no `-z`
+# and one-true-awk stores RS="\0" as the empty string, so on the only OS that runs this script the
+# pipeline emitted nothing at all — which then either aborted the release on bash 3.2 (`sorted:
+# unbound variable`) or, on a newer bash, silently signed nothing but the main executable. Parameter
+# expansion never word-splits, so paths with spaces are safe without a delimiter.
+order_macho_paths_deepest_first() {
+  local context="$1"
+  MACHO_PATHS_ORDERED=()
+  if ((${#MACHO_PATHS[@]} == 0)); then
+    return 0
+  fi
+
+  local -a depths=()
+  local entry
+  local separators
+  local max_depth=0
+  for entry in "${MACHO_PATHS[@]}"; do
+    separators="${entry//[!\/]/}"
+    depths+=("${#separators}")
+    if ((${#separators} > max_depth)); then
+      max_depth=${#separators}
+    fi
+  done
+
+  local level
+  local index
+  for ((level = max_depth; level >= 0; level--)); do
+    for ((index = 0; index < ${#MACHO_PATHS[@]}; index++)); do
+      if ((depths[index] == level)); then
+        MACHO_PATHS_ORDERED+=("${MACHO_PATHS[index]}")
+      fi
+    done
+  done
+
+  # A reordering that drops entries would sign a partial tree and leave the rest unsigned inside an
+  # archive that `codesign --verify` still calls valid, because it only inspects the main binary.
+  # Fail loudly instead.
+  if ((${#MACHO_PATHS_ORDERED[@]} != ${#MACHO_PATHS[@]})); then
+    echo "error: $context: depth ordering kept ${#MACHO_PATHS_ORDERED[@]} of ${#MACHO_PATHS[@]} Mach-O files; refusing to sign a partial tree" >&2
+    exit 1
+  fi
+}
+
 # Sign Mach-O files inside a .app: nested libs/helpers first, then main executable, then bundle.
+# build-app-dmg.sh copies the publish directory verbatim into Contents/MacOS, so this walks the same
+# tree shape as sign_publish_dir and needs the same deepest-first ordering and partial-tree guard.
 sign_app_bundle() {
   local app_path="$1"
   local entitlements="${2:-}"
@@ -77,17 +128,30 @@ sign_app_bundle() {
   local executable_name
   executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
 
-  # Sign nested Mach-O files except the main apphost (depth-first via find).
+  require_cmd file
+  require_cmd codesign
+
+  # Collect nested Mach-O files except the main apphost, which is signed after everything it loads.
+  MACHO_PATHS=()
+  local file
+  local base
   while IFS= read -r -d '' file; do
-    local base
     base="$(basename "$file")"
     if [[ "$base" == "$executable_name" ]]; then
       continue
     fi
     if file -b "$file" | grep -q 'Mach-O'; then
-      codesign_item "$file" "$entitlements"
+      MACHO_PATHS+=("$file")
     fi
   done < <(find "$macos_dir" -type f -print0)
+
+  order_macho_paths_deepest_first sign_app_bundle
+
+  local path
+  for path in "${MACHO_PATHS_ORDERED[@]+"${MACHO_PATHS_ORDERED[@]}"}"; do
+    echo "==> Signing nested Mach-O: $path"
+    codesign_item "$path" "$entitlements"
+  done
 
   codesign_item "$macos_dir/$executable_name" "$entitlements"
   codesign_item "$app_path" "$entitlements"
@@ -115,56 +179,22 @@ sign_publish_dir() {
   require_cmd file
   require_cmd codesign
 
-  local -a nested=()
+  MACHO_PATHS=()
   local file
   while IFS= read -r -d '' file; do
     if [[ "$file" == "$main_path" ]]; then
       continue
     fi
     if file -b "$file" | grep -q 'Mach-O'; then
-      nested+=("$file")
+      MACHO_PATHS+=("$file")
     fi
   done < <(find "$dir" -type f -print0)
 
-  # Deepest paths first so nested dylibs are signed before dependents / main. The ordering is done
-  # in-shell rather than through a NUL-delimited pipeline: BSD `cut` has no `-z` and one-true-awk
-  # stores RS="\0" as the empty string, so on the only OS that runs this script the pipeline emitted
-  # nothing at all — which then either aborted the release on bash 3.2 (`sorted: unbound variable`)
-  # or, on a newer bash, silently signed nothing but the main executable. Parameter expansion never
-  # word-splits, so paths with spaces are safe without a delimiter.
-  if ((${#nested[@]} > 0)); then
-    local -a depths=()
-    local -a sorted=()
-    local separators
-    local max_depth=0
-    for file in "${nested[@]}"; do
-      separators="${file//[!\/]/}"
-      depths+=("${#separators}")
-      if ((${#separators} > max_depth)); then
-        max_depth=${#separators}
-      fi
-    done
-    local level
-    local index
-    for ((level = max_depth; level >= 0; level--)); do
-      for ((index = 0; index < ${#nested[@]}; index++)); do
-        if ((depths[index] == level)); then
-          sorted+=("${nested[index]}")
-        fi
-      done
-    done
-    # A reordering that drops entries would sign a partial tree and leave the rest unsigned inside an
-    # archive that `codesign --verify` still calls valid, because it only inspects the main binary.
-    # Fail loudly instead.
-    if ((${#sorted[@]} != ${#nested[@]})); then
-      echo "error: sign_publish_dir: depth ordering kept ${#sorted[@]} of ${#nested[@]} Mach-O files; refusing to sign a partial tree" >&2
-      exit 1
-    fi
-    nested=("${sorted[@]}")
-  fi
+  # Deepest paths first so nested dylibs are signed before dependents / main.
+  order_macho_paths_deepest_first sign_publish_dir
 
   local path
-  for path in "${nested[@]+"${nested[@]}"}"; do
+  for path in "${MACHO_PATHS_ORDERED[@]+"${MACHO_PATHS_ORDERED[@]}"}"; do
     echo "==> Signing nested Mach-O: $path"
     codesign_item "$path" "$entitlements"
     codesign --verify --strict --verbose=2 "$path"

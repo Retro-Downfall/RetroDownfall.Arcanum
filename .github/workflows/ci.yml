@@ -31,9 +31,9 @@ jobs:
           set -euo pipefail
           package=src/RetroDownfall.Arcanum.NativeSqlCipher
           for rid in win-x64; do
-            status=$(jq -r --arg rid "$rid" '.assets[] | select(.rid == $rid) | .status' "$package/native-source-manifest.json")
-            path=$(jq -r --arg rid "$rid" '.assets[] | select(.rid == $rid) | .path' "$package/native-source-manifest.json")
-            if [[ "$status" == "verified" && -f "$package/$path" ]]; then
+            status=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].status // "absent"' "$package/native-source-manifest.json")
+            path=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].path // ""' "$package/native-source-manifest.json")
+            if [[ "$status" == "verified" && -n "$path" && -f "$package/$path" ]]; then
               echo "$rid=verified" >> "$GITHUB_OUTPUT"
             else
               echo "$rid=$status" >> "$GITHUB_OUTPUT"
