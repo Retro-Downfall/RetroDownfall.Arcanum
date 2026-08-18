@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
 internal static class WebToolAdapterHelpers
 {
-    public const string InternalErrorCode = "WebResearch.InternalError";
+    public const string InternalErrorCode = ErrorCodes.WebResearch.InternalError;
 
     public static bool TryGetRequiredString(
         AIFunctionArguments arguments,

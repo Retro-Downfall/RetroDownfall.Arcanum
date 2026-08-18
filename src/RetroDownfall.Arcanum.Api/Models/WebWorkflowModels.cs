@@ -129,6 +129,14 @@ public sealed record WebSearchWorkflowResult
 
     public Guid? AttachmentId { get; init; }
 
+    /// <summary>
+    /// Why the requested session attachment did not happen, when the workflow itself succeeded. The
+    /// provider call is billed before the attachment is attempted, so discarding the answer over a
+    /// failed attachment throws away work the caller already paid for; <c>null</c> here means either
+    /// no attachment was requested or it succeeded and <c>AttachmentId</c> names it.
+    /// </summary>
+    public string? AttachmentError { get; init; }
+
 }
 
 public sealed record WebBrowseWorkflowResult
@@ -150,6 +158,14 @@ public sealed record WebBrowseWorkflowResult
 
     public Guid? AttachmentId { get; init; }
 
+    /// <summary>
+    /// Why the requested session attachment did not happen, when the workflow itself succeeded. The
+    /// provider call is billed before the attachment is attempted, so discarding the answer over a
+    /// failed attachment throws away work the caller already paid for; <c>null</c> here means either
+    /// no attachment was requested or it succeeded and <c>AttachmentId</c> names it.
+    /// </summary>
+    public string? AttachmentError { get; init; }
+
 }
 
 public sealed record WebResearchWorkflowResult
@@ -170,6 +186,14 @@ public sealed record WebResearchWorkflowResult
     public WebWorkflowUsage Usage { get; init; } = new();
 
     public Guid? AttachmentId { get; init; }
+
+    /// <summary>
+    /// Why the requested session attachment did not happen, when the workflow itself succeeded. The
+    /// provider call is billed before the attachment is attempted, so discarding the answer over a
+    /// failed attachment throws away work the caller already paid for; <c>null</c> here means either
+    /// no attachment was requested or it succeeded and <c>AttachmentId</c> names it.
+    /// </summary>
+    public string? AttachmentError { get; init; }
 
 }
 

@@ -117,8 +117,10 @@ public sealed class WebWorkflowEndpointTests
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
+        StubWebProvider provider = new();
+
         await using ArcanumWebApplicationFactory factory = Factory(
-            new StubWebProvider(),
+            provider,
             new StubIntelligence());
 
         HttpClient client = factory.CreateAuthenticatedClient();
@@ -128,6 +130,14 @@ public sealed class WebWorkflowEndpointTests
             new StringContent(body, Encoding.UTF8, "application/json"));
 
         Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        Assert.NotNull(provider.LastSearchOptions);
+
+        // Normalized where the options are built, not merely tolerated downstream: otherwise every
+        // provider that reads these filters has to defend against the same null on its own.
+        Assert.NotNull(provider.LastSearchOptions.IncludeDomains);
+
+        Assert.NotNull(provider.LastSearchOptions.ExcludeDomains);
 
     }
 
@@ -1336,6 +1346,128 @@ public sealed class WebWorkflowEndpointTests
             frames,
             static frame => frame.Type == WebResearchStreamFrameType.Progress
                 && frame.Stage == "attachment_failed");
+
+    }
+
+    /// <summary>
+    /// Search and browse have no progress channel, so the research path's <c>attachment_failed</c> frame
+    /// has no counterpart here: a failed attachment discarded the whole result, including the answer the
+    /// caller has already been billed for. The billed work is returned and the attachment failure is
+    /// reported alongside it, rather than one information loss being traded for another.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Search_still_returns_the_billed_answer_when_attachment_fails_late()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            new StubWebProvider(),
+            new StubIntelligence(),
+            vanishSessionAfterCalls: 1);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/web/search",
+            new WebSearchWorkflowRequest
+            {
+
+                Query = "current facts",
+
+                ResultCount = 3,
+
+                AttachToSessionId = sessionId,
+
+            },
+            ArcanumJsonContext.Default.WebSearchWorkflowRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<WebSearchWorkflowResult>? envelope = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseWebSearchWorkflowResult);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.True(envelope.IsSuccess);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.Answer));
+
+        Assert.Null(envelope.Data.AttachmentId);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.AttachmentError));
+
+    }
+
+    [SkippableFact]
+
+    public async Task Browse_still_returns_the_billed_page_when_attachment_fails_late()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            new StubWebProvider(),
+            new StubIntelligence(),
+            vanishSessionAfterCalls: 1);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/web/browse",
+            new WebBrowseWorkflowRequest
+            {
+
+                Url = "https://example.test/article",
+
+                AttachToSessionId = sessionId,
+
+            },
+            ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<WebBrowseWorkflowResult>? envelope = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseWebBrowseWorkflowResult);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.True(envelope.IsSuccess);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.Markdown));
+
+        Assert.Null(envelope.Data.AttachmentId);
+
+        Assert.False(string.IsNullOrWhiteSpace(envelope.Data.AttachmentError));
+
+    }
+
+    private static async Task<Guid> CreateSessionAsync(HttpClient client)
+    {
+
+        HttpResponseMessage created = await client.PostAsJsonAsync(
+            "/api/sessions",
+            new CreateSessionRequest(null, "Attachment target"),
+            ArcanumJsonContext.Default.CreateSessionRequest);
+
+        ApiResponse<SessionDetailDto>? session = JsonSerializer.Deserialize(
+            await created.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Assert.NotNull(session?.Data);
+
+        return session.Data.Id;
 
     }
 

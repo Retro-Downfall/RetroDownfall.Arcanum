@@ -104,6 +104,24 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Provider.NotFound =>
                 StatusCodes.Status404NotFound,
 
+            // The durable-operation routes (§8.23). StateConflict is 409 rather than 400: the caller's
+            // request was well formed and the operation simply moved, so re-reading and deciding again
+            // is the action, not fixing the request.
+            ErrorCodes.Operation.NotFound =>
+                StatusCodes.Status404NotFound,
+
+            ErrorCodes.Operation.StateConflict =>
+                StatusCodes.Status409Conflict,
+
+            ErrorCodes.Operation.InvalidState or ErrorCodes.Codex.PathNotContained =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.Perception.InvalidPath =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.Perception.PathNotAllowed =>
+                StatusCodes.Status403Forbidden,
+
             ErrorCodes.Attachment.NotFound or ErrorCodes.Attachment.SourceNotFound =>
                 StatusCodes.Status404NotFound,
 
@@ -140,7 +158,7 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Attachment.SourceUnavailable =>
                 StatusCodes.Status400BadRequest,
 
-            ErrorCodes.ProvingGrounds.InferenceFailed or ErrorCodes.Workspace.WriteFailed or ErrorCodes.Workspace.DeleteFailed or ErrorCodes.Saga.SearchFailed =>
+            ErrorCodes.ProvingGrounds.InferenceFailed or ErrorCodes.Workspace.WriteFailed or ErrorCodes.Workspace.DeleteFailed or ErrorCodes.Spell.WriteFailed or ErrorCodes.Saga.SearchFailed =>
                 StatusCodes.Status500InternalServerError,
 
             ErrorCodes.CommLink.Suppressed =>
@@ -197,6 +215,7 @@ internal static class ArcanumErrorMapper
         if (errorCode is ErrorCodes.ProvingGrounds.InferenceFailed
             or ErrorCodes.Workspace.WriteFailed
             or ErrorCodes.Workspace.DeleteFailed
+            or ErrorCodes.Spell.WriteFailed
             or ErrorCodes.Saga.SearchFailed
             or ErrorCodes.Hub.Error)
         {

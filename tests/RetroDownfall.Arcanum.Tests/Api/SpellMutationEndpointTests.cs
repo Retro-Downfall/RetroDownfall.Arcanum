@@ -158,4 +158,97 @@ public sealed class SpellMutationEndpointTests
 
     }
 
+    /// <summary>
+    /// <c>Spell.WriteFailed</c> is the repository saying the filesystem refused it, not the caller
+    /// saying something wrong. The create route answered an unconditional 400 for every failure, so a
+    /// client had no way to tell "fix your request" from "the server could not write". API §8.23 puts
+    /// it with <c>Workspace.WriteFailed</c> at 500.
+    /// </summary>
+    [SkippableFact]
+    public async Task CreateSpell_answers_500_when_the_workspace_filesystem_refuses_the_write()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = Path.Combine(
+            _factory.TempHome,
+            $"spell-mutation-writefail-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(workspace);
+
+        // A regular file where the repository must create the "spells" directory: the staging
+        // Directory.CreateDirectory throws, which is exactly the arm that answers Spell.WriteFailed.
+        await File.WriteAllTextAsync(Path.Combine(workspace, "spells"), "not a directory");
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = JsonSerializer.Serialize(
+            new CreateSpellRequest(
+                "blocked-spell",
+                "a spell whose workspace cannot hold it",
+                [],
+                "system",
+                null,
+                null,
+                null,
+                [],
+                []),
+            ArcanumJsonContext.Default.CreateSpellRequest);
+
+        HttpResponseMessage response = await client.PostAsync(
+            $"/api/spells?workspace={Uri.EscapeDataString(workspace)}",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        ApiResponse<bool>? envelope = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(envelope);
+
+        Assert.Equal(ErrorCodes.Spell.WriteFailed, envelope.Error?.Code);
+
+    }
+
+    /// <summary>
+    /// <c>SpellExportDto.FullContent</c> and <c>.Scripts</c> are non-nullable positional parameters, so
+    /// STJ happily binds them to null when the body omits them and the repository then dereferences
+    /// null well past the point where a request could still be refused. Rejecting at the binding layer
+    /// is what makes the declared shape true.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("""{"payload":{},"workspace":"WORKSPACE"}""")]
+    [InlineData("""{"payload":{"metadata":null,"scripts":[]},"workspace":"WORKSPACE"}""")]
+    [InlineData("""{"payload":{"metadata":null,"fullContent":"---\nname: x\n---\nbody"},"workspace":"WORKSPACE"}""")]
+    public async Task ImportSpell_refuses_a_payload_missing_a_required_member(string template)
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = Path.Combine(
+            _factory.TempHome,
+            $"spell-import-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(workspace);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = template.Replace(
+            "WORKSPACE",
+            JsonEncodedText.Encode(workspace).ToString(),
+            StringComparison.Ordinal);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/spells/import",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+    }
+
 }

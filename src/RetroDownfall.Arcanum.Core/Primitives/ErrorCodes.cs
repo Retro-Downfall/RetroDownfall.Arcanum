@@ -326,6 +326,13 @@ public static class ErrorCodes
         /// <summary>The requested directory could not be resolved, or does not exist.</summary>
         public const string InvalidPath = "Perception.InvalidPath";
 
+        /// <summary>
+        /// The directory resolved outside <c>Arcanum:Security:PerceptionWorkspaceRoots</c>. Distinct
+        /// from <see cref="InvalidPath"/> on purpose: the deny answer is returned before any existence
+        /// probe, so a denied caller cannot use the endpoint as a filesystem existence oracle.
+        /// </summary>
+        public const string PathNotAllowed = "Perception.PathNotAllowed";
+
     }
 
     /// <summary>Spell — workspace spell files and execution.</summary>
@@ -361,6 +368,12 @@ public static class ErrorCodes
         public const string ContinuationFrameTooLarge =
             "Spell.ContinuationFrameTooLarge";
 
+        /// <summary>
+        /// A spell file could not be written. The envelope carries a fixed sanitized sentence and the
+        /// exception detail stays in the server log, so no absolute server path reaches the caller.
+        /// </summary>
+        public const string WriteFailed = "Spell.WriteFailed";
+
     }
 
     /// <summary>Prompt — named prompt templates.</summary>
@@ -387,6 +400,12 @@ public static class ErrorCodes
 
         /// <summary>The submitted CODEX body exceeds the configured UTF-8 byte ceiling.</summary>
         public const string ContentTooLarge = "Codex.ContentTooLarge";
+
+        /// <summary>
+        /// <c>CODEX.md</c> is a link resolving outside its campaign root or the Grimoire directory. A
+        /// campaign root is frequently an untrusted repository, and a repository can ship that link.
+        /// </summary>
+        public const string PathNotContained = "Codex.PathNotContained";
 
     }
 
@@ -460,6 +479,23 @@ public static class ErrorCodes
     {
 
         public const string NotFound = "Execution.NotFound";
+
+    }
+
+    /// <summary>Operation — durable long-running operations (<c>/api/operations</c>).</summary>
+    public static class Operation
+    {
+
+        public const string NotFound = "Operation.NotFound";
+
+        /// <summary>The <c>state</c> filter named something that is not a durable operation state.</summary>
+        public const string InvalidState = "Operation.InvalidState";
+
+        /// <summary>
+        /// The compare-and-set lost: the operation moved, is already terminal, or is not in a state
+        /// this transition accepts. The caller can re-read and decide, so it is a conflict, not a fault.
+        /// </summary>
+        public const string StateConflict = "Operation.StateConflict";
 
     }
 
@@ -783,6 +819,12 @@ public static class ErrorCodes
             "WebResearch.JavaScriptRenderingUnavailable";
 
         public const string BudgetExceeded = "WebResearch.BudgetExceeded";
+
+        /// <summary>
+        /// An unexpected fault inside a native web tool adapter. Reported in the structured MCP tool
+        /// result rather than on an HTTP route, so §8.23 gives it no status row.
+        /// </summary>
+        public const string InternalError = "WebResearch.InternalError";
 
     }
 

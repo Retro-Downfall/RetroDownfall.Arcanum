@@ -62,11 +62,17 @@ public sealed record MemorySourcesDto(
     Guid? SessionId,
     MemorySourceDto[] Sources);
 
+/// <param name="Limit">
+/// Optional caller ceiling on the number of results. Omitted means the server's own budget, which is
+/// also the maximum a caller may ask for; a value outside <c>[1, budget]</c> is refused rather than
+/// silently clamped, so a caller never believes it paged when it did not.
+/// </param>
 public sealed record MemorySearchRequest(
     string Query,
     MemorySearchScope Scope = MemorySearchScope.All,
     Guid? SessionId = null,
-    string? WorkspaceId = null);
+    string? WorkspaceId = null,
+    int? Limit = null);
 
 public sealed record MemorySearchResultDto(
     MemorySearchScope Scope,
@@ -76,10 +82,24 @@ public sealed record MemorySearchResultDto(
     string Retention,
     string SourceId);
 
+/// <summary>
+/// What one scope contributed, and whether it had more to give. Scopes are consulted in order against
+/// one shared budget, so a saturating early scope starves the later ones — without this a caller could
+/// not tell an exhausted scope from a starved one.
+/// </summary>
+public sealed record MemorySearchScopeStatusDto(
+    MemorySearchScope Scope,
+    int Count,
+    bool HasMore);
+
+/// <param name="Scopes">One entry per scope actually consulted, in the order they were consulted.</param>
+/// <param name="HasMore">True when any consulted scope was truncated; the caller may raise <c>limit</c>.</param>
 public sealed record MemorySearchResponse(
     string Query,
     MemorySearchScope Scope,
-    MemorySearchResultDto[] Results);
+    MemorySearchResultDto[] Results,
+    MemorySearchScopeStatusDto[]? Scopes = null,
+    bool HasMore = false);
 
 public sealed record MemoryEligibilityDto(
     string Name,

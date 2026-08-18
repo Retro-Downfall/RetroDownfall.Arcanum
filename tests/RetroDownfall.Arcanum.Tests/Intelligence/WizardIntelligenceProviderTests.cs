@@ -2311,6 +2311,87 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// <c>disableMcpTools</c> and a filtering <c>toolPolicy</c> are both narrowing instructions, so the
+    /// answer to both is their intersection, not the policy alone. Dropping the flag for
+    /// <c>readOnlyTools</c>/<c>noForbiddenArts</c> advertised MCP tools to a caller that asked for none.
+    /// </summary>
+    [Theory]
+    [InlineData(ToolPolicy.ReadOnlyTools)]
+    [InlineData(ToolPolicy.NoForbiddenArts)]
+    public async Task A_filtering_tool_policy_still_honours_disable_mcp_tools(ToolPolicy policy)
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("filtered");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+
+        mcp.Tools.Add(CreateMcpTool("search_workspace"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "list",
+                SkipSpellRouting = true,
+                ToolPolicy = policy,
+                DisableMcpTools = true,
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+
+        Assert.DoesNotContain("read_file_chunk", toolNames);
+
+        Assert.DoesNotContain("search_workspace", toolNames);
+
+    }
+
+    /// <summary>
+    /// The wire converter refuses an undefined policy, so such a value can only arrive from in-process
+    /// construction — but both consumers treated "unrecognized" as the permissive arm, which is the one
+    /// direction an unknown restriction must never take.
+    /// </summary>
+    [Fact]
+    public async Task An_undefined_tool_policy_advertises_nothing_rather_than_everything()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("undefined");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+
+        mcp.Tools.Add(CreateMcpTool("write_file"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "list",
+                SkipSpellRouting = true,
+                ToolPolicy = (ToolPolicy)99,
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Empty(ToolNames(chat.LastChatOptions));
+
+    }
+
     [Fact]
     public async Task Stateless_turn_does_not_advertise_apply_patch()
     {

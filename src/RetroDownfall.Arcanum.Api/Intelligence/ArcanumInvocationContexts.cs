@@ -142,10 +142,25 @@ internal static class ArcanumInvocationContexts
 
     }
 
+    /// <summary>
+    /// The covenant-authority view of what this turn advertises. It errs closed on purpose: the only
+    /// eligibility question downstream is <c>ToolPolicy is not NoTools</c>, so an unrecognized value
+    /// would otherwise pass that gate. The wire converter refuses undefined values, which leaves
+    /// in-process construction as the only way one can arrive — and an unknown restriction must never
+    /// be read as permission.
+    /// </summary>
     private static ToolPolicy ResolveToolPolicy(PingRequest request) =>
         request.DisableAllTools || request.DisableMcpTools
             ? ToolPolicy.NoTools
-            : request.ToolPolicy ?? ToolPolicy.AllTools;
+            : request.ToolPolicy switch
+            {
+                null => ToolPolicy.AllTools,
+                ToolPolicy.AllTools
+                    or ToolPolicy.NoTools
+                    or ToolPolicy.ReadOnlyTools
+                    or ToolPolicy.NoForbiddenArts => request.ToolPolicy.Value,
+                _ => ToolPolicy.NoTools,
+            };
 
     /// <summary>
     /// The irrevocable request marker set by the pre-binding no-context middleware.

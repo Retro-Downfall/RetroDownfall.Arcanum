@@ -6319,44 +6319,40 @@ public sealed partial class WizardIntelligenceProvider(
         return roots;
     }
 
-    private static bool ShouldDisableMcpTools(PingRequest request)
-    {
-        if (request.ToolPolicy is ToolPolicy.NoTools)
+    /// <summary>
+    /// <c>toolPolicy</c> and <c>disableMcpTools</c> are both narrowing instructions, so the answer to
+    /// both is their intersection. The filtering policies no longer supersede the flag, which used to
+    /// leave a caller that asked for no MCP tools with a filtered MCP toolset anyway.
+    ///
+    /// <para>The <c>_</c> arm treats an unrecognized policy as <c>noTools</c>. The wire converter
+    /// refuses undefined values, so one can only arrive from in-process construction — and an unknown
+    /// restriction must never be the arm that widens advertisement.</para>
+    /// </summary>
+    private static bool ShouldDisableMcpTools(PingRequest request) =>
+        request.ToolPolicy switch
         {
-            return true;
-        }
+            ToolPolicy.NoTools => true,
+            null
+                or ToolPolicy.AllTools
+                or ToolPolicy.ReadOnlyTools
+                or ToolPolicy.NoForbiddenArts => request.DisableMcpTools,
+            _ => true,
+        };
 
-        if (request.ToolPolicy is null or ToolPolicy.AllTools)
+    /// <summary>
+    /// The advertisement filter for a resolved policy. Its <c>_</c> arm advertises nothing, for the same
+    /// reason <see cref="ShouldDisableMcpTools"/>'s does: an undefined policy is not a licence.
+    /// </summary>
+    private IReadOnlyList<AITool> ApplyToolPolicyFilters(PingRequest request, IReadOnlyList<AITool> tools) =>
+        request.ToolPolicy switch
         {
-            return request.DisableMcpTools;
-        }
-
-        return false;
-    }
-
-    private IReadOnlyList<AITool> ApplyToolPolicyFilters(PingRequest request, IReadOnlyList<AITool> tools)
-    {
-        if (request.ToolPolicy is null or ToolPolicy.AllTools or ToolPolicy.NoTools)
-        {
-            return tools;
-        }
-
-        if (request.ToolPolicy is ToolPolicy.ReadOnlyTools)
-        {
-            return FilterToolsToAllowlist(tools, ReadOnlyToolNames);
-        }
-
-        if (request.ToolPolicy is ToolPolicy.NoForbiddenArts)
-        {
-            WardSettings wardSettings = settings.Value.ResolveWard();
-
-            return FilterToolsExcludingNames(
+            null or ToolPolicy.AllTools or ToolPolicy.NoTools => tools,
+            ToolPolicy.ReadOnlyTools => FilterToolsToAllowlist(tools, ReadOnlyToolNames),
+            ToolPolicy.NoForbiddenArts => FilterToolsExcludingNames(
                 tools,
-                ToolRiskClassifier.BuildForbiddenToolNames(wardSettings.ForbiddenArts));
-        }
-
-        return tools;
-    }
+                ToolRiskClassifier.BuildForbiddenToolNames(settings.Value.ResolveWard().ForbiddenArts)),
+            _ => [],
+        };
 
     private static readonly HashSet<string> ReadOnlyToolNames = new(StringComparer.OrdinalIgnoreCase)
     {

@@ -126,6 +126,70 @@ public sealed class PingRequestBoundsValidatorTests
 
     }
 
+    /// <summary>
+    /// <c>Content</c> is the flattened text of the same message <c>ContentParts</c> carries in
+    /// structured form, and the mapper sends exactly one of the two. Adding them charged a caller twice
+    /// for one payload, so the byte-identical JSON-string form of a request passed while the parts form
+    /// was refused.
+    /// </summary>
+    [Fact]
+    public void Validate_ContentAndItsFlattenedParts_AreChargedOnceNotTwice()
+    {
+        ArcanumSettings settings = new();
+        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
+            ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
+
+        // Comfortably under the cap on its own, comfortably over it when double-counted.
+        string body = new('x', (maxEntryBytes * 3) / 5);
+
+        PingRequest request = new(
+            Prompt: string.Empty,
+            StatelessMessages:
+            [
+                new CoreChatMessage(
+                    "user",
+                    body,
+                    ContentParts: [new CoreContentPart("text", body, null, null)]),
+            ]);
+
+        Result result = PingRequestBoundsValidator.Validate(request, settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    /// <summary>
+    /// The counterpart: for <c>role = tool</c> the mapper branches on role before it looks at
+    /// <c>ContentParts</c>, so it is <c>Content</c> that reaches the provider. Letting a tiny part
+    /// stand in for the whole message would be a cap bypass, which is why this is a max and not a
+    /// "parts win" skip.
+    /// </summary>
+    [Fact]
+    public void Validate_ToolRoleContent_IsStillMeasuredWhenAPartIsPresent()
+    {
+        ArcanumSettings settings = new();
+        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
+            ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
+
+        PingRequest request = new(
+            Prompt: string.Empty,
+            StatelessMessages:
+            [
+                new CoreChatMessage(
+                    "tool",
+                    new string('x', maxEntryBytes + 1),
+                    ToolCallId: "call-1",
+                    ContentParts: [new CoreContentPart("text", "tiny", null, null)]),
+            ]);
+
+        Result result = PingRequestBoundsValidator.Validate(request, settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Validation.StatelessMessageTooLong", result.Error.Code);
+
+    }
+
     [Fact]
     public void Validate_RejectsOversizedAdditionalSystemPrompt()
     {

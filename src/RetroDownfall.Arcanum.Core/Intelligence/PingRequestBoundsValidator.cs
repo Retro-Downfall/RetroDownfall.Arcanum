@@ -103,10 +103,36 @@ public static class PingRequestBoundsValidator
 
     }
 
+    /// <summary>
+    /// <c>Content</c> and <c>ContentParts</c> are two representations of one payload and the mapper
+    /// sends exactly one of them, so they are charged as the larger of the two rather than summed.
+    /// Summing billed a caller twice for one body, which refused a structured request where the
+    /// byte-identical JSON-string form of the same message passed.
+    /// </summary>
+    /// <remarks>
+    /// A max, not a "parts win" skip: <c>MapStatelessMessageToMeAi</c> branches on role before it looks
+    /// at <c>ContentParts</c>, so for <c>role = tool</c> and assistant-with-tool-calls it is
+    /// <c>Content</c> that reaches the provider. Ignoring it there would let a ten-byte part stand in
+    /// for a multi-megabyte message. Tool-call arguments are a genuinely separate payload and still add.
+    /// </remarks>
     private static long MeasureMessageBytes(CoreChatMessage message)
     {
 
-        long bytes = Utf8Bytes(message.Content);
+        long partBytes = 0;
+
+        if (message.ContentParts is { Count: > 0 } parts)
+        {
+
+            foreach (CoreContentPart part in parts)
+            {
+
+                partBytes += Utf8Bytes(part.Text) + Utf8Bytes(part.ImageUrl);
+
+            }
+
+        }
+
+        long bytes = Math.Max(Utf8Bytes(message.Content), partBytes);
 
         if (message.ToolCalls is { Count: > 0 } toolCalls)
         {
@@ -115,18 +141,6 @@ public static class PingRequestBoundsValidator
             {
 
                 bytes += Utf8Bytes(toolCall.Name) + Utf8Bytes(toolCall.ArgumentsJson);
-
-            }
-
-        }
-
-        if (message.ContentParts is { Count: > 0 } parts)
-        {
-
-            foreach (CoreContentPart part in parts)
-            {
-
-                bytes += Utf8Bytes(part.Text) + Utf8Bytes(part.ImageUrl);
 
             }
 

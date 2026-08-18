@@ -42,6 +42,35 @@ public sealed class OpenAiV1ModerationsEndpointTests
         Assert.Equal("not_supported", body.Error.Code);
     }
 
+    /// <summary>
+    /// The handler discards its bound body (<c>_ = body;</c>), but binding still ran, so a payload that
+    /// would not deserialize answered the framework's 400/415 rather than the route's own unconditional
+    /// 501. "Not supported" cannot depend on the shape of a body nothing reads.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("not json at all", "application/json")]
+    [InlineData("""{"input":"hello"}""", "text/plain")]
+    [InlineData("""{"input":{"nested":true}}""", "application/json")]
+    public async Task PostModerations_Returns501_WhateverTheBodyLooksLike(string payload, string contentType)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/moderations",
+            new StringContent(payload, Encoding.UTF8, contentType));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+        Assert.Equal("not_supported", body.Error.Code);
+    }
+
     [SkippableFact]
     public async Task PostModerations_WithoutApiKey_Returns401()
     {
