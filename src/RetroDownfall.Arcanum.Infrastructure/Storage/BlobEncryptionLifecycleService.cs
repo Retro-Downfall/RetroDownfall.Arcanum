@@ -170,35 +170,53 @@ public sealed class BlobEncryptionLifecycleService(
         IReadOnlyList<BlobEncryptionCandidate> candidates = await metadataStore
             .ListAsync(cancellationToken)
             .ConfigureAwait(false);
+        int failed = 0;
         foreach (BlobEncryptionCandidate candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (targetKeyId is null)
+            try
             {
-                _ = await processor.MigrateAsync(candidate, cancellationToken)
-                    .ConfigureAwait(false);
+                if (targetKeyId is null)
+                {
+                    _ = await processor.MigrateAsync(candidate, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    _ = await processor.ReencryptAsync(candidate, targetKeyId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
-            else
+            // The same filter RunDurableAsync uses. A blob deleted out-of-band, a length/hash
+            // mismatch, or an unavailable key is an expected data condition, not a reason to
+            // abandon every candidate queued behind it. Recovery for these kinds runs once —
+            // FindExpiredAsync re-selects only the DataRetention kinds — so an early unwind would
+            // leave the remaining files legacy plaintext (or on the retired key) permanently.
+            catch (Exception ex) when (ex is IOException
+                                       or InvalidDataException
+                                       or System.Security.Cryptography.CryptographicException)
             {
-                _ = await processor.ReencryptAsync(candidate, targetKeyId, cancellationToken)
-                    .ConfigureAwait(false);
+                failed++;
             }
+        }
+
+        // Both branches verify their own work before claiming success. Migration recovery used to
+        // return Completed() unconditionally, so a pass that never touched a file was
+        // indistinguishable from a clean one.
+        BlobEncryptionOperationResult verification = await RunVerificationAsync(
+                operation.Id,
+                maxConcurrency: 2,
+                maxBytesPerSecond: 64L * 1024 * 1024,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (failed != 0 || verification.FailedFiles != 0 || verification.RemainingFiles != 0)
+        {
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                LongRunningOperationErrorCodes.RecoveryFailed);
         }
 
         if (targetKeyId is not null)
         {
-            BlobEncryptionOperationResult verification = await RunVerificationAsync(
-                    operation.Id,
-                    maxConcurrency: 2,
-                    maxBytesPerSecond: 64L * 1024 * 1024,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            if (verification.FailedFiles != 0 || verification.RemainingFiles != 0)
-            {
-                return LongRunningOperationRecoveryResult.RequiresAttention(
-                    LongRunningOperationErrorCodes.RecoveryFailed);
-            }
-
             await RetireUnreferencedKeysAsync(targetKeyId, cancellationToken).ConfigureAwait(false);
         }
 

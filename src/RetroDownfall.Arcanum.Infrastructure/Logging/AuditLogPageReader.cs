@@ -81,23 +81,15 @@ internal static class AuditLogPageReader
                 directory,
                 stem,
                 effectiveFrom,
-                effectiveTo);
+                effectiveTo,
+                family,
+                logger);
 
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
 
-            logger.LogDebug(ex, "Could not enumerate {AuditFamily} audit logs for this query.", family);
-
-            return checkpoint is null
-                ? Result<AuditQueryPage<T>>.Success(new AuditQueryPage<T>([], null))
-                : InvalidCursor<T>();
-
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-
-            logger.LogDebug(ex, "Could not enumerate {AuditFamily} audit logs for this query.", family);
+            LogUnreadable(logger, ex, family, directory);
 
             return checkpoint is null
                 ? Result<AuditQueryPage<T>>.Success(new AuditQueryPage<T>([], null))
@@ -128,6 +120,8 @@ internal static class AuditLogPageReader
                 || !await MatchesIdentityAsync(
                     files[startFileIndex],
                     checkpoint,
+                    family,
+                    logger,
                     cancellationToken).ConfigureAwait(false))
             {
 
@@ -204,6 +198,8 @@ internal static class AuditLogPageReader
                         candidate.NextBoundaryOffset,
                         effectiveTo,
                         queryFingerprint,
+                        family,
+                        logger,
                         cancellationToken).ConfigureAwait(false);
 
                     if (nextCursor.IsFailure)
@@ -219,31 +215,10 @@ internal static class AuditLogPageReader
                 }
 
             }
-            catch (IOException ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
 
-                logger.LogDebug(
-                    ex,
-                    "Could not read {AuditFamily} audit log file {FilePath} for this query; skipping.",
-                    family,
-                    file.Path);
-
-                if (checkpoint is not null && fileIndex == startFileIndex)
-                {
-
-                    return InvalidCursor<T>();
-
-                }
-
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-
-                logger.LogDebug(
-                    ex,
-                    "Could not read {AuditFamily} audit log file {FilePath} for this query; skipping.",
-                    family,
-                    file.Path);
+                LogUnreadable(logger, ex, family, file.Path);
 
                 if (checkpoint is not null && fileIndex == startFileIndex)
                 {
@@ -260,11 +235,52 @@ internal static class AuditLogPageReader
 
     }
 
+    /// <summary>
+    /// Reports a dated audit log the reader discovered but could not read, so an operator can tell
+    /// "no records that day" apart from "that day's records were unreadable".
+    /// </summary>
+    /// <remarks>
+    /// A path that vanished between enumeration and open is the retention sweep doing its job, and
+    /// stays at Debug. Everything else — a mode/ACL change, a disk error, a lock held elsewhere — is
+    /// an anomaly on a security audit surface, and Debug cannot carry it: the Serilog pipeline floor
+    /// is a hardcoded <c>MinimumLevel.Information()</c>, so a Debug event reaches neither the rolling
+    /// file, nor the ring buffer behind <c>GET /api/logs</c>, nor <c>arcanum logs</c>.
+    /// </remarks>
+    private static void LogUnreadable(
+        ILogger logger,
+        Exception exception,
+        string family,
+        string path)
+    {
+
+        if (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+
+            logger.LogDebug(
+                exception,
+                "{AuditFamily} audit log {FilePath} was removed between enumeration and read; skipping.",
+                family,
+                path);
+
+            return;
+
+        }
+
+        logger.LogWarning(
+            exception,
+            "{AuditFamily} audit log {FilePath} could not be read; this query's results are incomplete.",
+            family,
+            path);
+
+    }
+
     private static IReadOnlyList<AuditLogFileSnapshot> EnumerateDatedLogFiles(
         string directory,
         string stem,
         DateTimeOffset from,
-        DateTimeOffset to)
+        DateTimeOffset to,
+        string family,
+        ILogger logger)
     {
 
         string prefix = stem + "-";
@@ -307,12 +323,10 @@ internal static class AuditLogPageReader
                     new FileInfo(path).Length));
 
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
 
-            }
-            catch (UnauthorizedAccessException)
-            {
+                LogUnreadable(logger, ex, family, path);
 
             }
 
@@ -370,6 +384,8 @@ internal static class AuditLogPageReader
         long currentBoundary,
         DateTimeOffset snapshotTo,
         ReadOnlyMemory<byte> queryFingerprint,
+        string family,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
 
@@ -398,6 +414,8 @@ internal static class AuditLogPageReader
         AuditLogFileIdentity? identity = await ReadIdentityAsync(
             target,
             expectedPrefixLength: null,
+            family,
+            logger,
             cancellationToken).ConfigureAwait(false);
 
         if (identity is null)
@@ -425,12 +443,16 @@ internal static class AuditLogPageReader
     private static async Task<bool> MatchesIdentityAsync(
         AuditLogFileSnapshot file,
         AuditLogCursorCheckpoint checkpoint,
+        string family,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
 
         AuditLogFileIdentity? actual = await ReadIdentityAsync(
             file,
             checkpoint.IdentityPrefixLength,
+            family,
+            logger,
             cancellationToken).ConfigureAwait(false);
 
         return actual is not null
@@ -443,6 +465,8 @@ internal static class AuditLogPageReader
     private static async Task<AuditLogFileIdentity?> ReadIdentityAsync(
         AuditLogFileSnapshot file,
         int? expectedPrefixLength,
+        string family,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
 
@@ -472,14 +496,12 @@ internal static class AuditLogPageReader
                 SHA256.HashData(prefix));
 
         }
-        catch (IOException)
+        // Without this the caller turns a permissions or disk failure into "its retained log file
+        // changed during the read", which sends the operator to the wrong diagnosis entirely.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
 
-            return null;
-
-        }
-        catch (UnauthorizedAccessException)
-        {
+            LogUnreadable(logger, ex, family, file.Path);
 
             return null;
 

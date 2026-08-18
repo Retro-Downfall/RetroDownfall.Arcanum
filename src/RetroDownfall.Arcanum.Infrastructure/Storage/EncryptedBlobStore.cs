@@ -666,7 +666,30 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         }
 
         public override int Read(byte[] buffer, int offset, int count) =>
-            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+            Read(buffer.AsSpan(offset, count));
+
+        // A genuine synchronous path. OpenReadAsync builds its FileStream with
+        // FileOptions.Asynchronous, so blocking on ReadAsync here would pin a thread-pool thread for
+        // the duration of real file I/O on every synchronous consumer — Stream.CopyTo and
+        // JsonSerializer.Deserialize(Stream) among them.
+        public override int Read(Span<byte> buffer)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (buffer.Length == 0)
+            {
+                return 0;
+            }
+
+            if (_plainOffset == _plainCount && !DecryptNextChunk())
+            {
+                return 0;
+            }
+
+            int count = Math.Min(buffer.Length, _plainCount - _plainOffset);
+            _plainBuffer.AsSpan(_plainOffset, count).CopyTo(buffer);
+            _plainOffset += count;
+            return count;
+        }
 
         public override async ValueTask<int> ReadAsync(
             Memory<byte> buffer,
@@ -690,14 +713,37 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             return count;
         }
 
-        private async ValueTask<bool> DecryptNextChunkAsync(CancellationToken cancellationToken)
+        private bool DecryptNextChunk()
         {
-            if (_remaining == 0 && _chunkIndex > 0)
+            if (!TryBeginChunk(out int count))
             {
                 return false;
             }
 
-            int count = (int)Math.Min(Descriptor.ChunkSize, _remaining);
+            try
+            {
+                if (count > 0)
+                {
+                    _input.ReadExactly(_cipherBuffer.AsSpan(0, count));
+                }
+
+                _input.ReadExactly(_tag);
+            }
+            catch (EndOfStreamException ex)
+            {
+                throw new InvalidDataException("The encrypted blob chunk is truncated.", ex);
+            }
+
+            return DecryptBufferedChunk(count);
+        }
+
+        private async ValueTask<bool> DecryptNextChunkAsync(CancellationToken cancellationToken)
+        {
+            if (!TryBeginChunk(out int count))
+            {
+                return false;
+            }
+
             try
             {
                 if (count > 0)
@@ -715,6 +761,25 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 throw new InvalidDataException("The encrypted blob chunk is truncated.", ex);
             }
 
+            return DecryptBufferedChunk(count);
+        }
+
+        private bool TryBeginChunk(out int count)
+        {
+            if (_remaining == 0 && _chunkIndex > 0)
+            {
+                count = 0;
+                return false;
+            }
+
+            count = (int)Math.Min(Descriptor.ChunkSize, _remaining);
+            return true;
+        }
+
+        // The AEAD open, shared by both read paths so the nonce, AAD, and chunk bookkeeping exist in
+        // exactly one place.
+        private bool DecryptBufferedChunk(int count)
+        {
             Span<byte> nonce = stackalloc byte[NonceLength];
             _noncePrefix.AsSpan().CopyTo(nonce);
             BinaryPrimitives.WriteUInt32BigEndian(nonce[NoncePrefixLength..], _chunkIndex);
@@ -850,7 +915,31 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         }
 
         public override void Write(byte[] buffer, int offset, int count) =>
-            WriteAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+            Write(buffer.AsSpan(offset, count));
+
+        // A genuine synchronous path. BatchProcessingService wraps this writer in a StreamWriter, and
+        // StreamWriter's synchronous Flush/Dispose call straight through to here; blocking on the async
+        // path would pin a thread-pool thread for the duration of real file I/O.
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            EnsureWritable();
+            while (!buffer.IsEmpty)
+            {
+                // A full buffer is only sealed once more content arrives, so the chunk that turns
+                // out to be last is always encrypted by CompleteAsync with the final marker — even
+                // when the total length is an exact multiple of the chunk size.
+                if (_bufferCount == _plainBuffer.Length)
+                {
+                    EncryptBufferedChunk(isFinal: false);
+                }
+
+                int copy = Math.Min(_plainBuffer.Length - _bufferCount, buffer.Length);
+                buffer[..copy].CopyTo(_plainBuffer.AsSpan(_bufferCount));
+                _bufferCount += copy;
+                _plaintextLength = checked(_plaintextLength + copy);
+                buffer = buffer[copy..];
+            }
+        }
 
         public override async ValueTask WriteAsync(
             ReadOnlyMemory<byte> buffer,
@@ -911,7 +1000,35 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             }
         }
 
+        private void EncryptBufferedChunk(bool isFinal)
+        {
+            int count = SealBufferedChunk(isFinal);
+            if (count > 0)
+            {
+                _output.Write(_cipherBuffer.AsSpan(0, count));
+            }
+
+            _output.Write(_tag);
+            AdvanceChunk(count);
+        }
+
         private async Task EncryptBufferedChunkAsync(bool isFinal, CancellationToken cancellationToken)
+        {
+            int count = SealBufferedChunk(isFinal);
+            if (count > 0)
+            {
+                await _output.WriteAsync(
+                        _cipherBuffer.AsMemory(0, count),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            await _output.WriteAsync(_tag, cancellationToken).ConfigureAwait(false);
+            AdvanceChunk(count);
+        }
+
+        // The AEAD seal, shared by both write paths so the nonce and AAD exist in exactly one place.
+        private int SealBufferedChunk(bool isFinal)
         {
             int count = _bufferCount;
             BinaryPrimitives.WriteUInt32BigEndian(
@@ -931,15 +1048,11 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 _cipherBuffer.AsSpan(0, count),
                 _tag,
                 _aad);
-            if (count > 0)
-            {
-                await _output.WriteAsync(
-                        _cipherBuffer.AsMemory(0, count),
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            return count;
+        }
 
-            await _output.WriteAsync(_tag, cancellationToken).ConfigureAwait(false);
+        private void AdvanceChunk(int count)
+        {
             CryptographicOperations.ZeroMemory(_plainBuffer.AsSpan(0, count));
             CryptographicOperations.ZeroMemory(_cipherBuffer.AsSpan(0, count));
             _bufferCount = 0;
@@ -956,8 +1069,21 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             }
         }
 
+        /// <summary>
+        /// Flushes the underlying file handle. Plaintext still sitting in the chunk buffer is not
+        /// sealed by a flush.
+        /// </summary>
+        /// <remarks>
+        /// It cannot be: the reader frames every non-final chunk as exactly <c>ChunkSize</c> bytes, so
+        /// sealing a partial chunk mid-stream would produce an envelope that cannot be read back.
+        /// Buffered plaintext reaches disk when the buffer fills or when <c>CompleteAsync</c> writes the
+        /// final chunk, and <c>CompleteAsync</c> is the only way to obtain a descriptor at all — an
+        /// abandoned writer's temp file is deleted rather than published. Throwing here instead would
+        /// break <c>StreamWriter</c>, which flushes its own char buffer through to this stream.
+        /// </remarks>
         public override void Flush() => _output.Flush();
 
+        /// <inheritdoc cref="Flush"/>
         public override Task FlushAsync(CancellationToken cancellationToken) =>
             _output.FlushAsync(cancellationToken);
 
@@ -972,30 +1098,52 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
 
         private async ValueTask AbortAsync()
         {
-            if (!_disposed)
+            if (_disposed)
             {
-                _disposed = true;
-                _aes.Dispose();
-                await _output.DisposeAsync().ConfigureAwait(false);
-                CryptographicOperations.ZeroMemory(_purposeKey);
-                CryptographicOperations.ZeroMemory(_plainBuffer);
-                CryptographicOperations.ZeroMemory(_cipherBuffer);
-                CryptographicOperations.ZeroMemory(_tag);
-                CryptographicOperations.ZeroMemory(_aad);
-                CryptographicOperations.ZeroMemory(_nonce);
-                if (File.Exists(_tempPath))
-                {
-                    try
-                    {
-                        File.Delete(_tempPath);
-                    }
-                    catch (IOException)
-                    {
-                    }
-                    catch (UnauthorizedAccessException)
-                    {
-                    }
-                }
+                return;
+            }
+
+            _disposed = true;
+            _aes.Dispose();
+            await _output.DisposeAsync().ConfigureAwait(false);
+            ScrubAndDiscardTemp();
+        }
+
+        private void Abort()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _aes.Dispose();
+            _output.Dispose();
+            ScrubAndDiscardTemp();
+        }
+
+        private void ScrubAndDiscardTemp()
+        {
+            CryptographicOperations.ZeroMemory(_purposeKey);
+            CryptographicOperations.ZeroMemory(_plainBuffer);
+            CryptographicOperations.ZeroMemory(_cipherBuffer);
+            CryptographicOperations.ZeroMemory(_tag);
+            CryptographicOperations.ZeroMemory(_aad);
+            CryptographicOperations.ZeroMemory(_nonce);
+            if (!File.Exists(_tempPath))
+            {
+                return;
+            }
+
+            try
+            {
+                File.Delete(_tempPath);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
             }
         }
 
@@ -1003,7 +1151,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         {
             if (disposing)
             {
-                AbortAsync().AsTask().GetAwaiter().GetResult();
+                Abort();
             }
 
             base.Dispose(disposing);

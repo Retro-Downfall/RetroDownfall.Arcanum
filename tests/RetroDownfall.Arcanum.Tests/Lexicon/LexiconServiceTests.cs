@@ -250,6 +250,54 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// <c>DELETE /api/memory/lexicon/{name}</c> hands the handler <c>context.RequestAborted</c>, so an
+    /// aborted request cancels the token while <c>BEGIN IMMEDIATE</c> already holds the RESERVED write
+    /// lock. Issuing the <c>ROLLBACK</c> on that same token means <c>ExecuteNonQueryAsync</c> returns a
+    /// cancelled task before any SQL is sent, so the deterministic release the code exists to perform
+    /// never happens and the transaction is stranded on the pooled context's shared connection.
+    /// </summary>
+    [SkippableFact]
+    public async Task DeleteByNameAsync_RollsBackWhenTheCallerCancelsMidTransaction()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _service!.UpsertAsync("Abandoned", "Project", ["Written before the abort."], CancellationToken.None);
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        using CancellationTokenSource cts = new();
+
+        bool armed = true;
+
+        // SQLite's trace hook fires while BEGIN IMMEDIATE is executing — after DbCommand has already
+        // checked the token — so the write lock is genuinely taken and only the statements after it
+        // observe the cancellation. That is exactly the aborted-request window.
+        strdelegate_trace trace = (object _, string statement) =>
+        {
+
+            if (armed && statement.Contains("BEGIN IMMEDIATE", StringComparison.Ordinal))
+            {
+
+                armed = false;
+
+                cts.Cancel();
+
+            }
+
+        };
+
+        raw.sqlite3_trace(connection.Handle, trace, null);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _service.DeleteByNameAsync("abandoned", cts.Token));
+
+        // sqlite3_get_autocommit returns 0 while an explicit transaction is open.
+        Assert.NotEqual(0, raw.sqlite3_get_autocommit(connection.Handle));
+
+    }
+
     [SkippableFact]
     public async Task MatchEntitiesAsync_ExactNameHitsSurfaceBeforeFtsHits()
     {
@@ -455,6 +503,77 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             result.Value.Select(static entry => entry.Name).ToArray());
 
     }
+
+    /// <summary>
+    /// Provenance is written only when a call carries an attachment, and facts are append-only, so an
+    /// upsert that leaves the provenance rows exactly as they already are has nothing to write. The
+    /// write path deleted every row for the entry and re-inserted the survivors one freshly-prepared
+    /// statement at a time regardless — inside the <c>BEGIN IMMEDIATE</c> critical section, on every
+    /// single upsert. The Unseen Servant rewrites its <c>daemon_state</c> entry on every waking cycle
+    /// and that entry is never deletable, so the churn has no bound.
+    /// </summary>
+    [SkippableFact]
+    public async Task UpsertAsync_DoesNotRewriteProvenanceWhenNothingAboutItChanged()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        AttachmentMemoryProvenance provenance = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "notes.md",
+            1,
+            "content-hash",
+            DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+            "WorkspaceFile",
+            AttachmentSourceAvailability.Available);
+
+        Result<LexiconEntryDto> seeded = await _service!.UpsertAsync(
+            "Aetherium",
+            "Project",
+            ["Ships on Tuesday."],
+            provenance,
+            CancellationToken.None);
+
+        Assert.True(seeded.IsSuccess);
+
+        List<string> statements = CaptureStatements();
+
+        // Same entity, same fact, same attachment: the stored rows already say exactly this.
+        Result<LexiconEntryDto> repeated = await _service.UpsertAsync(
+            "Aetherium",
+            "Project",
+            ["Ships on Tuesday."],
+            provenance,
+            CancellationToken.None);
+
+        Assert.True(repeated.IsSuccess);
+
+        // And an append with no attachment at all — the daemon's shape — leaves provenance untouched.
+        Result<LexiconEntryDto> appended = await _service.UpsertAsync(
+            "Aetherium",
+            "Project",
+            ["Also ships on Wednesday."],
+            CancellationToken.None);
+
+        Assert.True(appended.IsSuccess);
+
+        Assert.DoesNotContain(statements, IsProvenanceWrite);
+
+        Result<LexiconEntryDto?> reloaded = await _service.GetByNameAsync("Aetherium", CancellationToken.None);
+
+        LexiconFactProvenance surviving = Assert.Single(reloaded.Value!.FactProvenance ?? []);
+
+        Assert.Equal("Ships on Tuesday.", surviving.Fact);
+
+        Assert.Equal(provenance.AttachmentId, surviving.Source.AttachmentId);
+
+    }
+
+    private static bool IsProvenanceWrite(string statement) =>
+        statement.Contains("lexicon_fact_attachment_provenance", StringComparison.Ordinal)
+        && (statement.Contains("DELETE", StringComparison.Ordinal)
+            || statement.Contains("INSERT", StringComparison.Ordinal));
 
     [SkippableFact]
     public async Task ListAsync_HydratesProvenanceForEveryEntityWithOneQuery()
