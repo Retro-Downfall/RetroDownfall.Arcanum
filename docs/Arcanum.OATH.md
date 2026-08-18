@@ -10,7 +10,7 @@
 
 **Document status:** current as of **2026-08-17**, reconciled against the `long-term-memory` branch at `e55a586b`, the approved Covenant specification and Plans 01–05, and GitHub issues #73–#115.
 
-**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe, the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.20.6), and the specification and plans in `docs/superpowers/` currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
+**Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe and the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.20.6) currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
 
 ---
 
@@ -1289,13 +1289,6 @@ The following documents own or explain the detailed contracts summarized here. D
   - §10.20.1–§10.20.6 Retention, reset, and full erasure
 - [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
-- `docs/superpowers/specs/2026-08-13-covenant-design.md`: approved target semantics, authority firewall, persistence, runtime, surfaces, lifecycle, and acceptance contract **(branch)**.
-- `docs/superpowers/plans/2026-08-14-covenant-implementation.md`: dependency graph, execution waves, final gates, and integration evidence **(branch)**.
-- `docs/superpowers/plans/2026-08-14-covenant-native-and-schema.md` (Plan 01): hermetic SQLCipher, connection authorization, schema tiers, manifests, installation, and health **(branch)**.
-- `docs/superpowers/plans/2026-08-14-covenant-domain-and-persistence.md` (Plan 02): Core protocol, operation gate, canonical store, mutation kernel, quotas, cleanup, search, and rebuild **(branch)**.
-- `docs/superpowers/plans/2026-08-14-covenant-runtime-and-authority.md` (Plan 03): invocation authority, Campaign binding, turn claims, prompt attribution, admission, frozen calls, disclosure, MCP capabilities, publication, and protected derivatives **(branch)**.
-- `docs/superpowers/plans/2026-08-14-covenant-surfaces-and-lifecycle.md` (Plan 04): authentication, API and CLI, cursors, path and binding administration, repair, backup, restore, retention, reset, transfer, and erasure **(branch)**.
-- `docs/superpowers/plans/2026-08-14-covenant-verification-and-docs.md` (Plan 05): benchmark methodology, Native AOT gates, coverage, full verification, review, docs, and integration **(branch)**.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): the shared model/tool-loop and attachment continuation ordering that the OATH runtime integration extends.
 - GitHub issues [#73](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/73) through [#115](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/115): the delivery units. Issue bodies are authoritative for acceptance criteria; the implementation-plan checklists remain the mechanical source of truth.
 

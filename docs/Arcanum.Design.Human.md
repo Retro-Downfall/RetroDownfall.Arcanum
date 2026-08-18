@@ -117,7 +117,7 @@ The loop stops on a final answer, deterministic repeated no-progress, caller/hos
 
 Reasoning budget is per inference turn (`PingRequest`), not a lifetime cap for a session. An agentic turn can make several provider calls, and each call is accounted within the same reserved turn.
 
-Durable Session state follows the same distinction. Entry count and branch ancestry depth are not provider limits, so Arcanum does not reject them by total count. The pre-existing durable-pin admission setting remains unchanged outside issue #55. Reads and Campaign Logger consolidation page/checkpoint long history; one turn considers every already-accepted pin and applies disclosed per-pin/per-turn byte allocation only while materializing its content.
+Durable Session state follows the same distinction. Entry count and branch ancestry depth are not provider limits, so Arcanum does not reject them by total count. The pre-existing durable-pin admission setting remains unchanged. Reads and Campaign Logger consolidation page/checkpoint long history; one turn considers every already-accepted pin and applies disclosed per-pin/per-turn byte allocation only while materializing its content.
 
 ### Safety boundaries versus arbitrary restrictions
 
@@ -131,7 +131,7 @@ The useful distinction is the owner and failure model, not whether a number appe
 | Physical resource protection | One allocation/frame, concurrency admission, post-cancellation cleanup | Stream, page, queue, or checkpoint the rest; a local slice must not become a hidden total-work ceiling. |
 | Arbitrary product restriction | Turn/hop/retry counter or total wall-clock deadline while progress continues | Remove it or replace it with cancellation and a deterministic progress/no-progress rule. |
 
-[`Arcanum.ConstraintInventory.json`](Arcanum.ConstraintInventory.json) is the machine-reviewable classification, and [`Arcanum.ConstraintReduction.20260803.md`](Arcanum.ConstraintReduction.20260803.md) explains the issue #55 removals. A retained-boundary error should say who owns the boundary, the safe measured value and limit, whether state was saved/checkpointed, and the exact continuation or recovery action.
+[`Arcanum.ConstraintInventory.json`](Arcanum.ConstraintInventory.json) is the machine-reviewable classification, and [`Arcanum.ConstraintReduction.20260803.md`](Arcanum.ConstraintReduction.20260803.md) explains those removals. A retained-boundary error should say who owns the boundary, the safe measured value and limit, whether state was saved/checkpointed, and the exact continuation or recovery action.
 
 ## 6. Context is admitted, not merely collected
 
@@ -237,7 +237,7 @@ Deletion follows ownership. Attachment bytes, chunks, embeddings, and index stat
 
 Checkpoint recovery resumes the bounded candidate snapshot at its saved cursor. Each selected candidate rechecks its active-work and ownership conditions, and apply verifies the candidate's owned rows, derived records, and files after deletion. This is intentionally a bounded candidate-local check, not a global orphan sweep.
 
-Factory reset is bounded to the configured Arcanum data root and explicitly preserves external backups, configuration, keys/security material, and data outside that root. Logical SQL deletion and file unlinking are not physical secure erasure: SSD wear leveling, copy-on-write snapshots, WAL/free pages, caches, replicas, and backups can retain copies. Issue #43 adds no schema object and does not require recreating a local/test database. The Forge-owned local histories are outside this implementation boundary and remain untouched; no coordinated cleanup integration is added. A successful reset clears prior terminal operation history but necessarily leaves its own completed durable-operation marker as the audit/recovery record. Managed files first move to identity-verified, owner-only quarantine: rollback restores them, successful commit finalizes deletion, and restart recovery resumes any quarantine left by a crash.
+Factory reset is bounded to the configured Arcanum data root and explicitly preserves external backups, configuration, keys/security material, and data outside that root. Logical SQL deletion and file unlinking are not physical secure erasure: SSD wear leveling, copy-on-write snapshots, WAL/free pages, caches, replicas, and backups can retain copies. It adds no schema object and does not require recreating a local or test database. The Forge-owned local histories are outside this implementation boundary and remain untouched; no coordinated cleanup integration is added. A successful reset clears prior terminal operation history but necessarily leaves its own completed durable-operation marker as the audit/recovery record. Managed files first move to identity-verified, owner-only quarantine: rollback restores them, successful commit finalizes deletion, and restart recovery resumes any quarantine left by a crash.
 
 ## 9. Security model
 
