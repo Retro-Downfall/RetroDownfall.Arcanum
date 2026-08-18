@@ -134,6 +134,118 @@ public sealed class MarkdigSpectreRendererTests
 
     }
 
+    /// <summary>
+    /// An ordered list carries its own numbering, and that numbering is content: a set of steps
+    /// rendered as undifferentiated bullets no longer tells the operator what order to do them in.
+    /// </summary>
+    [Fact]
+    public void Render_ordered_list_keeps_its_numbering()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("1. unplug it\n2. wait\n3. plug it back in"));
+
+        Assert.Contains("1. unplug it", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("2. wait", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("3. plug it back in", console.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("- unplug it", console.Output, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Render_ordered_list_honours_a_start_value_other_than_one()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("4. fourth\n5. fifth"));
+
+        Assert.Contains("4. fourth", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("5. fifth", console.Output, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Render_bulleted_list_still_uses_a_bullet()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("- alpha\n- beta"));
+
+        Assert.Contains("- alpha", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("- beta", console.Output, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A terminal cannot be clicked, so a link whose destination is dropped leaves the operator with
+    /// link text and nothing to act on.
+    /// </summary>
+    [Fact]
+    public void Render_link_keeps_the_destination_url()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("See [the guide](https://example.test/g)."));
+
+        Assert.Contains("the guide", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("https://example.test/g", console.Output, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Markdig models an image as a link, so the same omission drops the image source and leaves only
+    /// the alt text.
+    /// </summary>
+    [Fact]
+    public void Render_image_keeps_its_source()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("![a chart](https://example.test/c.png)"));
+
+        Assert.Contains("a chart", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("https://example.test/c.png", console.Output, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Render_link_whose_text_is_its_url_does_not_repeat_it()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("[https://example.test/g](https://example.test/g)"));
+
+        Assert.Equal(
+            1,
+            console.Output.Split("https://example.test/g", StringSplitOptions.None).Length - 1);
+
+    }
+
     private static MarkdigSpectreRenderer CreateRenderer()
     {
 

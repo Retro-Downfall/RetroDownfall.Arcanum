@@ -63,7 +63,7 @@ public sealed class CliOperatorSurfaceTests
 
         StringBuilder buffer = new("你好世界");
 
-        int erased = CliLineReader.ClearLine(buffer);
+        int erased = CliLineReader.ClearLine(buffer, new FakeLineTerminal(80), originColumn: 0);
 
         Assert.Equal(8, erased);
 
@@ -81,7 +81,7 @@ public sealed class CliOperatorSurfaceTests
 
         StringBuilder buffer = new("\U0001D400");
 
-        Assert.Equal(1, CliLineReader.ClearLine(buffer));
+        Assert.Equal(1, CliLineReader.ClearLine(buffer, new FakeLineTerminal(80), originColumn: 0));
 
     }
 
@@ -91,7 +91,7 @@ public sealed class CliOperatorSurfaceTests
 
         StringBuilder buffer = new();
 
-        Assert.Equal(0, CliLineReader.ClearLine(buffer));
+        Assert.Equal(0, CliLineReader.ClearLine(buffer, new FakeLineTerminal(80), originColumn: 0));
 
     }
 
@@ -101,7 +101,7 @@ public sealed class CliOperatorSurfaceTests
 
         StringBuilder buffer = new("hi 世界");
 
-        int erased = CliLineReader.DeleteLastWord(buffer);
+        int erased = CliLineReader.DeleteLastWord(buffer, new FakeLineTerminal(80), originColumn: 0);
 
         Assert.Equal(4, erased);
 
@@ -115,7 +115,7 @@ public sealed class CliOperatorSurfaceTests
 
         StringBuilder buffer = new("a好");
 
-        int erased = CliLineReader.EraseLastCharacter(buffer);
+        int erased = CliLineReader.EraseLastCharacter(buffer, new FakeLineTerminal(80), originColumn: 0);
 
         Assert.Equal(2, erased);
 
@@ -129,11 +129,200 @@ public sealed class CliOperatorSurfaceTests
 
         StringBuilder buffer = new("a\U0001D400");
 
-        int erased = CliLineReader.EraseLastCharacter(buffer);
+        int erased = CliLineReader.EraseLastCharacter(buffer, new FakeLineTerminal(80), originColumn: 0);
 
         Assert.Equal(1, erased);
 
         Assert.Equal("a", buffer.ToString());
+
+    }
+
+    /// <summary>
+    /// Backspace is a no-op at column 0 on every common terminal, so it cannot walk the caret back
+    /// onto the previous visual row. An erase that spans a wrap boundary painted with backspaces
+    /// leaves the first row's text on screen while the buffer no longer holds it, and spills its
+    /// blanks onto a row below. The erase has to move the cursor instead.
+    /// </summary>
+    [Fact]
+    public void ClearLine_crossing_a_wrap_boundary_moves_the_cursor_instead_of_backspacing()
+    {
+
+        FakeLineTerminal terminal = new(20);
+
+        StringBuilder buffer = new(new string('x', 30));
+
+        int erased = CliLineReader.ClearLine(buffer, terminal, originColumn: 10);
+
+        Assert.Equal(30, erased);
+
+        Assert.DoesNotContain("\b", terminal.Output, StringComparison.Ordinal);
+
+        Assert.Equal("\u001b[1A\u001b[11G\u001b[0J", terminal.Output);
+
+    }
+
+    /// <summary>
+    /// A composed line that exactly fills its row leaves the caret in the terminal's deferred-wrap
+    /// state, where it is displayed on the last column it painted rather than at column 0 of the next
+    /// row. Backspacing from there is off by one, so this erase is positioned explicitly too.
+    /// </summary>
+    [Fact]
+    public void EraseLastCharacter_on_an_exactly_filled_row_positions_the_cursor_explicitly()
+    {
+
+        FakeLineTerminal terminal = new(20);
+
+        StringBuilder buffer = new(new string('x', 10));
+
+        int erased = CliLineReader.EraseLastCharacter(buffer, terminal, originColumn: 10);
+
+        Assert.Equal(1, erased);
+
+        Assert.Equal("\u001b[20G\u001b[0J", terminal.Output);
+
+    }
+
+    [Fact]
+    public void ClearLine_within_a_single_row_still_erases_with_backspaces()
+    {
+
+        FakeLineTerminal terminal = new(80);
+
+        StringBuilder buffer = new("hello");
+
+        int erased = CliLineReader.ClearLine(buffer, terminal, originColumn: 10);
+
+        Assert.Equal(5, erased);
+
+        Assert.Equal("\b\b\b\b\b     \b\b\b\b\b", terminal.Output);
+
+    }
+
+    /// <summary>
+    /// A terminal that cannot move the cursor still cannot cross the boundary, so the erase reports
+    /// only the columns it actually blanked rather than the count it was asked for.
+    /// </summary>
+    [Fact]
+    public void ClearLine_without_cursor_motion_reports_only_the_columns_it_could_reach()
+    {
+
+        FakeLineTerminal terminal = new(20) { SupportsAnsi = false };
+
+        StringBuilder buffer = new(new string('x', 30));
+
+        int erased = CliLineReader.ClearLine(buffer, terminal, originColumn: 10);
+
+        Assert.Equal(20, erased);
+
+    }
+
+    /// <summary>
+    /// The read result exists so the caller — not the process-termination handler — decides what an
+    /// interrupt means. Flattening Ctrl+C, Ctrl+D and an empty submission to <c>null</c> takes that
+    /// decision away, and the ask_human coordinator then reports a deliberate cancel as
+    /// "no answer was provided".
+    /// </summary>
+    [Fact]
+    public void ReadLine_translation_separates_an_interrupt_from_a_submitted_line()
+    {
+
+        Assert.Equal(
+            string.Empty,
+            CliLineReader.TranslateToLine(
+                new CliLineReadResult(CliLineReadOutcome.Submitted, string.Empty, false),
+                CancellationToken.None));
+
+        _ = Assert.Throws<OperationCanceledException>(() => CliLineReader.TranslateToLine(
+            new CliLineReadResult(CliLineReadOutcome.Interrupted, null, true),
+            CancellationToken.None));
+
+        _ = Assert.Throws<InvalidOperationException>(() => CliLineReader.TranslateToLine(
+            new CliLineReadResult(CliLineReadOutcome.EndOfInput, null, false),
+            CancellationToken.None));
+
+    }
+
+    [Fact]
+    public void ReadInteractive_reports_an_interrupt_and_the_text_it_discarded()
+    {
+
+        FakeLineTerminal terminal = new(80, Printable('h'), Printable('i'), ControlKey(ConsoleKey.C));
+
+        CliLineReadResult result = CliLineReader.ReadInteractive(
+            terminal,
+            allowEmpty: false,
+            originColumn: 0,
+            CancellationToken.None);
+
+        Assert.Equal(CliLineReadOutcome.Interrupted, result.Outcome);
+
+        Assert.True(result.HadPendingText);
+
+        Assert.Null(result.Line);
+
+    }
+
+    /// <summary>
+    /// A dismissed prompt has to be able to take the console back. Console.ReadKey has no cancellable
+    /// overload, so a read that blocks on it outlives the question it belonged to and the operator
+    /// has to type into a prompt that no longer means anything before the command can exit.
+    /// </summary>
+    [Fact]
+    public void ReadInteractive_gives_the_console_back_when_the_caller_cancels()
+    {
+
+        using CancellationTokenSource cts = new();
+
+        cts.Cancel();
+
+        FakeLineTerminal terminal = new(80);
+
+        CliLineReadResult result = CliLineReader.ReadInteractive(
+            terminal,
+            allowEmpty: false,
+            originColumn: 0,
+            cts.Token);
+
+        Assert.Equal(CliLineReadOutcome.Cancelled, result.Outcome);
+
+    }
+
+    private static ConsoleKeyInfo Printable(char value) =>
+        new(value, ConsoleKey.None, shift: false, alt: false, control: false);
+
+    private static ConsoleKeyInfo ControlKey(ConsoleKey key) =>
+        new((char)(key - ConsoleKey.A + 1), key, shift: false, alt: false, control: true);
+
+    /// <summary>
+    /// A terminal whose geometry, capabilities and keystrokes are all fixed by the test. Reading a
+    /// key that is not queued is the fake's stand-in for the blocking read: it fails loudly instead
+    /// of hanging the suite.
+    /// </summary>
+    private sealed class FakeLineTerminal(int width, params ConsoleKeyInfo[] keys) : ICliLineTerminal
+    {
+
+        private readonly Queue<ConsoleKeyInfo> _keys = new(keys);
+
+        private readonly StringBuilder _output = new();
+
+        public int Width { get; } = width;
+
+        public int CursorLeft => 0;
+
+        public bool SupportsAnsi { get; init; } = true;
+
+        public bool KeyAvailable => _keys.Count > 0;
+
+        public string Output => _output.ToString();
+
+        public ConsoleKeyInfo ReadKey() =>
+            _keys.Count > 0
+                ? _keys.Dequeue()
+                : throw new InvalidOperationException("ReadKey blocked: no keystroke is available.");
+
+        public void Write(string text) => _ = _output.Append(text);
+
+        public void WriteLine() => _ = _output.Append('\n');
 
     }
 

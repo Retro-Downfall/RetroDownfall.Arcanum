@@ -139,8 +139,12 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
                 return ResourceSelectionResult<T>.Failure(scanned.Error.Message);
             }
 
+            // The request carries only "not interactive", never why: redirection and the --json /
+            // --print flags collapse into the same bool at ICliEnvironment. Naming redirection as the
+            // cause therefore states something about the operator's shell that is false whenever a
+            // flag made a real terminal report itself headless, so the message names both causes.
             return ResourceSelectionResult<T>.Failure(
-                $"A {request.Descriptor.SingularName} identifier or name is required when input or output is redirected. "
+                $"A {request.Descriptor.SingularName} identifier or name is required because no interactive picker is available (input or output is redirected, or --json/--print is in effect). "
                 + CandidateText(scanned.Value.All, request.Descriptor));
         }
 
