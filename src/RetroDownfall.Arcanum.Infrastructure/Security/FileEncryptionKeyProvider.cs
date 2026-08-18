@@ -19,6 +19,18 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
     private Dictionary<string, FileEncryptionKeyMaterial>? _keys;
     private string? _activeKeyId;
 
+    /// <summary>
+    /// Material dropped from the ring that a reader may still hold, zeroized only at disposal.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FileEncryptionKeyMaterial.MasterKey"/> is a view over the instance's own array and
+    /// Dispose zeroizes it in place, so disposing a retired key while a reader holds the same instance
+    /// rewrites the bytes under it. Readers leave the gate before touching the span, so retirement
+    /// cannot know whether one is mid-flight. Removing the entry is what makes the key unreachable for
+    /// new reads; zeroizing waits until the whole provider goes away.
+    /// </remarks>
+    private readonly List<FileEncryptionKeyMaterial> _retired = [];
+
     public FileEncryptionKeyProvider(
         ISecretStore secretStore,
         Func<bool>? encryptedBlobsExist = null)
@@ -36,6 +48,13 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
                 material.Dispose();
             }
         }
+
+        foreach (FileEncryptionKeyMaterial material in _retired)
+        {
+            material.Dispose();
+        }
+
+        _retired.Clear();
 
         _gate.Dispose();
     }
@@ -160,7 +179,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
             _ = updated.Remove(retired!.KeyId);
             await PersistAsync(updated, _activeKeyId!).ConfigureAwait(false);
             _keys = updated;
-            retired.Dispose();
+            _retired.Add(retired);
         }
         finally
         {

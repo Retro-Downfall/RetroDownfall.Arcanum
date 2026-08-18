@@ -86,20 +86,48 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         try
         {
 
+            // The digest columns are declared BLOB, which in a non-STRICT table is SQLite's "no
+            // affinity": a TEXT value is stored as TEXT and still satisfies length(...) = 32, so the
+            // CHECK constraint cannot be relied on to guarantee the shape. Match on it the way the
+            // sibling readers of this same column do, rather than casting and hoping.
+            if (reader.GetValue(3) is not byte[] fingerprint)
+            {
+
+                return MalformedRow("CurrentMasterKeyFingerprint");
+
+            }
+
+            byte[]? taintFingerprint = null;
+
+            if (!reader.IsDBNull(8))
+            {
+
+                if (reader.GetValue(8) is not byte[] taint)
+                {
+
+                    return MalformedRow("TaintFingerprint");
+
+                }
+
+                taintFingerprint = taint;
+
+            }
+
             return new HostProcessToolsAuthorityRow(
                 reader.GetString(0),
                 reader.GetInt64(1),
                 checked((uint)reader.GetInt64(2)),
-                new CovenantDigest((byte[])reader.GetValue(3)),
+                new CovenantDigest(fingerprint),
                 reader.GetInt64(4),
                 (CovenantHostToolsState)reader.GetInt64(5),
                 reader.IsDBNull(6) ? null : Guid.Parse(reader.GetString(6)),
                 reader.IsDBNull(7) ? null : checked((uint)reader.GetInt64(7)),
-                reader.IsDBNull(8) ? null : new CovenantDigest((byte[])reader.GetValue(8)));
+                taintFingerprint is null ? null : new CovenantDigest(taintFingerprint));
 
         }
         catch (Exception exception) when (
-            exception is FormatException or OverflowException or ArgumentException)
+            exception is FormatException or OverflowException or ArgumentException
+                or InvalidCastException)
         {
 
             return new Error(
@@ -303,6 +331,15 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
 
     }
+
+    /// <summary>
+    /// Names the offending column so the blocked disposition points the operator at one field rather
+    /// than at the whole row.
+    /// </summary>
+    private static Error MalformedRow(string column) =>
+        new(
+            ErrorCodes.Covenant.IntegrityFailure,
+            $"The durable authority row is malformed: {column} is not stored as a digest.");
 
     private static string Format(Guid value) => value.ToString().ToUpperInvariant();
 

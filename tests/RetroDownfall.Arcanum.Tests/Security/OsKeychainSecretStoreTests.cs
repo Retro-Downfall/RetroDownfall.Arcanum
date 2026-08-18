@@ -182,6 +182,61 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A read that failed says nothing about whether the credential exists, so it must never collapse
+    /// to Missing — Missing is the one status that authorises minting a replacement over the live key.
+    /// The file-encryption sibling already reports Corrupted for exactly this condition.
+    /// </summary>
+    [Fact]
+    public async Task Get_ReportsCorruptWhenTheOsReadFailsWithNoLegacyMirror()
+    {
+
+        ReadFailingStore os = new();
+
+        using OsKeychainSecretStore store = CreateStore(os);
+
+        SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Contains("OS key storage failed", result.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Get_PrefersTheLegacyMirrorOverAFailedOsRead()
+    {
+
+        ReadFailingStore os = new();
+
+        using DataProtectionSecretStore legacy = CreateDataProtectionStore();
+
+        await legacy.SaveApiKeyAsync("mirrored-key");
+
+        using OsKeychainSecretStore store = CreateStore(os, legacy);
+
+        SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
+
+        Assert.Equal("mirrored-key", result.Value);
+
+    }
+
+    [Fact]
+    public async Task FileEncryptionSecret_ReportsCorruptWhenTheOsReadFails()
+    {
+
+        ReadFailingStore os = new();
+
+        using OsKeychainSecretStore store = CreateStore(os);
+
+        SecretStoreReadResult result = await store.GetFileEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+    }
+
     [Fact]
     public async Task FileEncryptionSecret_RoundTripsThroughDedicatedOsCredential()
     {
@@ -346,6 +401,27 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             deleteFails
                 ? OsCredentialStoreResult.Failed("test delete failure")
                 : inner.Delete(service, account);
+
+    }
+
+    /// <summary>
+    /// A reachable OS credential backend whose reads fail (locked macOS keychain, ACL denial after a
+    /// resign, a transient CredReadW or libsecret error). Distinct from <see cref="UnavailableStore"/>:
+    /// the backend is present, so a failed read leaves the credential's existence unknown.
+    /// </summary>
+    private sealed class ReadFailingStore : IOsCredentialStore
+    {
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            OsCredentialStoreResult.Failed("test read failure");
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Ok(secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.Ok(string.Empty);
 
     }
 
