@@ -405,10 +405,8 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
             || options.MaxCitationUrlChars <= 0
             || options.ResultCount is < 1 or > 20
             || !IsValidFreshness(options.Freshness)
-            || options.IncludeDomains.Length > 20
-            || options.ExcludeDomains.Length > 20
-            || options.IncludeDomains.Any(static domain => !IsValidDomain(domain))
-            || options.ExcludeDomains.Any(static domain => !IsValidDomain(domain)))
+            || !AreValidDomainFilters(options.IncludeDomains)
+            || !AreValidDomainFilters(options.ExcludeDomains))
         {
             error = new Error(
                 ErrorCodes.WebResearch.RequestRejected,
@@ -430,6 +428,16 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
         || freshness.Trim().ToLowerInvariant()
             is "day" or "week" or "month" or "year";
 
+    /// <summary>
+    /// Null-tolerant on purpose. <c>WebSearchOptions</c> declares the filters non-nullable, but an
+    /// explicit JSON null on the request body overwrites the property initializer, and dereferencing
+    /// it here would escape the Result flow as an unhandled 500 rather than a rejection envelope.
+    /// A missing filter means "no filter", exactly as an empty one does.
+    /// </summary>
+    private static bool AreValidDomainFilters(string[]? domains) =>
+        domains is null
+        || (domains.Length <= 20 && domains.All(static domain => IsValidDomain(domain)));
+
     private static bool IsValidDomain(string? domain)
     {
         if (string.IsNullOrWhiteSpace(domain)
@@ -447,10 +455,10 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
 
     private static string[]? BuildDomainFilter(WebSearchOptions options)
     {
-        string[] domains = options.IncludeDomains
+        string[] domains = (options.IncludeDomains ?? [])
             .Select(static domain => domain.Trim().TrimStart('.'))
             .Concat(
-                options.ExcludeDomains.Select(
+                (options.ExcludeDomains ?? []).Select(
                     static domain => "-" + domain.Trim().TrimStart('.')))
             .ToArray();
 

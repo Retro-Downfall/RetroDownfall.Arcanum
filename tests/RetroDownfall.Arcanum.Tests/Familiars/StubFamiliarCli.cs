@@ -64,6 +64,62 @@ internal sealed class StubFamiliarCli : IDisposable
 
     }
 
+    /// <summary>
+    /// Writes a stub that emits <paramref name="stdoutLines"/> <em>before</em> it drains stdin. Both
+    /// shipped CLIs happen to read their whole prompt first, which is exactly why this ordering is
+    /// unpinned: a caller that finishes its stdin write before it starts reading stdout wedges both
+    /// pipes against a child in this shape, and nothing else in the suite would notice.
+    /// </summary>
+    public static StubFamiliarCli CreateEmittingBeforeReadingStandardInput(IEnumerable<string> stdoutLines)
+    {
+
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-familiar-stub-" + Guid.NewGuid().ToString("N"));
+
+        _ = Directory.CreateDirectory(directory);
+
+        string payloadPath = Path.Combine(directory, "payload.ndjson");
+
+        File.WriteAllText(payloadPath, string.Join('\n', stdoutLines) + "\n");
+
+        string stdinLogPath = Path.Combine(directory, "stdin.log");
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            string windowsScriptPath = Path.Combine(directory, "familiar-stub.ps1");
+
+            File.WriteAllText(
+                windowsScriptPath,
+                $"Get-Content -LiteralPath '{payloadPath}'\n"
+                + $"$input | Out-String | Set-Content -LiteralPath '{stdinLogPath}'\n"
+                + "exit 0\n");
+
+            return new StubFamiliarCli(
+                directory,
+                "powershell.exe",
+                ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windowsScriptPath]);
+
+        }
+
+        string scriptPath = Path.Combine(directory, "familiar-stub");
+
+        File.WriteAllText(
+            scriptPath,
+            "#!/bin/sh\n"
+            + $"cat '{payloadPath}'\n"
+            + $"cat > '{stdinLogPath}'\n"
+            + "exit 0\n");
+
+        File.SetUnixFileMode(
+            scriptPath,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        return new StubFamiliarCli(directory, scriptPath, []);
+
+    }
+
     /// <summary>A path that does not exist, for the "operator has not installed it" path.</summary>
     public static string MissingExecutablePath() =>
         Path.Combine(

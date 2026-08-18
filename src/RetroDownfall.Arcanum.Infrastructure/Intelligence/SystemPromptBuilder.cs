@@ -686,6 +686,35 @@ public static class SystemPromptBuilder
 
     }
 
+    /// <summary>
+    /// Neutralizes only the line structure of a workspace-derived path. Unlike
+    /// <see cref="HardenAttachmentIndexName"/> this keeps '#', which is legal in both POSIX and
+    /// Windows paths and which the model needs verbatim to address files; a '#' cannot open a
+    /// heading here because every call site prefixes the value on its rendered line. Newlines and
+    /// other control characters are the only way a filename could start a fresh line inside the
+    /// CONTEXT block and forge a section header, so those are what get replaced.
+    /// </summary>
+    internal static string HardenWorkspacePathLine(string? value)
+    {
+
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        StringBuilder sb = new(value.Length);
+
+        foreach (char c in value)
+        {
+
+            sb.Append(char.IsControl(c) ? '_' : c);
+
+        }
+
+        return sb.ToString().Trim();
+
+    }
+
     private static void AppendContextSegments(
         List<PromptSegment> segments,
         PingRequest request,
@@ -723,7 +752,7 @@ public static class SystemPromptBuilder
                     sb.Append("Domain: ");
                     sb.AppendLine(snapshot.Domain.ToString());
                     sb.Append("RootPath: ");
-                    sb.AppendLine(snapshot.RootPath);
+                    sb.AppendLine(HardenWorkspacePathLine(snapshot.RootPath));
                     sb.AppendLine();
                     sb.AppendLine("### Table of Contents");
                     sb.AppendLine();
@@ -735,8 +764,15 @@ public static class SystemPromptBuilder
                             continue;
                         }
 
+                        string hardenedThread = HardenWorkspacePathLine(thread);
+
+                        if (hardenedThread.Length == 0)
+                        {
+                            continue;
+                        }
+
                         sb.Append("- ");
-                        sb.AppendLine(thread);
+                        sb.AppendLine(hardenedThread);
                     }
                 });
         }

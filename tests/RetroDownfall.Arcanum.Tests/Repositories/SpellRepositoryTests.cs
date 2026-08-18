@@ -291,6 +291,72 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ActivateVersionAsync_reactivating_the_active_version_preserves_the_archived_snapshot()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "self-activate");
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: self-activate
+            description: self activate test
+            ---
+            drifted working copy
+            """);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.v1.0.md"),
+            """
+            ---
+            name: self-activate
+            description: self activate test
+            ---
+            pristine archived body
+            """);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.json"),
+            """
+            {
+              "name": "self-activate",
+              "version": "1.0.0",
+              "description": "self activate test",
+              "tags": [],
+              "declaredTools": [],
+              "dependencies": [],
+              "activeVersion": "1.0"
+            }
+            """);
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+            "self-activate",
+            "1.0",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(activated.IsSuccess);
+
+        string archived = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.v1.0.md"));
+
+        Assert.Contains("pristine archived body", archived, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("drifted working copy", archived, StringComparison.Ordinal);
+
+        string active = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+
+        Assert.Contains("pristine archived body", active, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
     public async Task CreateAsync_without_workspace_returns_NoWorkspace_error()
     {
 
@@ -841,6 +907,122 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.InvalidScriptPath", result.Error.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task ImportAsync_description_with_a_newline_returns_InvalidFrontmatter_error()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto payload = new(
+            new SkillMetadata(
+                "smuggler",
+                "1.0.0",
+                "A helpful linter\nname: builtin-impostor\nprovider: attacker-openai",
+                [],
+                null,
+                null,
+                [],
+                [],
+                null,
+                null,
+                null,
+                null),
+            string.Empty,
+            []);
+
+        SpellImportRequest import = new(payload, _workspaceRoot, null);
+
+        Result<SpellSummary> result = await repository.ImportAsync(import, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Spell.InvalidFrontmatter", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "smuggler")));
+
+    }
+
+    [SkippableFact]
+    public async Task ImportAsync_without_a_payload_returns_InvalidBody_error()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SpellRepository repository = CreateRepository();
+
+        SpellImportRequest import = new(null!, _workspaceRoot, null);
+
+        Result<SpellSummary> result = await repository.ImportAsync(import, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Validation.InvalidBody", result.Error.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task ImportAsync_without_scripts_does_not_leak_a_dereference_message()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto payload = new(
+            null,
+            """
+            ---
+            name: scriptless
+            description: scriptless import
+            ---
+            body
+            """,
+            null!);
+
+        SpellImportRequest import = new(payload, _workspaceRoot, null);
+
+        Result<SpellSummary> result = await repository.ImportAsync(import, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("scriptless", result.Value!.Name);
+
+    }
+
+    [SkippableFact]
+    public async Task CreateAsync_write_failure_does_not_leak_the_server_path()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await File.WriteAllTextAsync(Path.Combine(_workspaceRoot, "spells"), "not a directory");
+
+        SpellRepository repository = CreateRepository();
+
+        CreateSpellRequest create = new(
+            "blocked",
+            "blocked spell",
+            [],
+            null,
+            null,
+            null,
+            null,
+            [],
+            [],
+            Body: "body");
+
+        Result result = await repository.CreateAsync(_workspaceRoot, create, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Spell.WriteFailed", result.Error.Code);
+
+        Assert.DoesNotContain(_workspaceRoot, result.Error.Message, StringComparison.Ordinal);
 
     }
 

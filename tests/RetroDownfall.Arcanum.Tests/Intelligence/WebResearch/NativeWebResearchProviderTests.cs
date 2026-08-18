@@ -216,6 +216,44 @@ public sealed class NativeWebResearchProviderTests : IDisposable
         Assert.DoesNotContain("do not expose me", result.Error.Message);
     }
 
+    /// <summary>
+    /// The workflow service forwards whatever the request body carried, and an explicit JSON null
+    /// overwrites a non-nullable property's initializer. The provider has to treat that as "no
+    /// filter" rather than dereferencing it, because an NRE here escapes the Result flow entirely
+    /// and reaches the endpoint as an unhandled 500.
+    /// </summary>
+    [Fact]
+    public async Task Perplexity_treats_null_domain_filters_as_no_filter()
+    {
+        RecordingHandler handler = new(
+            (_, _) => Task.FromResult(
+                JsonResponse(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "role": "assistant",
+                            "content": "answer"
+                          }
+                        }
+                      ]
+                    }
+                    """)));
+        PerplexityWebProvider provider = CreatePerplexity(handler, "key");
+
+        Result<WebSearchResult> result = await provider.SearchAsync(
+            "query",
+            new WebSearchOptions
+            {
+                IncludeDomains = null!,
+                ExcludeDomains = null!,
+            });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("answer", result.Value.Answer);
+    }
+
     [Fact]
     public async Task Perplexity_distinguishes_idle_timeout_from_caller_cancellation()
     {

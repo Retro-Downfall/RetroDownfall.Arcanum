@@ -18,6 +18,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 internal sealed partial class SpellRepository : ISpellRepository
 {
 
+    /// <summary>
+    /// Operator-facing text for every <c>Spell.WriteFailed</c> envelope. Raw exception messages
+    /// name absolute server paths, so the exception detail stays in the structured log the same
+    /// catch block writes and the API answers with this fixed sentence instead. Mirrors
+    /// <c>PhysicalFileSystemWriter</c>'s I/O write message.
+    /// </summary>
+    private const string WriteFailedMessage = "The spell could not be written. See server logs.";
+
     private static readonly Regex ValidNameRegex = ValidNamePattern();
 
     private readonly ILogger<SpellRepository> _logger;
@@ -221,7 +229,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to create spell {SpellName} at {SpellPath}", trimmedName, spellFile);
 
-            return Result.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
         finally
         {
@@ -298,7 +306,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to update spell {SpellName} at {SpellPath}", trimmedName, workspaceSpell.FilePath);
 
-            return Result.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -356,7 +364,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to delete spell {SpellName} at {SpellPath}", trimmedName, workspaceSpell.FilePath);
 
-            return Result.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -578,6 +586,14 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to import spells."));
         }
 
+        // SpellImportRequest.Payload is a non-required positional parameter, so a body that omits
+        // "payload" deserializes it as null. Refuse it as an invalid body rather than letting the
+        // dereference below escape the Result flow as an unhandled 500.
+        if (request.Payload is null)
+        {
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "An import payload is required."));
+        }
+
         string name = request.Payload.Metadata?.Name
             ?? SpellFileParser.Parse(request.Payload.FullContent, "imported").Name;
 
@@ -606,7 +622,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             Dependencies: request.Payload.Metadata?.Dependencies.ToArray(),
             DefaultParameters: request.Payload.Metadata?.DefaultParameters);
 
-        Result<SpellSummary> createResult = await ImportCreateStagedAsync(workspace, create, request.Payload.Scripts, ct).ConfigureAwait(false);
+        Result<SpellSummary> createResult = await ImportCreateStagedAsync(workspace, create, request.Payload.Scripts ?? [], ct).ConfigureAwait(false);
 
         if (createResult.IsFailure)
         {
@@ -705,7 +721,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to clone spell {SourceName} to {NewName} in {Workspace}", name, trimmedNewName, workspaceRoot);
 
-            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
         finally
         {
@@ -770,7 +786,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to create version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
 
-            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -831,7 +847,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to update version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
 
-            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -987,7 +1003,17 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             string previousBackupPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(previousLabel));
 
-            await SpellAtomicFile.WriteAllTextAsync(previousBackupPath, workspaceSpell.FullContent, ct).ConfigureAwait(false);
+            // Re-activating the already-active label aliases the backup path onto the requested
+            // version file. Writing the backup first would replace the archived snapshot with the
+            // (possibly drifted) working copy and destroy it irrecoverably, so skip the backup and
+            // report no previous label — the version -> SPELL.md copy still runs, because
+            // `spell version update` deliberately leaves activeVersion pointing at an edited label.
+            bool backupAliasesRequestedVersion = PathsReferToSameFile(previousBackupPath, versionPath);
+
+            if (!backupAliasesRequestedVersion)
+            {
+                await SpellAtomicFile.WriteAllTextAsync(previousBackupPath, workspaceSpell.FullContent, ct).ConfigureAwait(false);
+            }
 
             string newActiveContent = await File.ReadAllTextAsync(versionPath, ct).ConfigureAwait(false);
 
@@ -999,14 +1025,46 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             DateTimeOffset activatedAt = File.GetLastWriteTimeUtc(workspaceSpell.FilePath);
 
-            return Result<SpellVersionDto>.Success(new SpellVersionDto(label, true, activatedAt, workspaceSpell.Description, previousLabel));
+            return Result<SpellVersionDto>.Success(
+                new SpellVersionDto(label, true, activatedAt, workspaceSpell.Description, backupAliasesRequestedVersion ? null : previousLabel));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to activate version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
 
-            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
+    }
+
+    /// <summary>
+    /// Compares two spell file paths for filesystem identity. Version labels permit
+    /// <c>[A-Za-z0-9.]</c>, so "1.0a" and "1.0A" name the same file on the case-insensitive
+    /// defaults of macOS and Windows even though the raw labels differ ordinally.
+    /// </summary>
+    private static bool PathsReferToSameFile(string left, string right)
+    {
+
+        string fullLeft;
+
+        string fullRight;
+
+        try
+        {
+            fullLeft = Path.GetFullPath(left);
+
+            fullRight = Path.GetFullPath(right);
+        }
+        catch (Exception)
+        {
+            return string.Equals(left, right, StringComparison.Ordinal);
+        }
+
+        StringComparison cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        return fullLeft.Equals(fullRight, cmp);
+
     }
 
     private static bool IsUnderGlobalSpellsDirectory(string candidateDir)
@@ -1057,6 +1115,26 @@ internal sealed partial class SpellRepository : ISpellRepository
         if (nameError is not null)
         {
             return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.InvalidName, nameError));
+        }
+
+        // Import is the second writer of SPELL.md/SPELL.json and must clear the same gate as
+        // CreateAsync. Without it a bundle's description/tags/model/provider reach the formatter
+        // with only a Trim(), and an embedded newline becomes an extra frontmatter key — including
+        // a second `name:`, which the parser lets win and which then shadows a built-in spell.
+        string? frontmatterError = SpellFrontmatterValidator.ValidateCreate(create);
+
+        if (frontmatterError is not null)
+        {
+            return Result<SpellSummary>.Failure(new Error("Spell.InvalidFrontmatter", frontmatterError));
+        }
+
+        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
+
+        string? skillBoundsError = SkillJsonBoundsValidator.ValidateCreate(create, maxDeclaredTools);
+
+        if (skillBoundsError is not null)
+        {
+            return Result<SpellSummary>.Failure(new Error("Spell.InvalidSkillJson", skillBoundsError));
         }
 
         string workspaceRoot = workspace.Trim();
@@ -1159,7 +1237,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to import spell {SpellName} into {Workspace}", trimmedName, workspaceRoot);
 
-            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", ex.Message));
+            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
         finally
         {
