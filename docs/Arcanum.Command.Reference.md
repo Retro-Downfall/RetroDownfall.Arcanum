@@ -492,7 +492,7 @@ Maintains the legacy operator-owned key/value MageSettings store. Lore is distin
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum lore list` | List all scribed lore keys. | None beyond global or inherited family options. |
-| `arcanum lore get <key>` | Read a specific lore entry by key. The value is written to stdout verbatim, with the key on stderr, so `VALUE=$(arcanum lore get <key>)` captures the value alone. | None beyond global or inherited family options. |
+| `arcanum lore get <key>` | Read a specific lore entry by key. Text output is the value verbatim on stdout with the key on stderr, so `VALUE=$(arcanum lore get <key>)` captures the value alone; `--output-format json` emits `{ "key", "value" }`, which preserves trailing newlines and any escape sequences the value contains. | None beyond global or inherited family options. |
 | `arcanum lore set <key> <value>` | Create or update a lore entry. | None beyond global or inherited family options. |
 | `arcanum lore delete <key>` | Delete a lore entry. | None beyond global or inherited family options. |
 

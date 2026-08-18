@@ -75,6 +75,26 @@ internal static class SensitiveValueInput
     }
 
     /// <summary>
+    /// Surrounding whitespace is stripped from a credential on <em>both</em> input routes, which is
+    /// a deliberate widening of the redirected-stdin trim the baseline applied on its own. An API
+    /// key carries no meaningful leading or trailing whitespace, and both routes hide it: a hidden
+    /// prompt echoes nothing back, and a piped value arrives with whatever newline the producer
+    /// wrote. Normalising them identically is what makes <c>arcanum key set</c> store the same bytes
+    /// whether the key was typed or piped, and it turns an invisible, undiagnosable authentication
+    /// failure into no failure at all.
+    ///
+    /// <para>Deliberately not reached by <c>config set</c>. Its sensitive values are arbitrary
+    /// configuration strings rather than credentials, so surrounding whitespace can be meaningful
+    /// there and the caller's bytes are stored exactly as supplied — which is why the trim lives
+    /// here, named, rather than inside <see cref="ReadAsync"/> where both families would inherit
+    /// it.</para>
+    /// </summary>
+    internal static SensitiveValueRead NormalizeCredential(SensitiveValueRead read) =>
+        read.IsAvailable
+            ? SensitiveValueRead.From(read.Value?.Trim())
+            : read;
+
+    /// <summary>
     /// Prompt settings for a stdin that is known to be a terminal. Interaction is asserted rather
     /// than detected because <c>ConfigureAnsiConsoleForInvocation</c> disables it for the whole
     /// process under <c>--plain</c>, which would otherwise make Spectre throw

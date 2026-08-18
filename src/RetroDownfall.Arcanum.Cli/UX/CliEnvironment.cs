@@ -57,19 +57,23 @@ public sealed class CliEnvironment : ICliEnvironment
 
         _isInteractive = !stdinRedirected && !stdoutRedirected;
 
-        string? noColor = Environment.GetEnvironmentVariable("NO_COLOR");
-
-        string? arcanumNoColor = Environment.GetEnvironmentVariable("ARCANUM_NO_COLOR");
-
-        bool noColorRequested = !string.IsNullOrEmpty(noColor) || !string.IsNullOrEmpty(arcanumNoColor);
-
-        _colorEnabled = _isInteractive && !noColorRequested;
+        _colorEnabled = _isInteractive && !NoColorRequested;
 
         _showManaBarConfigured = showManaBarConfigured;
 
         _invocationContext = invocationContext;
 
     }
+
+    /// <summary>
+    /// The standard <c>NO_COLOR</c> (see <c>https://no-color.org</c>) or the Arcanum-specific
+    /// <c>ARCANUM_NO_COLOR</c>, set to any non-empty value. Exposed so the writers that build a
+    /// console per write — <see cref="Commands.CliErrorOutput"/> — answer the no-colour question
+    /// from the same place this type does instead of restating the variable names a third time.
+    /// </summary>
+    internal static bool NoColorRequested =>
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))
+        || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ARCANUM_NO_COLOR"));
 
     /// <summary>
     /// <c>--print</c> is the explicit headless marker: it makes a real TTY behave like a redirected

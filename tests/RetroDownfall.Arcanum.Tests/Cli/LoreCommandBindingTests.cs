@@ -88,6 +88,32 @@ public sealed class LoreCommandBindingTests
 
     }
 
+    /// <summary>
+    /// Writing the value verbatim fixed the panel, but only for the text mode. Under <c>--output-format json</c> anything left on stdout still falls through the legacy text wrapper, which strips every ESC-introduced sequence out of the middle of the buffer and trims the trailing newlines off the end — so the mode that exists for machines was the one that could not reproduce the stored value. A structured document keeps it out of that wrapper, exactly as <c>workspace read</c> already does.
+    /// </summary>
+    [Fact]
+    public void Lore_get_json_reproduces_the_stored_value_byte_for_byte()
+    {
+
+        string value = "\u001b[31mred\u001b[0m literal escape\nplain line\n\n";
+
+        RecordingHandler handler = new(_ => CreateLoreResponse(new ApiResponse<LoreDto>(
+            new LoreDto("deploy.notes", value, DateTime.UtcNow),
+            true,
+            null)));
+
+        CliTestResult result = RunCommand(handler, ["lore", "get", "deploy.notes", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal("deploy.notes", document.RootElement.GetProperty("key").GetString());
+
+        Assert.Equal(value, document.RootElement.GetProperty("value").GetString());
+
+    }
+
     [Fact]
     public void Lore_delete_binds_key_argument()
     {

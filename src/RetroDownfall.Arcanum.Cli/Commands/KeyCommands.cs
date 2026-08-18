@@ -407,9 +407,7 @@ public sealed class KeyCommands(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return read.IsAvailable
-            ? SensitiveValueRead.From(read.Value?.Trim())
-            : read;
+        return SensitiveValueInput.NormalizeCredential(read);
 
     }
 

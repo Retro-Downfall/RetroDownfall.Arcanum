@@ -143,6 +143,60 @@ public sealed class SensitiveValueInputTests
 
     }
 
+    /// <summary>
+    /// Credential normalisation is a decision, not an accident of refactoring: the baseline trimmed only the redirected route, so the same key typed at the hidden prompt and piped in produced different stored bytes. Both routes converge here. Pinned because it decides the bytes stored as a credential, and because the neighbouring <c>config set</c> route deliberately keeps the opposite answer.
+    /// </summary>
+    [Fact]
+    public async Task A_credential_typed_at_the_hidden_prompt_is_normalised_like_a_piped_one()
+    {
+
+        FakeSensitiveValueConsole prompted = new(isInputRedirected: false, line: null)
+        {
+
+            PromptResult = "  sk-typed-secret\t",
+
+        };
+
+        SensitiveValueRead promptRead = SensitiveValueInput.NormalizeCredential(
+            await SensitiveValueInput.ReadAsync(
+                prompted,
+                new CliInvocationOptions(Json: false, Plain: false, Yes: false),
+                "Master API key:",
+                CancellationToken.None));
+
+        FakeSensitiveValueConsole piped = new(
+            isInputRedirected: true,
+            line: "  sk-typed-secret\t");
+
+        SensitiveValueRead pipedRead = SensitiveValueInput.NormalizeCredential(
+            await SensitiveValueInput.ReadAsync(
+                piped,
+                new CliInvocationOptions(Json: false, Plain: false, Yes: false),
+                "Master API key:",
+                CancellationToken.None));
+
+        Assert.Equal("sk-typed-secret", promptRead.Value);
+
+        Assert.Equal(promptRead.Value, pipedRead.Value);
+
+    }
+
+    /// <summary>
+    /// "No input route exists" is a configuration error, not an empty credential. Normalisation must not launder it into an available-but-blank read, which the caller would report as an empty key instead of naming the missing route.
+    /// </summary>
+    [Fact]
+    public void Normalisation_leaves_an_unavailable_read_unavailable()
+    {
+
+        SensitiveValueRead normalized =
+            SensitiveValueInput.NormalizeCredential(SensitiveValueRead.Unavailable);
+
+        Assert.False(normalized.IsAvailable);
+
+        Assert.Null(normalized.Value);
+
+    }
+
     private sealed class FakeSensitiveValueConsole(bool isInputRedirected, string? line)
         : ISensitiveValueConsole
     {
