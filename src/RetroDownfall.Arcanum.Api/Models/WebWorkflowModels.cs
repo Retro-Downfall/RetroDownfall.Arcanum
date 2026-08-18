@@ -185,15 +185,14 @@ public sealed record WebResearchWorkflowResult
 
     public WebWorkflowUsage Usage { get; init; } = new();
 
-    public Guid? AttachmentId { get; init; }
-
     /// <summary>
-    /// Why the requested session attachment did not happen, when the workflow itself succeeded. The
-    /// provider call is billed before the attachment is attempted, so discarding the answer over a
-    /// failed attachment throws away work the caller already paid for; <c>null</c> here means either
-    /// no attachment was requested or it succeeded and <c>AttachmentId</c> names it.
+    /// The stored attachment, or <c>null</c> when none was requested or the attachment failed. There is
+    /// deliberately no <c>AttachmentError</c> counterpart to the one on
+    /// <see cref="WebSearchWorkflowResult"/> and <see cref="WebBrowseWorkflowResult"/>: research
+    /// streams, so a late attachment failure is reported on its own <c>attachment_failed</c> progress
+    /// frame ahead of this one. A copy on the result would be a field no code path can populate.
     /// </summary>
-    public string? AttachmentError { get; init; }
+    public Guid? AttachmentId { get; init; }
 
 }
 

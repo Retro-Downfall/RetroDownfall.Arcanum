@@ -492,6 +492,38 @@ public sealed class WeaveServiceTests
     }
 
     /// <summary>
+    /// The relative bound is half the window rather than <c>chunkSizeChars - 1</c>, and the difference
+    /// is not cosmetic: the two clamps admit an overlap one character below the window, so a
+    /// <c>size - 1</c> bound would leave a 1,000/999 configuration at a one-character step — the same
+    /// one-chunk-per-character blow-up as the overlap-at-or-above-size case, reached by a configuration
+    /// that never trips it. Only a bound proportional to the window keeps the emitted count bounded
+    /// across every legal pair.
+    /// </summary>
+    [Theory]
+    [InlineData(1_000, 999)]
+    [InlineData(1_000, 600)]
+    [InlineData(128, 127)]
+    [InlineData(256, 200)]
+    public void ResolveChunkStep_OverlapBelowChunkSizeButAboveHalf_IsBoundedToHalfAWindow(
+        int chunkSizeChars,
+        int chunkOverlapChars)
+    {
+
+        const int documentChars = 200_000;
+
+        int step = WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars);
+
+        Assert.Equal(chunkSizeChars - (chunkSizeChars / 2), step);
+
+        int emitted = ((documentChars - 1) / step) + 1;
+
+        int minimum = ((documentChars - 1) / chunkSizeChars) + 1;
+
+        Assert.True(emitted <= minimum * 2, $"{emitted} chunks emitted for a {minimum}-chunk document.");
+
+    }
+
+    /// <summary>
     /// An overlap the window can actually carry is honoured exactly — the relative bound must not
     /// silently shrink an ordinary configuration.
     /// </summary>
