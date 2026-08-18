@@ -73,6 +73,20 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly bool _allowUnsandboxedToolChildren;
 
+    /// <summary>
+    /// The variable names the operator declared as holding Arcanum's own secrets — the list
+    /// <see cref="RetroDownfall.Arcanum.Infrastructure.Familiars.FamiliarSecretEnvironmentNames.Collect"/>
+    /// builds from configuration. Threaded in rather than resolved here because this tool is
+    /// constructed per turn and holds no <c>IOptions</c>.
+    /// </summary>
+    /// <remarks>
+    /// The <c>ARCANUM_</c> prefix scrub the SpellScript profile already applies covers only the
+    /// derived default names. A provider credential the operator legitimately pointed at
+    /// <c>MY_OPENAI_KEY</c> carries no prefix, so without this list every spell script — including
+    /// one authored from untrusted content — reads it straight out of its own environment.
+    /// </remarks>
+    private readonly IReadOnlyList<string>? _operatorDeclaredSecretEnvironmentVariables;
+
     public ArcanumSpellScriptTool(
         IReadOnlyList<string> scriptsDirectoryPaths,
         long toolOutputCapBytes = 1L * 1024L * 1024L,
@@ -81,7 +95,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         IProcessResourceLimiter? resourceLimiter = null,
         string? campaignWorkspaceRoot = null,
         bool allowUnsandboxedToolChildren = false,
-        ArcanumEdition configuredEdition = ArcanumEdition.Local)
+        ArcanumEdition configuredEdition = ArcanumEdition.Local,
+        IReadOnlyList<string>? operatorDeclaredSecretEnvironmentVariables = null)
     {
         _toolOutputCapBytes = toolOutputCapBytes < 2048L ? 2048L : toolOutputCapBytes;
 
@@ -96,6 +111,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         _allowUnsandboxedToolChildren = allowUnsandboxedToolChildren;
 
         _configuredEdition = configuredEdition;
+
+        _operatorDeclaredSecretEnvironmentVariables = operatorDeclaredSecretEnvironmentVariables;
 
         var roots = new List<string>(scriptsDirectoryPaths.Count);
 
@@ -131,7 +148,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         IProcessResourceLimiter? resourceLimiter = null,
         string? campaignWorkspaceRoot = null,
         bool allowUnsandboxedToolChildren = false,
-        ArcanumEdition configuredEdition = ArcanumEdition.Local)
+        ArcanumEdition configuredEdition = ArcanumEdition.Local,
+        IReadOnlyList<string>? operatorDeclaredSecretEnvironmentVariables = null)
         : this(
             [scriptsDirectoryPath],
             toolOutputCapBytes,
@@ -140,7 +158,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             resourceLimiter,
             campaignWorkspaceRoot,
             allowUnsandboxedToolChildren,
-            configuredEdition)
+            configuredEdition,
+            operatorDeclaredSecretEnvironmentVariables)
     {
     }
 
@@ -302,7 +321,9 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             _resourceLimiter,
             cancellationToken,
             sandboxRequest,
-            _logger).ConfigureAwait(false);
+            _logger,
+            operatorDeclaredSecretEnvironmentVariables: _operatorDeclaredSecretEnvironmentVariables)
+            .ConfigureAwait(false);
 
         switch (runResult.Outcome)
         {

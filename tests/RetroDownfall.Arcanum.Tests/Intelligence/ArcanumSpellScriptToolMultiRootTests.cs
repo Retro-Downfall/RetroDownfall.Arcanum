@@ -182,4 +182,75 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
         Assert.Contains("script not found", result, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A spell script must not be able to read one of Arcanum's own credentials out of its own
+    /// environment just because the operator pointed <c>Arcanum:Providers:*:CredentialEnvironmentVariable</c>
+    /// at a name of their choosing.
+    /// </summary>
+    /// <remarks>
+    /// The SpellScript profile's <c>ARCANUM_</c> prefix scrub covers only the derived default names,
+    /// so a provider key the operator legitimately put in <c>MY_OPENAI_KEY</c> reached this child
+    /// untouched while the <c>execute_command</c> path scrubbed it. Both names below deliberately
+    /// avoid the <c>ARCANUM_</c> prefix and the loader-hijack denylist, or the prefix scrub would
+    /// remove them and the test would pass without exercising the declared-name list at all. The
+    /// undeclared marker is asserted <em>present</em> for the same reason: a child that inherited
+    /// nothing would otherwise satisfy the secret assertion for the wrong reason.
+    /// </remarks>
+    [Fact]
+    public async Task Invoke_DoesNotLeakOperatorDeclaredSecretsToTheScript()
+    {
+        const string declaredSecretName = "ARCTEST_SPELLSCRIPT_DECLARED_PROVIDER_KEY";
+
+        const string declaredSecretValue = "declared-secret-value-must-not-reach-the-script";
+
+        const string markerName = "ARCTEST_SPELLSCRIPT_INHERITANCE_MARKER";
+
+        const string markerValue = "marker-value-that-may-reach-the-script";
+
+        string scriptName = OperatingSystem.IsWindows() ? "env.ps1" : "env.sh";
+
+        string scriptPath = Path.Combine(_rootA, scriptName);
+
+        string script = OperatingSystem.IsWindows()
+            ? $"Write-Output \"secret=[$env:{declaredSecretName}]\"\nWrite-Output \"marker=[$env:{markerName}]\"\n"
+            : $"#!/bin/sh\necho \"secret=[${declaredSecretName}]\"\necho \"marker=[${markerName}]\"\n";
+
+        await File.WriteAllTextAsync(scriptPath, script);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        global::System.Environment.SetEnvironmentVariable(declaredSecretName, declaredSecretValue);
+
+        global::System.Environment.SetEnvironmentVariable(markerName, markerValue);
+
+        try
+        {
+            ArcanumSpellScriptTool tool = new(
+                [_rootA],
+                allowUnsandboxedToolChildren: true,
+                operatorDeclaredSecretEnvironmentVariables: [declaredSecretName]);
+
+            string? result = await tool.InvokeAsync(
+                new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = scriptName }))
+                as string;
+
+            Assert.NotNull(result);
+
+            Assert.Contains($"marker=[{markerValue}]", result, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(declaredSecretValue, result, StringComparison.Ordinal);
+
+            Assert.Contains("secret=[]", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(declaredSecretName, null);
+
+            global::System.Environment.SetEnvironmentVariable(markerName, null);
+        }
+    }
+
 }

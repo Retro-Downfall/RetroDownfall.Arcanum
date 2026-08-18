@@ -21,6 +21,11 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 /// to remove. <c>FamiliarProcessRunner</c> is likewise absent because it never routes through
 /// <c>RunAsync</c> — it scrubs the same names inline from <c>request.DeniedEnvironmentVariables</c>,
 /// which <c>FamiliarSecretEnvironmentNames.Collect</c> builds.</para>
+///
+/// <para>Scoped to every authored production source, not to the Infrastructure project alone. The
+/// runner is Infrastructure's, but the callers are not: <c>run_spell_script</c> lives in the Api
+/// project, and an inventory that only looked where the runner lives declared the wiring complete
+/// while the spell-script child still inherited every operator-declared credential.</para>
 /// </remarks>
 public sealed class ChildProcessSecretScrubCallSiteTests
 {
@@ -29,7 +34,15 @@ public sealed class ChildProcessSecretScrubCallSiteTests
 
     private const string DeclaredNamesArgument = "operatorDeclaredSecretEnvironmentVariables";
 
-    private const string InfrastructureProject = "RetroDownfall.Arcanum.Infrastructure";
+    private const string CollectCall = "FamiliarSecretEnvironmentNames.Collect";
+
+    /// <summary>
+    /// The one call site that legitimately does not build the list itself: the tool is constructed
+    /// per turn by <c>WizardIntelligenceProvider</c> and receives the names as a constructor
+    /// argument, which <see cref="The_spell_script_composition_site_sources_the_names_from_configuration"/>
+    /// pins to the configured source.
+    /// </summary>
+    private const string NamesReceivedByConstructor = "ArcanumSpellScriptTool.cs";
 
     [Theory]
     [InlineData("ChildProcessEnvironmentProfile.ToolExec")]
@@ -40,7 +53,6 @@ public sealed class ChildProcessSecretScrubCallSiteTests
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
-                .Where(source => source.RelativePath.Contains(InfrastructureProject, StringComparison.Ordinal))
                 .Where(source => source.Names(RunnerCall) && source.Names(profile))
                 .Where(static source => !source.Names(DeclaredNamesArgument))
                 .Select(static source => source.RelativePath),
@@ -66,9 +78,9 @@ public sealed class ChildProcessSecretScrubCallSiteTests
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
-                .Where(source => source.RelativePath.Contains(InfrastructureProject, StringComparison.Ordinal))
                 .Where(static source => source.Names(RunnerCall) && source.Names(DeclaredNamesArgument))
-                .Where(static source => !source.Names("FamiliarSecretEnvironmentNames.Collect"))
+                .Where(static source => !source.Is(NamesReceivedByConstructor))
+                .Where(static source => !source.Names(CollectCall))
                 .Select(static source => source.RelativePath),
         ];
 
@@ -77,6 +89,42 @@ public sealed class ChildProcessSecretScrubCallSiteTests
             "The declared-secret names are configuration, not a constant: every name in "
             + "Arcanum:Providers:*:CredentialEnvironmentVariable and its four siblings has to reach the "
             + "child scrub. Build the list with FamiliarSecretEnvironmentNames.Collect in: "
+            + string.Join(", ", offenders));
+
+    }
+
+    /// <summary>
+    /// The spell-script tool takes the names as a constructor argument, so its scrub is only as good
+    /// as what the composition site hands it.
+    /// </summary>
+    /// <remarks>
+    /// Without this, the previous assertion's exemption would be a hole: a composition site could
+    /// construct the tool with no names at all, or with a hand-written literal, and every file
+    /// involved would still satisfy the other two checks.
+    /// </remarks>
+    [Fact]
+    public void The_spell_script_composition_site_sources_the_names_from_configuration()
+    {
+
+        List<ProductionSource> compositionSites =
+        [
+            .. ProductionSourceInventory.Sources()
+                .Where(static source => source.Names("new ArcanumSpellScriptTool(")),
+        ];
+
+        Assert.NotEmpty(compositionSites);
+
+        List<string> offenders =
+        [
+            .. compositionSites
+                .Where(static source => !source.Names(CollectCall))
+                .Select(static source => source.RelativePath),
+        ];
+
+        Assert.True(
+            offenders.Count == 0,
+            "A spell-script child is scrubbed of the operator's declared secrets only when the site "
+            + "that constructs the tool builds that list with " + CollectCall + ": "
             + string.Join(", ", offenders));
 
     }
