@@ -11,6 +11,40 @@ public sealed class WebPageContentExtractor
 {
     private const int MaxTitleBytes = 2_048;
 
+    /// <summary>
+    /// Hard ceiling on element nesting. This walk, and HtmlAgilityPack's own <c>InnerText</c> and
+    /// <c>Descendants</c> helpers, all recurse once per level, so untrusted markup of nested tags
+    /// would otherwise overflow the stack — and a <see cref="StackOverflowException"/> cannot be
+    /// caught, so it tears the whole host process down rather than failing one turn. Enforced at
+    /// parse time through <c>OptionMaxNestedChildNodes</c> (which also covers the library's own
+    /// recursion) and again by the render walk. Real pages nest an order of magnitude below this.
+    /// </summary>
+    private const int MaxNodeDepth = 256;
+
+    /// <summary>
+    /// Headroom applied to the caller's UTF-8 content budget when sizing the render buffer. UTF-8
+    /// never encodes a char in fewer than one byte, so rendering this many chars always yields at
+    /// least <c>maxContentBytes</c> bytes of markdown; the factor and slack absorb the whitespace
+    /// that <see cref="NormalizeMarkdown"/> later removes, which keeps the rendered output
+    /// byte-identical to an unbounded render for every page that fits within the budget.
+    /// </summary>
+    private const int RenderBudgetFactor = 4;
+
+    private const int RenderBudgetSlackChars = 4_096;
+
+    /// <summary>
+    /// Anchors <see cref="ExtractLinks"/> resolves per unit of the caller's link budget, and the
+    /// floor and ceiling that bracket it. Resolving an anchor materialises its absolute URL, so a
+    /// long page URL amplifies each ~20-byte relative href into kilobytes of retained string.
+    /// Anchors past the ceiling count toward the omitted total without being resolved, which keeps
+    /// the retained set proportional to limits the operator configured rather than to page size.
+    /// </summary>
+    private const int LinkScanFactor = 16;
+
+    private const int MinScannedAnchors = 256;
+
+    private const int MaxScannedAnchors = 4_096;
+
     private static readonly char[] Whitespace = [' ', '\t', '\r', '\n', '\f'];
 
     public WebPageExtractionResult Extract(
@@ -29,9 +63,27 @@ public sealed class WebPageContentExtractor
         HtmlDocument document = new()
         {
             OptionFixNestedTags = true,
+            OptionMaxNestedChildNodes = MaxNodeDepth,
         };
 
-        document.LoadHtml(html);
+        try
+        {
+            document.LoadHtml(html);
+        }
+        catch (Exception)
+        {
+            // HtmlAgilityPack raises a bare Exception as soon as the document nests deeper than
+            // OptionMaxNestedChildNodes. Report the page as wholly truncated instead of walking a
+            // tree that would overflow the stack: the caller still receives a result to convert
+            // into an envelope, and no partial render is attributed to the page.
+            return new WebPageExtractionResult(
+                string.Empty,
+                string.Empty,
+                [],
+                false,
+                true,
+                0);
+        }
 
         bool hasKnownApplicationMount = document.DocumentNode.SelectSingleNode(
             "//*[@id='root' or @id='app' or @id='__next']") is not null;
@@ -52,8 +104,10 @@ public sealed class WebPageContentExtractor
             ?? document.DocumentNode.SelectSingleNode("//body")
             ?? document.DocumentNode;
 
+        int renderCharBudget = ResolveRenderCharBudget(maxContentBytes);
         StringBuilder markdownBuilder = new();
-        RenderChildren(contentRoot, markdownBuilder, baseUri);
+        RenderChildren(contentRoot, markdownBuilder, baseUri, renderCharBudget, 0);
+        bool renderBudgetReached = markdownBuilder.Length >= renderCharBudget;
 
         string markdown = NormalizeMarkdown(markdownBuilder.ToString());
         markdown = WebResearchBounds.TruncateUtf8(
@@ -73,9 +127,19 @@ public sealed class WebPageContentExtractor
             markdown,
             links,
             hasKnownApplicationMount && string.IsNullOrWhiteSpace(markdown),
-            titleTruncated || contentTruncated || omittedLinkCount > 0,
+            titleTruncated || contentTruncated || renderBudgetReached || omittedLinkCount > 0,
             omittedLinkCount);
     }
+
+    private static int ResolveRenderCharBudget(int maxContentBytes) =>
+        (int)Math.Min(
+            ((long)maxContentBytes * RenderBudgetFactor) + RenderBudgetSlackChars,
+            int.MaxValue);
+
+    private static int ResolveAnchorScanCeiling(int maxLinks) =>
+        (int)Math.Max(
+            Math.Clamp((long)maxLinks * LinkScanFactor, MinScannedAnchors, MaxScannedAnchors),
+            maxLinks);
 
     private static void RemoveUnsafeAndNonContentNodes(HtmlDocument document)
     {
@@ -111,17 +175,37 @@ public sealed class WebPageContentExtractor
         }
     }
 
-    private static void RenderChildren(HtmlNode node, StringBuilder output, Uri baseUri)
+    private static void RenderChildren(
+        HtmlNode node,
+        StringBuilder output,
+        Uri baseUri,
+        int charBudget,
+        int depth)
     {
+        if (depth >= MaxNodeDepth)
+        {
+            return;
+        }
+
         foreach (HtmlNode child in node.ChildNodes)
         {
-            RenderNode(child, output, baseUri);
+            if (output.Length >= charBudget)
+            {
+                return;
+            }
+
+            RenderNode(child, output, baseUri, charBudget, depth + 1);
         }
     }
 
-    private static void RenderNode(HtmlNode node, StringBuilder output, Uri baseUri)
+    private static void RenderNode(
+        HtmlNode node,
+        StringBuilder output,
+        Uri baseUri,
+        int charBudget,
+        int depth)
     {
-        if (node.NodeType == HtmlNodeType.Comment)
+        if (node.NodeType == HtmlNodeType.Comment || output.Length >= charBudget)
         {
             return;
         }
@@ -134,7 +218,7 @@ public sealed class WebPageContentExtractor
 
         if (node.NodeType != HtmlNodeType.Element)
         {
-            RenderChildren(node, output, baseUri);
+            RenderChildren(node, output, baseUri, charBudget, depth);
             return;
         }
 
@@ -147,7 +231,7 @@ public sealed class WebPageContentExtractor
             EnsureBlankLine(output);
             output.Append('#', name[1] - '0');
             output.Append(' ');
-            RenderChildren(node, output, baseUri);
+            RenderChildren(node, output, baseUri, charBudget, depth);
             EnsureBlankLine(output);
             return;
         }
@@ -160,7 +244,7 @@ public sealed class WebPageContentExtractor
             case "article":
             case "main":
                 EnsureBlankLine(output);
-                RenderChildren(node, output, baseUri);
+                RenderChildren(node, output, baseUri, charBudget, depth);
                 EnsureBlankLine(output);
                 return;
 
@@ -189,13 +273,13 @@ public sealed class WebPageContentExtractor
 
             case "ul":
             case "ol":
-                RenderList(node, output, baseUri, ordered: name == "ol");
+                RenderList(node, output, baseUri, charBudget, depth, ordered: name == "ol");
                 return;
 
             case "li":
                 EnsureLineBreak(output);
                 output.Append("- ");
-                RenderChildren(node, output, baseUri);
+                RenderChildren(node, output, baseUri, charBudget, depth);
                 EnsureLineBreak(output);
                 return;
 
@@ -263,7 +347,7 @@ public sealed class WebPageContentExtractor
                 return;
 
             default:
-                RenderChildren(node, output, baseUri);
+                RenderChildren(node, output, baseUri, charBudget, depth);
                 return;
         }
     }
@@ -272,6 +356,8 @@ public sealed class WebPageContentExtractor
         HtmlNode list,
         StringBuilder output,
         Uri baseUri,
+        int charBudget,
+        int depth,
         bool ordered)
     {
         EnsureBlankLine(output);
@@ -283,8 +369,13 @@ public sealed class WebPageContentExtractor
                          "li",
                          StringComparison.OrdinalIgnoreCase)))
         {
+            if (output.Length >= charBudget)
+            {
+                break;
+            }
+
             output.Append(ordered ? $"{ordinal}. " : "- ");
-            RenderChildren(item, output, baseUri);
+            RenderChildren(item, output, baseUri, charBudget, depth);
             EnsureLineBreak(output);
             ordinal++;
         }
@@ -330,11 +421,23 @@ public sealed class WebPageContentExtractor
     {
         HashSet<string> seen = new(StringComparer.Ordinal);
         List<ExtractedWebLink> retained = new(Math.Min(maxLinks, 32));
+        int scanCeiling = ResolveAnchorScanCeiling(maxLinks);
+        int scanned = 0;
         int total = 0;
 
         foreach (HtmlNode anchor in contentRoot.SelectNodes(".//a[@href]")
                      ?? Enumerable.Empty<HtmlNode>())
         {
+            if (scanned >= scanCeiling)
+            {
+                // Past the scan ceiling an anchor counts as omitted without being resolved, so the
+                // retained set never grows with page size. Duplicate and unresolvable hrefs are
+                // counted here too, which can only overstate how much the page held back.
+                total++;
+                continue;
+            }
+
+            scanned++;
             string href = anchor.GetAttributeValue("href", string.Empty).Trim();
 
             if (!TryResolvePublicLink(baseUri, href, out Uri? resolved))
@@ -342,11 +445,7 @@ public sealed class WebPageContentExtractor
                 continue;
             }
 
-            UriBuilder normalizedBuilder = new(resolved)
-            {
-                Fragment = string.Empty,
-            };
-            string normalized = normalizedBuilder.Uri.AbsoluteUri;
+            string normalized = StripFragment(resolved);
 
             if (!seen.Add(normalized))
             {
@@ -371,6 +470,21 @@ public sealed class WebPageContentExtractor
 
         omittedLinkCount = total - retained.Count;
         return [.. retained];
+    }
+
+    private static string StripFragment(Uri resolved)
+    {
+        if (resolved.Fragment.Length == 0)
+        {
+            return resolved.AbsoluteUri;
+        }
+
+        UriBuilder normalizedBuilder = new(resolved)
+        {
+            Fragment = string.Empty,
+        };
+
+        return normalizedBuilder.Uri.AbsoluteUri;
     }
 
     private static bool TryResolvePublicLink(

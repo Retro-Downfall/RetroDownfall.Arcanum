@@ -129,6 +129,40 @@ public sealed class FamiliarProcessRunnerTests
     }
 
     /// <summary>
+    /// A folded system prompt routinely clears a quarter of a megabyte, which is orders of magnitude
+    /// past any OS pipe buffer. If the runner insists on finishing that write before it reads a
+    /// single stdout byte, a CLI that speaks before it listens fills its own pipe, stops reading,
+    /// and both sides wait for the other until the fifteen-minute deadline reports a timeout the
+    /// operator has no way to interpret. The write and the read have to overlap.
+    /// </summary>
+    [Fact]
+    public async Task A_large_prompt_does_not_wedge_against_a_familiar_that_writes_before_it_reads()
+    {
+
+        string frame = new('x', 1_024);
+
+        using StubFamiliarCli stub = StubFamiliarCli.CreateEmittingBeforeReadingStandardInput(
+            Enumerable.Repeat(frame, 512));
+
+        string prompt = new('p', 512 * 1024);
+
+        List<string> lines = [];
+
+        await foreach (string line in RunAsync(
+            stub,
+            standardInput: prompt,
+            timeout: TimeSpan.FromSeconds(15)))
+        {
+            lines.Add(line);
+        }
+
+        Assert.Equal(512, lines.Count);
+
+        Assert.Equal(prompt, stub.ReadRecordedStandardInput().TrimEnd('\r', '\n'));
+
+    }
+
+    /// <summary>
     /// Arguments are handed over as a list. A value containing spaces, quotes, or a leading dash
     /// must arrive as exactly one argument — this is the "dependency mess turns into a security
     /// mess" vector, and the only defence is never building a command string in the first place.
