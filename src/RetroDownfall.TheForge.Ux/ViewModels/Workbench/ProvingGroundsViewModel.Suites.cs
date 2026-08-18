@@ -340,9 +340,34 @@ public sealed partial class ProvingGroundsViewModel
 
         }
 
-        await ArtifactImportExportHelper
-            .WriteJsonAsync(path, SelectedSuite, TheForgeTrialSuitesJsonContext.Default.TrialSuiteRecord, cancellationToken)
-            .ConfigureAwait(true);
+        try
+        {
+
+            await ArtifactImportExportHelper
+                .WriteJsonAsync(path, SelectedSuite, TheForgeTrialSuitesJsonContext.Default.TrialSuiteRecord, cancellationToken)
+                .ConfigureAwait(true);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            SuiteStatusText = "Suite export cancelled.";
+
+            return;
+
+        }
+        catch (Exception ex)
+        {
+
+            SuiteStatusText = "Suite export failed.";
+
+            _foundryFloor.AppendLine($"Suite export error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Suite export failed.");
+
+            return;
+
+        }
 
         _whispers.Show(WhisperSeverity.Success, "Suite exported.");
 
@@ -482,6 +507,21 @@ public sealed partial class ProvingGroundsViewModel
 
             suiteWatch.Stop();
 
+            // Re-read the suite the run started from: the operator can keep authoring while a run is
+            // in flight, so anything captured before the awaits above is a stale snapshot.
+            TrialSuiteRecord? current = _suiteDocument.Suites.FirstOrDefault(s => s.Id == suite.Id);
+
+            if (current is null)
+            {
+
+                StatusText = $"Suite “{suite.Name}” was deleted during the run; results were not saved.";
+
+                _whispers.Show(WhisperSeverity.Warning, StatusText);
+
+                return;
+
+            }
+
             TrialSuiteRunRecord run = new(
                 Guid.NewGuid(),
                 suite.Id,
@@ -492,9 +532,9 @@ public sealed partial class ProvingGroundsViewModel
                 $"items={items.Count}; elapsedMs={suiteWatch.ElapsedMilliseconds}",
                 results);
 
-            List<TrialSuiteRunRecord> runs = suite.Runs.Prepend(run).ToList();
+            List<TrialSuiteRunRecord> runs = current.Runs.Prepend(run).ToList();
 
-            TrialSuiteRecord updated = suite with
+            TrialSuiteRecord updated = current with
             {
                 Runs = runs,
                 UpdatedAt = DateTimeOffset.UtcNow,

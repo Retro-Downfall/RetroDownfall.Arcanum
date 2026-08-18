@@ -35,6 +35,12 @@ public sealed partial class ScriptoriumViewModel
 
     private string _persistedDefaultParametersJson = "{}";
 
+    /// <summary>
+    /// Monotonic ticket for mirror refreshes. Only the newest refresh may write the mirror surface,
+    /// so rapid version selection cannot leave a superseded version's diff on screen.
+    /// </summary>
+    private int _mirrorRefreshGeneration;
+
     [ObservableProperty]
     private PromptDetailDto? _mirrorComparedPrompt;
 
@@ -86,7 +92,7 @@ public sealed partial class ScriptoriumViewModel
         if (value is not null)
         {
 
-            _ = RefreshMirrorDiffAsync(CancellationToken.None);
+            TaskUtilities.FireAndForget(RefreshMirrorDiffAsync(CancellationToken.None));
 
         }
 
@@ -127,11 +133,22 @@ public sealed partial class ScriptoriumViewModel
     public async Task RefreshMirrorDiffAsync(CancellationToken cancellationToken)
     {
 
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        int generation = ++_mirrorRefreshGeneration;
+
         MirrorDiffLines.Clear();
 
         MirrorComparedPrompt = null;
 
-        if (SelectedVersion is null)
+        PromptVersionDto? version = SelectedVersion;
+
+        if (version is null)
         {
 
             MirrorStatusText = "Select a version to compare.";
@@ -140,9 +157,35 @@ public sealed partial class ScriptoriumViewModel
 
         }
 
-        PromptDetailDto? detail = await _dataSource
-            .LoadPromptAsync(SelectedVersion.Id, cancellationToken)
-            .ConfigureAwait(true);
+        PromptDetailDto? detail;
+
+        try
+        {
+
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                _lifetimeCts.Token);
+
+            detail = await _dataSource
+                .LoadPromptAsync(version.Id, linked.Token)
+                .ConfigureAwait(true);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return;
+
+        }
+
+        if (_disposed || generation != _mirrorRefreshGeneration)
+        {
+
+            // A newer selection (or a closed document) already owns the mirror surface.
+
+            return;
+
+        }
 
         if (detail is null)
         {
@@ -151,7 +194,7 @@ public sealed partial class ScriptoriumViewModel
 
             MirrorStatusText = "Version detail unavailable.";
 
-            _foundryFloor.AppendLine($"Scriptorium Mirror failed for version {SelectedVersion.Version} ({SelectedVersion.Id:D}).");
+            _foundryFloor.AppendLine($"Scriptorium Mirror failed for version {version.Version} ({version.Id:D}).");
 
             return;
 

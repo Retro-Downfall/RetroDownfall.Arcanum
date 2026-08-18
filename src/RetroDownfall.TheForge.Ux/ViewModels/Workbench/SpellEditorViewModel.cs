@@ -23,7 +23,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// actions, The Mirror (version compare/create/update), Spell Metadata Designer / raw SPELL.json,
 /// and streams Execute events through the spell-specific NDJSON endpoint.
 /// </summary>
-public sealed partial class SpellEditorViewModel : ViewModelBase
+public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 {
 
     private readonly ISpellEditorDataSource _dataSource;
@@ -50,7 +50,17 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
     private IReadOnlyList<string> _toolCatalog = [];
 
+    private readonly CancellationTokenSource _lifetimeCts = new();
+
     private CancellationTokenSource? _executeCts;
+
+    private bool _disposed;
+
+    /// <summary>
+    /// Monotonic ticket for mirror refreshes. Only the newest refresh may write the diff surface,
+    /// so rapid version selection cannot leave a superseded version's lines on screen.
+    /// </summary>
+    private int _mirrorRefreshGeneration;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsBuiltIn))]
@@ -364,6 +374,44 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
     [RelayCommand]
     public async Task LoadAsync(CancellationToken cancellationToken)
+    {
+
+        if (!TryGuardUnsavedEdits("Reloading"))
+        {
+
+            return;
+
+        }
+
+        await LoadCoreAsync(cancellationToken).ConfigureAwait(true);
+
+    }
+
+    /// <summary>
+    /// Refuses a reload that would overwrite unsaved editor work, pointing the operator at save or
+    /// discard rather than silently dropping the buffer. Returns <see langword="false"/> when blocked.
+    /// </summary>
+    private bool TryGuardUnsavedEdits(string action)
+    {
+
+        if (!IsEditorDirty)
+        {
+
+            return true;
+
+        }
+
+        LastError = $"{action} would discard unsaved editor changes — save the spell or discard them first.";
+
+        StatusText = "Unsaved editor changes.";
+
+        _whispers.Show(WhisperSeverity.Warning, "The spell editor has unsaved changes.");
+
+        return false;
+
+    }
+
+    private async Task LoadCoreAsync(CancellationToken cancellationToken)
     {
 
         IsBusy = true;
@@ -1060,7 +1108,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
         _executeCts?.Dispose();
 
-        _executeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _executeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeCts.Token);
 
         CancellationToken runToken = _executeCts.Token;
 
@@ -1087,7 +1135,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
                 }
 
-                if (ev.Type == IntelligenceEventType.SessionBound && Guid.TryParse(ev.Message, out Guid sessionId))
+                if (ev.Type == IntelligenceEventType.SessionBound
+                    && !_disposed
+                    && Guid.TryParse(ev.Message, out Guid sessionId))
                 {
 
                     _navigation.OpenDocument(DocumentKind.Session, sessionId.ToString());
@@ -1149,11 +1199,46 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
     }
 
+    /// <summary>
+    /// Closing the document ends the run it owns. Without this the Stop button leaves with the tab
+    /// while the NDJSON stream keeps going against a spell the operator may have just deleted.
+    /// </summary>
+    public void Dispose()
+    {
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        _disposed = true;
+
+        _lifetimeCts.Cancel();
+
+        _lifetimeCts.Dispose();
+
+        _executeCts?.Cancel();
+
+        _executeCts?.Dispose();
+
+        GC.SuppressFinalize(this);
+
+    }
+
     [RelayCommand(CanExecute = nameof(CanActivateVersion))]
     public async Task ActivateVersionAsync(SpellVersionDto? version, CancellationToken cancellationToken)
     {
 
         if (version is null || !CanMutateVersions)
+        {
+
+            return;
+
+        }
+
+        if (!TryGuardUnsavedEdits("Activating a version"))
         {
 
             return;
@@ -1171,7 +1256,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
                 ? null
                 : $"Previous SPELL.md preserved as SPELL.v{activated.PreviousVersion}.md";
 
-            await LoadAsync(cancellationToken).ConfigureAwait(true);
+            await LoadCoreAsync(cancellationToken).ConfigureAwait(true);
 
             StatusText = "Version activated.";
 
@@ -1340,18 +1425,55 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
     public async Task RefreshMirrorDiffAsync(CancellationToken cancellationToken)
     {
 
-        DiffLines.Clear();
-
-        if (SelectedVersion is null)
+        if (_disposed)
         {
 
             return;
 
         }
 
-        SpellVersionDetailDto? detail = await _dataSource
-            .GetVersionDetailAsync(SpellName, SelectedVersion.Version, Workspace, cancellationToken)
-            .ConfigureAwait(true);
+        int generation = ++_mirrorRefreshGeneration;
+
+        DiffLines.Clear();
+
+        SpellVersionDto? version = SelectedVersion;
+
+        if (version is null)
+        {
+
+            return;
+
+        }
+
+        SpellVersionDetailDto? detail;
+
+        try
+        {
+
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                _lifetimeCts.Token);
+
+            detail = await _dataSource
+                .GetVersionDetailAsync(SpellName, version.Version, Workspace, linked.Token)
+                .ConfigureAwait(true);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return;
+
+        }
+
+        if (_disposed || generation != _mirrorRefreshGeneration)
+        {
+
+            // A newer selection (or a closed document) already owns the mirror surface.
+
+            return;
+
+        }
 
         if (detail is null)
         {
@@ -1360,7 +1482,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
             StatusText = "Version detail unavailable.";
 
-            _foundryFloor.AppendLine($"Spell version detail failed: {SpellName} v{SelectedVersion.Version}.");
+            _foundryFloor.AppendLine($"Spell version detail failed: {SpellName} v{version.Version}.");
 
             return;
 
