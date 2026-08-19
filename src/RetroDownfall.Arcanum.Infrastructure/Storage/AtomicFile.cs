@@ -23,6 +23,22 @@ internal static class AtomicFile
 {
 
     /// <summary>
+    /// The prefix every backup copy of a replaced destination carries.
+    /// </summary>
+    /// <remarks>
+    /// Public to this assembly because a caller that has to <i>prove</i> no replacement artifact
+    /// survived cannot be allowed to guess the name. A proof written against a literal copy of this
+    /// prefix would stop finding the file on the day the prefix changed, and would report the absence
+    /// it was written to detect.
+    /// </remarks>
+    internal const string BackupPrefix = ".arcanum-bak-";
+
+    /// <summary>
+    /// The prefix an unverified destination is moved aside under, for the same reason.
+    /// </summary>
+    internal const string QuarantinePrefix = ".arcanum-quarantine-";
+
+    /// <summary>
     /// Writes <paramref name="writeAsync"/>'s content to <paramref name="tempPath"/> and atomically
     /// replaces <paramref name="destinationPath"/> with it.
     /// </summary>
@@ -179,7 +195,7 @@ internal static class AtomicFile
 
                 backupPath = Path.Combine(
                     Path.GetDirectoryName(destinationPath) ?? string.Empty,
-                    $".arcanum-bak-{Guid.NewGuid():N}");
+                    $"{BackupPrefix}{Guid.NewGuid():N}");
 
                 FileStreamOptions backupOptions = new()
                 {
@@ -534,7 +550,7 @@ internal static class AtomicFile
 
         string quarantinePath = Path.Combine(
             Path.GetDirectoryName(destinationPath) ?? string.Empty,
-            $".arcanum-quarantine-{Guid.NewGuid():N}");
+            $"{QuarantinePrefix}{Guid.NewGuid():N}");
 
         try
         {

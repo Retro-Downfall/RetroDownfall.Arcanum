@@ -118,10 +118,13 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
     }
 
+    /// <summary>Absolute path of the scratch Grimoire this fixture erases.</summary>
+    internal string DatabasePath => _database.DatabasePath;
+
     /// <summary>
     /// Hands the erasure its own unpooled handle to this same file.
     /// </summary>
-    internal ICovenantMaintenanceConnectionFactory Connections() => new ScratchConnectionFactory(_database);
+    internal ICovenantMaintenanceConnectionFactory Connections() => _database.MaintenanceConnections();
 
     /// <summary>
     /// Seeds one of everything the erasure must remove, and one of everything it must not.
@@ -480,15 +483,6 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$created", Timestamp(SeedTime));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
-    }
-
-    private sealed class ScratchConnectionFactory(CovenantSchemaScratchDatabase database)
-        : ICovenantMaintenanceConnectionFactory
-    {
-
-        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
-            database.OpenUninitializedConnectionAsync(cancellationToken);
 
     }
 

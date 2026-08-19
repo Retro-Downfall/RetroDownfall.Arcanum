@@ -100,6 +100,18 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         "covenant_key_epochs",
     ];
 
+    /// <summary>
+    /// The same canonical tables, for the proof that re-reads them once the erasure claims they are
+    /// empty.
+    /// </summary>
+    /// <remarks>
+    /// One list rather than two. A second copy could only ever differ in the case that matters: a
+    /// table this transaction stopped naming would also be a table the storage-health proof stopped
+    /// counting, and the erasure would report a family it had not finished emptying.
+    /// </remarks>
+    internal static IReadOnlyList<string> FamilyTables { get; } =
+        Array.AsReadOnly(FamilyTablesInDeletionOrder);
+
     private readonly ICovenantMaintenanceConnectionFactory _connections;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
