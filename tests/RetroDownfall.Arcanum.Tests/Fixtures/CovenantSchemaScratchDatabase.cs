@@ -32,12 +32,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     private const string OwnerDeletionEventsObjectName = "owner_deletion_events";
 
     /// <summary>
-    /// The database file and every sidecar WAL mode can leave beside it. Deleting only the database
-    /// leaves two orphans per test under the temp directory.
-    /// </summary>
-    private static readonly string[] Sidecars = ["", "-wal", "-shm", "-journal"];
-
-    /// <summary>
     /// The provider has to be installed before the first connection is constructed. Doing it here
     /// rather than in each suite keeps a filtered run from depending on some earlier test in the run
     /// having initialized it.
@@ -71,7 +65,14 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     public static async Task<CovenantSchemaScratchDatabase> CreateAsync(CancellationToken cancellationToken)
     {
 
-        string path = Path.Combine(Path.GetTempPath(), $"covenant-schema-{Guid.NewGuid():N}.db");
+        // One directory per instance, holding nothing but this database and whatever it leaves beside
+        // it. A suite that proves an erasure left no residual artifact has to be able to enumerate
+        // the database's own directory, and a shared temp root would hand it every other test's
+        // leftovers as evidence.
+        string directory = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), $"covenant-schema-{Guid.NewGuid():N}")).FullName;
+
+        string path = Path.Combine(directory, "arcanum.db");
 
         SqliteConnection connection = new(
             new SqliteConnectionStringBuilder
@@ -102,7 +103,7 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
             await connection.DisposeAsync();
 
-            DeleteFiles(path);
+            DeleteDirectory(directory);
 
             throw;
 
@@ -269,6 +270,18 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     }
 
     /// <summary>
+    /// Hands a maintenance path its own factory over this same scratch file.
+    /// </summary>
+    /// <remarks>
+    /// The factory rather than a connection, because the production seam owns three things a test
+    /// cannot substitute without changing what is under test: the database's path, the key every
+    /// handle is opened under, and the exact flags that make a read-only handle unable to create a
+    /// sidecar. The scratch factory reaches for the production helpers for the last two, so a suite
+    /// proving sidecar absence proves it about the connection string production actually opens.
+    /// </remarks>
+    internal ICovenantMaintenanceConnectionFactory MaintenanceConnections() => new ScratchMaintenance(this);
+
+    /// <summary>
     /// Reopens and reinitializes <see cref="Connection"/> after a maintenance path drained it.
     /// </summary>
     /// <remarks>
@@ -376,7 +389,7 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         SqliteConnection.ClearAllPools();
 
-        DeleteFiles(_path);
+        DeleteDirectory(Path.GetDirectoryName(_path)!);
 
     }
 
@@ -434,40 +447,118 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
     }
 
-    private static void DeleteFiles(string path)
+    private static void DeleteDirectory(string directory)
     {
 
-        foreach (string suffix in Sidecars)
+        try
         {
 
-            try
+            if (Directory.Exists(directory))
             {
 
-                string sidecar = path + suffix;
-
-                if (File.Exists(sidecar))
-                {
-
-                    File.Delete(sidecar);
-
-                }
-
-            }
-            catch (IOException)
-            {
-
-                // Scratch under the OS temp root; a scanner still holding the handle must not fail
-                // a test that has already made its assertions.
-
-            }
-            catch (UnauthorizedAccessException)
-            {
-
-                // Same.
+                Directory.Delete(directory, recursive: true);
 
             }
 
         }
+        catch (IOException)
+        {
+
+            // Scratch under the OS temp root; a scanner still holding a handle must not fail a test
+            // that has already made its assertions.
+
+        }
+        catch (UnauthorizedAccessException)
+        {
+
+            // Same.
+
+        }
+
+    }
+
+    /// <summary>
+    /// The scratch file's own maintenance factory, keyed exactly as every other handle to it.
+    /// </summary>
+    private sealed class ScratchMaintenance(CovenantSchemaScratchDatabase database)
+        : ICovenantMaintenanceConnectionFactory
+    {
+
+        public string DatabasePath => database.DatabasePath;
+
+        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
+            database.OpenUninitializedConnectionAsync(cancellationToken);
+
+        public async Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken)
+        {
+
+            SqliteConnection connection = new(
+                CovenantMaintenanceConnectionFactory
+                    .SidecarFreeReadOnly(database.DatabasePath, Passphrase)
+                    .ToString());
+
+            try
+            {
+
+                await connection.OpenAsync(cancellationToken);
+
+                return connection;
+
+            }
+            catch
+            {
+
+                await connection.DisposeAsync();
+
+                throw;
+
+            }
+
+        }
+
+        public async Task<SqliteConnection> OpenSideFileAsync(string path, CancellationToken cancellationToken)
+        {
+
+            SqliteConnection connection = new(
+                new SqliteConnectionStringBuilder
+                {
+                    DataSource = path,
+
+                    Password = Passphrase,
+
+                    Pooling = false,
+                }.ToString());
+
+            try
+            {
+
+                await connection.OpenAsync(cancellationToken);
+
+                return connection;
+
+            }
+            catch
+            {
+
+                await connection.DisposeAsync();
+
+                throw;
+
+            }
+
+        }
+
+        public Task AttachSideFileAsync(
+            SqliteConnection connection,
+            string alias,
+            string path,
+            CancellationToken cancellationToken) =>
+            CovenantMaintenanceConnectionFactory.AttachSideFileCoreAsync(
+                connection,
+                alias,
+                path,
+                Passphrase,
+                cancellationToken);
 
     }
 

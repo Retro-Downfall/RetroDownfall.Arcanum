@@ -662,6 +662,8 @@ public sealed class CovenantCanonicalErasureTransactionTests
         List<string> steps) : ICovenantMaintenanceConnectionFactory
     {
 
+        public string DatabasePath => inner.DatabasePath;
+
         public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
         {
 
@@ -670,6 +672,22 @@ public sealed class CovenantCanonicalErasureTransactionTests
             return inner.OpenAsync(cancellationToken);
 
         }
+
+        // The canonical transaction opens no side file and no read-only handle. Delegating rather
+        // than throwing would let it grow one without this suite's ordering log noticing.
+        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException(
+                "The canonical erasure transaction opens no sidecar-free read-only handle.");
+
+        public Task<SqliteConnection> OpenSideFileAsync(string path, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction opens no side file.");
+
+        public Task AttachSideFileAsync(
+            SqliteConnection connection,
+            string alias,
+            string path,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The canonical erasure transaction attaches no side file.");
 
     }
 
