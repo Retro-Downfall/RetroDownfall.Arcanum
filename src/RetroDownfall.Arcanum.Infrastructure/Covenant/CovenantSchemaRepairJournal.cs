@@ -65,53 +65,159 @@ internal static class CovenantSchemaRepairJournal
 
         ArgumentNullException.ThrowIfNull(connection);
 
-        await using SqliteCommand command = connection.CreateCommand();
+        cancellationToken.ThrowIfCancellationRequested();
 
-        command.CommandText = """
-            SELECT OperationId, EffectDigest, InspectedCatalogDigest, RepairActionCode, TargetTierCode,
-                CapturedDatasetGeneration, AuthorityEpoch, PhaseCode, Revision
-            FROM covenant_schema_repair_intents
-            WHERE PhaseCode IN (1, 2, 3, 4)
-            ORDER BY CreatedAtUtc
-            LIMIT 2;
-            """;
-
-        List<CovenantSchemaRepairIntent> intents = [];
-
-        await using (SqliteDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false))
+        try
         {
 
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = """
+                SELECT OperationId, EffectDigest, InspectedCatalogDigest, RepairActionCode, TargetTierCode,
+                    CapturedDatasetGeneration, AuthorityEpoch, PhaseCode, Revision
+                FROM covenant_schema_repair_intents
+                WHERE typeof(PhaseCode) <> 'integer' OR PhaseCode NOT IN (5, 6)
+                ORDER BY CreatedAtUtc
+                LIMIT 2;
+                """;
+
+            List<CovenantSchemaRepairIntent> intents = [];
+
+            await using (SqliteDataReader reader = await command
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false))
             {
 
-                intents.Add(
-                    new CovenantSchemaRepairIntent(
-                        Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
-                        new CovenantDigest((byte[])reader.GetValue(1)),
-                        new CovenantDigest((byte[])reader.GetValue(2)),
-                        (CovenantSchemaRepairAction)reader.GetInt32(3),
-                        (GrimoireSchemaTransactionTier)reader.GetInt32(4),
-                        reader.IsDBNull(5) ? null : new Guid((byte[])reader.GetValue(5)),
-                        reader.GetInt64(6),
-                        (CovenantSchemaRepairPhase)reader.GetInt32(7),
-                        reader.GetInt64(8)));
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    Result<CovenantSchemaRepairIntent> parsed = ParseActive(reader);
+
+                    if (parsed.IsFailure)
+                    {
+
+                        return Result<CovenantSchemaRepairIntent?>.Failure(parsed.Error);
+
+                    }
+
+                    intents.Add(parsed.Value);
+
+                }
 
             }
 
+            // Two live intents mean two operations each believe they closed admission, and neither can
+            // safely finish the other's work. That is an operator's problem, not a recovery pass's.
+            return intents.Count > 1
+                ? ReadFailure()
+                : Result<CovenantSchemaRepairIntent?>.Success(intents.FirstOrDefault());
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception)
+        {
+
+            return ReadFailure();
+
         }
 
-        // Two live intents mean two operations each believe they closed admission, and neither can
-        // safely finish the other's work. That is an operator's problem, not a recovery pass's.
-        return intents.Count > 1
-            ? Result<CovenantSchemaRepairIntent?>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.ManualRecoveryRequired,
-                    "More than one Covenant schema repair intent is active."))
-            : Result<CovenantSchemaRepairIntent?>.Success(intents.FirstOrDefault());
+    }
+
+    private static Result<CovenantSchemaRepairIntent> ParseActive(SqliteDataReader reader)
+    {
+
+        if (reader.GetValue(0) is not string rawOperationId
+            || !Guid.TryParseExact(rawOperationId, "D", out Guid operationId)
+            || !string.Equals(
+                rawOperationId,
+                operationId.ToString("D").ToUpperInvariant(),
+                StringComparison.Ordinal)
+            || reader.GetValue(1) is not byte[] { Length: CovenantLimits.DigestBytes } effect
+            || reader.GetValue(2) is not byte[] { Length: CovenantLimits.DigestBytes } catalog
+            || reader.GetValue(3) is not long rawAction
+            || rawAction is < byte.MinValue or > byte.MaxValue
+            || !Enum.IsDefined((CovenantSchemaRepairAction)(byte)rawAction)
+            || reader.GetValue(4) is not long rawTier
+            || rawTier is < int.MinValue or > int.MaxValue
+            || !Enum.IsDefined((GrimoireSchemaTransactionTier)(int)rawTier)
+            || reader.GetValue(6) is not long authorityEpoch
+            || authorityEpoch <= 0
+            || reader.GetValue(7) is not long rawPhase
+            || rawPhase is < byte.MinValue or > byte.MaxValue
+            || (CovenantSchemaRepairPhase)(byte)rawPhase is not CovenantSchemaRepairPhase.Prepared
+                and not CovenantSchemaRepairPhase.CatalogCommitted
+                and not CovenantSchemaRepairPhase.HealthVerified
+                and not CovenantSchemaRepairPhase.ReopenPending
+            || reader.GetValue(8) is not long revision
+            || revision < 0)
+        {
+
+            return IntentFailure();
+
+        }
+
+        Guid? generation;
+
+        if (reader.IsDBNull(5))
+        {
+
+            generation = null;
+
+        }
+        else if (reader.GetValue(5) is byte[] { Length: 16 } rawGeneration)
+        {
+
+            generation = new Guid(rawGeneration);
+
+        }
+        else
+        {
+
+            return IntentFailure();
+
+        }
+
+        CovenantSchemaRepairAction action = (CovenantSchemaRepairAction)(byte)rawAction;
+
+        if (action == CovenantSchemaRepairAction.InstallAbsentCanonicalFamily
+                ? generation is not null
+                : generation is null)
+        {
+
+            return IntentFailure();
+
+        }
+
+        return Result<CovenantSchemaRepairIntent>.Success(
+            new CovenantSchemaRepairIntent(
+                operationId,
+                new CovenantDigest(effect),
+                new CovenantDigest(catalog),
+                action,
+                (GrimoireSchemaTransactionTier)(int)rawTier,
+                generation,
+                authorityEpoch,
+                (CovenantSchemaRepairPhase)(byte)rawPhase,
+                revision));
 
     }
+
+    private static Result<CovenantSchemaRepairIntent?> ReadFailure() =>
+        Result<CovenantSchemaRepairIntent?>.Failure(
+            new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "The Covenant schema-repair journal could not be read safely."));
+
+    private static Result<CovenantSchemaRepairIntent> IntentFailure() =>
+        Result<CovenantSchemaRepairIntent>.Failure(
+            new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "The Covenant schema-repair journal could not be read safely."));
 
     /// <summary>
     /// Commits the <c>Prepared</c> intent that authorizes the first repair statement.

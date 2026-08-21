@@ -421,7 +421,10 @@ public sealed class CovenantSensitiveEgressTests
             attendance,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 7)).Value;
+            CovenantReadAuthorityEpoch.CreateForTests(
+                Installation,
+                runtimeAuthorityGeneration: 1,
+                authorityEpoch: 7)).Value;
 
     private sealed class RecordingJournal : ICovenantDisclosureJournal
     {

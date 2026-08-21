@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
@@ -99,16 +100,47 @@ public sealed class CovenantArtifactErasureAuthorityTests
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, wrongRequirement.Error.Code);
 
-        authority.Advance();
+        CovenantAuthoritySnapshot current = authority.Current!;
+
+        OperatorAuthorityContext differentEpoch = OperatorAuthorityContext.CreateForTests(
+            CovenantAuthorityRequirement.SensitivityRetentionPurge,
+            Guid.Parse(current.InstallationIdentity),
+            lease.Snapshot.RuntimeAuthorityGeneration,
+            current.AuthorityEpoch + 1,
+            current.MasterKeyVersion);
 
         Result<CovenantArtifactErasureAuthority> staleEpoch = CovenantArtifactErasureAuthority.ForOrdinary(
             lease,
-            CovenantErasureAuthorityFixture.OperatorContext(authority),
+            differentEpoch,
             CovenantErasureAuthorityFixture.Issuer(authority));
 
         Assert.True(staleEpoch.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, staleEpoch.Error.Code);
+
+    }
+
+    [Fact]
+    public void Ordinary_authority_rejects_equal_durable_epochs_from_different_runtime_generations()
+    {
+
+        CovenantWriteLease lease = new(new FixedRegistration(runtimeAuthorityGeneration: 1));
+
+        OperatorAuthorityContext context = OperatorAuthorityContext.CreateForTests(
+            CovenantAuthorityRequirement.SensitivityRetentionPurge,
+            Guid.Parse("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"),
+            runtimeAuthorityGeneration: 2,
+            authorityEpoch: 11,
+            masterKeyVersion: 4);
+
+        Result<CovenantArtifactErasureAuthority> result = CovenantArtifactErasureAuthority.ForOrdinary(
+            lease,
+            context,
+            new UnreachableIssuer());
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
 
     }
 
@@ -347,6 +379,49 @@ public sealed class CovenantArtifactErasureAuthorityTests
         _ = Assert.Throws<OverflowException>(() =>
             new CovenantArtifactErasureProgress(ulong.MaxValue, 0, 0, CovenantErasureBlocker.None)
                 .Add(new CovenantArtifactErasureProgress(1, 0, 0, CovenantErasureBlocker.None)));
+
+    }
+
+    private sealed class FixedRegistration(long runtimeAuthorityGeneration) : ICovenantLeaseRegistration
+    {
+
+        public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
+            Guid.Parse("11111111-2222-4333-8444-555555555555"),
+            runtimeAuthorityGeneration,
+            CovenantLeaseKind.Write,
+            CovenantLeaseCoverage.Scoped,
+            CovenantOperationScope.Global,
+            CovenantOperationGateFixture.DatasetGeneration,
+            CapabilityGeneration: 1,
+            AuthorityEpoch: 11,
+            CanonicalSequence: 0,
+            CampaignAvailabilityGeneration: null,
+            CampaignPathRevision: null,
+            AcceleratorEpoch: null,
+            AppliedCampaignDeletionSequence: null,
+            RecoveryOwner: null,
+            CleanupOnlyHistoricalCampaign: false);
+
+        public CancellationToken Revocation => CancellationToken.None;
+
+        public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("The runtime mismatch must be refused before revalidation.");
+
+        public ValueTask ReleaseAsync() => ValueTask.CompletedTask;
+
+    }
+
+    private sealed class UnreachableIssuer : IOperatorAuthorityContextIssuer
+    {
+
+        public Result<OperatorAuthorityContext> Issue(CovenantAuthorityRequirement requirement) =>
+            throw new InvalidOperationException("The runtime mismatch must be refused before issuing authority.");
+
+        public Result<CovenantReadAuthorityEpoch> IssueReadEpoch() =>
+            throw new InvalidOperationException("The runtime mismatch must be refused before issuing a read epoch.");
+
+        public Result Revalidate(OperatorAuthorityContext context) =>
+            throw new InvalidOperationException("The runtime mismatch must be refused before context revalidation.");
 
     }
 

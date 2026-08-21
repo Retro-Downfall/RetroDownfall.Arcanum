@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -8,9 +10,17 @@ using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Operations;
+
+using RetroDownfall.Arcanum.Tests.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -53,7 +63,7 @@ public sealed partial class DataRetentionServiceTests
     [SkippableTheory]
 
     [MemberData(nameof(EveryResetPhase))]
-    public async Task RecoverMutationAsync_FromEveryV3Phase_IsIdempotentAndChangesNothing(
+    public async Task RecoverMutationAsync_FromEveryV3Phase_RunsTheCoordinatorAndCompletes(
         CovenantResetPhase phase)
     {
 
@@ -63,32 +73,26 @@ public sealed partial class DataRetentionServiceTests
 
         LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(operations, phase);
 
-        DataRetentionService service = CreateService(operationStore: operations);
+        DataRetentionService service = CreateService(
+            operationStore: operations,
+            erasureCoordinator: RecoveryCoordinator(operations, operation, phase));
 
-        LongRunningOperationRecoveryResult first = await service.RecoverMutationAsync(
+        LongRunningOperationRecoveryResult result = await service.RecoverMutationAsync(
             (await operations.GetAsync(operation.Id))!,
             CancellationToken.None);
 
-        LongRunningOperationRecoveryResult second = await service.RecoverMutationAsync(
-            (await operations.GetAsync(operation.Id))!,
-            CancellationToken.None);
+        Assert.Equal(LongRunningOperationState.Completed, result.State);
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, first.State);
-
-        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, first.ErrorCode);
-
-        Assert.Equal(first.State, second.State);
-
-        Assert.Equal(first.ErrorCode, second.ErrorCode);
+        Assert.Null(result.ErrorCode);
 
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
-        // The checkpoint is still active and still at the exact phase the crash left it at, so the
-        // next start faces the same durable evidence rather than a phase this pass invented.
+        // The coordinator durably advances every completed storage step. The recovery handler only
+        // reports Completed; the outer reconciler owns the row's terminal transition.
         Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, after.CheckpointVersion);
 
         Assert.Equal(
-            phase,
+            CovenantResetPhase.ReopenedVerified,
             CovenantRecoveryCheckpointCodec
                 .DecodeDataRetentionMutation(after.CheckpointPayload!)
                 .Value
@@ -122,12 +126,14 @@ public sealed partial class DataRetentionServiceTests
 
         RecordingLogger<DataRetentionService> log = new();
 
-        LongRunningOperationRecoveryResult result =
-            await CreateService(operationStore: operations, logger: log).RecoverMutationAsync(
+        LongRunningOperationRecoveryResult result = await CreateService(
+            operationStore: operations,
+            logger: log,
+            erasureCoordinator: RecoveryCoordinator(operations, operation, phase)).RecoverMutationAsync(
                 (await operations.GetAsync(operation.Id))!,
                 CancellationToken.None);
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+        Assert.Equal(LongRunningOperationState.Completed, result.State);
 
         string adopted = Assert.Single(
             log.Messages,
@@ -321,7 +327,7 @@ public sealed partial class DataRetentionServiceTests
     [SkippableTheory]
 
     [MemberData(nameof(EveryResetPhase))]
-    public async Task RecoverFactoryResetAsync_FromEveryV1Phase_ParksWithoutRestartingTheErasure(
+    public async Task RecoverFactoryResetAsync_FromEveryV1Phase_RunsTheCoordinatorAndCompletes(
         CovenantResetPhase phase)
     {
 
@@ -343,30 +349,313 @@ public sealed partial class DataRetentionServiceTests
                     CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
                     phase)));
 
-        DataRetentionService service = CreateService(operationStore: operations);
+        DataRetentionService service = CreateService(
+            operationStore: operations,
+            erasureCoordinator: RecoveryCoordinator(operations, operation, phase));
 
-        LongRunningOperationRecoveryResult first = await service.RecoverFactoryResetAsync(
+        LongRunningOperationRecoveryResult result = await service.RecoverFactoryResetAsync(
             (await operations.GetAsync(operation.Id))!,
             CancellationToken.None);
 
-        LongRunningOperationRecoveryResult second = await service.RecoverFactoryResetAsync(
-            (await operations.GetAsync(operation.Id))!,
-            CancellationToken.None);
-
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, first.State);
-
-        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, first.ErrorCode);
-
-        Assert.Equal(first.State, second.State);
+        Assert.Equal(LongRunningOperationState.Completed, result.State);
 
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
         Assert.Equal(
-            phase,
+            CovenantResetPhase.ReopenedVerified,
             CovenantRecoveryCheckpointCodec
                 .DecodeDataRetentionFactoryReset(after.CheckpointPayload!)
                 .Value
                 .Phase);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(
+        RecoveryDisposition.Rollback,
+        LongRunningOperationState.Failed,
+        ErrorCodes.Covenant.IntegrityFailure)]
+
+    [InlineData(
+        RecoveryDisposition.KeepClosed,
+        LongRunningOperationState.ReconciliationRequired,
+        ErrorCodes.Covenant.ErasureIncomplete)]
+    public async Task RecoverMutationAsync_MapsTheCoordinatorsClosedDisposition(
+        RecoveryDisposition disposition,
+        LongRunningOperationState expectedState,
+        string expectedError)
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedCovenantResetCheckpointAsync(
+            operations,
+            CovenantResetPhase.InventoryPrepared);
+
+        LongRunningOperationRecoveryResult result = await CreateService(
+            operationStore: operations,
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhase.InventoryPrepared,
+                disposition)).RecoverMutationAsync(
+                    (await operations.GetAsync(operation.Id))!,
+                    CancellationToken.None);
+
+        Assert.Equal(expectedState, result.State);
+
+        Assert.Equal(expectedError, result.ErrorCode);
+
+    }
+
+    [SkippableFact]
+    public async Task RecoverFactoryResetAsync_RequiresTheCurrentLeaseOwner()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedCheckpointAsync(
+            operations,
+            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+            payload: null,
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
+                new DataRetentionFactoryResetCheckpointV1(
+                    DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                    id,
+                    CovenantResetEffect,
+                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                    CovenantResetPhase.InventoryPrepared)));
+
+        LongRunningOperation unowned = (await operations.GetAsync(operation.Id))! with
+        {
+
+            LeaseOwner = " ",
+
+        };
+
+        LongRunningOperationRecoveryResult result = await CreateService(
+            operationStore: operations,
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhase.InventoryPrepared)).RecoverFactoryResetAsync(
+                    unowned,
+                    CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
+
+    }
+
+    public enum RecoveryDisposition
+    {
+
+        Commit,
+
+        Rollback,
+
+        KeepClosed,
+
+    }
+
+    private static CovenantErasureCoordinator RecoveryCoordinator(
+        LongRunningOperationStore operations,
+        LongRunningOperation operation,
+        CovenantResetPhase phase,
+        RecoveryDisposition disposition = RecoveryDisposition.Commit)
+    {
+
+        Result<CovenantErasureCheckpointState> checkpoint = operation.Kind
+            == LongRunningOperationKinds.DataRetentionFactoryReset
+            ? CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
+                operation.Id,
+                operation.CheckpointPayload!)
+            : CovenantErasureCheckpointState.FromMutationCheckpoint(
+                operation.Id,
+                operation.CheckpointPayload!,
+                out _);
+
+        Assert.True(checkpoint.IsSuccess);
+
+        Assert.Equal(phase, checkpoint.Value.Phase);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        gate.AdoptDurableRecoveryOwner(
+            checkpoint.Value.Owner,
+            scope: null,
+            cleanupOnlyHistoricalCampaign: false);
+
+        return new CovenantErasureCoordinator(
+            new LongRunningOperationCoordinator(operations, TimeProvider.System),
+            operations,
+            gate,
+            new RecoveryArtifactKernel(),
+            new RecoveryManagedFileKernel(),
+            new RecoveryInventory(disposition),
+            new RecoveryTransition(disposition),
+            new RecoveryWriterLifecycle(),
+            TimeProvider.System,
+            NullLogger<CovenantErasureCoordinator>.Instance);
+
+    }
+
+    private sealed class RecoveryInventory(RecoveryDisposition disposition)
+        : ICovenantErasureInventorySource
+    {
+
+        public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation operation,
+            Guid datasetGeneration,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                disposition == RecoveryDisposition.Rollback
+                    ? Result<CovenantErasureInventorySummary>.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.IntegrityFailure,
+                            "The recovery inventory was refused."))
+                    : Result<CovenantErasureInventorySummary>.Success(
+                        new CovenantErasureInventorySummary(
+                            0,
+                            0,
+                            new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact))));
+
+        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
+            Guid datasetGeneration,
+            Guid? afterLabelId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<CovenantDatabaseErasureBatch>.Success(
+                    new CovenantDatabaseErasureBatch(afterLabelId, true, page: null)));
+
+        public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
+            Guid operationId,
+            Guid? afterLabelId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<CovenantManagedFileErasureBatch>.Success(
+                    new CovenantManagedFileErasureBatch(afterLabelId, true, [])));
+
+        public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<CovenantDisclosureExposure>.Success(
+                    new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact)));
+
+    }
+
+    private sealed class RecoveryArtifactKernel : ICovenantProtectedArtifactErasureKernel
+    {
+
+        public ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(
+            CovenantProtectedArtifactErasurePage page,
+            CovenantArtifactErasureAuthority authority,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(
+                Result<CovenantArtifactErasureProgress>.Success(
+                    new CovenantArtifactErasureProgress(0, 0, 0, CovenantErasureBlocker.None)));
+
+    }
+
+    private sealed class RecoveryManagedFileKernel : ICovenantManagedFileErasureKernel
+    {
+
+        public ValueTask<Result<CovenantArtifactErasureProgress>> EraseAsync(
+            CovenantManagedFileErasureRequest request,
+            CovenantArtifactErasureAuthority authority,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(
+                Result<CovenantArtifactErasureProgress>.Success(
+                    new CovenantArtifactErasureProgress(0, 0, 0, CovenantErasureBlocker.None)));
+
+    }
+
+    private sealed class RecoveryWriterLifecycle : ICovenantDisclosureWriterLifecycle
+    {
+
+        public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result.Success());
+
+    }
+
+    private sealed class RecoveryTransition(RecoveryDisposition disposition)
+        : ICovenantErasureTransition
+    {
+
+        public Task<Result<Guid>> ApplyCanonicalErasureAsync(
+            CovenantExclusiveOperation operation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                disposition == RecoveryDisposition.KeepClosed
+                    ? Result<Guid>.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.ErasureIncomplete,
+                            "The recovery transition was refused."))
+                    : Result<Guid>.Success(Guid.Parse("99999999-9999-4999-8999-999999999999")));
+
+        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result> TruncateWalAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result> CompactAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result> InitializeAcceleratorAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<CovenantVerifiedCandidateState>.Success(Candidate()));
+
+        public Task<Result> PublishCommittedAsync(
+            ICovenantExclusiveOperationLease lease,
+            CovenantVerifiedCandidateState candidate,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        private static CovenantVerifiedCandidateState Candidate() =>
+            new(
+                new CovenantCandidateDatasetState(
+                    Guid.Parse("99999999-9999-4999-8999-999999999999"),
+                    0,
+                    0,
+                    null,
+                    null,
+                    0,
+                    0,
+                    1,
+                    CovenantFtsRebuildState.FullRebuildRequired,
+                    1,
+                    new byte[32],
+                    1),
+                new CovenantCandidateAuthorityState(
+                    "retention-recovery-test",
+                    1,
+                    1,
+                    new byte[32],
+                    1,
+                    CovenantHostToolsState.Clean,
+                    null),
+                new CovenantCandidateCapabilityState(0, 0, false));
 
     }
 
@@ -436,7 +725,7 @@ public sealed partial class DataRetentionServiceTests
                 operation.PublicSummary,
                 now));
 
-        return operation;
+        return (await operations.GetAsync(operation.Id))!;
 
     }
 

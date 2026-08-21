@@ -387,9 +387,9 @@ public sealed class CovenantArtifactErasureAuthority
     /// <remarks>
     /// The operator context must have been issued for
     /// <see cref="CovenantAuthorityRequirement.SensitivityRetentionPurge"/> and must agree with the
-    /// lease about the authority epoch. That is the only fact the two values actually share: the
-    /// snapshot exposes no installation identity and no master-key version, and aliasing a different
-    /// generation field to manufacture a second comparison would be a check that proves nothing.
+    /// lease about both the in-memory runtime generation and the durable authority epoch. The runtime
+    /// generation invalidates borrowed capabilities after a retired owner reopens the same durable
+    /// authority, while the durable epoch keeps the database authority transition in the join.
     /// </remarks>
     public static Result<CovenantArtifactErasureAuthority> ForOrdinary(
         CovenantWriteLease lease,
@@ -413,13 +413,14 @@ public sealed class CovenantArtifactErasureAuthority
 
         }
 
-        if (lease.Snapshot.AuthorityEpoch != operatorContext.AuthorityEpoch)
+        if (lease.Snapshot.RuntimeAuthorityGeneration != operatorContext.RuntimeAuthorityGeneration
+            || lease.Snapshot.AuthorityEpoch != operatorContext.AuthorityEpoch)
         {
 
             return Result<CovenantArtifactErasureAuthority>.Failure(
                 new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
-                    "The write lease and the operator authority were issued under different authority epochs."));
+                    "The write lease and the operator authority were issued under different authority generations."));
 
         }
 

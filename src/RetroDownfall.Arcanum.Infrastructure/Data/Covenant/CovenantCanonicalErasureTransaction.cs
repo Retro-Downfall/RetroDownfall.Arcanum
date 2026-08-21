@@ -33,17 +33,6 @@ internal interface ICovenantCanonicalErasure
         CovenantExclusiveOperation operation,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Reads back the candidate dataset generation a previous pass already committed, or
-    /// <see cref="Guid.Empty"/> when no dataset row exists.
-    /// </summary>
-    /// <remarks>
-    /// An empty generation is reported rather than turned into a failure here. The caller is the only
-    /// component that knows whether a missing dataset row is a contradiction — a resumed erasure past
-    /// its canonical phase — or simply a catalog that never had one.
-    /// </remarks>
-    Task<Result<Guid>> ReadCandidateDatasetGenerationAsync(CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -184,63 +173,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         {
 
             return await ApplyOnConnectionAsync(connection, operation, cancellationToken).ConfigureAwait(false);
-
-        }
-
-    }
-
-    public async Task<Result<Guid>> ReadCandidateDatasetGenerationAsync(CancellationToken cancellationToken)
-    {
-
-        SqliteConnection connection;
-
-        try
-        {
-
-            connection = await _connections.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (SqliteException failed)
-        {
-
-            return Failure(failed, "read the committed dataset generation");
-
-        }
-
-        await using (connection.ConfigureAwait(false))
-        {
-
-            try
-            {
-
-                await _initializer
-                    .InitializeAsync(connection, CovenantSqliteConnectionMode.ReadOnly, cancellationToken)
-                    .ConfigureAwait(false);
-
-                await using SqliteCommand command = connection.CreateCommand();
-
-                command.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
-
-                object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-
-                return Result<Guid>.Success(value is byte[] { Length: 16 } bytes ? new Guid(bytes) : Guid.Empty);
-
-            }
-            catch (SqliteException failed)
-            {
-
-                return Failure(failed, "read the committed dataset generation");
-
-            }
-            catch (InvalidOperationException failed)
-            {
-
-                return Result<Guid>.Failure(
-                    new Error(
-                        ErrorCodes.Covenant.IntegrityFailure,
-                        $"The Covenant dataset generation could not be read: {failed.Message}"));
-
-            }
 
         }
 

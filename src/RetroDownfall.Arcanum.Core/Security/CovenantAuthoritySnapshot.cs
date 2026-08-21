@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Security;
@@ -48,9 +49,17 @@ public enum CovenantHostToolsState : byte
 /// so two separate escapes cannot be collapsed into a single record.</para>
 /// </remarks>
 public sealed record CovenantAuthoritySnapshot(
+    long RuntimeAuthorityGeneration,
     string InstallationIdentity,
     long AuthorityEpoch,
     uint MasterKeyVersion,
     long RecoveryEnvelopeEpoch,
     CovenantHostToolsState HostToolsState,
-    string? TransitionId);
+    string? TransitionId)
+{
+
+    public long RuntimeAuthorityGeneration { get; init; } = CovenantValidation.RequirePositive(
+        RuntimeAuthorityGeneration,
+        nameof(RuntimeAuthorityGeneration));
+
+}

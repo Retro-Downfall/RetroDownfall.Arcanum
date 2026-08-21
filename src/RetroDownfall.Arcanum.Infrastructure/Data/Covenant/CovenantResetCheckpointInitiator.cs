@@ -29,6 +29,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 internal sealed class CovenantResetCheckpointInitiator(
     ILongRunningOperationStore operations,
     ICovenantErasureEffectDigestCalculator effectDigests,
+    CovenantHealthyCatalogErasureGuard healthyCatalog,
+    ICovenantOperationGate operationGate,
     TimeProvider timeProvider)
 {
 
@@ -144,13 +146,51 @@ internal sealed class CovenantResetCheckpointInitiator(
     /// <summary>
     /// Commits the <c>InventoryPrepared</c> checkpoint of a healthy-catalog factory erasure.
     /// </summary>
-    internal Task<Result<GateAdmission>> PrepareFactoryErasureInventoryAsync(
+    internal async Task<Result<GateAdmission>> PrepareFactoryErasureInventoryAsync(
         LongRunningOperation operation,
         string ownerId,
         CovenantErasureEffectDigestInput effect,
         Guid? requestedOperationId,
-        CancellationToken cancellationToken) =>
-        PrepareAsync(
+        CancellationToken cancellationToken)
+    {
+
+        Result<CovenantInstallationReadLease> acquired = await operationGate
+            .AcquireInstallationReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+
+            return Result<GateAdmission>.Failure(acquired.Error);
+
+        }
+
+        await using CovenantInstallationReadLease readLease = acquired.Value;
+
+        Result healthy = await healthyCatalog
+            .RequireHealthyAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (healthy.IsFailure)
+        {
+
+            return Result<GateAdmission>.Failure(healthy.Error);
+
+        }
+
+        Result current = await readLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+        if (current.IsFailure)
+        {
+
+            return Result<GateAdmission>.Failure(current.Error);
+
+        }
+
+        // The installation read lease stays live through digest derivation and the successful
+        // checkpoint commit. A competing exclusive acquisition closes admission and waits for this
+        // method to return, so it cannot replace the catalog between proof and durable preparation.
+        return await PrepareAsync(
             operation,
             ownerId,
             effect,
@@ -165,7 +205,9 @@ internal sealed class CovenantResetCheckpointInitiator(
                     CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
                     CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
                     CovenantResetPhaseMachine.First)),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+
+    }
 
     private async Task<Result<GateAdmission>> PrepareAsync(
         LongRunningOperation operation,

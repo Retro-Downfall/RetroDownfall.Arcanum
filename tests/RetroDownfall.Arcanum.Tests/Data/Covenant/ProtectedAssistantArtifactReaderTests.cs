@@ -293,6 +293,7 @@ public sealed class ProtectedAssistantArtifactReaderTests
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             Guid.NewGuid(),
+            RuntimeAuthorityGeneration: 1,
             CovenantLeaseKind.InstallationRead,
             CovenantLeaseCoverage.Installation,
             null,

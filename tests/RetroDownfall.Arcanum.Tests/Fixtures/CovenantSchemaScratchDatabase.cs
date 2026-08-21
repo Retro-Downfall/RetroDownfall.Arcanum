@@ -185,6 +185,31 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     }
 
     /// <summary>
+    /// Installs the core metadata table and one complete, inspector-proven Covenant catalog.
+    /// </summary>
+    internal async Task InstallHealthyCovenantCatalogAsync(
+        bool withAccelerator,
+        CancellationToken cancellationToken)
+    {
+
+        await InstallCoreObjectsAsync(["grimoire_feature_schemas"], cancellationToken);
+
+        await InstallCanonicalAsync(cancellationToken);
+
+        await RecordHealthyTierAsync(GrimoireSchemaManifests.CovenantCanonical, cancellationToken);
+
+        if (withAccelerator)
+        {
+
+            await InstallAcceleratorAsync(cancellationToken);
+
+            await RecordHealthyTierAsync(GrimoireSchemaManifests.CovenantAccelerator, cancellationToken);
+
+        }
+
+    }
+
+    /// <summary>
     /// Opens a second initialized connection to the same scratch file.
     /// </summary>
     /// <remarks>
@@ -489,6 +514,33 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
             database.OpenUninitializedConnectionAsync(cancellationToken);
 
+        public async Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
+        {
+
+            SqliteConnection connection = new(
+                CovenantMaintenanceConnectionFactory
+                    .ReadOnly(database.DatabasePath, Passphrase)
+                    .ToString());
+
+            try
+            {
+
+                await connection.OpenAsync(cancellationToken);
+
+                return connection;
+
+            }
+            catch
+            {
+
+                await connection.DisposeAsync();
+
+                throw;
+
+            }
+
+        }
+
         public async Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken)
         {
 
@@ -559,6 +611,51 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
                 path,
                 Passphrase,
                 cancellationToken);
+
+    }
+
+    private async Task RecordHealthyTierAsync(
+        GrimoireSchemaManifest manifest,
+        CancellationToken cancellationToken)
+    {
+
+        GrimoireSchemaManifestInspector inspector =
+            new(GrimoireSchemaTierOwnershipRegistry.CreateDefault());
+
+        GrimoireSchemaInspectionResult inspected = await inspector
+            .InspectAsync(Connection, transaction: null, manifest, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!inspected.IsValid || inspected.InstalledCatalogFingerprint is null)
+        {
+
+            throw new InvalidOperationException(
+                "The scratch Covenant catalog was not healthy before metadata recording.");
+
+        }
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO grimoire_feature_schemas (
+                FamilyCode, TransactionTierCode, SchemaVersion, SourceDefinitionFingerprint,
+                InstalledCatalogFingerprint, InstalledAtUtc, HealthCode, HealthDetailCode)
+            VALUES ($family, $tier, $version, $source, $installed, $installedAt, 0, NULL);
+            """;
+
+        _ = command.Parameters.AddWithValue("$family", (long)manifest.Family);
+
+        _ = command.Parameters.AddWithValue("$tier", (long)manifest.TransactionTier);
+
+        _ = command.Parameters.AddWithValue("$version", manifest.Version);
+
+        _ = command.Parameters.AddWithValue("$source", manifest.SourceDefinitionFingerprint);
+
+        _ = command.Parameters.AddWithValue("$installed", inspected.InstalledCatalogFingerprint);
+
+        _ = command.Parameters.AddWithValue("$installedAt", "2026-08-20T00:00:00.0000000Z");
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
     }
 

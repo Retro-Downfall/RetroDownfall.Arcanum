@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -17,17 +18,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// swapping safe. Publishing while readers were admitted would let a request that started under the old
 /// generation finish under the new one.</para>
 ///
-/// <para>The new generation is derived first and swapped second. A derivation failure therefore leaves
-/// the previous generation intact and the gate closed, which is recoverable; a swap that half-succeeded
-/// would not be.</para>
+/// <para>The new generation is derived first and swapped second. Any failure conditionally retires
+/// the observed runtime generation while preserving the newest availability and exact recovery owner;
+/// a competing complete authority winner is left untouched. Recovery can then derive again from the
+/// resident root while the same gate closure remains closed.</para>
 /// </remarks>
 internal sealed class CovenantAuthorityTransitionPublisher(
+    CovenantRuntimeGenerationProvider runtime,
     CovenantEnvelopeMasterKeyProvider keys,
-    CovenantAuthoritySnapshotProvider authority) : ICovenantAuthorityTransitionPublisher
+    CovenantAvailability availability)
+    : ICovenantAuthorityTransitionPublisher, ICovenantCommittedTransitionPublisher
 {
 
     /// <inheritdoc/>
-    public async ValueTask<Result> PublishCommittedAsync(
+    public ValueTask<Result> PublishCommittedAsync(
         CovenantCommittedAuthorityTransition transition,
         ICovenantExclusiveOperationLease lease,
         CancellationToken cancellationToken)
@@ -35,60 +39,191 @@ internal sealed class CovenantAuthorityTransitionPublisher(
 
         ArgumentNullException.ThrowIfNull(transition);
 
+        return PublishCommittedAsync(
+            Result<CovenantCommittedAuthorityTransition>.Success(transition),
+            lease,
+            runtime.Current,
+            cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Publishes against the exact runtime tuple the erasure adapter captured before projection.
+    /// </summary>
+    public async ValueTask<Result> PublishCommittedAsync(
+        Result<CovenantCommittedAuthorityTransition> transition,
+        ICovenantExclusiveOperationLease lease,
+        CovenantRuntimeGenerationState expected,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(transition);
+
         ArgumentNullException.ThrowIfNull(lease);
 
-        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(expected);
 
-        Result live = await lease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+        long observedRuntimeGeneration = lease.Snapshot.RuntimeAuthorityGeneration;
 
-        if (!live.IsSuccess)
+        if (lease.Snapshot.RecoveryOwner is not { } recoveryOwner)
         {
-            return live;
-        }
 
-        CovenantAuthoritySnapshot? current = authority.Current;
-
-        if (current is not null
-            && !string.Equals(current.InstallationIdentity, transition.InstallationIdentity, StringComparison.Ordinal))
-        {
             return Result.Failure(
                 new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "A committed transition cannot change the installation identity."));
+                    ErrorCodes.Covenant.ForbiddenAuthority,
+                    "A committed authority transition requires an exact exclusive recovery owner."));
+
         }
+
+        if (expected.RuntimeAuthorityGeneration != observedRuntimeGeneration)
+        {
+            _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+            return Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.StaleSnapshot,
+                    "The exclusive lease belongs to an older Covenant runtime generation."));
+        }
+
+        if (transition.IsFailure)
+        {
+
+            _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+            return Result.Failure(transition.Error);
+
+        }
+
+        CovenantCommittedAuthorityTransition committed = transition.Value;
+
+        CovenantPreparedEnvelopeKeyGeneration? prepared = null;
+
+        try
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Result live = await lease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!live.IsSuccess)
+            {
+                _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+                return live;
+            }
+
+            CovenantAuthoritySnapshot? current = expected.ActiveAuthority
+                ?? (expected.AuthorityRetired && expected.RecoveryOwner == recoveryOwner
+                    ? expected.AuthoritySlot
+                    : null);
+
+            if (current is not null
+                && !string.Equals(current.InstallationIdentity, committed.InstallationIdentity, StringComparison.Ordinal))
+            {
+                Result failure = Result.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "A committed transition cannot change the installation identity."));
+
+                _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+                return failure;
+            }
 
         // Monotonic or nothing. A transition that moved a counter backwards would make a replayed
         // token from an earlier generation authenticate again, which is the exact failure every one of
         // these counters exists to prevent.
-        if (current is not null
-            && (transition.AuthorityEpoch < current.AuthorityEpoch
-                || transition.MasterKeyVersion < current.MasterKeyVersion
-                || transition.RecoveryEnvelopeEpoch < current.RecoveryEnvelopeEpoch))
-        {
-            return Result.Failure(
-                new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "A committed transition cannot move an authority counter backwards."));
+            if (current is not null
+                && (committed.AuthorityEpoch < current.AuthorityEpoch
+                    || committed.MasterKeyVersion < current.MasterKeyVersion
+                    || (expected.CanonicalEnvelopeEpoch is { } canonicalEnvelopeEpoch
+                        && committed.CanonicalEnvelopeEpoch < canonicalEnvelopeEpoch)
+                    || committed.RecoveryEnvelopeEpoch < current.RecoveryEnvelopeEpoch))
+            {
+                Result failure = Result.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "A committed transition cannot move an authority counter backwards."));
+
+                _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+                return failure;
+            }
+
+            Result<CovenantHealthTransition> healthTransition = ResolveHealthTransition(
+                recoveryOwner.Operation);
+
+            if (!healthTransition.IsSuccess)
+            {
+                _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+                return healthTransition.Error;
+            }
+
+            Result<CovenantAvailabilitySnapshot> built = availability.BuildCommittedTransition(
+                expected.Availability,
+                committed.Capability,
+                healthTransition.Value);
+
+            if (!built.IsSuccess)
+            {
+                _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+                return built.Error;
+            }
+
+            Result<CovenantPreparedEnvelopeKeyGeneration> derived = keys.PrepareRekey(committed);
+
+            if (!derived.IsSuccess)
+            {
+                _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+                return derived.Error;
+            }
+
+            prepared = derived.Value;
+
+            Result published = lease.ExecuteWhileHeld(
+                () => runtime.PublishCommitted(expected, prepared!, committed, built.Value));
+
+            if (!published.IsSuccess)
+            {
+                _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+            }
+
+            return published;
+
         }
-
-        Result rekeyed = keys.Rekey(transition);
-
-        if (!rekeyed.IsSuccess)
+        catch
         {
-            return rekeyed;
+
+            _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
+
+            throw;
+
         }
+        finally
+        {
 
-        authority.Publish(
-            new CovenantAuthoritySnapshot(
-                transition.InstallationIdentity,
-                transition.AuthorityEpoch,
-                transition.MasterKeyVersion,
-                transition.RecoveryEnvelopeEpoch,
-                current?.HostToolsState ?? CovenantHostToolsState.Clean,
-                current?.TransitionId));
+            prepared?.Dispose();
 
-        return Result.Success();
+        }
 
     }
+
+    private static Result<CovenantHealthTransition> ResolveHealthTransition(
+        CovenantExclusiveOperation operation) =>
+        operation switch
+        {
+            CovenantExclusiveOperation.CovenantReset => CovenantHealthTransition.Reset,
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure => CovenantHealthTransition.Reset,
+            CovenantExclusiveOperation.BackupRestore => CovenantHealthTransition.Restore,
+            CovenantExclusiveOperation.CovenantFamilyReinitialize => CovenantHealthTransition.FamilyReinitialize,
+            CovenantExclusiveOperation.SchemaRepair => CovenantHealthTransition.SchemaRepair,
+            _ => Result<CovenantHealthTransition>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ForbiddenAuthority,
+                    "This exclusive operation cannot publish a Covenant authority transition.")),
+        };
 
 }

@@ -178,6 +178,8 @@ public sealed class CovenantLeasedServiceResultTests
     private sealed class FakeExclusiveLease : FakeLease, ICovenantExclusiveOperationLease
     {
 
+        public Result ExecuteWhileHeld(Func<Result> callback) => callback();
+
         public ValueTask<Result> CompleteAsync(
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken) =>

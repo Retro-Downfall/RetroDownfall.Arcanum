@@ -27,6 +27,12 @@ internal enum CovenantSchemaRepairStartupRecoveryOutcome : byte
 }
 
 /// <summary>
+/// The exact effect-free journal decision prepared before any protected startup recovery acts.
+/// </summary>
+internal sealed record CovenantSchemaRepairStartupRecoveryPreparation(
+    CovenantSchemaRepairIntent? Intent);
+
+/// <summary>
 /// The sole pre-readiness resumer of an interrupted Covenant schema repair.
 /// </summary>
 /// <remarks>
@@ -38,10 +44,17 @@ internal enum CovenantSchemaRepairStartupRecoveryOutcome : byte
 internal interface ICovenantSchemaRepairStartupRecovery
 {
 
-    Task<Result<CovenantSchemaRepairStartupRecoveryOutcome>> RecoverBeforeReadinessAsync(
+    Task<Result<CovenantSchemaRepairStartupRecoveryPreparation>> PrepareBeforeEffectsAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         SqliteConnection connection,
+        CancellationToken cancellationToken);
+
+    Task<Result<CovenantSchemaRepairStartupRecoveryOutcome>> RecoverPreparedAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        SqliteConnection connection,
+        CovenantSchemaRepairStartupRecoveryPreparation preparation,
         CancellationToken cancellationToken);
 
 }
@@ -78,7 +91,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
     private readonly TimeProvider _time = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
-    public async Task<Result<CovenantSchemaRepairStartupRecoveryOutcome>> RecoverBeforeReadinessAsync(
+    public async Task<Result<CovenantSchemaRepairStartupRecoveryPreparation>> PrepareBeforeEffectsAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         SqliteConnection connection,
@@ -98,15 +111,15 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         if (active.IsFailure)
         {
 
-            return Kept();
+            return Result<CovenantSchemaRepairStartupRecoveryPreparation>.Failure(active.Error);
 
         }
 
         if (active.Value is not { } intent)
         {
 
-            return Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
-                CovenantSchemaRepairStartupRecoveryOutcome.NoActiveJournal);
+            return Result<CovenantSchemaRepairStartupRecoveryPreparation>.Success(
+                new CovenantSchemaRepairStartupRecoveryPreparation(Intent: null));
 
         }
 
@@ -122,7 +135,42 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         catch (InvalidOperationException)
         {
 
-            return Kept();
+            return PreparationFailure();
+
+        }
+        catch (ArgumentException)
+        {
+
+            return PreparationFailure();
+
+        }
+
+        return Result<CovenantSchemaRepairStartupRecoveryPreparation>.Success(
+            new CovenantSchemaRepairStartupRecoveryPreparation(intent));
+
+    }
+
+    public async Task<Result<CovenantSchemaRepairStartupRecoveryOutcome>> RecoverPreparedAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        SqliteConnection connection,
+        CovenantSchemaRepairStartupRecoveryPreparation preparation,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentNullException.ThrowIfNull(preparation);
+
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        if (preparation.Intent is not { } intent)
+        {
+
+            return Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
+                CovenantSchemaRepairStartupRecoveryOutcome.NoActiveJournal);
 
         }
 
@@ -290,6 +338,34 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
     }
 
+    /// <summary>
+    /// Compatibility seam for the focused journal tests. Startup composition uses the two explicit
+    /// passes above so protected effects cannot begin before every durable owner is resolved.
+    /// </summary>
+    internal async Task<Result<CovenantSchemaRepairStartupRecoveryOutcome>> RecoverBeforeReadinessAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await PrepareBeforeEffectsAsync(
+            heldInstallationLock,
+            guardedDirectory,
+            connection,
+            cancellationToken).ConfigureAwait(false);
+
+        return prepared.IsFailure
+            ? Result<CovenantSchemaRepairStartupRecoveryOutcome>.Failure(prepared.Error)
+            : await RecoverPreparedAsync(
+                heldInstallationLock,
+                guardedDirectory,
+                connection,
+                prepared.Value,
+                cancellationToken).ConfigureAwait(false);
+
+    }
+
     private async Task<Result<CovenantSchemaRepairIntent?>> AdvanceAsync(
         SqliteConnection connection,
         CovenantSchemaRepairIntent intent,
@@ -352,5 +428,11 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
     private static Result<CovenantSchemaRepairStartupRecoveryOutcome> Kept() =>
         Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
             CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed);
+
+    private static Result<CovenantSchemaRepairStartupRecoveryPreparation> PreparationFailure() =>
+        Result<CovenantSchemaRepairStartupRecoveryPreparation>.Failure(
+            new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "Covenant schema-repair ownership could not be reconstructed safely."));
 
 }

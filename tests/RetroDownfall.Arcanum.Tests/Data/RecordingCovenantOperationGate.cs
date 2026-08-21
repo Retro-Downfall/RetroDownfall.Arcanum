@@ -158,6 +158,11 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         CancellationToken cancellationToken) =>
         Refuse<CovenantExclusiveLease>("exclusive");
 
+    public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        Refuse<CovenantExclusiveLease>("resume-or-acquire-exclusive");
+
     public ValueTask<Result<CovenantCampaignExclusiveLease>> ResumeCampaignExclusiveAsync(
         Guid campaignId,
         CovenantExclusiveRecoveryOwner owner,
@@ -231,6 +236,7 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             RegistrationId: Guid.NewGuid(),
+            RuntimeAuthorityGeneration: 1,
             Kind: kind,
             Coverage: scope is null
                 ? CovenantLeaseCoverage.Installation

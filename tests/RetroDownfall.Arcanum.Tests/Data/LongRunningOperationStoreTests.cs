@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -363,6 +364,44 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(heartbeatAt, persisted.HeartbeatAt);
 
         Assert.Equal(leaseExpiresAt, persisted.LeaseExpiresAt);
+
+    }
+
+    /// <summary>
+    /// A destructive Covenant transition drains the operation ledger's scoped handle before it
+    /// replaces the Grimoire, and the next checkpoint reopens that same connection object against
+    /// the installed candidate.
+    /// </summary>
+    [SkippableFact]
+    public async Task CovenantDrain_ClosesTheScopedLedgerHandle_AndTheNextReadReopensIt()
+    {
+
+        RequireSqlCipher();
+
+        CovenantConnectionDrain drain = new();
+
+        using LongRunningOperationStore store = new(_db!, drain);
+
+        LongRunningOperation operation = await CreateAsync(
+            store,
+            new DateTimeOffset(2026, 8, 20, 12, 0, 0, TimeSpan.Zero));
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        Assert.Equal(System.Data.ConnectionState.Open, connection.State);
+
+        Result drained = await drain.DrainAsync(CancellationToken.None);
+
+        Assert.True(drained.IsSuccess, drained.Error.Message);
+
+        Assert.Equal(System.Data.ConnectionState.Closed, connection.State);
+
+        LongRunningOperation reopened = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(operation.Id, CancellationToken.None));
+
+        Assert.Equal(operation.Id, reopened.Id);
+
+        Assert.Equal(System.Data.ConnectionState.Open, connection.State);
 
     }
 
@@ -876,6 +915,99 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.True(retentionLease.Acquired);
 
         Assert.False(unrelatedLease.Acquired);
+
+    }
+
+    [SkippableFact]
+    public async Task CovenantMaintenanceAttention_IsClaimableOnlyForTheTwoCovenantRetentionKinds()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!);
+
+        DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation mutation = await store.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionMutation,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                "Resume a Covenant reset.",
+                now));
+
+        LongRunningOperation factory = await store.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Resume a Covenant factory erasure.",
+                now));
+
+        LongRunningOperation prune = await store.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Do not adopt a prune as Covenant maintenance.",
+                now));
+
+        LongRunningOperation unrelated = await CreateAsync(store, now);
+
+        foreach (LongRunningOperation operation in new[] { mutation, factory, prune, unrelated })
+        {
+
+            LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
+                operation.Id,
+                "failed-disposition-owner",
+                now,
+                now.AddMinutes(1));
+
+            Assert.True(lease.Acquired);
+
+            Assert.True(
+                await store.TryTransitionAsync(
+                    operation.Id,
+                    lease.Operation.Revision,
+                    "failed-disposition-owner",
+                    LongRunningOperationState.ReconciliationRequired,
+                    now.AddSeconds(1),
+                    ErrorCodes.Covenant.MaintenanceFailed));
+
+        }
+
+        IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
+            now.AddSeconds(2),
+            10);
+
+        Assert.Contains(recoverable, operation => operation.Id == mutation.Id);
+
+        Assert.Contains(recoverable, operation => operation.Id == factory.Id);
+
+        Assert.DoesNotContain(recoverable, operation => operation.Id == prune.Id);
+
+        Assert.DoesNotContain(recoverable, operation => operation.Id == unrelated.Id);
+
+        Assert.True((await store.TryAcquireLeaseAsync(
+            mutation.Id,
+            "recovery-owner",
+            now.AddSeconds(2),
+            now.AddMinutes(2))).Acquired);
+
+        Assert.True((await store.TryAcquireLeaseAsync(
+            factory.Id,
+            "recovery-owner",
+            now.AddSeconds(2),
+            now.AddMinutes(2))).Acquired);
+
+        Assert.False((await store.TryAcquireLeaseAsync(
+            prune.Id,
+            "recovery-owner",
+            now.AddSeconds(2),
+            now.AddMinutes(2))).Acquired);
+
+        Assert.False((await store.TryAcquireLeaseAsync(
+            unrelated.Id,
+            "recovery-owner",
+            now.AddSeconds(2),
+            now.AddMinutes(2))).Acquired);
 
     }
 

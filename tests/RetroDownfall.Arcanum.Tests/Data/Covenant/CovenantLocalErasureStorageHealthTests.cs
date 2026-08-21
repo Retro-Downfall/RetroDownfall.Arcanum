@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
@@ -382,23 +383,51 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
 
+        await erased.SeedPublicationStateAsync(Token);
+
         Result<CovenantVerifiedCandidateState> proven = await erased.ProveAsync(Token);
 
         Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
 
         CovenantVerifiedCandidateState state = proven.Value;
 
-        Assert.Equal(erased.CandidateGeneration, state.Dataset.DatasetGeneration);
+        Assert.Equal(ErasedGrimoire.PublishedDatasetGeneration, state.Dataset.DatasetGeneration);
 
-        Assert.Equal(32, state.Dataset.EnvelopeMasterKeyFingerprint.Length);
+        Assert.Equal(17, state.Dataset.CanonicalSearchSequence);
 
-        Assert.True(state.Dataset.EnvelopeKeyEpoch > 0);
+        Assert.Equal(4, state.Dataset.CoreCampaignDeletionSequence);
 
-        Assert.Equal(32, state.Authority.CurrentMasterKeyFingerprint.Length);
+        Assert.Equal(ErasedGrimoire.AppliedDatasetGeneration, state.Dataset.AppliedDatasetGeneration);
 
-        Assert.True(state.Authority.AuthorityEpoch > 0);
+        Assert.Equal(13, state.Dataset.AppliedSearchSequence);
 
-        Assert.NotEmpty(state.Authority.InstallationIdentity);
+        Assert.Equal(4, state.Dataset.AppliedCampaignDeletionSequence);
+
+        Assert.Equal(2, state.Dataset.AppliedSessionDeletionSequence);
+
+        Assert.Equal((ulong)29, state.Dataset.AcceleratorEpoch);
+
+        Assert.Equal(CovenantFtsRebuildState.Rebuilding, state.Dataset.RebuildState);
+
+        Assert.Equal(7, state.Dataset.EnvelopeMasterKeyVersion);
+
+        Assert.Equal(Enumerable.Repeat((byte)0xC1, 32), state.Dataset.EnvelopeMasterKeyFingerprint);
+
+        Assert.Equal(31, state.Dataset.EnvelopeKeyEpoch);
+
+        Assert.Equal("verified-installation", state.Authority.InstallationIdentity);
+
+        Assert.Equal(23, state.Authority.AuthorityEpoch);
+
+        Assert.Equal(7, state.Authority.CurrentMasterKeyVersion);
+
+        Assert.Equal(Enumerable.Repeat((byte)0xC1, 32), state.Authority.CurrentMasterKeyFingerprint);
+
+        Assert.Equal(37, state.Authority.RecoveryEnvelopeEpoch);
+
+        Assert.Equal(CovenantHostToolsState.HostToolsTainted, state.Authority.HostToolsState);
+
+        Assert.Equal("11111111-2222-4333-8444-555555555555", state.Authority.TransitionId);
 
         // The erasure moves both cursors to the core owner-deletion journal's maximum per owner kind,
         // and the fixture seeds distinct maxima so a transposed pair cannot compare equal.
@@ -409,6 +438,350 @@ public sealed class CovenantLocalErasureStorageHealthTests
         Assert.Equal(state.Dataset.AppliedCampaignDeletionSequence, state.Capability.AppliedCampaignSequence);
 
         Assert.Equal(state.Dataset.AppliedSessionDeletionSequence, state.Capability.AppliedSessionSequence);
+
+        Assert.True(state.Capability.FullSweepRequired);
+
+    }
+
+    public static TheoryData<string, string> MalformedPublicationStates => new()
+    {
+        {
+            "unknown rebuild state",
+            "UPDATE covenant_state SET RebuildStateCode = 99 WHERE StateKey = 1;"
+        },
+        {
+            "unknown host-tools state",
+            "UPDATE covenant_authority_state SET HostToolsStateCode = 99 WHERE StateKey = 1;"
+        },
+        {
+            "half-present applied tuple",
+            "UPDATE covenant_state SET AppliedDatasetGeneration = NULL WHERE StateKey = 1;"
+        },
+        {
+            "non-boolean full-sweep flag",
+            "UPDATE capability_cleanup_state SET FullSweepRequired = 2 WHERE CapabilityFamilyCode = 1;"
+        },
+        {
+            "clean authority carrying a transition",
+            """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 1,
+                TaintTimeMasterVersion = NULL,
+                TaintFingerprint = NULL,
+                TransitionId = 'sentinel-publication-secret'
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "master-key version outside the runtime domain",
+            "UPDATE covenant_authority_state SET CurrentMasterKeyVersion = 4294967296 WHERE StateKey = 1;"
+        },
+        {
+            "short canonical fingerprint",
+            "UPDATE covenant_state SET EnvelopeMasterKeyFingerprint = X'01' WHERE StateKey = 1;"
+        },
+        {
+            "same-version fingerprint disagreement",
+            """
+            UPDATE covenant_authority_state
+            SET CurrentMasterKeyFingerprint = X'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "empty applied dataset generation",
+            """
+            UPDATE covenant_state
+            SET AppliedDatasetGeneration = zeroblob(16)
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "blank installation identity",
+            "UPDATE covenant_authority_state SET InstallationIdentity = '' WHERE StateKey = 1;"
+        },
+        {
+            "malformed transition identity",
+            """
+            UPDATE covenant_authority_state
+            SET TransitionId = 'sentinel-publication-secret'
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "negative canonical sequence",
+            """
+            DROP TRIGGER covenant_state_validate_update;
+            UPDATE covenant_state SET CanonicalSearchSequence = -1 WHERE StateKey = 1;
+            """
+        },
+    };
+
+    public static TheoryData<string, string> MalformedRebuildTuples => new()
+    {
+        {
+            "rebuilding without a target",
+            "UPDATE covenant_state SET RebuildTargetSequence = NULL WHERE StateKey = 1;"
+        },
+        {
+            "idle with a cursor",
+            """
+            UPDATE covenant_state
+            SET RebuildStateCode = 1,
+                RebuildTargetSequence = NULL,
+                RebuildCursor = 9
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "full rebuild required with a target",
+            """
+            UPDATE covenant_state
+            SET RebuildStateCode = 2,
+                RebuildTargetSequence = 17,
+                RebuildCursor = NULL
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "rebuilding with a negative cursor",
+            "UPDATE covenant_state SET RebuildCursor = -1 WHERE StateKey = 1;"
+        },
+        {
+            "rebuilding with a non-integer target",
+            "UPDATE covenant_state SET RebuildTargetSequence = 'sentinel-rebuild-secret' WHERE StateKey = 1;"
+        },
+    };
+
+    public static TheoryData<string, string> MalformedHostToolsTaintTuples => new()
+    {
+        {
+            "clean authority retaining a taint-time master version",
+            """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 1,
+                TaintTimeMasterVersion = 5,
+                TaintFingerprint = NULL,
+                TransitionId = NULL
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "clean authority retaining a taint fingerprint",
+            """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 1,
+                TaintTimeMasterVersion = NULL,
+                TaintFingerprint = CAST('sentinel-taint-secret' AS BLOB),
+                TransitionId = NULL
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "pending authority without a taint-time master version",
+            """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 2,
+                TaintTimeMasterVersion = NULL
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "tainted authority without a fingerprint",
+            "UPDATE covenant_authority_state SET TaintFingerprint = NULL WHERE StateKey = 1;"
+        },
+        {
+            "pending authority with a non-integer taint-time master version",
+            """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 2,
+                TaintTimeMasterVersion = 'sentinel-taint-secret'
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "pending authority with an overflowing taint-time master version",
+            """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 2,
+                TaintTimeMasterVersion = 4294967296
+            WHERE StateKey = 1;
+            """
+        },
+        {
+            "tainted authority with a short fingerprint",
+            "UPDATE covenant_authority_state SET TaintFingerprint = X'01' WHERE StateKey = 1;"
+        },
+        {
+            "tainted authority with a text fingerprint",
+            """
+            UPDATE covenant_authority_state
+            SET TaintFingerprint = 'sentinel-taint-secret-12345678901'
+            WHERE StateKey = 1;
+            """
+        },
+    };
+
+    [Theory]
+    [MemberData(nameof(MalformedRebuildTuples))]
+    public async Task The_verified_reopen_refuses_malformed_rebuild_tuples_without_content_leakage(
+        string caseName,
+        string corruption)
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.SeedPublicationStateAsync(Token);
+
+        await erased.ExecuteUncheckedAsync(corruption, Token);
+
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(Token);
+
+        Assert.True(reopened.IsFailure, caseName);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Assert.DoesNotContain(erased.DatabasePath, reopened.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sentinel-rebuild-secret", reopened.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [MemberData(nameof(MalformedHostToolsTaintTuples))]
+    public async Task The_verified_reopen_refuses_malformed_host_tools_taint_tuples_without_content_leakage(
+        string caseName,
+        string corruption)
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.SeedPublicationStateAsync(Token);
+
+        await erased.ExecuteUncheckedAsync(corruption, Token);
+
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(Token);
+
+        Assert.True(reopened.IsFailure, caseName);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Assert.DoesNotContain(erased.DatabasePath, reopened.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sentinel-taint-secret", reopened.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task The_verified_reopen_refuses_a_current_dataset_cursor_ahead_of_canonical_without_content_leakage()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.SeedPublicationStateAsync(Token);
+
+        await erased.ExecuteAsync(
+            """
+            UPDATE covenant_state
+            SET AppliedDatasetGeneration = DatasetGeneration,
+                AppliedSearchSequence = CanonicalSearchSequence + 1,
+                UpdatedAtUtc = 'sentinel-future-cursor'
+            WHERE StateKey = 1;
+            """,
+            Token);
+
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(Token);
+
+        Assert.True(reopened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Assert.DoesNotContain(erased.DatabasePath, reopened.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sentinel-future-cursor", reopened.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [MemberData(nameof(MalformedPublicationStates))]
+    public async Task The_verified_reopen_refuses_malformed_publication_state_without_content_leakage(
+        string caseName,
+        string corruption)
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.SeedPublicationStateAsync(Token);
+
+        await erased.ExecuteUncheckedAsync(corruption, Token);
+
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(Token);
+
+        Assert.True(reopened.IsFailure, caseName);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Assert.DoesNotContain(erased.DatabasePath, reopened.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sentinel-publication-secret", reopened.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Malformed_authority_refuses_accelerator_initialization_without_throwing_or_leaking()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.ExecuteUncheckedAsync(
+            """
+            UPDATE covenant_authority_state
+            SET InstallationIdentity = 'sentinel-publication-secret',
+                CurrentMasterKeyVersion = 4294967296
+            WHERE StateKey = 1;
+            """,
+            Token);
+
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(Token);
+
+        Assert.True(initialized.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, initialized.Error.Code);
+
+        Assert.DoesNotContain(erased.DatabasePath, initialized.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sentinel-publication-secret", initialized.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Malformed_taint_authority_refuses_accelerator_initialization_without_content_leakage()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.SeedPublicationStateAsync(Token);
+
+        await erased.ExecuteUncheckedAsync(
+            """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 1,
+                TaintTimeMasterVersion = 5,
+                TaintFingerprint = CAST('sentinel-taint-secret' AS BLOB),
+                TransitionId = NULL
+            WHERE StateKey = 1;
+            """,
+            Token);
+
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(Token);
+
+        Assert.True(initialized.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, initialized.Error.Code);
+
+        Assert.DoesNotContain(erased.DatabasePath, initialized.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sentinel-taint-secret", initialized.Error.Message, StringComparison.Ordinal);
 
     }
 
@@ -834,6 +1207,12 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         private const int JunkEntryCount = 400;
 
+        internal static Guid PublishedDatasetGeneration { get; } =
+            new(Convert.FromHexString("00112233445566778899AABBCCDDEEFF"));
+
+        internal static Guid AppliedDatasetGeneration { get; } =
+            new(Convert.FromHexString("FFEEDDCCBBAA99887766554433221100"));
+
         private readonly CovenantCanonicalErasureFixture _fixture;
 
         private ErasedGrimoire(
@@ -1059,6 +1438,54 @@ public sealed class CovenantLocalErasureStorageHealthTests
             await Connection.CloseAsync();
 
         }
+
+        internal Task SeedPublicationStateAsync(CancellationToken cancellationToken) =>
+            ExecuteAsync(
+                """
+                UPDATE covenant_authority_state
+                SET InstallationIdentity = 'verified-installation',
+                    AuthorityEpoch = 23,
+                    CurrentMasterKeyVersion = 7,
+                    CurrentMasterKeyFingerprint = X'C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1',
+                    RecoveryEnvelopeEpoch = 37,
+                    HostToolsStateCode = 3,
+                    TaintTimeMasterVersion = 5,
+                    TaintFingerprint = X'D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2',
+                    TransitionId = '11111111-2222-4333-8444-555555555555'
+                WHERE StateKey = 1;
+
+                UPDATE covenant_state
+                SET DatasetGeneration = X'00112233445566778899AABBCCDDEEFF',
+                    CanonicalSearchSequence = 17,
+                    AppliedDatasetGeneration = X'FFEEDDCCBBAA99887766554433221100',
+                    AppliedSearchSequence = 13,
+                    AppliedCampaignDeletionSequence = 4,
+                    AppliedSessionDeletionSequence = 2,
+                    AcceleratorEpoch = 29,
+                    EnvelopeMasterKeyVersion = 7,
+                    EnvelopeMasterKeyFingerprint = X'C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1',
+                    EnvelopeKeyEpoch = 31,
+                    RebuildStateCode = 3,
+                    RebuildTargetSequence = 17,
+                    RebuildCursor = 9
+                WHERE StateKey = 1;
+
+                UPDATE capability_cleanup_state
+                SET AppliedCampaignSequence = 4,
+                    AppliedSessionSequence = 2,
+                    FullSweepRequired = 1
+                WHERE CapabilityFamilyCode = 1;
+                """,
+                cancellationToken);
+
+        internal Task ExecuteUncheckedAsync(string sql, CancellationToken cancellationToken) =>
+            ExecuteAsync(
+                $"""
+                PRAGMA ignore_check_constraints = ON;
+                {sql}
+                PRAGMA ignore_check_constraints = OFF;
+                """,
+                cancellationToken);
 
         internal async Task<long> ScalarLongAsync(string sql, CancellationToken cancellationToken)
         {

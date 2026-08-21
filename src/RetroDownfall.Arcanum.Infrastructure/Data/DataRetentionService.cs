@@ -59,7 +59,9 @@ internal sealed partial class DataRetentionService(
     IDaemonExecutionRepository? daemonExecutions = null,
     IDaemonExecutionMutationGate? daemonMutationGate = null,
     IManagedLogMutationGate? managedLogMutationGate = null,
-    ICovenantOperationGate? covenantGate = null) : IDataRetentionService
+    ICovenantOperationGate? covenantGate = null,
+    CovenantErasureCoordinator? covenantErasureCoordinator = null,
+    CovenantDisclosureExposureReader? covenantExposureReader = null) : IDataRetentionService
 {
 
     private static readonly int[] ActiveOperationStates =
@@ -88,6 +90,12 @@ internal sealed partial class DataRetentionService(
     private readonly DataRetentionLeaseMaintainer _leaseMaintainer = new(
         operations.RenewLeaseAsync,
         timeProvider);
+
+    private readonly CovenantErasureCoordinator? _covenantErasureCoordinator =
+        covenantErasureCoordinator;
+
+    private readonly CovenantDisclosureExposureReader _covenantExposureReader =
+        covenantExposureReader ?? new CovenantDisclosureExposureReader();
 
     public async Task<DataRetentionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default)
@@ -1487,8 +1495,8 @@ internal sealed partial class DataRetentionService(
                 new DataRetentionConflict(
                     DataRetentionConflictCodes.CovenantResetRequiresErasureCoordinator,
                     string.Empty,
-                    "Covenant erasure requires the exclusive erasure coordinator, which this build does "
-                        + "not have. No Covenant state was changed."),
+                    "The production Covenant erasure coordinator exists but is not yet wired to this route. "
+                        + "No Covenant state was changed."),
             ],
             [],
             requiresConfirmation: true);
@@ -5649,7 +5657,9 @@ internal sealed partial class DataRetentionService(
         if (operation.CheckpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion)
         {
 
-            return RecoverCovenantResetMutation(operation);
+            return await RecoverCovenantResetMutationAsync(
+                operation,
+                cancellationToken).ConfigureAwait(false);
 
         }
 
@@ -5788,8 +5798,9 @@ internal sealed partial class DataRetentionService(
     /// dataset. Abandoning it instead would discard the only durable record of a half-erased family
     /// (§10.20.3).</para>
     /// </remarks>
-    private LongRunningOperationRecoveryResult RecoverCovenantResetMutation(
-        LongRunningOperation operation)
+    private async Task<LongRunningOperationRecoveryResult> RecoverCovenantResetMutationAsync(
+        LongRunningOperation operation,
+        CancellationToken cancellationToken)
     {
 
         // The same projection the erasure coordinator resumes from, so the handler and the coordinator
@@ -5820,16 +5831,66 @@ internal sealed partial class DataRetentionService(
 
         }
 
+        if (string.IsNullOrWhiteSpace(operation.LeaseOwner)
+            || _covenantErasureCoordinator is null)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.MaintenanceFailed);
+
+        }
+
         logger.LogWarning(
             "A Covenant reset was interrupted at phase {ResetPhase} for durable operation "
-            + "{OperationId}; admission stays closed until it is resumed.",
+            + "{OperationId}; recovery is resuming the recorded owner.",
             state.Value.Phase,
             operation.Id);
 
-        return LongRunningOperationRecoveryResult.RequiresAttention(
-            ErrorCodes.Covenant.ManualRecoveryRequired);
+        Result<CovenantErasureCompletion> recovered = await _covenantErasureCoordinator
+            .RunAsync(
+                operation,
+                state.Value,
+                operation.LeaseOwner,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return MapCovenantErasureRecovery(recovered);
 
     }
+
+    private static LongRunningOperationRecoveryResult MapCovenantErasureRecovery(
+        Result<CovenantErasureCompletion> recovered)
+    {
+
+        if (recovered.IsFailure)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ClosedCovenantError(recovered.Error.Code));
+
+        }
+
+        string blocking = ClosedCovenantError(recovered.Value.BlockingErrorCode);
+
+        return recovered.Value.Disposition switch
+        {
+
+            CovenantExclusiveLeaseDisposition.CommitAndReopen =>
+                LongRunningOperationRecoveryResult.Completed(),
+
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen =>
+                LongRunningOperationRecoveryResult.Failed(blocking),
+
+            _ => LongRunningOperationRecoveryResult.RequiresAttention(blocking),
+
+        };
+
+    }
+
+    private static string ClosedCovenantError(string? errorCode) =>
+        string.IsNullOrWhiteSpace(errorCode)
+            ? ErrorCodes.Covenant.MaintenanceFailed
+            : errorCode;
 
     private Dictionary<RetentionMutationJournalEntry, IdentityOwnedFileSystemQuarantine>
         DiscoverMutationQuarantines(

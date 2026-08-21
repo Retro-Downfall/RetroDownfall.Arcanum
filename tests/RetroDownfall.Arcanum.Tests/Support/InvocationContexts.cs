@@ -60,7 +60,10 @@ internal static class InvocationContexts
             Epoch());
 
     private static CovenantReadAuthorityEpoch Epoch() =>
-        CovenantReadAuthorityEpoch.CreateForTests(Installation, authorityEpoch: 11);
+        CovenantReadAuthorityEpoch.CreateForTests(
+            Installation,
+            runtimeAuthorityGeneration: 1,
+            authorityEpoch: 11);
 
     private static CanonicalCampaignContext CampaignContext(Guid campaignId) =>
         CanonicalCampaignContext.Create(

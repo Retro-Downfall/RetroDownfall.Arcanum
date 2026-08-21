@@ -34,7 +34,15 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
     private static readonly Guid SessionOne = new("55555555-6666-4777-8888-999999999999");
 
-    private readonly CovenantSchemaScratchDatabase _database;
+    private readonly CovenantSchemaScratchDatabase? _database;
+
+    private readonly SqliteConnection? _attachedConnection;
+
+    private readonly ICovenantMaintenanceConnectionFactory? _attachedConnections;
+
+    private readonly ICovenantSqliteConnectionInitializer? _attachedInitializer;
+
+    private readonly CovenantConnectionDrain? _scratchDrain;
 
     private readonly IDisposable _enrolment;
 
@@ -48,13 +56,33 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
         _enrolment = enrolment;
 
-        Drain = drain;
+        _scratchDrain = drain;
 
     }
 
-    internal SqliteConnection Connection => _database.Connection;
+    private CovenantCanonicalErasureFixture(
+        SqliteConnection connection,
+        ICovenantMaintenanceConnectionFactory connections,
+        ICovenantSqliteConnectionInitializer initializer,
+        IDisposable enrolment)
+    {
 
-    internal CovenantConnectionDrain Drain { get; }
+        _attachedConnection = connection;
+
+        _attachedConnections = connections;
+
+        _attachedInitializer = initializer;
+
+        _enrolment = enrolment;
+
+    }
+
+    internal SqliteConnection Connection => _database?.Connection
+        ?? _attachedConnection
+        ?? throw new ObjectDisposedException(nameof(CovenantCanonicalErasureFixture));
+
+    internal CovenantConnectionDrain Drain => _scratchDrain
+        ?? throw new InvalidOperationException("An attached production fixture exposes its production drain through DI.");
 
     internal InMemoryOsCredentialStore Credentials { get; } = new();
 
@@ -118,13 +146,62 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
     }
 
+    /// <summary>
+    /// Attaches the seeding/assertion surface to the exact production maintenance factory and drain
+    /// resolved by an integrated host. The fixture owns only this enrolled handle; the provider owns
+    /// the database, runtime generation, gate, writer, and every erasure component.
+    /// </summary>
+    internal static async Task<CovenantCanonicalErasureFixture> AttachAsync(
+        ICovenantMaintenanceConnectionFactory connections,
+        ICovenantSqliteConnectionInitializer initializer,
+        ICovenantConnectionDrain drain,
+        CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = await connections.OpenAsync(cancellationToken);
+
+        IDisposable enrolment = drain.Register(connection);
+
+        try
+        {
+
+            await initializer.InitializeAsync(
+                connection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken);
+
+            return new CovenantCanonicalErasureFixture(
+                connection,
+                connections,
+                initializer,
+                enrolment);
+
+        }
+        catch
+        {
+
+            enrolment.Dispose();
+
+            await connection.DisposeAsync();
+
+            throw;
+
+        }
+
+    }
+
     /// <summary>Absolute path of the scratch Grimoire this fixture erases.</summary>
-    internal string DatabasePath => _database.DatabasePath;
+    internal string DatabasePath => _database?.DatabasePath
+        ?? _attachedConnections?.DatabasePath
+        ?? throw new ObjectDisposedException(nameof(CovenantCanonicalErasureFixture));
 
     /// <summary>
     /// Hands the erasure its own unpooled handle to this same file.
     /// </summary>
-    internal ICovenantMaintenanceConnectionFactory Connections() => _database.MaintenanceConnections();
+    internal ICovenantMaintenanceConnectionFactory Connections() =>
+        _database?.MaintenanceConnections()
+        ?? _attachedConnections
+        ?? throw new ObjectDisposedException(nameof(CovenantCanonicalErasureFixture));
 
     /// <summary>
     /// Seeds one of everything the erasure must remove, and one of everything it must not.
@@ -150,22 +227,119 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
     }
 
-    internal Task ReopenAsync(CancellationToken cancellationToken) => _database.ReopenAsync(cancellationToken);
+    /// <summary>
+    /// Seeds only acceptance content into an already-installed production catalog. Schema metadata
+    /// and retained authority rows belong to bootstrap and are deliberately not duplicated here.
+    /// </summary>
+    internal async Task SeedAcceptanceStateAsync(CancellationToken cancellationToken)
+    {
+
+        await SeedCampaignAsync(cancellationToken);
+
+        await SeedFamilyAsync(cancellationToken);
+
+        await SeedReceiptsAsync(cancellationToken);
+
+        await SeedDisclosureAsync(cancellationToken);
+
+        await SeedSensitivityLabelAsync(cancellationToken);
+
+    }
+
+    internal async Task ReopenAsync(CancellationToken cancellationToken)
+    {
+
+        if (_database is { } database)
+        {
+
+            await database.ReopenAsync(cancellationToken);
+
+            return;
+
+        }
+
+        if (Connection.State != System.Data.ConnectionState.Closed)
+        {
+
+            return;
+
+        }
+
+        await Connection.OpenAsync(cancellationToken);
+
+        await _attachedInitializer!.InitializeAsync(
+            Connection,
+            CovenantSqliteConnectionMode.ReadWrite,
+            cancellationToken);
+
+    }
 
     internal Task<long> CountAsync(string table, CancellationToken cancellationToken) =>
-        _database.ScalarLongAsync($"SELECT COUNT(*) FROM \"{table}\";", cancellationToken);
+        ScalarLongAsync($"SELECT COUNT(*) FROM \"{table}\";", cancellationToken);
 
-    internal Task<long> ScalarLongAsync(string sql, CancellationToken cancellationToken) =>
-        _database.ScalarLongAsync(sql, cancellationToken);
+    internal async Task<long> ScalarLongAsync(string sql, CancellationToken cancellationToken)
+    {
 
-    internal Task<string?> ScalarStringAsync(string sql, CancellationToken cancellationToken) =>
-        _database.ScalarStringAsync(sql, cancellationToken);
+        await using SqliteCommand command = Connection.CreateCommand();
 
-    internal Task ExecuteAsync(string sql, CancellationToken cancellationToken) =>
-        _database.ExecuteAsync(sql, cancellationToken);
+        command.CommandText = sql;
 
-    internal Task<bool> ObjectExistsAsync(string name, string type, CancellationToken cancellationToken) =>
-        _database.ObjectExistsAsync(name, type, cancellationToken);
+        object? value = await command.ExecuteScalarAsync(cancellationToken);
+
+        return value is null or DBNull
+            ? 0
+            : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+
+    }
+
+    internal async Task<string?> ScalarStringAsync(string sql, CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken);
+
+        return value is null or DBNull
+            ? null
+            : Convert.ToString(value, CultureInfo.InvariantCulture);
+
+    }
+
+    internal async Task ExecuteAsync(string sql, CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    internal async Task<bool> ObjectExistsAsync(
+        string name,
+        string type,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT 1
+            FROM sqlite_master
+            WHERE "type" = $type AND "name" = $name
+            LIMIT 1;
+            """;
+
+        _ = command.Parameters.AddWithValue("$type", type);
+
+        _ = command.Parameters.AddWithValue("$name", name);
+
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+
+    }
 
     internal async Task<Guid?> ReadDatasetGenerationAsync(CancellationToken cancellationToken)
     {
@@ -193,7 +367,18 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
         _enrolment.Dispose();
 
-        await _database.DisposeAsync();
+        if (_database is { } database)
+        {
+
+            await database.DisposeAsync();
+
+        }
+        else if (_attachedConnection is { } connection)
+        {
+
+            await connection.DisposeAsync();
+
+        }
 
     }
 
@@ -481,6 +666,68 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$generation", new byte[16]);
 
         _ = command.Parameters.AddWithValue("$created", Timestamp(SeedTime));
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    private async Task SeedSensitivityLabelAsync(CancellationToken cancellationToken)
+    {
+
+        Guid dataset = await ReadDatasetGenerationAsync(cancellationToken)
+            ?? throw new InvalidOperationException("The installed Covenant catalog has no dataset generation.");
+
+        ArtifactSensitivityLabel label = new(
+            new Guid("dddddddd-1111-4111-8111-111111111111"),
+            SensitiveArtifactKind.ToolArtifact,
+            new Guid("eeeeeeee-2222-4222-8222-222222222222"),
+            sessionId: null,
+            campaignId: null,
+            turnId: null,
+            artifactRevision: 1,
+            CovenantRetainedEvidence.Digest(0xB0),
+            ContentSensitivity.CovenantDerived,
+            GenerationProvenance.Create([dataset]),
+            producingPlanDigest: null,
+            producingAdmissionDigest: null,
+            producingMaintenanceReceiptDigest: null,
+            SeedTime);
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO artifact_sensitivity (
+                LabelId, ArtifactKindCode, ArtifactId, SensitivityCode, ProvenanceModeCode,
+                ExactGenerationIds, GenerationBloom, SessionId, CampaignId, TurnId,
+                ArtifactRevision, ArtifactContentDigest, SensitivityDigest, ProducingPlanDigest,
+                ProducingAdmissionDigest, ProducingMaintenanceReceiptDigest, ArtifactLabelDigest,
+                CreatedAtUtc)
+            VALUES (
+                $label, $kind, $artifact, $sensitivity, $mode, $generations, NULL, NULL, NULL, NULL,
+                $revision, $content, $sensitivityDigest, NULL, NULL, NULL, $labelDigest, $created);
+            """;
+
+        _ = command.Parameters.AddWithValue("$label", label.LabelId.ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$kind", (long)label.ArtifactKind);
+
+        _ = command.Parameters.AddWithValue("$artifact", label.ArtifactId.ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$sensitivity", (long)label.Sensitivity);
+
+        _ = command.Parameters.AddWithValue("$mode", (long)label.Provenance.Mode);
+
+        _ = command.Parameters.AddWithValue("$generations", label.Provenance.ToCanonicalExactBytes());
+
+        _ = command.Parameters.AddWithValue("$revision", checked((long)label.ArtifactRevision));
+
+        _ = command.Parameters.AddWithValue("$content", label.ArtifactContentDigest.Bytes);
+
+        _ = command.Parameters.AddWithValue("$sensitivityDigest", label.SensitivityDigest.Bytes);
+
+        _ = command.Parameters.AddWithValue("$labelDigest", label.LabelDigest.Bytes);
+
+        _ = command.Parameters.AddWithValue("$created", Timestamp(label.CreatedAt));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
 

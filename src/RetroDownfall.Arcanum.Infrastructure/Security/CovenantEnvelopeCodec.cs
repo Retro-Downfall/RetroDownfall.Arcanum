@@ -31,10 +31,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// cryptographic failure collapses to one content-free result. A decoder that distinguished "wrong
 /// key" from "tampered tag" would be an oracle.</para>
 /// </remarks>
-internal sealed class CovenantEnvelopeCodec(
-    ICovenantEnvelopeMasterKeyProvider keys,
-    TimeProvider timeProvider) : ICovenantEnvelopeCodec
+internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 {
+
+    private readonly ICovenantEnvelopeMasterKeyProvider keys;
+
+    private readonly TimeProvider timeProvider;
+
+    private readonly ICovenantEnvelopeCodecCheckpoint _checkpoint;
 
     private static readonly byte[] MagicBytes = Encoding.ASCII.GetBytes(CovenantEnvelopeLimits.Magic);
 
@@ -43,6 +47,27 @@ internal sealed class CovenantEnvelopeCodec(
 
     private const int MaxWireBytes =
         CovenantEnvelopeLimits.HeaderBytes + MaxCipherTextBytes + CovenantEnvelopeLimits.TagBytes;
+
+    internal CovenantEnvelopeCodec(
+        ICovenantEnvelopeMasterKeyProvider keys,
+        TimeProvider timeProvider)
+        : this(keys, timeProvider, CovenantEnvelopeCodecCheckpoint.None)
+    {
+    }
+
+    internal CovenantEnvelopeCodec(
+        ICovenantEnvelopeMasterKeyProvider keys,
+        TimeProvider timeProvider,
+        ICovenantEnvelopeCodecCheckpoint checkpoint)
+    {
+
+        this.keys = keys ?? throw new ArgumentNullException(nameof(keys));
+
+        this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+
+        _checkpoint = checkpoint ?? throw new ArgumentNullException(nameof(checkpoint));
+
+    }
 
     /// <inheritdoc/>
     public CovenantEnvelopeKeySnapshot KeySnapshot =>
@@ -74,83 +99,122 @@ internal sealed class CovenantEnvelopeCodec(
                 new Error(ErrorCodes.Covenant.InvalidCursor, "This envelope lifetime is outside its bound."));
         }
 
-        if (keys.Current is not { } generation)
-        {
-            return Result<string>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.OperatorAuthorityUnavailable,
-                    "Covenant envelope keys are not available."));
-        }
-
-        ReadOnlySpan<byte> key = generation.PurposeKey(purpose);
-
-        if (key.Length != 32)
-        {
-            return Result<string>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.Unavailable,
-                    "This envelope purpose has no key in the current generation."));
-        }
-
-        if (!generation.TryReserveCounter(purpose, out ulong counter))
-        {
-            return Result<string>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.CapacityExceeded,
-                    "This envelope purpose has exhausted its issuance counter and must re-key."));
-        }
-
-        DateTimeOffset issuedAt = timeProvider.GetUtcNow();
-
-        DateTimeOffset expiresAt = issuedAt + lifetime;
-
-        int cipherTextLength = CovenantEnvelopeLimits.BodyTimeBytes + payload.Length;
-
-        Span<byte> wire = stackalloc byte[CovenantEnvelopeLimits.HeaderBytes + cipherTextLength + CovenantEnvelopeLimits.TagBytes];
-
-        WriteHeader(
-            wire,
-            purpose,
-            generation.Snapshot.MasterKeyVersion,
-            generation.EpochFor(purpose),
-            counter,
-            issuedAt,
-            expiresAt,
-            cipherTextLength);
-
-        Span<byte> plaintext = stackalloc byte[cipherTextLength];
-
-        BinaryPrimitives.WriteInt64BigEndian(plaintext, issuedAt.ToUnixTimeMilliseconds());
-
-        BinaryPrimitives.WriteInt64BigEndian(plaintext[8..], expiresAt.ToUnixTimeMilliseconds());
-
-        payload.CopyTo(plaintext[CovenantEnvelopeLimits.BodyTimeBytes..]);
-
-        Span<byte> nonce = stackalloc byte[CovenantEnvelopeLimits.NonceBytes];
-
-        WriteNonce(nonce, purpose, counter);
+        Span<byte> key = stackalloc byte[32];
 
         try
         {
 
-            using AesGcm aes = new(key, CovenantEnvelopeLimits.TagBytes);
+            CovenantEnvelopeKeyCopyStatus copyStatus = keys.TryCopyPurposeKeyAndReserve(
+                purpose,
+                key,
+                out CovenantEnvelopeKeyReservation reservation);
 
-            aes.Encrypt(
-                nonce,
-                plaintext,
-                wire.Slice(CovenantEnvelopeLimits.HeaderBytes, cipherTextLength),
-                wire[(CovenantEnvelopeLimits.HeaderBytes + cipherTextLength)..],
-                wire[..CovenantEnvelopeLimits.HeaderBytes]);
+            if (copyStatus == CovenantEnvelopeKeyCopyStatus.NoGeneration)
+            {
+                return Result<string>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.OperatorAuthorityUnavailable,
+                        "Covenant envelope keys are not available."));
+            }
+
+            if (copyStatus == CovenantEnvelopeKeyCopyStatus.PurposeUnavailable)
+            {
+                return Result<string>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.Unavailable,
+                        "This envelope purpose has no key in the current generation."));
+            }
+
+            if (copyStatus == CovenantEnvelopeKeyCopyStatus.CounterExhausted)
+            {
+                return Result<string>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.CapacityExceeded,
+                        "This envelope purpose has exhausted its issuance counter and must re-key."));
+            }
+
+            _checkpoint.Reached(CovenantEnvelopeCodecStep.PurposeKeyCopied);
+
+            DateTimeOffset issuedAt = timeProvider.GetUtcNow();
+
+            DateTimeOffset expiresAt = issuedAt + lifetime;
+
+            int cipherTextLength = CovenantEnvelopeLimits.BodyTimeBytes + payload.Length;
+
+            Span<byte> wire = stackalloc byte[
+                CovenantEnvelopeLimits.HeaderBytes + cipherTextLength + CovenantEnvelopeLimits.TagBytes];
+
+            Span<byte> plaintext = stackalloc byte[cipherTextLength];
+
+            Span<byte> nonce = stackalloc byte[CovenantEnvelopeLimits.NonceBytes];
+
+            try
+            {
+
+                WriteHeader(
+                    wire,
+                    purpose,
+                    reservation.Snapshot.MasterKeyVersion,
+                    reservation.Epoch,
+                    reservation.Counter,
+                    issuedAt,
+                    expiresAt,
+                    cipherTextLength);
+
+                BinaryPrimitives.WriteInt64BigEndian(plaintext, issuedAt.ToUnixTimeMilliseconds());
+
+                BinaryPrimitives.WriteInt64BigEndian(plaintext[8..], expiresAt.ToUnixTimeMilliseconds());
+
+                payload.CopyTo(plaintext[CovenantEnvelopeLimits.BodyTimeBytes..]);
+
+                WriteNonce(nonce, purpose, reservation.Counter);
+
+                using AesGcm aes = new(key, CovenantEnvelopeLimits.TagBytes);
+
+                aes.Encrypt(
+                    nonce,
+                    plaintext,
+                    wire.Slice(CovenantEnvelopeLimits.HeaderBytes, cipherTextLength),
+                    wire[(CovenantEnvelopeLimits.HeaderBytes + cipherTextLength)..],
+                    wire[..CovenantEnvelopeLimits.HeaderBytes]);
+
+                _checkpoint.Reached(CovenantEnvelopeCodecStep.CryptographyCompleted);
+
+                _checkpoint.Reached(CovenantEnvelopeCodecStep.BeforeGenerationRevalidation);
+
+                using CovenantEnvelopeMaterializationLease materialization =
+                    keys.AcquireMaterializationLease(
+                        reservation.RuntimeAuthorityGeneration,
+                        reservation.Identity);
+
+                if (!materialization.IsCurrent)
+                {
+                    return Stale<string>();
+                }
+
+                _checkpoint.Reached(CovenantEnvelopeCodecStep.CurrentGenerationProven);
+
+                return Result<string>.Success(Base64Url.EncodeToString(wire));
+
+            }
+            finally
+            {
+
+                ZeroAndObserve(plaintext, CovenantEnvelopeCodecBufferKind.Plaintext);
+
+                ZeroAndObserve(nonce, CovenantEnvelopeCodecBufferKind.Nonce);
+
+                ZeroAndObserve(wire, CovenantEnvelopeCodecBufferKind.Wire);
+
+            }
 
         }
         finally
         {
 
-            CryptographicOperations.ZeroMemory(plaintext);
+            ZeroAndObserve(key, CovenantEnvelopeCodecBufferKind.Key);
 
         }
-
-        return Result<string>.Success(Base64Url.EncodeToString(wire));
 
     }
 
@@ -181,156 +245,201 @@ internal sealed class CovenantEnvelopeCodec(
             return Invalid();
         }
 
-        Span<byte> wire = stackalloc byte[MaxWireBytes];
-
-        if (!Base64Url.TryDecodeFromChars(token, wire, out int wireLength))
-        {
-            return Invalid();
-        }
-
-        wire = wire[..wireLength];
-
-        if (wireLength < CovenantEnvelopeLimits.HeaderBytes + CovenantEnvelopeLimits.BodyTimeBytes + CovenantEnvelopeLimits.TagBytes)
-        {
-            return Invalid();
-        }
-
-        ReadOnlySpan<byte> header = wire[..CovenantEnvelopeLimits.HeaderBytes];
-
-        if (!header[..4].SequenceEqual(MagicBytes) || header[4] != CovenantEnvelopeLimits.Version)
-        {
-            return Invalid();
-        }
-
-        byte purposeCode = header[5];
-
-        if (!Enum.IsDefined((CovenantEnvelopePurpose)purposeCode))
-        {
-            return Invalid();
-        }
-
-        CovenantEnvelopePurpose purpose = (CovenantEnvelopePurpose)purposeCode;
-
-        if (purpose != expectedPurpose)
-        {
-            return Result<CovenantEnvelopeBody>.Failure(
-                CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.PurposeMismatch));
-        }
-
-        uint masterKeyVersion = BinaryPrimitives.ReadUInt32BigEndian(header[6..]);
-
-        long epoch = BinaryPrimitives.ReadInt64BigEndian(header[10..]);
-
-        ulong counter = BinaryPrimitives.ReadUInt64BigEndian(header[18..]);
-
-        long headerIssuedMs = BinaryPrimitives.ReadInt64BigEndian(header[26..]);
-
-        long headerExpiresMs = BinaryPrimitives.ReadInt64BigEndian(header[34..]);
-
-        uint declaredCipherTextLength = BinaryPrimitives.ReadUInt32BigEndian(header[42..]);
-
-        int actualCipherTextLength = wireLength - CovenantEnvelopeLimits.HeaderBytes - CovenantEnvelopeLimits.TagBytes;
-
-        if (declaredCipherTextLength != (uint)actualCipherTextLength
-            || actualCipherTextLength < CovenantEnvelopeLimits.BodyTimeBytes
-            || actualCipherTextLength > MaxCipherTextBytes)
-        {
-            return Invalid();
-        }
-
-        if (counter is 0 or > CovenantEnvelopeLimits.CounterRolloverBound)
-        {
-            return Invalid();
-        }
-
-        if (headerExpiresMs <= headerIssuedMs)
-        {
-            return Invalid();
-        }
-
-        if (keys.Current is not { } generation)
-        {
-            return Invalid();
-        }
-
-        // Only the current key, epoch, and version are accepted. Every transition that advances one of
-        // these exists to invalidate work in flight, so a grace window would defeat all of them.
-        if (masterKeyVersion != generation.Snapshot.MasterKeyVersion || epoch != generation.EpochFor(purpose))
-        {
-            return Invalid();
-        }
-
-        ReadOnlySpan<byte> key = generation.PurposeKey(purpose);
-
-        if (key.Length != 32)
-        {
-            return Invalid();
-        }
-
-        Span<byte> plaintext = stackalloc byte[actualCipherTextLength];
-
-        Span<byte> nonce = stackalloc byte[CovenantEnvelopeLimits.NonceBytes];
-
-        WriteNonce(nonce, purpose, counter);
+        Span<byte> wireBuffer = stackalloc byte[MaxWireBytes];
 
         try
         {
 
-            using AesGcm aes = new(key, CovenantEnvelopeLimits.TagBytes);
+            if (!Base64Url.TryDecodeFromChars(token, wireBuffer, out int wireLength))
+            {
+                return Invalid();
+            }
 
-            aes.Decrypt(
-                nonce,
-                wire.Slice(CovenantEnvelopeLimits.HeaderBytes, actualCipherTextLength),
-                wire[(CovenantEnvelopeLimits.HeaderBytes + actualCipherTextLength)..],
-                plaintext,
-                header);
+            Span<byte> wire = wireBuffer[..wireLength];
+
+            if (wireLength < CovenantEnvelopeLimits.HeaderBytes + CovenantEnvelopeLimits.BodyTimeBytes + CovenantEnvelopeLimits.TagBytes)
+            {
+                return Invalid();
+            }
+
+            ReadOnlySpan<byte> header = wire[..CovenantEnvelopeLimits.HeaderBytes];
+
+            if (!header[..4].SequenceEqual(MagicBytes) || header[4] != CovenantEnvelopeLimits.Version)
+            {
+                return Invalid();
+            }
+
+            byte purposeCode = header[5];
+
+            if (!Enum.IsDefined((CovenantEnvelopePurpose)purposeCode))
+            {
+                return Invalid();
+            }
+
+            CovenantEnvelopePurpose purpose = (CovenantEnvelopePurpose)purposeCode;
+
+            if (purpose != expectedPurpose)
+            {
+                return Result<CovenantEnvelopeBody>.Failure(
+                    CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.PurposeMismatch));
+            }
+
+            uint masterKeyVersion = BinaryPrimitives.ReadUInt32BigEndian(header[6..]);
+
+            long epoch = BinaryPrimitives.ReadInt64BigEndian(header[10..]);
+
+            ulong counter = BinaryPrimitives.ReadUInt64BigEndian(header[18..]);
+
+            long headerIssuedMs = BinaryPrimitives.ReadInt64BigEndian(header[26..]);
+
+            long headerExpiresMs = BinaryPrimitives.ReadInt64BigEndian(header[34..]);
+
+            uint declaredCipherTextLength = BinaryPrimitives.ReadUInt32BigEndian(header[42..]);
+
+            int actualCipherTextLength =
+                wireLength - CovenantEnvelopeLimits.HeaderBytes - CovenantEnvelopeLimits.TagBytes;
+
+            if (declaredCipherTextLength != (uint)actualCipherTextLength
+                || actualCipherTextLength < CovenantEnvelopeLimits.BodyTimeBytes
+                || actualCipherTextLength > MaxCipherTextBytes)
+            {
+                return Invalid();
+            }
+
+            if (counter is 0 or > CovenantEnvelopeLimits.CounterRolloverBound)
+            {
+                return Invalid();
+            }
+
+            if (headerExpiresMs <= headerIssuedMs)
+            {
+                return Invalid();
+            }
+
+            Span<byte> key = stackalloc byte[32];
+
+            try
+            {
+
+                CovenantEnvelopeKeyCopyStatus copyStatus = keys.TryCopyPurposeKey(
+                    purpose,
+                    key,
+                    out CovenantEnvelopeKeyCapture capture);
+
+                if (copyStatus != CovenantEnvelopeKeyCopyStatus.Success)
+                {
+                    return Invalid();
+                }
+
+                _checkpoint.Reached(CovenantEnvelopeCodecStep.PurposeKeyCopied);
+
+                // Only the current key, epoch, and version are accepted. Every transition that advances
+                // one of these exists to invalidate work in flight, so a grace window would defeat all of
+                // them.
+                if (masterKeyVersion != capture.Snapshot.MasterKeyVersion || epoch != capture.Epoch)
+                {
+                    return Invalid();
+                }
+
+                Span<byte> plaintext = stackalloc byte[actualCipherTextLength];
+
+                Span<byte> nonce = stackalloc byte[CovenantEnvelopeLimits.NonceBytes];
+
+                try
+                {
+
+                    WriteNonce(nonce, purpose, counter);
+
+                    try
+                    {
+
+                        using AesGcm aes = new(key, CovenantEnvelopeLimits.TagBytes);
+
+                        aes.Decrypt(
+                            nonce,
+                            wire.Slice(CovenantEnvelopeLimits.HeaderBytes, actualCipherTextLength),
+                            wire[(CovenantEnvelopeLimits.HeaderBytes + actualCipherTextLength)..],
+                            plaintext,
+                            header);
+
+                    }
+                    catch (CryptographicException)
+                    {
+                        return Invalid();
+                    }
+
+                    _checkpoint.Reached(CovenantEnvelopeCodecStep.CryptographyCompleted);
+
+                    _checkpoint.Reached(CovenantEnvelopeCodecStep.BeforeGenerationRevalidation);
+
+                    using CovenantEnvelopeMaterializationLease materialization =
+                        keys.AcquireMaterializationLease(
+                            capture.RuntimeAuthorityGeneration,
+                            capture.Identity);
+
+                    if (!materialization.IsCurrent)
+                    {
+                        return Stale<CovenantEnvelopeBody>();
+                    }
+
+                    _checkpoint.Reached(CovenantEnvelopeCodecStep.CurrentGenerationProven);
+
+                    long bodyIssuedMs = BinaryPrimitives.ReadInt64BigEndian(plaintext);
+
+                    long bodyExpiresMs = BinaryPrimitives.ReadInt64BigEndian(plaintext[8..]);
+
+                    if (bodyIssuedMs != headerIssuedMs || bodyExpiresMs != headerExpiresMs)
+                    {
+                        return Invalid();
+                    }
+
+                    DateTimeOffset issuedAt = DateTimeOffset.FromUnixTimeMilliseconds(bodyIssuedMs);
+
+                    DateTimeOffset expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(bodyExpiresMs);
+
+                    if (timeProvider.GetUtcNow() >= expiresAt)
+                    {
+                        return Result<CovenantEnvelopeBody>.Failure(
+                            CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Expired));
+                    }
+
+                    byte[] payload = plaintext[CovenantEnvelopeLimits.BodyTimeBytes..].ToArray();
+
+                    return Result<CovenantEnvelopeBody>.Success(
+                        new CovenantEnvelopeBody(
+                            purpose,
+                            masterKeyVersion,
+                            epoch,
+                            counter,
+                            issuedAt,
+                            expiresAt,
+                            payload));
+
+                }
+                finally
+                {
+
+                    ZeroAndObserve(plaintext, CovenantEnvelopeCodecBufferKind.Plaintext);
+
+                    ZeroAndObserve(nonce, CovenantEnvelopeCodecBufferKind.Nonce);
+
+                }
+
+            }
+            finally
+            {
+
+                ZeroAndObserve(key, CovenantEnvelopeCodecBufferKind.Key);
+
+            }
 
         }
-        catch (CryptographicException)
+        finally
         {
 
-            CryptographicOperations.ZeroMemory(plaintext);
-
-            return Invalid();
+            ZeroAndObserve(wireBuffer, CovenantEnvelopeCodecBufferKind.Wire);
 
         }
-
-        long bodyIssuedMs = BinaryPrimitives.ReadInt64BigEndian(plaintext);
-
-        long bodyExpiresMs = BinaryPrimitives.ReadInt64BigEndian(plaintext[8..]);
-
-        if (bodyIssuedMs != headerIssuedMs || bodyExpiresMs != headerExpiresMs)
-        {
-
-            CryptographicOperations.ZeroMemory(plaintext);
-
-            return Invalid();
-
-        }
-
-        byte[] payload = plaintext[CovenantEnvelopeLimits.BodyTimeBytes..].ToArray();
-
-        CryptographicOperations.ZeroMemory(plaintext);
-
-        DateTimeOffset issuedAt = DateTimeOffset.FromUnixTimeMilliseconds(bodyIssuedMs);
-
-        DateTimeOffset expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(bodyExpiresMs);
-
-        if (timeProvider.GetUtcNow() >= expiresAt)
-        {
-            return Result<CovenantEnvelopeBody>.Failure(
-                CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Expired));
-        }
-
-        return Result<CovenantEnvelopeBody>.Success(
-            new CovenantEnvelopeBody(
-                purpose,
-                masterKeyVersion,
-                epoch,
-                counter,
-                issuedAt,
-                expiresAt,
-                payload));
 
     }
 
@@ -397,8 +506,98 @@ internal sealed class CovenantEnvelopeCodec(
 
     }
 
+    private void ZeroAndObserve(
+        Span<byte> buffer,
+        CovenantEnvelopeCodecBufferKind kind)
+    {
+
+        CryptographicOperations.ZeroMemory(buffer);
+
+        _checkpoint.Zeroized(kind, IsZero(buffer));
+
+    }
+
+    private static bool IsZero(ReadOnlySpan<byte> buffer)
+    {
+
+        foreach (byte value in buffer)
+        {
+
+            if (value != 0)
+            {
+                return false;
+            }
+
+        }
+
+        return true;
+
+    }
+
+    private static Result<T> Stale<T>() =>
+        Result<T>.Failure(
+            new Error(
+                ErrorCodes.Covenant.StaleSnapshot,
+                "Covenant envelope keys changed while this operation was in flight."));
+
     private static Result<CovenantEnvelopeBody> Invalid() =>
         Result<CovenantEnvelopeBody>.Failure(
             CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid));
+
+}
+
+/// <summary>Content-free checkpoints exposed only for deterministic codec race tests.</summary>
+internal interface ICovenantEnvelopeCodecCheckpoint
+{
+
+    void Reached(CovenantEnvelopeCodecStep step);
+
+    void Zeroized(CovenantEnvelopeCodecBufferKind kind, bool isZero);
+
+}
+
+internal enum CovenantEnvelopeCodecStep
+{
+
+    PurposeKeyCopied = 1,
+
+    CryptographyCompleted = 2,
+
+    BeforeGenerationRevalidation = 3,
+
+    CurrentGenerationProven = 4,
+
+}
+
+internal enum CovenantEnvelopeCodecBufferKind
+{
+
+    Key = 1,
+
+    Plaintext = 2,
+
+    Nonce = 3,
+
+    Wire = 4,
+
+}
+
+internal static class CovenantEnvelopeCodecCheckpoint
+{
+
+    internal static ICovenantEnvelopeCodecCheckpoint None { get; } = new NoOpCheckpoint();
+
+    private sealed class NoOpCheckpoint : ICovenantEnvelopeCodecCheckpoint
+    {
+
+        public void Reached(CovenantEnvelopeCodecStep step)
+        {
+        }
+
+        public void Zeroized(CovenantEnvelopeCodecBufferKind kind, bool isZero)
+        {
+        }
+
+    }
 
 }

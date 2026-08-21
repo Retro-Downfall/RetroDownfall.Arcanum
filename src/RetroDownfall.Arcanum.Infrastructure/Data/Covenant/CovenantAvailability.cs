@@ -1,5 +1,7 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -7,10 +9,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// The process-wide publisher of <see cref="CovenantAvailabilitySnapshot"/>.
 /// </summary>
 /// <remarks>
-/// Publication replaces one complete immutable snapshot with <see cref="Interlocked.Exchange{T}"/>
-/// and advances a monotonic generation. That is the whole concurrency design: readers never take a
-/// lock, never see a half-updated view, and can capture a generation early in a turn and prove at
-/// dispatch time that availability has not changed underneath them.
+/// Publication asks the composite runtime holder to replace one complete immutable snapshot and
+/// advance its monotonic availability generation while preserving the exact runtime authority, key,
+/// and authority references. Readers never take a lock or see a half-updated tuple.
 ///
 /// <para>Each publication method copies only the fields its publisher actually owns. A mutation
 /// commit knows the canonical sequence but not the accelerator's applied tuple, and letting it write
@@ -19,29 +20,67 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 internal sealed class CovenantAvailability : ICovenantAvailability
 {
 
-    private CovenantAvailabilitySnapshot _current = new(
-        Generation: 1,
-        FeatureEnabled: false,
-        Canonical: CovenantCapabilityState.Unavailable,
-        CanonicalSchemaVersion: null,
-        CanonicalInstalledFingerprint: null,
-        Accelerator: CovenantCapabilityState.Unavailable,
-        AcceleratorSchemaVersion: null,
-        AcceleratorInstalledFingerprint: null,
-        DatasetGeneration: null,
-        CanonicalSequence: 0,
-        CoreCampaignDeletionSequence: 0,
-        AppliedDatasetGeneration: null,
-        AppliedSequence: null,
-        AppliedCampaignDeletionSequence: null,
-        AcceleratorEpoch: 0,
-        FtsSynchronization: CovenantFtsSynchronizationState.Unavailable,
-        RebuildRequired: true,
-        LastHealthTransition: CovenantHealthTransition.Bootstrap,
-        CanonicalDiagnosticCode: null,
-        AcceleratorDiagnosticCode: null);
+    private readonly CovenantRuntimeGenerationProvider _runtime;
 
-    public CovenantAvailabilitySnapshot Current => Volatile.Read(ref _current);
+    internal CovenantAvailability()
+        : this(new CovenantRuntimeGenerationProvider())
+    {
+    }
+
+    internal CovenantAvailability(CovenantRuntimeGenerationProvider runtime) =>
+        _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+
+    public CovenantAvailabilitySnapshot Current => _runtime.Current.Availability;
+
+    internal Result<CovenantAvailabilitySnapshot> BuildCommittedTransition(
+        CovenantAvailabilitySnapshot expected,
+        CovenantCommittedCapabilityTransition transition,
+        CovenantHealthTransition healthTransition)
+    {
+
+        ArgumentNullException.ThrowIfNull(expected);
+
+        ArgumentNullException.ThrowIfNull(transition);
+
+        if (!Enum.IsDefined(healthTransition))
+        {
+            throw new ArgumentOutOfRangeException(nameof(healthTransition));
+        }
+
+        if (!ReferenceEquals(Current, expected)
+            || transition.ExpectedGeneration != expected.Generation
+            || transition.Generation != expected.Generation + 1)
+        {
+            return Result<CovenantAvailabilitySnapshot>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.StaleSnapshot,
+                    "Covenant availability changed before the committed transition was built."));
+        }
+
+        return Result<CovenantAvailabilitySnapshot>.Success(
+            new CovenantAvailabilitySnapshot(
+                transition.Generation,
+                transition.FeatureEnabled,
+                transition.Canonical,
+                transition.CanonicalSchemaVersion,
+                transition.CanonicalInstalledFingerprint,
+                transition.Accelerator,
+                transition.AcceleratorSchemaVersion,
+                transition.AcceleratorInstalledFingerprint,
+                transition.DatasetGeneration,
+                transition.CanonicalSequence,
+                transition.CoreCampaignDeletionSequence,
+                transition.AppliedDatasetGeneration,
+                transition.AppliedSequence,
+                transition.AppliedCampaignDeletionSequence,
+                transition.AcceleratorEpoch,
+                transition.FtsSynchronization,
+                transition.RebuildRequired,
+                healthTransition,
+                transition.CanonicalDiagnosticCode,
+                transition.AcceleratorDiagnosticCode));
+
+    }
 
     /// <summary>
     /// Publishes the outcome of a schema installation. Copies only the installed schema versions,
@@ -145,6 +184,42 @@ internal sealed class CovenantAvailability : ICovenantAvailability
 
         });
 
+    internal CovenantAvailabilitySnapshot PublishPersistedState(
+        Guid datasetGeneration,
+        long canonicalSequence,
+        long coreCampaignDeletionSequence,
+        Guid? appliedDatasetGeneration,
+        long? appliedSequence,
+        long? appliedCampaignDeletionSequence,
+        ulong acceleratorEpoch,
+        CovenantFtsSynchronizationState synchronization,
+        bool rebuildRequired,
+        CovenantHealthTransition transition) =>
+        Publish(current => current with
+        {
+
+            DatasetGeneration = datasetGeneration,
+
+            CanonicalSequence = canonicalSequence,
+
+            CoreCampaignDeletionSequence = coreCampaignDeletionSequence,
+
+            AppliedDatasetGeneration = appliedDatasetGeneration,
+
+            AppliedSequence = appliedSequence,
+
+            AppliedCampaignDeletionSequence = appliedCampaignDeletionSequence,
+
+            AcceleratorEpoch = acceleratorEpoch,
+
+            FtsSynchronization = synchronization,
+
+            RebuildRequired = rebuildRequired,
+
+            LastHealthTransition = transition,
+
+        });
+
     /// <summary>
     /// Publishes a live feature switch. Changes only the flag and the generation, so flipping the
     /// feature cannot disturb a cursor a turn already captured.
@@ -186,28 +261,7 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> mutate)
     {
 
-        while (true)
-        {
-
-            CovenantAvailabilitySnapshot current = Volatile.Read(ref _current);
-
-            CovenantAvailabilitySnapshot next = mutate(current) with
-            {
-
-                Generation = current.Generation + 1,
-
-            };
-
-            // Compare-exchange rather than a plain swap: two publishers committing at once must
-            // produce two distinct generations, never one that silently overwrites the other.
-            if (ReferenceEquals(Interlocked.CompareExchange(ref _current, next, current), current))
-            {
-
-                return next;
-
-            }
-
-        }
+        return _runtime.PublishAvailability(mutate);
 
     }
 

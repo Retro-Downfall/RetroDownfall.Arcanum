@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Covenant;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -24,10 +25,15 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 public sealed class CovenantReadAuthorityEpoch
 {
 
-    private CovenantReadAuthorityEpoch(string installationIdentity, long authorityEpoch)
+    private CovenantReadAuthorityEpoch(
+        string installationIdentity,
+        long runtimeAuthorityGeneration,
+        long authorityEpoch)
     {
 
         InstallationIdentity = installationIdentity;
+
+        RuntimeAuthorityGeneration = runtimeAuthorityGeneration;
 
         AuthorityEpoch = authorityEpoch;
 
@@ -35,6 +41,9 @@ public sealed class CovenantReadAuthorityEpoch
 
     /// <summary>The installation this epoch belongs to. Identities are not comparable across them.</summary>
     public string InstallationIdentity { get; }
+
+    /// <summary>The process-local authority generation observed at the boundary.</summary>
+    public long RuntimeAuthorityGeneration { get; }
 
     /// <summary>The monotonic clean authority epoch observed at the boundary.</summary>
     public long AuthorityEpoch { get; }
@@ -66,7 +75,9 @@ public sealed class CovenantReadAuthorityEpoch
                     "This installation carries a host-process tools taint and has no clean authority epoch."));
         }
 
-        if (string.IsNullOrWhiteSpace(snapshot.InstallationIdentity) || snapshot.AuthorityEpoch <= 0)
+        if (string.IsNullOrWhiteSpace(snapshot.InstallationIdentity)
+            || snapshot.RuntimeAuthorityGeneration <= 0
+            || snapshot.AuthorityEpoch <= 0)
         {
             return Result<CovenantReadAuthorityEpoch>.Failure(
                 new Error(
@@ -75,7 +86,10 @@ public sealed class CovenantReadAuthorityEpoch
         }
 
         return Result<CovenantReadAuthorityEpoch>.Success(
-            new CovenantReadAuthorityEpoch(snapshot.InstallationIdentity, snapshot.AuthorityEpoch));
+            new CovenantReadAuthorityEpoch(
+                snapshot.InstallationIdentity,
+                snapshot.RuntimeAuthorityGeneration,
+                snapshot.AuthorityEpoch));
 
     }
 
@@ -85,13 +99,25 @@ public sealed class CovenantReadAuthorityEpoch
     public bool Matches(CovenantAuthoritySnapshot? current) =>
         current is not null
         && current.HostToolsState is CovenantHostToolsState.Clean
+        && current.RuntimeAuthorityGeneration == RuntimeAuthorityGeneration
         && current.AuthorityEpoch == AuthorityEpoch
         && string.Equals(current.InstallationIdentity, InstallationIdentity, StringComparison.Ordinal);
+
+    /// <summary>Whether a newly acquired turn lease belongs to this exact request authority epoch.</summary>
+    public bool Matches(CovenantOperationLeaseSnapshot lease) =>
+        lease.RuntimeAuthorityGeneration == RuntimeAuthorityGeneration
+        && lease.AuthorityEpoch == AuthorityEpoch;
 
     /// <summary>
     /// Builds an epoch directly, for tests that have no live authority publisher.
     /// </summary>
-    internal static CovenantReadAuthorityEpoch CreateForTests(Guid installationIdentity, long authorityEpoch) =>
-        new(installationIdentity.ToString().ToUpperInvariant(), authorityEpoch);
+    internal static CovenantReadAuthorityEpoch CreateForTests(
+        Guid installationIdentity,
+        long runtimeAuthorityGeneration,
+        long authorityEpoch) =>
+        new(
+            installationIdentity.ToString().ToUpperInvariant(),
+            CovenantValidation.RequirePositive(runtimeAuthorityGeneration, nameof(runtimeAuthorityGeneration)),
+            CovenantValidation.RequirePositive(authorityEpoch, nameof(authorityEpoch)));
 
 }

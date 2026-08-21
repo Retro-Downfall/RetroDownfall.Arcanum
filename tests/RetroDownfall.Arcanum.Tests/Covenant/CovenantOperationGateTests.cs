@@ -498,6 +498,109 @@ public sealed class CovenantOperationGateTests
     }
 
     [Fact]
+    public async Task Final_publication_runs_only_while_the_exact_registration_still_holds_its_closure()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveLease exclusive = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            Token)).Value;
+
+        int publications = 0;
+
+        Result held = exclusive.ExecuteWhileHeld(() =>
+        {
+
+            publications++;
+
+            return Result.Success();
+
+        });
+
+        Assert.True(held.IsSuccess);
+
+        Assert.Equal(1, publications);
+
+        Assert.True((await exclusive.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            Token)).IsSuccess);
+
+        Result afterDisposition = exclusive.ExecuteWhileHeld(() =>
+        {
+
+            publications++;
+
+            return Result.Success();
+
+        });
+
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, afterDisposition.Error.Code);
+
+        Assert.Equal(1, publications);
+
+        await exclusive.DisposeAsync();
+
+    }
+
+    [Fact]
+    public async Task A_disposed_or_replaced_registration_cannot_publish_through_the_retained_closure()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner = CovenantOperationGateFixture.Owner(
+            CovenantExclusiveOperation.SchemaRepair);
+
+        CovenantExclusiveLease original = (await gate.AcquireExclusiveAsync(owner, Token)).Value;
+
+        ICovenantExclusiveLeaseRegistration originalRegistration =
+            (ICovenantExclusiveLeaseRegistration)typeof(CovenantExclusiveOperationLease)
+                .GetField("_exclusive", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(original)!;
+
+        await original.DisposeAsync();
+
+        int publications = 0;
+
+        Result disposed = original.ExecuteWhileHeld(() =>
+        {
+
+            publications++;
+
+            return Result.Success();
+
+        });
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, disposed.Error.Code);
+
+        await using CovenantExclusiveLease replacement = (await gate.ResumeExclusiveAsync(owner, Token)).Value;
+
+        Result replaced = originalRegistration.ExecuteWhileHeld(() =>
+        {
+
+            publications++;
+
+            return Result.Success();
+
+        });
+
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, replaced.Error.Code);
+
+        Assert.True(replacement.ExecuteWhileHeld(() =>
+        {
+
+            publications++;
+
+            return Result.Success();
+
+        }).IsSuccess);
+
+        Assert.Equal(1, publications);
+
+    }
+
+    [Fact]
     public async Task Disposing_before_a_disposition_keeps_the_scope_closed()
     {
 
@@ -610,6 +713,104 @@ public sealed class CovenantOperationGateTests
             Token)).Value;
 
         Assert.Equal(CovenantLeaseKind.Exclusive, resumed.Snapshot.Kind);
+
+    }
+
+    [Fact]
+    public async Task Resume_or_acquire_resumes_an_exact_adopted_owner()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner =
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset);
+
+        gate.AdoptDurableRecoveryOwner(owner, scope: null, cleanupOnlyHistoricalCampaign: false);
+
+        await using CovenantExclusiveLease resumed =
+            (await gate.ResumeOrAcquireExclusiveAsync(owner, Token)).Value;
+
+        Assert.Equal(owner, resumed.Snapshot.RecoveryOwner);
+
+    }
+
+    [Fact]
+    public async Task Resume_or_acquire_acquires_only_when_no_closure_exists()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner =
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset);
+
+        await using CovenantExclusiveLease acquired =
+            (await gate.ResumeOrAcquireExclusiveAsync(owner, Token)).Value;
+
+        Assert.Equal(owner, acquired.Snapshot.RecoveryOwner);
+
+    }
+
+    [Fact]
+    public async Task Resume_or_acquire_refuses_a_conflicting_owner_without_replacing_it()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveRecoveryOwner winner =
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset);
+
+        CovenantExclusiveRecoveryOwner conflicting =
+            CovenantOperationGateFixture.Owner(
+                CovenantExclusiveOperation.CovenantReset,
+                operationId: Guid.Parse("abababab-abab-4bab-8bab-abababababab"));
+
+        gate.AdoptDurableRecoveryOwner(winner, scope: null, cleanupOnlyHistoricalCampaign: false);
+
+        Result<CovenantExclusiveLease> refused = await gate.ResumeOrAcquireExclusiveAsync(
+            conflicting,
+            Token);
+
+        Assert.True(refused.IsFailure);
+
+        await using CovenantExclusiveLease resumed =
+            (await gate.ResumeExclusiveAsync(winner, Token)).Value;
+
+        Assert.Equal(winner, resumed.Snapshot.RecoveryOwner);
+
+    }
+
+    [Fact]
+    public async Task Resume_or_acquire_cannot_bypass_a_closure_that_wins_at_the_decision_boundary()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantInstallationReadLease reader =
+            (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        CovenantExclusiveRecoveryOwner winner =
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset);
+
+        CovenantExclusiveRecoveryOwner loser =
+            CovenantOperationGateFixture.Owner(
+                CovenantExclusiveOperation.CovenantReset,
+                operationId: Guid.Parse("cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd"));
+
+        Task<Result<CovenantExclusiveLease>> winning = gate
+            .ResumeOrAcquireExclusiveAsync(winner, Token)
+            .AsTask();
+
+        Assert.True(reader.Revocation.IsCancellationRequested);
+
+        Result<CovenantExclusiveLease> refused = await gate.ResumeOrAcquireExclusiveAsync(loser, Token);
+
+        Assert.True(refused.IsFailure);
+
+        await reader.DisposeAsync();
+
+        await using CovenantExclusiveLease lease = (await winning).Value;
+
+        Assert.Equal(winner, lease.Snapshot.RecoveryOwner);
 
     }
 
@@ -783,7 +984,7 @@ public sealed class CovenantOperationGateTests
     }
 
     [Fact]
-    public async Task Revalidation_notices_a_dataset_generation_change()
+    public async Task Revalidation_notices_a_committed_dataset_generation_change()
     {
 
         FakeCovenantAvailability availability = new();
@@ -795,9 +996,11 @@ public sealed class CovenantOperationGateTests
 
         Assert.True((await reader.RevalidateAsync(Token)).IsSuccess);
 
-        availability.Mutate(current => current with { DatasetGeneration = Guid.NewGuid() });
+        availability.PublishCommittedDataset(Guid.NewGuid());
 
-        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, (await reader.RevalidateAsync(Token)).Error.Code);
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await reader.RevalidateAsync(Token)).Error.Code);
 
     }
 

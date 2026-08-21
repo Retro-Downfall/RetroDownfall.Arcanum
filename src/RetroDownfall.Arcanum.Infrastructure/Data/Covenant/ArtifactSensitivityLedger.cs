@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -212,6 +213,8 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         command.CommandText = """
             SELECT LabelId,
+                   ArtifactKindCode,
+                   ArtifactId,
                    SessionId,
                    CampaignId,
                    TurnId,
@@ -243,29 +246,126 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         }
 
+        Result<ArtifactSensitivityLabel> materialized = Materialize(reader);
+
+        return materialized.IsFailure
+            ? Result<ArtifactSensitivityLabel?>.Failure(materialized.Error)
+            : Result<ArtifactSensitivityLabel?>.Success(materialized.Value);
+
+    }
+
+    /// <summary>
+    /// Reads one bounded keyset page through the caller's active connection and optional snapshot.
+    /// </summary>
+    /// <remarks>
+    /// This is deliberately static and accepts the connection. Erasure inventory owns a private,
+    /// enrolled maintenance handle and must not make the scoped ledger open a second EF connection
+    /// while that snapshot is being proved.
+    /// </remarks>
+    internal static async Task<Result<IReadOnlyList<ArtifactSensitivityLabel>>> ReadPageWithinAsync(
+        SqliteConnection callerOwnedConnection,
+        SqliteTransaction? transaction,
+        Guid? afterLabelId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(callerOwnedConnection);
+
+        if (afterLabelId == Guid.Empty || limit is < 1 or > CovenantProtectedArtifactErasurePage.MaxItems)
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.InvalidScope,
+                $"A sensitivity-label page carries between 1 and {CovenantProtectedArtifactErasurePage.MaxItems} rows and a nonempty cursor.");
+
+        }
+
+        await using SqliteCommand command = callerOwnedConnection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT LabelId,
+                   ArtifactKindCode,
+                   ArtifactId,
+                   SessionId,
+                   CampaignId,
+                   TurnId,
+                   ArtifactRevision,
+                   ArtifactContentDigest,
+                   SensitivityCode,
+                   ProvenanceModeCode,
+                   ExactGenerationIds,
+                   GenerationBloom,
+                   ProducingPlanDigest,
+                   ProducingAdmissionDigest,
+                   ProducingMaintenanceReceiptDigest,
+                   CreatedAtUtc
+            FROM artifact_sensitivity
+            WHERE ($after IS NULL OR LabelId > $after)
+            ORDER BY LabelId
+            LIMIT $limit;
+            """;
+
+        _ = command.Parameters.AddWithValue(
+            "$after",
+            afterLabelId is { } cursor ? Format(cursor) : DBNull.Value);
+
+        _ = command.Parameters.AddWithValue("$limit", limit);
+
+        List<ArtifactSensitivityLabel> labels = new(limit);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            Result<ArtifactSensitivityLabel> materialized = Materialize(reader);
+
+            if (materialized.IsFailure)
+            {
+
+                return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Failure(materialized.Error);
+
+            }
+
+            labels.Add(materialized.Value);
+
+        }
+
+        return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Success(labels);
+
+    }
+
+    /// <summary>The one decoder shared by point reads and bounded inventory pages.</summary>
+    private static Result<ArtifactSensitivityLabel> Materialize(SqliteDataReader reader)
+    {
+
         try
         {
 
-            GenerationProvenance provenance = (GenerationProvenanceMode)reader.GetInt64(7)
+            GenerationProvenance provenance = (GenerationProvenanceMode)reader.GetInt64(9)
                 is GenerationProvenanceMode.Exact
-                ? GenerationProvenance.CreateExact(ReadGenerations((byte[])reader.GetValue(8)))
-                : GenerationProvenance.CreateBloom((byte[])reader.GetValue(9));
+                ? GenerationProvenance.CreateExact(ReadGenerations((byte[])reader.GetValue(10)))
+                : GenerationProvenance.CreateBloom((byte[])reader.GetValue(11));
 
             return new ArtifactSensitivityLabel(
                 Guid.Parse(reader.GetString(0)),
-                artifactKind,
-                artifactId,
-                reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1)),
-                reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2)),
+                (SensitiveArtifactKind)reader.GetInt64(1),
+                Guid.Parse(reader.GetString(2)),
                 reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3)),
-                checked((ulong)reader.GetInt64(4)),
-                new CovenantDigest((byte[])reader.GetValue(5)),
-                (ContentSensitivity)reader.GetInt64(6),
+                reader.IsDBNull(4) ? null : Guid.Parse(reader.GetString(4)),
+                reader.IsDBNull(5) ? null : Guid.Parse(reader.GetString(5)),
+                checked((ulong)reader.GetInt64(6)),
+                new CovenantDigest((byte[])reader.GetValue(7)),
+                (ContentSensitivity)reader.GetInt64(8),
                 provenance,
-                reader.IsDBNull(10) ? null : new CovenantDigest((byte[])reader.GetValue(10)),
-                reader.IsDBNull(11) ? null : new CovenantDigest((byte[])reader.GetValue(11)),
                 reader.IsDBNull(12) ? null : new CovenantDigest((byte[])reader.GetValue(12)),
-                DateTimeOffset.Parse(reader.GetString(13), CultureInfo.InvariantCulture));
+                reader.IsDBNull(13) ? null : new CovenantDigest((byte[])reader.GetValue(13)),
+                reader.IsDBNull(14) ? null : new CovenantDigest((byte[])reader.GetValue(14)),
+                DateTimeOffset.Parse(reader.GetString(15), CultureInfo.InvariantCulture));
 
         }
         catch (Exception exception) when (

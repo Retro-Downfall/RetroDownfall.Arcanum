@@ -5,6 +5,7 @@ using System.Text;
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
@@ -18,6 +19,8 @@ public sealed class CovenantEnvelopeCodecTests
     private static readonly Guid Installation = Guid.Parse("2C4A5E3B-9F17-4D0C-8A6E-1B3D5F70921A");
 
     private static readonly Guid Dataset = Guid.Parse("0D1E2F30-4152-4637-8899-AABBCCDDEEFF");
+
+    private static readonly Guid NextDataset = Guid.Parse("10213243-5465-4768-899A-ABBCCDDEEF01");
 
     private static readonly DateTimeOffset Now = new(2026, 8, 15, 12, 0, 0, TimeSpan.Zero);
 
@@ -397,6 +400,321 @@ public sealed class CovenantEnvelopeCodecTests
 
     }
 
+    [Fact]
+    public async Task Encoding_returns_stale_and_zeroizes_temporaries_when_retired_after_key_copy()
+    {
+
+        using BlockingCodecCheckpoint checkpoint = new(CovenantEnvelopeCodecStep.PurposeKeyCopied);
+
+        using CodecHarness harness = CodecHarness.Create(checkpoint);
+
+        Task<Result<string>> encoding = Task.Run(
+            () => harness.Codec.Encode(
+                CovenantEnvelopePurpose.Cursor,
+                [1, 2, 3],
+                TimeSpan.FromMinutes(5)));
+
+        checkpoint.WaitUntilReached();
+
+        try
+        {
+            harness.Retire();
+        }
+        finally
+        {
+            checkpoint.Release();
+        }
+
+        Result<string> encoded = await encoding;
+
+        Assert.False(encoded.IsSuccess);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, encoded.Error.Code);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Key, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
+
+    }
+
+    [Fact]
+    public async Task Encoding_returns_stale_without_a_token_when_a_generation_publishes_after_crypto()
+    {
+
+        using BlockingCodecCheckpoint checkpoint = new(
+            CovenantEnvelopeCodecStep.BeforeGenerationRevalidation);
+
+        using CodecHarness harness = CodecHarness.Create(checkpoint);
+
+        Task<Result<string>> encoding = Task.Run(
+            () => harness.Codec.Encode(
+                CovenantEnvelopePurpose.Cursor,
+                [4, 5, 6],
+                TimeSpan.FromMinutes(5)));
+
+        checkpoint.WaitUntilReached();
+
+        CovenantCommittedAuthorityTransition transition = Transition(
+            NextDataset,
+            masterKeyVersion: 8);
+
+        Result<CovenantPreparedEnvelopeKeyGeneration> prepared = harness.Keys.PrepareRekey(transition);
+
+        Assert.True(prepared.IsSuccess);
+
+        using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
+
+        try
+        {
+            harness.PublishOwned(owned, transition);
+        }
+        finally
+        {
+            checkpoint.Release();
+        }
+
+        Result<string> encoded = await encoding;
+
+        Assert.False(encoded.IsSuccess);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, encoded.Error.Code);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Key, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
+
+    }
+
+    [Fact]
+    public async Task Decoding_returns_stale_and_zeroizes_temporaries_when_retired_after_key_copy()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        string token = harness.Codec.Encode(
+            CovenantEnvelopePurpose.Cursor,
+            [7, 8, 9],
+            TimeSpan.FromMinutes(5)).Value;
+
+        using BlockingCodecCheckpoint checkpoint = new(CovenantEnvelopeCodecStep.PurposeKeyCopied);
+
+        CovenantEnvelopeCodec racingCodec = new(harness.Keys, harness.Time, checkpoint);
+
+        Task<Result<CovenantEnvelopeBody>> decoding = Task.Run(
+            () => racingCodec.Decode(CovenantEnvelopePurpose.Cursor, token));
+
+        checkpoint.WaitUntilReached();
+
+        try
+        {
+            harness.Retire();
+        }
+        finally
+        {
+            checkpoint.Release();
+        }
+
+        Result<CovenantEnvelopeBody> decoded = await decoding;
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, decoded.Error.Code);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Key, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
+
+    }
+
+    [Fact]
+    public async Task Decoding_returns_stale_without_a_payload_when_a_generation_publishes_after_crypto()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        string token = harness.Codec.Encode(
+            CovenantEnvelopePurpose.Cursor,
+            [10, 11, 12],
+            TimeSpan.FromMinutes(5)).Value;
+
+        using BlockingCodecCheckpoint checkpoint = new(
+            CovenantEnvelopeCodecStep.BeforeGenerationRevalidation);
+
+        CovenantEnvelopeCodec racingCodec = new(harness.Keys, harness.Time, checkpoint);
+
+        Task<Result<CovenantEnvelopeBody>> decoding = Task.Run(
+            () => racingCodec.Decode(CovenantEnvelopePurpose.Cursor, token));
+
+        checkpoint.WaitUntilReached();
+
+        CovenantCommittedAuthorityTransition transition = Transition(
+            NextDataset,
+            masterKeyVersion: 8);
+
+        Result<CovenantPreparedEnvelopeKeyGeneration> prepared = harness.Keys.PrepareRekey(transition);
+
+        Assert.True(prepared.IsSuccess);
+
+        using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
+
+        try
+        {
+            harness.PublishOwned(owned, transition);
+        }
+        finally
+        {
+            checkpoint.Release();
+        }
+
+        Result<CovenantEnvelopeBody> decoded = await decoding;
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, decoded.Error.Code);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Key, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
+
+    }
+
+    [Fact]
+    public async Task Encoding_holds_publication_between_current_proof_and_token_materialization()
+    {
+
+        using BlockingCodecCheckpoint checkpoint = new(
+            CovenantEnvelopeCodecStep.CurrentGenerationProven);
+
+        using CodecHarness harness = CodecHarness.Create(checkpoint);
+
+        CovenantCommittedAuthorityTransition transition = Transition(
+            NextDataset,
+            masterKeyVersion: 8);
+
+        Result<CovenantPreparedEnvelopeKeyGeneration> prepared = harness.Keys.PrepareRekey(transition);
+
+        Assert.True(prepared.IsSuccess);
+
+        using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
+
+        Task<Result<string>> encoding = Task.Run(
+            () => harness.Codec.Encode(
+                CovenantEnvelopePurpose.Cursor,
+                [13, 14, 15],
+                TimeSpan.FromMinutes(5)));
+
+        checkpoint.WaitUntilReached();
+
+        TaskCompletionSource publicationStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task publication = Task.Run(
+            () =>
+            {
+
+                publicationStarted.SetResult();
+
+                harness.PublishOwned(owned, transition);
+
+            });
+
+        await publicationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+
+            Task completed = await Task.WhenAny(
+                publication,
+                Task.Delay(TimeSpan.FromMilliseconds(100)));
+
+            Assert.NotSame(publication, completed);
+
+        }
+        finally
+        {
+            checkpoint.Release();
+        }
+
+        Result<string> encoded = await encoding;
+
+        await publication;
+
+        Assert.True(encoded.IsSuccess);
+        Assert.NotEmpty(encoded.Value);
+
+        CovenantEnvelopeCodec currentCodec = new(harness.Keys, harness.Time);
+
+        Assert.False(currentCodec.Decode(CovenantEnvelopePurpose.Cursor, encoded.Value).IsSuccess);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Key, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
+
+    }
+
+    [Fact]
+    public async Task Decoding_holds_retirement_between_current_proof_and_payload_materialization()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        byte[] payload = [16, 17, 18];
+
+        string token = harness.Codec.Encode(
+            CovenantEnvelopePurpose.Cursor,
+            payload,
+            TimeSpan.FromMinutes(5)).Value;
+
+        using BlockingCodecCheckpoint checkpoint = new(
+            CovenantEnvelopeCodecStep.CurrentGenerationProven);
+
+        CovenantEnvelopeCodec racingCodec = new(harness.Keys, harness.Time, checkpoint);
+
+        Task<Result<CovenantEnvelopeBody>> decoding = Task.Run(
+            () => racingCodec.Decode(CovenantEnvelopePurpose.Cursor, token));
+
+        checkpoint.WaitUntilReached();
+
+        TaskCompletionSource retirementStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task retirement = Task.Run(
+            () =>
+            {
+
+                retirementStarted.SetResult();
+
+                harness.Retire();
+
+            });
+
+        await retirementStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+
+            Task completed = await Task.WhenAny(
+                retirement,
+                Task.Delay(TimeSpan.FromMilliseconds(100)));
+
+            Assert.NotSame(retirement, completed);
+
+        }
+        finally
+        {
+            checkpoint.Release();
+        }
+
+        Result<CovenantEnvelopeBody> decoded = await decoding;
+
+        await retirement;
+
+        Assert.True(decoded.IsSuccess);
+        Assert.Equal(payload, decoded.Value.Payload);
+        Assert.Null(harness.Keys.Current);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Key, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
+        checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
+
+    }
+
     private static ulong Counter(string token) =>
         BinaryPrimitives.ReadUInt64BigEndian(Base64Url.DecodeFromChars(token).AsSpan(18));
 
@@ -431,26 +749,80 @@ public sealed class CovenantEnvelopeCodecTests
 
         public static CodecHarness Create() => Build(Dataset);
 
+        public static CodecHarness Create(ICovenantEnvelopeCodecCheckpoint checkpoint) =>
+            Build(Dataset, checkpoint);
+
         public static CodecHarness CreateWithoutDataset() => Build(dataset: null);
 
-        private static CodecHarness Build(Guid? dataset)
+        private static CodecHarness Build(
+            Guid? dataset,
+            ICovenantEnvelopeCodecCheckpoint? checkpoint = null)
         {
 
             CovenantEnvelopeMasterKeyProvider keys = new();
 
-            _ = keys.Initialize(
-                Encoding.UTF8.GetBytes("master-key-material"),
-                Transition(dataset, masterKeyVersion: 7));
+            Result initialized = dataset is { } committedDataset
+                ? CovenantEnvelopeRuntimeTestHarness.Initialize(
+                    keys,
+                    Encoding.UTF8.GetBytes("master-key-material"),
+                    Transition(committedDataset, masterKeyVersion: 7))
+                : CovenantEnvelopeRuntimeTestHarness.Initialize(
+                    keys,
+                    Encoding.UTF8.GetBytes("master-key-material"),
+                    new CovenantEnvelopeBootstrapKeyInput(
+                        Installation.ToString().ToUpperInvariant(),
+                        masterKeyVersion: 7,
+                        canonicalEnvelopeEpoch: 3,
+                        recoveryEnvelopeEpoch: 2,
+                        datasetGeneration: null));
 
-            byte[] cursorKey = keys.Current!.PurposeKey(CovenantEnvelopePurpose.Cursor).ToArray();
+            Assert.True(initialized.IsSuccess);
+
+            byte[] cursorKey = new byte[32];
+
+            CovenantEnvelopeKeyCopyStatus copyStatus = keys.TryCopyPurposeKey(
+                CovenantEnvelopePurpose.Cursor,
+                cursorKey,
+                out _);
+
+            if (dataset.HasValue)
+            {
+                Assert.Equal(CovenantEnvelopeKeyCopyStatus.Success, copyStatus);
+            }
+            else
+            {
+                Assert.Equal(CovenantEnvelopeKeyCopyStatus.PurposeUnavailable, copyStatus);
+
+                CryptographicOperations.ZeroMemory(cursorKey);
+
+                cursorKey = [];
+            }
 
             FakeTimeProvider time = FakeClock(Now);
 
-            return new CodecHarness(keys, new CovenantEnvelopeCodec(keys, time), time, cursorKey);
+            CovenantEnvelopeCodec codec = checkpoint is null
+                ? new CovenantEnvelopeCodec(keys, time)
+                : new CovenantEnvelopeCodec(keys, time, checkpoint);
+
+            return new CodecHarness(keys, codec, time, cursorKey);
 
         }
 
-        public void Dispose() => Keys.Dispose();
+        internal void PublishOwned(
+            CovenantPreparedEnvelopeKeyGeneration prepared,
+            CovenantCommittedAuthorityTransition transition) =>
+            CovenantEnvelopeRuntimeTestHarness.PublishOwned(Keys, prepared, transition);
+
+        internal void Retire() => CovenantEnvelopeRuntimeTestHarness.Retire(Keys);
+
+        public void Dispose()
+        {
+
+            CryptographicOperations.ZeroMemory(CursorKey);
+
+            Keys.Dispose();
+
+        }
 
     }
 
@@ -461,9 +833,87 @@ public sealed class CovenantEnvelopeCodecTests
             masterKeyVersion: masterKeyVersion,
             canonicalEnvelopeEpoch: 3,
             recoveryEnvelopeEpoch: 2,
-            capabilityGeneration: 1,
-            datasetGeneration: dataset,
-            covenantEnabled: true);
+            CovenantHostToolsState.Clean,
+            transitionId: null,
+            new CovenantCommittedCapabilityTransition(
+                ExpectedGeneration: 1,
+                Generation: 2,
+                FeatureEnabled: true,
+                CovenantCapabilityState.Healthy,
+                CanonicalSchemaVersion: 1,
+                CanonicalInstalledFingerprint: "sha256-canonical",
+                CovenantCapabilityState.Healthy,
+                AcceleratorSchemaVersion: 1,
+                AcceleratorInstalledFingerprint: "sha256-accelerator",
+                dataset ?? throw new ArgumentNullException(nameof(dataset)),
+                CanonicalSequence: 0,
+                CoreCampaignDeletionSequence: 0,
+                CanonicalAppliedCampaignDeletionSequence: 0,
+                CanonicalAppliedSessionDeletionSequence: 0,
+                AppliedDatasetGeneration: null,
+                AppliedSequence: null,
+                AppliedCampaignDeletionSequence: null,
+                AcceleratorEpoch: 1,
+                CovenantFtsSynchronizationState.Dirty,
+                RebuildRequired: true,
+                CleanupAppliedCampaignSequence: 0,
+                CleanupAppliedSessionSequence: 0,
+                CleanupFullSweepRequired: false,
+                CanonicalDiagnosticCode: null,
+                AcceleratorDiagnosticCode: null));
+
+    private sealed class BlockingCodecCheckpoint(
+        CovenantEnvelopeCodecStep blockedStep) : ICovenantEnvelopeCodecCheckpoint, IDisposable
+    {
+
+        private readonly ManualResetEventSlim _reached = new();
+
+        private readonly ManualResetEventSlim _release = new();
+
+        private readonly List<(CovenantEnvelopeCodecBufferKind Kind, bool IsZero)> _zeroizations = [];
+
+        public void Reached(CovenantEnvelopeCodecStep step)
+        {
+
+            if (step != blockedStep)
+            {
+                return;
+            }
+
+            _reached.Set();
+
+            _release.Wait();
+
+        }
+
+        public void Zeroized(CovenantEnvelopeCodecBufferKind kind, bool isZero) =>
+            _zeroizations.Add((kind, isZero));
+
+        public void WaitUntilReached() => Assert.True(_reached.Wait(TimeSpan.FromSeconds(5)));
+
+        public void Release() => _release.Set();
+
+        public void AssertZeroized(CovenantEnvelopeCodecBufferKind kind, int expectedCount)
+        {
+
+            (CovenantEnvelopeCodecBufferKind Kind, bool IsZero)[] matching =
+                [.. _zeroizations.Where(item => item.Kind == kind)];
+
+            Assert.Equal(expectedCount, matching.Length);
+            Assert.All(matching, static item => Assert.True(item.IsZero));
+
+        }
+
+        public void Dispose()
+        {
+
+            _reached.Dispose();
+
+            _release.Dispose();
+
+        }
+
+    }
 
 
     /// <summary>A fixed clock, so envelope timestamps and expiry are exact rather than approximate.</summary>

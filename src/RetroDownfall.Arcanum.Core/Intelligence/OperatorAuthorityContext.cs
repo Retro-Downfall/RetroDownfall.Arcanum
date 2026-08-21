@@ -27,6 +27,7 @@ public sealed class OperatorAuthorityContext
     private OperatorAuthorityContext(
         CovenantAuthorityRequirement requirement,
         string installationIdentity,
+        long runtimeAuthorityGeneration,
         long authorityEpoch,
         uint masterKeyVersion,
         Guid issuerNonce)
@@ -35,6 +36,8 @@ public sealed class OperatorAuthorityContext
         Requirement = requirement;
 
         InstallationIdentity = installationIdentity;
+
+        RuntimeAuthorityGeneration = runtimeAuthorityGeneration;
 
         AuthorityEpoch = authorityEpoch;
 
@@ -49,6 +52,9 @@ public sealed class OperatorAuthorityContext
 
     /// <summary>The installation this authority belongs to.</summary>
     public string InstallationIdentity { get; }
+
+    /// <summary>The process-local authority generation in force at issuance.</summary>
+    public long RuntimeAuthorityGeneration { get; }
 
     /// <summary>The clean authority epoch in force at issuance.</summary>
     public long AuthorityEpoch { get; }
@@ -70,6 +76,7 @@ public sealed class OperatorAuthorityContext
     public bool Matches(CovenantAuthoritySnapshot? current) =>
         current is not null
         && current.HostToolsState is CovenantHostToolsState.Clean
+        && current.RuntimeAuthorityGeneration == RuntimeAuthorityGeneration
         && current.AuthorityEpoch == AuthorityEpoch
         && current.MasterKeyVersion == MasterKeyVersion
         && string.Equals(current.InstallationIdentity, InstallationIdentity, StringComparison.Ordinal);
@@ -112,6 +119,7 @@ public sealed class OperatorAuthorityContext
 
         if (string.IsNullOrWhiteSpace(snapshot.InstallationIdentity)
             || snapshot.AuthorityEpoch <= 0
+            || snapshot.RuntimeAuthorityGeneration <= 0
             || snapshot.MasterKeyVersion == 0)
         {
             return Result<OperatorAuthorityContext>.Failure(
@@ -124,6 +132,7 @@ public sealed class OperatorAuthorityContext
             new OperatorAuthorityContext(
                 requirement,
                 snapshot.InstallationIdentity,
+                snapshot.RuntimeAuthorityGeneration,
                 snapshot.AuthorityEpoch,
                 snapshot.MasterKeyVersion,
                 Guid.NewGuid()));
@@ -136,11 +145,13 @@ public sealed class OperatorAuthorityContext
     internal static OperatorAuthorityContext CreateForTests(
         CovenantAuthorityRequirement requirement,
         Guid installationIdentity,
+        long runtimeAuthorityGeneration,
         long authorityEpoch,
         uint masterKeyVersion) =>
         new(
             requirement,
             installationIdentity.ToString().ToUpperInvariant(),
+            runtimeAuthorityGeneration,
             authorityEpoch,
             masterKeyVersion,
             Guid.NewGuid());

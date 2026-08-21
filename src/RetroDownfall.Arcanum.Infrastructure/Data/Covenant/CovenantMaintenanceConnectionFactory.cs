@@ -43,6 +43,12 @@ internal interface ICovenantMaintenanceConnectionFactory
     Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken);
 
     /// <summary>
+    /// Opens one distinct, unpooled, private-cache, uninitialized read-only connection to this
+    /// installation's live Grimoire, including any committed write-ahead log.
+    /// </summary>
+    Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken);
+
+    /// <summary>
     /// Opens one unpooled, uninitialized read-only handle that can create neither a write-ahead log
     /// nor a wal-index shared-memory file.
     /// </summary>
@@ -109,6 +115,9 @@ internal sealed class CovenantMaintenanceConnectionFactory(IGrimoireDbPassphrase
             },
             cancellationToken);
 
+    public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
+        OpenCoreAsync(ReadOnly(DatabasePath, _passphrase.Passphrase), cancellationToken);
+
     public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
         OpenCoreAsync(SidecarFreeReadOnly(DatabasePath, _passphrase.Passphrase), cancellationToken);
 
@@ -158,6 +167,24 @@ internal sealed class CovenantMaintenanceConnectionFactory(IGrimoireDbPassphrase
             Pooling = false,
 
             Mode = SqliteOpenMode.ReadOnly,
+        };
+
+    /// <summary>
+    /// A live-catalog reader. Unlike <see cref="SidecarFreeReadOnly"/>, this is deliberately not
+    /// immutable: a health proof must observe committed definitions still resident in the WAL.
+    /// </summary>
+    internal static SqliteConnectionStringBuilder ReadOnly(string databasePath, string passphrase) =>
+        new()
+        {
+            DataSource = databasePath,
+
+            Password = passphrase,
+
+            Pooling = false,
+
+            Mode = SqliteOpenMode.ReadOnly,
+
+            Cache = SqliteCacheMode.Private,
         };
 
     /// <summary>Attaches one keyed side file, shared with the scratch factory for the same reason.</summary>

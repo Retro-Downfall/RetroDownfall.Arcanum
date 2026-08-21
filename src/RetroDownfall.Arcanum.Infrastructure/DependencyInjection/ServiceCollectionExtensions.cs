@@ -179,11 +179,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantSqliteConnectionInitializer>(
             static _ => CovenantSqliteConnectionInitializer.Instance);
 
-        // Issue #125. One drain per process, because its correctness is the enrolment set: a
-        // per-resolution instance would hold no handles and would report a clean drain over every
-        // connection this process is actually holding open (§10.20.5).
-        services.AddSingleton<ICovenantConnectionDrain, CovenantConnectionDrain>();
-
         services.AddSingleton<IGrimoireSchemaDataInitializer, CoreGrimoireSchemaDataInitializer>();
 
         services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantCanonicalSchemaDataInitializer>();
@@ -197,18 +192,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<GrimoireSchemaManifestInspector>();
 
         services.AddSingleton<GrimoireSchemaInstaller>();
-
-        // One instance behind both names. Two would let a reader observe an availability generation
-        // the publisher never advanced.
-        services.AddSingleton<CovenantAvailability>();
-
-        services.AddSingleton<ICovenantAvailability>(
-            static sp => sp.GetRequiredService<CovenantAvailability>());
-
-        services.AddSingleton<CovenantAuthoritySnapshotProvider>();
-
-        services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
-            static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
         // One table for the whole host: a Covenant capability is registered by the API pipeline and
         // taken by the in-process MCP server, and those two run on different tasks.
@@ -745,11 +728,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantSqliteConnectionInitializer>(
             static _ => CovenantSqliteConnectionInitializer.Instance);
 
-        // Issue #125. One drain per process, because its correctness is the enrolment set: a
-        // per-resolution instance would hold no handles and would report a clean drain over every
-        // connection this process is actually holding open (§10.20.5).
-        services.AddSingleton<ICovenantConnectionDrain, CovenantConnectionDrain>();
-
         services.AddSingleton<IGrimoireSchemaDataInitializer, CoreGrimoireSchemaDataInitializer>();
 
         services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantCanonicalSchemaDataInitializer>();
@@ -763,18 +741,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<GrimoireSchemaManifestInspector>();
 
         services.AddSingleton<GrimoireSchemaInstaller>();
-
-        // One instance behind both names. Two would let a reader observe an availability generation
-        // the publisher never advanced.
-        services.AddSingleton<CovenantAvailability>();
-
-        services.AddSingleton<ICovenantAvailability>(
-            static sp => sp.GetRequiredService<CovenantAvailability>());
-
-        services.AddSingleton<CovenantAuthoritySnapshotProvider>();
-
-        services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
-            static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
         // One table for the whole host: a Covenant capability is registered by the API pipeline and
         // taken by the in-process MCP server, and those two run on different tasks.
@@ -893,10 +859,10 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionFactoryResetRecoveryHandler>();
 
-        // Issue #118. One producer of a Covenant erasure's effect digest, and one seam that makes
+        // One host-only producer of a Covenant erasure's effect digest, and one seam that makes
         // exclusive-gate acquisition unreachable before the InventoryPrepared checkpoint commits.
-        // Registered and reached by nothing yet: the erasure coordinator that consumes them is #119,
-        // and until it exists MemoryResetScope.Covenant still refuses rather than partially running.
+        // The shared production coordinator now consumes the resulting checkpoint during recovery;
+        // the public route remains refused until its later route-integration slice.
         services.AddSingleton<ICovenantErasureEffectDigestCalculator, CovenantErasureEffectDigestCalculator>();
 
         services.AddScoped<CovenantResetCheckpointInitiator>();
@@ -1191,7 +1157,9 @@ public static class ServiceCollectionExtensions
             static sp => new OperatorAuthorityContextIssuer(
                 sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>()));
 
-        services.AddSingleton<CovenantEnvelopeMasterKeyProvider>();
+        services.AddSingleton(
+            static sp => new CovenantEnvelopeMasterKeyProvider(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
 
         services.AddSingleton<ICovenantEnvelopeMasterKeyProvider>(
             static sp => sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>());
@@ -1208,10 +1176,17 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantDiagnosticTagger(
                 sp.GetRequiredService<ICovenantDiagnosticKeySource>()));
 
-        services.AddSingleton<ICovenantAuthorityTransitionPublisher>(
+        services.AddSingleton(
             static sp => new CovenantAuthorityTransitionPublisher(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
                 sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
-                sp.GetRequiredService<CovenantAuthoritySnapshotProvider>()));
+                sp.GetRequiredService<CovenantAvailability>()));
+
+        services.AddSingleton<ICovenantAuthorityTransitionPublisher>(
+            static sp => sp.GetRequiredService<CovenantAuthorityTransitionPublisher>());
+
+        services.AddSingleton<ICovenantCommittedTransitionPublisher>(
+            static sp => sp.GetRequiredService<CovenantAuthorityTransitionPublisher>());
 
         return services.AddHostProcessToolsAuthority();
 
@@ -1330,13 +1305,35 @@ public static class ServiceCollectionExtensions
         // Explicit factories rather than type registrations: these components declare internal
         // constructors on purpose, so the container is handed exactly the dependency graph the tier
         // intends instead of whatever a reflective activator can reach.
+        services.AddSingleton<CovenantRuntimeGenerationProvider>();
+
+        services.AddSingleton<ICovenantRuntimeGenerationProvider>(
+            static sp => sp.GetRequiredService<CovenantRuntimeGenerationProvider>());
+
+        services.AddSingleton(
+            static sp => new CovenantAvailability(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
+
+        services.AddSingleton<ICovenantAvailability>(
+            static sp => sp.GetRequiredService<CovenantAvailability>());
+
+        services.AddSingleton(
+            static sp => new CovenantAuthoritySnapshotProvider(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
+
+        services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
+            static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
+
+        // Its enrolment set is the proof a drain owns. Every direct Covenant handle in the process
+        // therefore has to meet the same instance, whichever request scope opened it.
+        services.AddSingleton<ICovenantConnectionDrain, CovenantConnectionDrain>();
+
         services.AddSingleton<ICovenantCampaignScopeProbe>(
             static sp => new CovenantCampaignScopeProbe(sp.GetRequiredService<IServiceScopeFactory>()));
 
         services.AddSingleton(
             static sp => new CovenantOperationGate(
-                sp.GetRequiredService<ICovenantAvailability>(),
-                sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
                 sp.GetRequiredService<ICovenantCampaignScopeProbe>()));
 
         services.AddSingleton<ICovenantOperationGate>(
@@ -1403,13 +1400,66 @@ public static class ServiceCollectionExtensions
         // identity would make every subject look like it belonged to a boot that had already ended.
         services.AddSingleton<CovenantProcessBootIdentity>();
 
-        services.AddScoped<ICovenantDisclosureJournal>(
-            static sp => new CovenantDisclosureJournal(
-                sp.GetRequiredService<ICovenantConnectionSource>(),
+        services.AddSingleton<ICovenantMaintenanceConnectionFactory, CovenantMaintenanceConnectionFactory>();
+
+        services.AddSingleton(
+            static sp => new CovenantHealthyCatalogErasureGuard(
+                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<GrimoireSchemaManifestInspector>()));
+
+        services.AddSingleton(static _ => new CovenantManagedFileErasureRequestReader());
+
+        services.AddSingleton(static _ => new CovenantDisclosureExposureReader());
+
+        services.AddSingleton(
+            static sp => new CovenantErasureStartupRecoveryOwnerAdopter(
+                sp.GetRequiredService<CovenantOperationGate>()));
+
+        services.AddSingleton(
+            static sp => new CovenantCanonicalErasureTransaction(
+                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddSingleton<ICovenantCanonicalErasure>(
+            static sp => sp.GetRequiredService<CovenantCanonicalErasureTransaction>());
+
+        services.AddSingleton(
+            static sp => new CovenantLocalErasureStorageHealth(
+                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddSingleton<ICovenantLocalErasureStorageHealth>(
+            static sp => sp.GetRequiredService<CovenantLocalErasureStorageHealth>());
+
+        services.AddSingleton<ICovenantDisclosureTransactionWriter>(
+            static sp => new CovenantDisclosureTransactionWriter(
                 sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
 
-        // Scoped with the journal it wraps: the guard's whole contract is that the receipt commits
-        // through that exact journal before the effect runs, so the two must share a lifetime.
+        // One process-wide warm owner behind both ports. A second instance would carry a second
+        // direct connection and could continue acknowledging while the lifecycle port believed the
+        // writer it had quiesced was the only one.
+        services.AddSingleton(
+            static sp => new CovenantDisclosureWriter(
+                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<ICovenantAvailability>(),
+                sp.GetRequiredService<ICovenantDisclosureTransactionWriter>()));
+
+        services.AddSingleton<ICovenantDisclosureJournal>(
+            static sp => sp.GetRequiredService<CovenantDisclosureWriter>());
+
+        services.AddSingleton<ICovenantDisclosureWriterLifecycle>(
+            static sp => sp.GetRequiredService<CovenantDisclosureWriter>());
+
+        // The guard remains scoped to its effect boundary and delegates to the one process-wide
+        // writer whose lifecycle destructive maintenance owns.
         services.AddScoped(
             static sp => new CovenantToolEgressGuard(
                 sp.GetRequiredService<ICovenantDisclosureJournal>()));
@@ -1493,6 +1543,7 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantSensitiveRetentionPurgeCoordinator(
                 sp.GetRequiredService<IArtifactSensitivityLedger>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<CovenantManagedFileErasureRequestReader>(),
                 sp.GetRequiredService<ICovenantOperationGate>(),
                 sp.GetRequiredService<IOperatorAuthorityContextIssuer>(),
                 sp.GetRequiredService<ICovenantAvailability>(),
@@ -1512,6 +1563,41 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ManagedFileErasureStateMachine>(),
                 sp.GetRequiredService<TimeProvider>()));
+
+        services.AddScoped(
+            static sp => new CovenantErasureInventorySource(
+                sp.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
+                sp.GetRequiredService<CovenantManagedFileErasureRequestReader>(),
+                sp.GetRequiredService<CovenantDisclosureExposureReader>()));
+
+        services.AddScoped<ICovenantErasureInventorySource>(
+            static sp => sp.GetRequiredService<CovenantErasureInventorySource>());
+
+        services.AddScoped(
+            static sp => new CovenantErasureTransition(
+                sp.GetRequiredService<ICovenantCanonicalErasure>(),
+                sp.GetRequiredService<ICovenantLocalErasureStorageHealth>(),
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
+                sp.GetRequiredService<ICovenantCommittedTransitionPublisher>()));
+
+        services.AddScoped<ICovenantErasureTransition>(
+            static sp => sp.GetRequiredService<CovenantErasureTransition>());
+
+        services.AddScoped(
+            static sp => new CovenantErasureCoordinator(
+                sp.GetRequiredService<ILongRunningOperationCoordinator>(),
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
+                sp.GetRequiredService<ICovenantManagedFileErasureKernel>(),
+                sp.GetRequiredService<ICovenantErasureInventorySource>(),
+                sp.GetRequiredService<ICovenantErasureTransition>(),
+                sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
+                sp.GetRequiredService<TimeProvider>(),
+                sp.GetRequiredService<ILogger<CovenantErasureCoordinator>>()));
 
         services.AddScoped<ICovenantLocalErasureStartupRecovery>(
             static sp => new CovenantLocalErasureStartupRecovery(

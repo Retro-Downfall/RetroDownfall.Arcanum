@@ -470,6 +470,11 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A backup must not close admission.");
 
+        public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A backup must not resume or close admission.");
+
         public ValueTask<Result<CovenantCampaignExclusiveLease>> ResumeCampaignExclusiveAsync(
             Guid campaignId,
             CovenantExclusiveRecoveryOwner owner,
@@ -492,6 +497,7 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 
             public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
                 Guid.NewGuid(),
+                1,
                 CovenantLeaseKind.InstallationRead,
                 CovenantLeaseCoverage.Installation,
                 null,

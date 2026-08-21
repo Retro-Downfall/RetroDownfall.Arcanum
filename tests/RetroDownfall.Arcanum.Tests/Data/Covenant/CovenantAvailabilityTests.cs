@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -45,6 +46,8 @@ public sealed class CovenantAvailabilityTests
     /// rather than by sharing a variable the publisher could have crossed.
     /// </summary>
     private static readonly Guid DatasetGeneration = new("2F1A9C7E-4B63-4D18-9E52-0A7C6D3B8F41");
+
+    private static readonly Guid NextDatasetGeneration = new("7D44D16A-1D26-4966-83F4-E53D55CB90C7");
 
     /// <summary>
     /// Every enum code that reaches storage or an operator surface, pinned independently of
@@ -139,6 +142,83 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal(CovenantHealthTransition.Restore, availability.Current.LastHealthTransition);
 
         Assert.Equal(third.Generation, availability.Current.Generation);
+
+    }
+
+    [Fact]
+    public void A_committed_reset_builds_the_complete_tuple_in_one_generation()
+    {
+
+        CovenantAvailability availability = new();
+
+        _ = availability.PublishSchema(HealthyInstallResult(), CovenantHealthTransition.Bootstrap);
+
+        CovenantAvailabilitySnapshot expected = availability.PublishCanonicalState(
+            DatasetGeneration,
+            canonicalSequence: 42,
+            coreCampaignDeletionSequence: 7,
+            rebuildRequired: false,
+            CovenantHealthTransition.CanonicalMutation);
+
+        CovenantCommittedCapabilityTransition transition = new(
+            expected.Generation,
+            expected.Generation + 1,
+            FeatureEnabled: true,
+            CovenantCapabilityState.Healthy,
+            SchemaVersion,
+            CanonicalFingerprint,
+            CovenantCapabilityState.Healthy,
+            SchemaVersion,
+            AcceleratorFingerprint,
+            NextDatasetGeneration,
+            CanonicalSequence: 0,
+            CoreCampaignDeletionSequence: 8,
+            CanonicalAppliedCampaignDeletionSequence: 8,
+            CanonicalAppliedSessionDeletionSequence: 5,
+            AppliedDatasetGeneration: null,
+            AppliedSequence: null,
+            AppliedCampaignDeletionSequence: null,
+            AcceleratorEpoch: 13,
+            CovenantFtsSynchronizationState.Dirty,
+            RebuildRequired: true,
+            CleanupAppliedCampaignSequence: 8,
+            CleanupAppliedSessionSequence: 5,
+            CleanupFullSweepRequired: false,
+            CanonicalDiagnosticCode: null,
+            AcceleratorDiagnosticCode: null);
+
+        Result<CovenantAvailabilitySnapshot> built = availability.BuildCommittedTransition(
+            expected,
+            transition,
+            CovenantHealthTransition.Reset);
+
+        Assert.True(built.IsSuccess);
+
+        Assert.Equal(expected.Generation + 1, built.Value.Generation);
+
+        Assert.True(built.Value.FeatureEnabled);
+
+        Assert.Equal(NextDatasetGeneration, built.Value.DatasetGeneration);
+
+        Assert.Equal(0, built.Value.CanonicalSequence);
+
+        Assert.Equal(8, built.Value.CoreCampaignDeletionSequence);
+
+        Assert.Null(built.Value.AppliedDatasetGeneration);
+
+        Assert.Null(built.Value.AppliedSequence);
+
+        Assert.Null(built.Value.AppliedCampaignDeletionSequence);
+
+        Assert.Equal(13UL, built.Value.AcceleratorEpoch);
+
+        Assert.Equal(CovenantFtsSynchronizationState.Dirty, built.Value.FtsSynchronization);
+
+        Assert.True(built.Value.RebuildRequired);
+
+        Assert.Equal(CovenantHealthTransition.Reset, built.Value.LastHealthTransition);
+
+        Assert.Same(expected, availability.Current);
 
     }
 

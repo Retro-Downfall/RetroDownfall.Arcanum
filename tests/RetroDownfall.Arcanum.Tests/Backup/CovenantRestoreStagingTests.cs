@@ -999,6 +999,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         }
 
+        public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A live restore acquires and never uses the recovery decision.");
+
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A restore takes no nested read lease.");
@@ -1068,6 +1073,7 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
                 Guid.NewGuid(),
+                RuntimeAuthorityGeneration: 1,
                 CovenantLeaseKind.Exclusive,
                 CovenantLeaseCoverage.Installation,
                 Scope: null,
@@ -1083,6 +1089,8 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 CleanupOnlyHistoricalCampaign: false);
 
             public CancellationToken Revocation => CancellationToken.None;
+
+            public Result ExecuteWhileHeld(Func<Result> callback) => callback();
 
             public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
                 ValueTask.FromResult(Result.Success());

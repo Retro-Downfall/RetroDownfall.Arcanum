@@ -246,7 +246,7 @@ public static class GrimoireDatabaseBootstrapper
             grimoireDirectory,
             cancellationToken).ConfigureAwait(false);
 
-        await RecoverProtectedMaintenanceAsync(
+        CovenantOperationGate? recoveredGate = await RecoverProtectedMaintenanceAsync(
             installConnection,
             scopeFactory,
             heldInstallationLock,
@@ -266,6 +266,8 @@ public static class GrimoireDatabaseBootstrapper
         await using (AsyncServiceScope scope = scopeFactory.CreateAsyncScope())
         {
             IGrimoireDbReadiness readiness = scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>();
+
+            recoveredGate?.PublishReadiness();
 
             readiness.MarkReady();
         }
@@ -624,8 +626,8 @@ public static class GrimoireDatabaseBootstrapper
         // Both are optional resolutions, like the Weave availability flag above: a narrow container
         // that installs the schema without composing the authority boundary is a legitimate caller,
         // and a GetRequiredService here would turn that into a startup failure.
-        CovenantAuthoritySnapshotProvider? authorityProvider =
-            scope.ServiceProvider.GetService<CovenantAuthoritySnapshotProvider>();
+        CovenantRuntimeGenerationProvider? runtime =
+            scope.ServiceProvider.GetService<CovenantRuntimeGenerationProvider>();
 
         CovenantEnvelopeMasterKeyProvider? keyProvider =
             scope.ServiceProvider.GetService<CovenantEnvelopeMasterKeyProvider>();
@@ -633,12 +635,12 @@ public static class GrimoireDatabaseBootstrapper
         IHostProcessToolsRuntimePolicy? hostToolsPolicy =
             scope.ServiceProvider.GetService<IHostProcessToolsRuntimePolicy>();
 
-        if (authorityProvider is not null && keyProvider is not null && hostToolsPolicy is not null)
+        if (runtime is not null && keyProvider is not null && hostToolsPolicy is not null)
         {
 
             await CovenantAuthorityStartupReconciler.ReconcileAsync(
                 installConnection,
-                authorityProvider,
+                runtime,
                 keyProvider,
                 published,
                 hostToolsPolicy,
@@ -665,12 +667,12 @@ public static class GrimoireDatabaseBootstrapper
     /// own the installation, and a second process adopting the host's unfinished erasure work would be
     /// two deleters for one file (§10.17).</para>
     ///
-    /// <para>A blocked local-erasure pass and a kept-closed repair are both logged rather than thrown.
-    /// Neither is a reason to refuse to start: the erasure blocker leaves the file, its producer row,
-    /// and its label untouched and visible, and the repair journal keeps Covenant admission closed on
-    /// its own.</para>
+    /// <para>A blocked local-erasure pass and a successfully adopted, later kept-closed repair are
+    /// logged rather than thrown. An erasure or schema-journal read/decode/adoption failure instead
+    /// refuses readiness: after the readiness boundary freezes adoption, no later component could
+    /// reconstruct the missing owner safely.</para>
     /// </remarks>
-    private static async Task RecoverProtectedMaintenanceAsync(
+    private static async Task<CovenantOperationGate?> RecoverProtectedMaintenanceAsync(
         SqliteConnection installConnection,
         IServiceScopeFactory scopeFactory,
         ArcanumMaintenanceLock? heldInstallationLock,
@@ -682,13 +684,65 @@ public static class GrimoireDatabaseBootstrapper
         if (heldInstallationLock is null)
         {
 
-            return;
+            return null;
 
         }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        CovenantOperationGate? gate = scope.ServiceProvider.GetService<CovenantOperationGate>();
 
         CovenantSqliteConnectionInitializer initializer = CovenantSqliteConnectionInitializer.Instance;
 
         initializer.EnsureAuthorizationFunctions(installConnection);
+
+        CovenantSchemaRepairStartupRecovery? repair = null;
+
+        CovenantSchemaRepairStartupRecoveryPreparation? repairPreparation = null;
+
+        if (gate is not null)
+        {
+
+            Result<CovenantExclusiveRecoveryOwner?> erasureOwner = await new
+                CovenantErasureStartupRecoveryOwnerAdopter(gate)
+                .AdoptBeforeReadinessAsync(installConnection, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (erasureOwner.IsFailure)
+            {
+
+                throw ProtectedRecoveryUnavailable();
+
+            }
+
+            repair = new CovenantSchemaRepairStartupRecovery(
+                gate,
+                new CovenantSchemaRepairExecutor(
+                    scope.ServiceProvider.GetRequiredService<GrimoireSchemaManifestInspector>(),
+                    scope.ServiceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
+                    BuildInitializationContext(heldInstallationLock, grimoireDirectory, masterApiKey),
+                    ResolveEmbeddingDimensions(scope)),
+                initializer,
+                TimeProvider.System);
+
+            Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await repair
+                .PrepareBeforeEffectsAsync(
+                    heldInstallationLock,
+                    grimoireDirectory,
+                    installConnection,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (prepared.IsFailure)
+            {
+
+                throw ProtectedRecoveryUnavailable();
+
+            }
+
+            repairPreparation = prepared.Value;
+
+        }
 
         CovenantLocalErasureStartupRecovery localErasure = new(
             new ManagedFileErasureStateMachine(
@@ -722,43 +776,44 @@ public static class GrimoireDatabaseBootstrapper
 
         }
 
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-        if (scope.ServiceProvider.GetService<CovenantOperationGate>() is not { } gate)
+        if (repair is not null && repairPreparation is not null)
         {
 
-            return;
+            Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await repair
+                .RecoverPreparedAsync(
+                    heldInstallationLock,
+                    grimoireDirectory,
+                    installConnection,
+                    repairPreparation,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (recovered.IsFailure)
+            {
+
+                throw ProtectedRecoveryUnavailable();
+
+            }
+
+            if (recovered.Value is CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed)
+            {
+
+                Log.Warning(
+                    "An interrupted Covenant schema repair could not be completed, so Covenant admission "
+                    + "stays closed and its journal remains active for the next start.");
+
+            }
 
         }
 
-        CovenantSchemaRepairStartupRecovery repair = new(
-            gate,
-            new CovenantSchemaRepairExecutor(
-                scope.ServiceProvider.GetRequiredService<GrimoireSchemaManifestInspector>(),
-                scope.ServiceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
-                BuildInitializationContext(heldInstallationLock, grimoireDirectory, masterApiKey),
-                ResolveEmbeddingDimensions(scope)),
-            initializer,
-            TimeProvider.System);
-
-        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await repair
-            .RecoverBeforeReadinessAsync(
-                heldInstallationLock,
-                grimoireDirectory,
-                installConnection,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (recovered.IsFailure || recovered.Value is CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed)
-        {
-
-            Log.Warning(
-                "An interrupted Covenant schema repair could not be completed, so Covenant admission "
-                + "stays closed and its journal remains active for the next start.");
-
-        }
+        return gate;
 
     }
+
+    private static GrimoireDatabaseUnavailableException ProtectedRecoveryUnavailable() =>
+        new(
+            "Protected Covenant startup recovery could not prove one durable owner. "
+                + "See logs for recovery steps.");
 
     /// <summary>
     /// Resolves the configured embedding width, falling back to the shipped default when the options
