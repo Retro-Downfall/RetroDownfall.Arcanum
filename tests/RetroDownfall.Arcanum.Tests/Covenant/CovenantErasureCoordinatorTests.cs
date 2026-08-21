@@ -61,6 +61,104 @@ public sealed class CovenantErasureCoordinatorTests
         "reopen-writer",
     ];
 
+    [Fact]
+    public async Task Factory_continuation_runs_after_its_durable_boundary_and_before_handle_proof()
+    {
+
+        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.True(
+            harness.Steps.IndexOf("erase-managed-files")
+            < harness.Steps.IndexOf("apply-ordinary-factory-reset"));
+
+        Assert.True(
+            harness.Steps.IndexOf("apply-ordinary-factory-reset")
+            < harness.Steps.IndexOf("close-handles"));
+
+    }
+
+    [Theory]
+    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, 1)]
+    [InlineData(CovenantResetPhase.HandlesClosed, 0)]
+    [InlineData(CovenantResetPhase.SidecarsVerified, 0)]
+    public async Task Factory_recovery_reruns_continuation_only_before_HandlesClosed_is_durable(
+        CovenantResetPhase phase,
+        int expectedCalls)
+    {
+
+        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(phase);
+
+        Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
+
+        Assert.Equal(expectedCalls, harness.FactoryContinuationCalls);
+
+    }
+
+    [Fact]
+    public async Task Factory_continuation_failure_keeps_admission_closed_at_ManagedArtifactsProcessed()
+    {
+
+        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
+        {
+
+            FactoryContinuationFailure = new Error(
+                ErrorCodes.Data.ReconciliationFailed,
+                "Ordinary factory deletion did not reconcile."),
+
+        };
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, completion.Value.BlockingErrorCode);
+
+        Assert.DoesNotContain("close-handles", harness.Steps);
+
+        LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
+
+        Assert.Equal(
+            CovenantResetPhase.ManagedArtifactsProcessed,
+            CovenantRecoveryCheckpointCodec
+                .DecodeDataRetentionFactoryReset(durable.CheckpointPayload!)
+                .Value
+                .Phase);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    [Fact]
+    public async Task Four_argument_reset_overload_refuses_a_factory_checkpoint_before_gate_effects()
+    {
+
+        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+
+        Result<CovenantErasureCompletion> completion = await harness.RunWithoutFactoryContinuationAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.InvalidScope, completion.Error.Code);
+
+        Assert.Equal(0, harness.Gate.ResumeOrAcquireCount);
+
+        Assert.Empty(harness.Steps);
+
+    }
+
     [Theory]
     [InlineData(CovenantExclusiveOperation.CovenantReset)]
     [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
@@ -82,7 +180,11 @@ public sealed class CovenantErasureCoordinatorTests
         // persists its durable work item before its first external effect, and that work item is a
         // database row: a file deleted before the transaction that authorized it would be a deletion
         // no surviving row can explain.
-        Assert.Equal(CleanRunSteps, harness.Steps);
+        string[] expectedSteps = operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
+            ? [.. CleanRunSteps[..4], "apply-ordinary-factory-reset", .. CleanRunSteps[4..]]
+            : CleanRunSteps;
+
+        Assert.Equal(expectedSteps, harness.Steps);
 
         Assert.Equal(
             CovenantOperationGateFixture.DatasetGeneration,
@@ -1128,6 +1230,10 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal RecordingOperationCoordinator Operations { get; }
 
+        internal int FactoryContinuationCalls { get; private set; }
+
+        internal Error? FactoryContinuationFailure { get; init; }
+
         internal CoordinatorHarness(
             CovenantExclusiveOperation operation = CovenantExclusiveOperation.CovenantReset,
             TimeSpan? drainTimeout = null,
@@ -1238,15 +1344,77 @@ public sealed class CovenantErasureCoordinatorTests
                 TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 
+            CovenantErasureCheckpointState checkpoint = new(
+                checkpointOperationId ?? OperationId,
+                _operation,
+                CovenantOperationGateFixture.Digest(7),
+                phase);
+
+            if (_operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
+            {
+
+                return await coordinator.RunAsync(
+                    operation,
+                    checkpoint,
+                    "owner",
+                    RunFactoryContinuationAsync,
+                    cancellationToken ?? Token);
+
+            }
+
+            return await coordinator.RunAsync(
+                operation,
+                checkpoint,
+                "owner",
+                cancellationToken ?? Token);
+
+        }
+
+        internal async Task<Result<CovenantErasureCompletion>> RunWithoutFactoryContinuationAsync(
+            CovenantResetPhase phase)
+        {
+
+            LongRunningOperation operation = Operation(phase);
+
+            Store.Add(operation);
+
+            CovenantErasureCoordinator coordinator = new(
+                Operations,
+                Store,
+                Gate,
+                Artifacts,
+                ManagedFiles,
+                _inventory,
+                Transition,
+                DisclosureWriter,
+                TimeProvider.System,
+                NullLogger<CovenantErasureCoordinator>.Instance);
+
             return await coordinator.RunAsync(
                 operation,
                 new CovenantErasureCheckpointState(
-                    checkpointOperationId ?? OperationId,
+                    OperationId,
                     _operation,
                     CovenantOperationGateFixture.Digest(7),
                     phase),
                 "owner",
-                cancellationToken ?? Token);
+                Token);
+
+        }
+
+        private Task<Result> RunFactoryContinuationAsync(CancellationToken cancellationToken)
+        {
+
+            _ = cancellationToken;
+
+            FactoryContinuationCalls++;
+
+            Steps.Add("apply-ordinary-factory-reset");
+
+            return Task.FromResult(
+                FactoryContinuationFailure is { } failure
+                    ? Result.Failure(failure)
+                    : Result.Success());
 
         }
 

@@ -236,9 +236,12 @@ internal sealed partial class DataRetentionService
 
     private async Task<DataRetentionApplyResult> ApplyFactoryResetAsync(
         Guid operationId,
+        string leaseOwner,
         DataRetentionPlan plan,
         CancellationToken cancellationToken)
     {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
 
         // Lock ordering is managed-log gate -> SQLite writer transaction. Log publication never
         // enters SQLite, so the reset cannot hold the database writer while waiting on an append.
@@ -386,6 +389,8 @@ internal sealed partial class DataRetentionService
                     Revision = Revision + 1
                 WHERE lower(replace(Id, '-', '')) = @currentId
                   AND State = @running
+                  AND LeaseOwner = @leaseOwner
+                  AND LeaseExpiresAt > @now
                 """,
                 cancellationToken,
                 ("@now", leaseRenewedAt.ToString("o", CultureInfo.InvariantCulture)),
@@ -393,12 +398,13 @@ internal sealed partial class DataRetentionService
                     .Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration)
                     .ToString("o", CultureInfo.InvariantCulture)),
                 ("@currentId", operationId.ToString("N")),
+                ("@leaseOwner", leaseOwner),
                 ("@running", (int)LongRunningOperationState.Running)).ConfigureAwait(false);
 
             if (renewed != 1)
             {
 
-                throw new RetentionConflictException(
+                throw new DataRetentionLeaseLostException(
                     "Factory reset lost its durable operation lease before file cleanup.");
 
             }
@@ -571,33 +577,51 @@ internal sealed partial class DataRetentionService
 
         }
 
+        if (string.IsNullOrWhiteSpace(operation.LeaseOwner))
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.MaintenanceFailed);
+
+        }
+
         try
         {
 
-            DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
-
-            DataRetentionPlan plan = await BuildFactoryResetPlanCoreAsync(
-                request,
+            return await _leaseMaintainer.RunAsync(
                 operation.Id,
+                operation.LeaseOwner,
+                async maintainedToken =>
+                {
+
+                    DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+                    DataRetentionPlan plan = await BuildFactoryResetPlanCoreAsync(
+                        request,
+                        operation.Id,
+                        maintainedToken).ConfigureAwait(false);
+
+                    if (plan.Conflicts.Length > 0)
+                    {
+
+                        return LongRunningOperationRecoveryResult.Failed(
+                            ErrorCodes.Data.Conflict);
+
+                    }
+
+                    DataRetentionApplyResult result = await ApplyFactoryResetAsync(
+                        operation.Id,
+                        operation.LeaseOwner,
+                        plan,
+                        maintainedToken).ConfigureAwait(false);
+
+                    return result.Reconciled
+                        ? LongRunningOperationRecoveryResult.Completed()
+                        : LongRunningOperationRecoveryResult.Failed(
+                            ErrorCodes.Data.ReconciliationFailed);
+
+                },
                 cancellationToken).ConfigureAwait(false);
-
-            if (plan.Conflicts.Length > 0)
-            {
-
-                return LongRunningOperationRecoveryResult.Failed(
-                    ErrorCodes.Data.Conflict);
-
-            }
-
-            DataRetentionApplyResult result = await ApplyFactoryResetAsync(
-                operation.Id,
-                plan,
-                cancellationToken).ConfigureAwait(false);
-
-            return result.Reconciled
-                ? LongRunningOperationRecoveryResult.Completed()
-                : LongRunningOperationRecoveryResult.Failed(
-                    ErrorCodes.Data.ReconciliationFailed);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -611,6 +635,18 @@ internal sealed partial class DataRetentionService
 
             return LongRunningOperationRecoveryResult.Failed(
                 ErrorCodes.Data.Conflict);
+
+        }
+        catch (DataRetentionLeaseLostException ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Factory-reset recovery lost ownership of durable operation {OperationId}.",
+                operation.Id);
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.MaintenanceFailed);
 
         }
         catch (RetentionQuarantineRecoveryRequiredException ex)
@@ -644,11 +680,10 @@ internal sealed partial class DataRetentionService
     /// Reconciles a version-1 healthy-catalog factory erasure.
     /// </summary>
     /// <remarks>
-    /// Rebuilds the identical exclusive owner from the checkpoint alone and parks the operation.
-    /// This build has no erasure coordinator to resume it with, and restarting it down the ordinary
-    /// idempotent path would run the factory contract's deletion over a family whose canonical arm
-    /// an interrupted erasure may already have replaced — while every reader that erasure closed
-    /// admission against is still waiting (§10.20.3).
+    /// Rebuilds the identical exclusive owner from the checkpoint alone and resumes the existing
+    /// erasure coordinator. The restart-idempotent ordinary continuation reruns only while
+    /// <c>ManagedArtifactsProcessed</c> is the durable boundary; <c>HandlesClosed</c> and later phases
+    /// prove that cleanup already completed and skip it (§10.20.3).
     /// </remarks>
     private async Task<LongRunningOperationRecoveryResult> RecoverCovenantFactoryErasureAsync(
         LongRunningOperation operation,
@@ -694,13 +729,47 @@ internal sealed partial class DataRetentionService
             state.Value.Phase,
             operation.Id);
 
-        Result<CovenantErasureCompletion> recovered = await _covenantErasureCoordinator
-            .RunAsync(
-                operation,
-                state.Value,
+        Result<CovenantErasureCompletion> recovered;
+
+        try
+        {
+
+            recovered = await _leaseMaintainer.RunAsync(
+                operation.Id,
                 operation.LeaseOwner,
-                cancellationToken)
-            .ConfigureAwait(false);
+                maintainedToken => _covenantErasureCoordinator.RunAsync(
+                    operation,
+                    state.Value,
+                    operation.LeaseOwner,
+                    async continuationToken =>
+                    {
+
+                        Result<DataRetentionApplyResult> continued = await ContinueFactoryResetAsync(
+                            operation.Id,
+                            operation.LeaseOwner,
+                            continuationToken).ConfigureAwait(false);
+
+                        return continued.IsSuccess
+                            ? Result.Success()
+                            : Result.Failure(continued.Error);
+
+                    },
+                    maintainedToken),
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (DataRetentionLeaseLostException ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Covenant factory-erasure recovery lost ownership of durable operation {OperationId}.",
+                operation.Id);
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.MaintenanceFailed);
+
+        }
 
         return MapCovenantErasureRecovery(recovered);
 

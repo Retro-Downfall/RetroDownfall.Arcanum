@@ -4,7 +4,13 @@ using System.Text;
 
 using System.Text.Json;
 
+using Microsoft.AspNetCore.Builder;
+
+using Microsoft.AspNetCore.Hosting;
+
 using Microsoft.AspNetCore.Http;
+
+using Microsoft.AspNetCore.Routing;
 
 using Microsoft.Extensions.DependencyInjection;
 
@@ -18,7 +24,11 @@ using RetroDownfall.Arcanum.Api.Security;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -63,6 +73,8 @@ public sealed class DataRetentionEndpointTests
     [InlineData("DELETE", "/api/data/attachments/22222222-2222-2222-2222-222222222222")]
 
     [InlineData("POST", "/api/data/memory/reset")]
+
+    [InlineData("POST", "/api/data/memory/reset/plan")]
 
     [InlineData("POST", "/api/data/factory-reset")]
 
@@ -119,6 +131,548 @@ public sealed class DataRetentionEndpointTests
             .SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Covenant_memory_reset_preview_returns_a_plan_without_applying_data()
+    {
+
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new();
+
+        RecordingCovenantLease lease = new();
+
+        service.PlanAdmissionHandler = (dataRequest, capability) =>
+        {
+
+            Assert.Equal(DataRetentionPlanAdmissionCapability.Request, capability);
+
+            return Result<DataRetentionPlanAdmission>.Success(
+                new DataRetentionPlanAdmission(
+                    service.Plan with { Request = dataRequest },
+                    lease));
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/memory/reset/plan",
+            JsonContent(
+                new MemoryResetRequest(MemoryResetScope.Covenant),
+                ArcanumJsonContext.Default.MemoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<DataRetentionPlan> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        Assert.True(body.IsSuccess);
+
+        Assert.Equal(DataRetentionOperation.ResetMemory, body.Data?.Request.Operation);
+
+        Assert.Equal(MemoryResetScope.Covenant, body.Data?.Request.MemoryScope);
+
+        Assert.Equal(0, service.ApplyCallCount);
+
+        Assert.Equal(
+            new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant),
+            service.LastPlanRequest);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Covenant_data_lifecycle_routes_require_lifecycle_manage_authority()
+    {
+
+        RequireSqlCipher();
+
+        _ = _factory.CreateClient();
+
+        EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
+
+        string[] expectedNames =
+        [
+            "PlanDataRetentionMemoryReset",
+            "ResetDataRetentionMemory",
+            "PlanFactoryResetDataRetention",
+            "FactoryResetDataRetention",
+        ];
+
+        RouteEndpoint[] routes =
+        [
+            .. endpoints.Endpoints
+                .OfType<RouteEndpoint>()
+                .Where(endpoint => expectedNames.Contains(
+                    endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName,
+                    StringComparer.Ordinal)),
+        ];
+
+        Assert.Equal(expectedNames.Length, routes.Length);
+
+        foreach (RouteEndpoint route in routes)
+        {
+
+            CovenantAuthorityRequirementMetadata? metadata = route.Metadata
+                .GetMetadata<CovenantAuthorityRequirementMetadata>();
+
+            Assert.NotNull(metadata);
+
+            Assert.Equal(CovenantAuthorityRequirement.LifecycleManage, metadata.Requirement);
+
+        }
+
+    }
+
+    [SkippableFact]
+
+    public async Task Covenant_reset_and_factory_plans_hold_their_read_lease_through_the_protected_response()
+    {
+
+        RequireSqlCipher();
+
+        List<RecordingCovenantLease> leases = [];
+
+        FakeDataRetentionService service = new()
+        {
+            PlanAdmissionHandler = (request, _) =>
+            {
+
+                RecordingCovenantLease lease = new();
+
+                leases.Add(lease);
+
+                return Result<DataRetentionPlanAdmission>.Success(
+                    new DataRetentionPlanAdmission(
+                    CreatePlan(request) with
+                    {
+
+                        Request = request,
+                        Covenant = new DataRetentionCovenantInventory(
+                            Rows: 1,
+                            ManagedFiles: 2,
+                            LocalArtifacts: 3,
+                            AffectedSessions: 4,
+                            PossibleDisclosures: 5,
+                            CovenantDisclosureCountKind.Exact),
+
+                    },
+                    lease));
+
+            },
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = CreateLoopbackAuthenticatedClient(factory);
+
+        HttpResponseMessage resetResponse = await client.PostAsync(
+            "/api/data/memory/reset/plan",
+            JsonContent(
+                new MemoryResetRequest(MemoryResetScope.Covenant),
+                ArcanumJsonContext.Default.MemoryResetRequest));
+
+        HttpResponseMessage factoryResponse = await client.PostAsync(
+            "/api/data/factory-reset/plan",
+            JsonContent(
+                new InstallationResetDataPlanRequest(InstallationResetDataScope.Global),
+                ArcanumJsonContext.Default.InstallationResetDataPlanRequest));
+
+        Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, factoryResponse.StatusCode);
+
+        foreach (HttpResponseMessage response in new[] { resetResponse, factoryResponse })
+        {
+
+            AssertProtectedCovenantHeaders(response);
+
+        }
+
+        Assert.Equal(2, leases.Count);
+
+        Assert.All(leases, static lease =>
+        {
+
+            Assert.Equal(1, lease.Revalidations);
+
+            Assert.Equal(1, lease.Disposals);
+
+        });
+
+    }
+
+    [SkippableFact]
+
+    public async Task A_stale_covenant_plan_writes_a_typed_503_refusal_with_protected_headers()
+    {
+
+        RequireSqlCipher();
+
+        RecordingCovenantLease lease = new()
+        {
+
+            Revalidation = Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ErasureIncomplete,
+                    "Covenant erasure remains incomplete.")),
+
+        };
+
+        FakeDataRetentionService service = new()
+        {
+
+            PlanAdmissionHandler = (request, _) => Result<DataRetentionPlanAdmission>.Success(
+                new DataRetentionPlanAdmission(
+                    CreatePlan(request),
+                    lease)),
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/memory/reset/plan",
+            JsonContent(
+                new MemoryResetRequest(MemoryResetScope.Covenant),
+                ArcanumJsonContext.Default.MemoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        ApiResponse<DataRetentionPlan> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, body.Error?.Code);
+
+        Assert.Null(body.Data);
+
+        AssertProtectedCovenantHeaders(response);
+
+        Assert.Equal(1, lease.Revalidations);
+
+        Assert.Equal(1, lease.Disposals);
+
+    }
+
+    [Fact]
+
+    public async Task A_covenant_plan_lease_remains_held_until_delayed_json_serialization_finishes()
+    {
+
+        RecordingCovenantLease lease = new();
+
+        DelayedWriteStream body = new();
+
+        DefaultHttpContext context = new();
+
+        context.Response.Body = body;
+
+        CovenantProtectedJsonResult<DataRetentionPlan> result = new(
+            lease,
+            Result<DataRetentionPlan>.Success(
+                CreatePlan(
+                    new DataRetentionRequest(
+                        DataRetentionOperation.ResetMemory,
+                        MemoryScope: MemoryResetScope.Covenant))),
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        Task execution = result.ExecuteAsync(context);
+
+        await body.WriteStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, lease.Revalidations);
+
+        Assert.Equal(0, lease.Disposals);
+
+        body.ReleaseWrites();
+
+        await execution;
+
+        Assert.NotEmpty(body.ToArray());
+
+        Assert.Equal(1, lease.Disposals);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Covenant_plan_admission_failure_is_mapped_without_serving_a_lease_free_plan()
+    {
+
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new()
+        {
+
+            PlanAdmissionHandler = static (_, _) => Result<DataRetentionPlanAdmission>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ErasureIncomplete,
+                    "Covenant erasure remains incomplete.")),
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/memory/reset/plan",
+            JsonContent(
+                new MemoryResetRequest(MemoryResetScope.Covenant),
+                ArcanumJsonContext.Default.MemoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        ApiResponse<DataRetentionPlan> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, body.Error?.Code);
+
+        Assert.Null(body.Data);
+
+        Assert.Equal(0, service.ApplyCallCount);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public async Task Protected_plan_endpoint_rejects_a_successful_admission_without_its_required_lease(
+        bool factoryReset)
+    {
+
+        RequireSqlCipher();
+
+        DataRetentionPlanAdmissionCapability? observedCapability = null;
+
+        FakeDataRetentionService service = new()
+        {
+
+            PlanAdmissionHandler = (request, capability) =>
+            {
+
+                observedCapability = capability;
+
+                return Result<DataRetentionPlanAdmission>.Success(
+                    new DataRetentionPlanAdmission(
+                        CreatePlan(request),
+                        ReadLease: null));
+
+            },
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = CreateLoopbackAuthenticatedClient(factory);
+
+        HttpResponseMessage response = factoryReset
+            ? await client.PostAsync(
+                "/api/data/factory-reset/plan",
+                JsonContent(
+                    new InstallationResetDataPlanRequest(InstallationResetDataScope.Global),
+                    ArcanumJsonContext.Default.InstallationResetDataPlanRequest))
+            : await client.PostAsync(
+                "/api/data/memory/reset/plan",
+                JsonContent(
+                    new MemoryResetRequest(MemoryResetScope.Covenant),
+                    ArcanumJsonContext.Default.MemoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        ApiResponse<DataRetentionPlan> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, body.Error?.Code);
+
+        Assert.Null(body.Data);
+
+        Assert.Equal(
+            factoryReset
+                ? DataRetentionPlanAdmissionCapability.Installation
+                : DataRetentionPlanAdmissionCapability.Request,
+            observedCapability);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public async Task Covenant_plan_endpoints_complete_only_after_their_installation_lease_is_disposed(
+        bool factoryWorkspacePlan)
+    {
+
+        RequireSqlCipher();
+
+        RecordingCovenantLease lease = new(blockDisposal: true);
+
+        DataRetentionPlanAdmissionCapability? observedCapability = null;
+
+        FakeDataRetentionService service = new()
+        {
+
+            PlanAdmissionHandler = (request, capability) =>
+            {
+
+                observedCapability = capability;
+
+                return Result<DataRetentionPlanAdmission>.Success(
+                    new DataRetentionPlanAdmission(CreatePlan(request), lease));
+
+            },
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = CreateLoopbackAuthenticatedClient(factory);
+
+        using HttpRequestMessage request = factoryWorkspacePlan
+            ? new HttpRequestMessage(HttpMethod.Post, "/api/data/factory-reset/plan")
+            : new HttpRequestMessage(HttpMethod.Post, "/api/data/memory/reset/plan");
+
+        request.Content = factoryWorkspacePlan
+            ? JsonContent(
+                new InstallationResetDataPlanRequest(
+                    InstallationResetDataScope.Workspace,
+                    new DataRetentionWorkspaceBinding(
+                        Guid.Parse("44444444-4444-4444-4444-444444444444"),
+                        "/workspace")),
+                ArcanumJsonContext.Default.InstallationResetDataPlanRequest)
+            : JsonContent(
+                new MemoryResetRequest(MemoryResetScope.Covenant),
+                ArcanumJsonContext.Default.MemoryResetRequest);
+
+        HttpResponseMessage response = await client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead);
+
+        Task<string> body = response.Content.ReadAsStringAsync();
+
+        await lease.DisposalStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(
+            factoryWorkspacePlan
+                ? DataRetentionPlanAdmissionCapability.Installation
+                : DataRetentionPlanAdmissionCapability.Request,
+            observedCapability);
+
+        Assert.Equal(CovenantLeaseKind.InstallationRead, lease.Snapshot.Kind);
+
+        Assert.False(body.IsCompleted);
+
+        lease.ReleaseDisposal();
+
+        Assert.NotEmpty(await body);
+
+        Assert.Equal(1, lease.Revalidations);
+
+        Assert.Equal(1, lease.Disposals);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public async Task Covenant_plan_endpoints_do_not_begin_lease_disposal_until_their_json_body_write_finishes(
+        bool factoryWorkspacePlan)
+    {
+
+        RequireSqlCipher();
+
+        ResponseWriteProbe bodyWrite = new();
+
+        RecordingCovenantLease lease = new();
+
+        FakeDataRetentionService service = new()
+        {
+
+            PlanAdmissionHandler = (request, _) => Result<DataRetentionPlanAdmission>.Success(
+                new DataRetentionPlanAdmission(CreatePlan(request), lease)),
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service, bodyWrite);
+
+        using HttpClient client = CreateLoopbackAuthenticatedClient(factory);
+
+        using HttpRequestMessage request = factoryWorkspacePlan
+            ? new HttpRequestMessage(HttpMethod.Post, "/api/data/factory-reset/plan")
+            : new HttpRequestMessage(HttpMethod.Post, "/api/data/memory/reset/plan");
+
+        request.Content = factoryWorkspacePlan
+            ? JsonContent(
+                new InstallationResetDataPlanRequest(
+                    InstallationResetDataScope.Workspace,
+                    new DataRetentionWorkspaceBinding(
+                        Guid.Parse("44444444-4444-4444-4444-444444444444"),
+                        "/workspace")),
+                ArcanumJsonContext.Default.InstallationResetDataPlanRequest)
+            : JsonContent(
+                new MemoryResetRequest(MemoryResetScope.Covenant),
+                ArcanumJsonContext.Default.MemoryResetRequest);
+
+        Task<HttpResponseMessage> responseTask = client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead);
+
+        Task<string> bodyTask = responseTask.ContinueWith(
+            static async task => await (await task).Content.ReadAsStringAsync(),
+            TaskScheduler.Default).Unwrap();
+
+        await bodyWrite.WriteStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, lease.Revalidations);
+
+        Assert.Equal(0, lease.Disposals);
+
+        Assert.False(bodyWrite.WriteCompleted.IsCompleted);
+
+        Assert.False(bodyTask.IsCompleted);
+
+        bodyWrite.ReleaseWrite();
+
+        await bodyWrite.WriteCompleted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await lease.DisposalStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, lease.Disposals);
+
+        HttpResponseMessage response = await responseTask;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.NotEmpty(await bodyTask);
 
     }
 
@@ -210,7 +764,7 @@ public sealed class DataRetentionEndpointTests
 
     [SkippableFact]
 
-    public async Task Covenant_reset_plan_keeps_the_unwired_route_refusal_observable()
+    public async Task Covenant_reset_plan_is_not_refused_by_the_retired_activation_conflict()
     {
 
         RequireSqlCipher();
@@ -226,39 +780,36 @@ public sealed class DataRetentionEndpointTests
 
         DataRetentionPlan plan = await service.PlanAsync(request);
 
-        DataRetentionConflict conflict = Assert.Single(plan.Conflicts);
-
-        Assert.Equal(
-            DataRetentionConflictCodes.CovenantResetRequiresErasureCoordinator,
-            conflict.Code);
-
-        Assert.Contains(
-            "production Covenant erasure coordinator exists but is not yet wired to this route",
-            conflict.Message,
-            StringComparison.Ordinal);
+        Assert.Empty(plan.Conflicts);
 
         using HttpClient client = _factory.CreateAuthenticatedClient();
 
         HttpResponseMessage response = await client.PostAsync(
-            "/api/data/memory/reset",
+            "/api/data/memory/reset/plan",
             JsonContent(
                 new MemoryResetRequest(MemoryResetScope.Covenant),
                 ArcanumJsonContext.Default.MemoryResetRequest));
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        ApiResponse<DataRetentionApplyResult> body = await ReadAsync(
+        ApiResponse<DataRetentionPlan> body = await ReadAsync(
             response,
-            ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
 
-        Assert.False(body.IsSuccess);
+        Assert.True(body.IsSuccess);
 
-        Assert.Equal(ErrorCodes.Data.Conflict, body.Error?.Code);
+        Assert.Empty(body.Data?.Conflicts ?? []);
 
-        Assert.Contains(
-            "production Covenant erasure coordinator exists but is not yet wired to this route",
-            body.Error?.Message,
-            StringComparison.Ordinal);
+        Assert.Null(
+            typeof(DataRetentionPlan).Assembly
+                .GetTypes()
+                .SelectMany(static type => type.GetFields(
+                    System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.Static
+                    | System.Reflection.BindingFlags.DeclaredOnly))
+                .SingleOrDefault(static field =>
+                    field.IsLiteral
+                    && field.GetRawConstantValue() is "Data.CovenantResetRequiresErasureCoordinator"));
 
     }
 
@@ -310,6 +861,64 @@ public sealed class DataRetentionEndpointTests
     }
 
     [SkippableTheory]
+    [InlineData("{\"confirmation\":\"factory-reset\",\"expectedPlanId\":\"factory-plan-128\"}")]
+    [InlineData("{\"confirmation\":\"factory-reset\",\"requestedOperationId\":\"51515151-5151-4151-8151-515151515151\"}")]
+    public async Task Factory_reset_requires_the_confirmed_plan_and_requested_name_together(
+        string json)
+    {
+
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using StringContent content = new(json, Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset",
+            content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(0, service.ApplyCallCount);
+
+    }
+
+    [SkippableFact]
+    public async Task Factory_reset_maps_the_confirmed_plan_and_requested_name_to_apply()
+    {
+
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        const string Json =
+            "{\"confirmation\":\"factory-reset\",\"expectedPlanId\":\"factory-plan-128\",\"requestedOperationId\":\"52525252-5252-4252-8252-525252525252\"}";
+
+        using StringContent content = new(Json, Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset",
+            content);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal("factory-plan-128", service.LastApplyRequest?.ExpectedPlanId);
+
+        Assert.Equal(
+            Guid.Parse("52525252-5252-4252-8252-525252525252"),
+            service.LastApplyRequest?.RequestedOperationId);
+
+    }
+
+    [SkippableTheory]
 
     [InlineData(InstallationResetDataScope.Global, DataRetentionOperation.FactoryReset)]
 
@@ -323,6 +932,20 @@ public sealed class DataRetentionEndpointTests
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
+
+        RecordingCovenantLease lease = new();
+
+        service.PlanAdmissionHandler = (dataRequest, capability) =>
+        {
+
+            Assert.Equal(DataRetentionPlanAdmissionCapability.Installation, capability);
+
+            return Result<DataRetentionPlanAdmission>.Success(
+                new DataRetentionPlanAdmission(
+                    service.Plan with { Request = dataRequest },
+                    lease));
+
+        };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
 
@@ -613,6 +1236,7 @@ public sealed class DataRetentionEndpointTests
             (ErrorCodes.Data.Conflict, HttpStatusCode.Conflict),
             (ErrorCodes.Data.InvalidRequest, HttpStatusCode.BadRequest),
             (ErrorCodes.Data.ReconciliationFailed, HttpStatusCode.InternalServerError),
+            (ErrorCodes.Covenant.ErasureIncomplete, HttpStatusCode.ServiceUnavailable),
         ];
 
         foreach ((string code, HttpStatusCode expectedStatus) in cases)
@@ -686,7 +1310,9 @@ public sealed class DataRetentionEndpointTests
         HttpResponseMessage memoryResponse = await client.PostAsync(
             "/api/data/memory/reset",
             JsonContent(
-                new MemoryResetRequest(MemoryResetScope.Entry),
+                new MemoryResetRequest(
+                    MemoryResetScope.Entry,
+                    ExpectedPlanId: "memory-plan-87"),
                 ArcanumJsonContext.Default.MemoryResetRequest));
 
         Assert.Equal(HttpStatusCode.OK, memoryResponse.StatusCode);
@@ -697,6 +1323,8 @@ public sealed class DataRetentionEndpointTests
                 TargetId: null,
                 MemoryScope: MemoryResetScope.Entry),
             service.LastApplyRequest?.Request);
+
+        Assert.Equal("memory-plan-87", service.LastApplyRequest?.ExpectedPlanId);
 
     }
 
@@ -904,7 +1532,8 @@ public sealed class DataRetentionEndpointTests
     }
 
     private static ArcanumWebApplicationFactory CreateFactory(
-        FakeDataRetentionService service)
+        FakeDataRetentionService service,
+        ResponseWriteProbe? responseWrite = null)
     {
 
         ArcanumWebApplicationFactory factory = new();
@@ -924,6 +1553,14 @@ public sealed class DataRetentionEndpointTests
                 return service;
 
             });
+
+            if (responseWrite is not null)
+            {
+
+                services.AddSingleton<IStartupFilter>(
+                    new ResponseWriteStartupFilter(responseWrite));
+
+            }
 
         };
 
@@ -959,6 +1596,38 @@ public sealed class DataRetentionEndpointTests
             JsonSerializer.Serialize(value, typeInfo),
             Encoding.UTF8,
             "application/json");
+
+    private static DataRetentionPlan CreatePlan(DataRetentionRequest request) =>
+        new(
+            "plan-test",
+            request,
+            new DateTimeOffset(2026, 8, 2, 12, 0, 0, TimeSpan.Zero),
+            [],
+            [],
+            [],
+            Rows: 2,
+            Files: 1,
+            EstimatedBytes: 512,
+            DerivedRecords: 3,
+            CandidateIds: ["candidate"],
+            RequiresConfirmation: true);
+
+    private static void AssertProtectedCovenantHeaders(HttpResponseMessage response)
+    {
+
+        Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+
+        Assert.Contains("no-cache", response.Headers.Pragma.Select(static value => value.Name));
+
+        Assert.Equal(
+            "0",
+            response.Content.Headers.NonValidated["Expires"].Single());
+
+        Assert.Null(response.Headers.ETag);
+
+        Assert.Null(response.Content.Headers.LastModified);
+
+    }
 
     private static async Task<ApiResponse<T>> ReadAsync<T>(
         HttpResponseMessage response,
@@ -1031,6 +1700,18 @@ public sealed class DataRetentionEndpointTests
 
         }
 
+        public Func<
+            DataRetentionRequest,
+            DataRetentionPlanAdmissionCapability,
+            Result<DataRetentionPlanAdmission>>? PlanAdmissionHandler
+        {
+
+            get;
+
+            set;
+
+        }
+
         public Task<DataRetentionStatus> GetStatusAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Status);
@@ -1048,6 +1729,25 @@ public sealed class DataRetentionEndpointTests
 
         }
 
+        public Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
+            DataRetentionRequest request,
+            CancellationToken cancellationToken = default,
+            DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request)
+        {
+
+            LastPlanRequest = request;
+
+            ObservedRetention = RetentionSnapshot?.Invoke();
+
+            return Task.FromResult(
+                PlanAdmissionHandler?.Invoke(request, capability)
+                ?? Result<DataRetentionPlanAdmission>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.MaintenanceFailed,
+                        "This fake has no Covenant planning lease.")));
+
+        }
+
         public Task<Result<DataRetentionApplyResult>> ApplyAsync(
             DataRetentionApplyRequest request,
             CancellationToken cancellationToken = default)
@@ -1062,6 +1762,223 @@ public sealed class DataRetentionEndpointTests
                 ?? Result<DataRetentionApplyResult>.Success(Applied));
 
         }
+
+    }
+
+    private sealed class RecordingCovenantLease(bool blockDisposal = false) : ICovenantSnapshotReadLease
+    {
+
+        private readonly CancellationTokenSource _revocation = new();
+
+        private readonly TaskCompletionSource _disposalStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _disposalReleased = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Result Revalidation { get; init; } = Result.Success();
+
+        public int Revalidations { get; private set; }
+
+        public int Disposals { get; private set; }
+
+        public Task DisposalStarted => _disposalStarted.Task;
+
+        public void ReleaseDisposal() => _disposalReleased.TrySetResult();
+
+        public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
+            Guid.NewGuid(),
+            RuntimeAuthorityGeneration: 1,
+            CovenantLeaseKind.InstallationRead,
+            CovenantLeaseCoverage.Installation,
+            Scope: null,
+            DatasetGeneration: Guid.NewGuid(),
+            CapabilityGeneration: 1,
+            AuthorityEpoch: 1,
+            CanonicalSequence: 0,
+            CampaignAvailabilityGeneration: null,
+            CampaignPathRevision: null,
+            AcceleratorEpoch: null,
+            AppliedCampaignDeletionSequence: null,
+            RecoveryOwner: null,
+            CleanupOnlyHistoricalCampaign: false);
+
+        public CancellationToken Revocation => _revocation.Token;
+
+        public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken)
+        {
+
+            Revalidations++;
+
+            return ValueTask.FromResult(Revalidation);
+
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+
+            Disposals++;
+
+            _disposalStarted.TrySetResult();
+
+            if (blockDisposal)
+            {
+
+                await _disposalReleased.Task;
+
+            }
+
+            _revocation.Dispose();
+
+        }
+
+    }
+
+    private sealed class DelayedWriteStream : MemoryStream
+    {
+
+        private readonly TaskCompletionSource _writeStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _writesReleased = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WriteStarted => _writeStarted.Task;
+
+        public void ReleaseWrites() => _writesReleased.TrySetResult();
+
+        public override async ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+
+            _writeStarted.TrySetResult();
+
+            await _writesReleased.Task.WaitAsync(cancellationToken);
+
+            await base.WriteAsync(buffer, cancellationToken);
+
+        }
+
+    }
+
+    private sealed class ResponseWriteProbe
+    {
+
+        private readonly TaskCompletionSource _writeStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _writeReleased = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _writeCompleted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WriteStarted => _writeStarted.Task;
+
+        public Task WriteCompleted => _writeCompleted.Task;
+
+        public void ReleaseWrite() => _writeReleased.TrySetResult();
+
+        public async ValueTask WriteAsync(
+            Stream inner,
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken)
+        {
+
+            _writeStarted.TrySetResult();
+
+            await _writeReleased.Task.WaitAsync(cancellationToken);
+
+            await inner.WriteAsync(buffer, cancellationToken);
+
+            _writeCompleted.TrySetResult();
+
+        }
+
+    }
+
+    private sealed class ResponseWriteStartupFilter(ResponseWriteProbe probe) : IStartupFilter
+    {
+
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+            application =>
+            {
+
+                application.Use(async (context, nextMiddleware) =>
+                {
+
+                    Stream original = context.Response.Body;
+
+                    context.Response.Body = new ResponseWriteStream(original, probe);
+
+                    try
+                    {
+
+                        await nextMiddleware().ConfigureAwait(false);
+
+                    }
+                    finally
+                    {
+
+                        context.Response.Body = original;
+
+                    }
+
+                });
+
+                next(application);
+
+            };
+
+    }
+
+    private sealed class ResponseWriteStream(Stream inner, ResponseWriteProbe probe) : Stream
+    {
+
+        public override bool CanRead => inner.CanRead;
+
+        public override bool CanSeek => inner.CanSeek;
+
+        public override bool CanWrite => inner.CanWrite;
+
+        public override long Length => inner.Length;
+
+        public override long Position
+        {
+
+            get => inner.Position;
+
+            set => inner.Position = value;
+
+        }
+
+        public override void Flush() => inner.Flush();
+
+        public override Task FlushAsync(CancellationToken cancellationToken) =>
+            inner.FlushAsync(cancellationToken);
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            inner.Read(buffer, offset, count);
+
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+
+        public override void SetLength(long value) => inner.SetLength(value);
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new InvalidOperationException("The response JSON writer must use asynchronous writes.");
+
+        public override ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            probe.WriteAsync(inner, buffer, cancellationToken);
+
+        public override Task WriteAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
     }
 

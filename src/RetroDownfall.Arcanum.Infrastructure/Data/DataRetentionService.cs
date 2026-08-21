@@ -32,6 +32,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
@@ -60,8 +62,13 @@ internal sealed partial class DataRetentionService(
     IDaemonExecutionMutationGate? daemonMutationGate = null,
     IManagedLogMutationGate? managedLogMutationGate = null,
     ICovenantOperationGate? covenantGate = null,
+    CovenantResetCheckpointInitiator? covenantResetCheckpointInitiator = null,
     CovenantErasureCoordinator? covenantErasureCoordinator = null,
-    CovenantDisclosureExposureReader? covenantExposureReader = null) : IDataRetentionService
+    CovenantDisclosureExposureReader? covenantExposureReader = null,
+    DataRetentionLeaseMaintainer? leaseMaintainer = null,
+    CovenantRequestedOperationStarter? requestedOperationStarter = null,
+    ICovenantFactoryErasureApplyRequestDigestCalculator? factoryApplyRequestDigests = null,
+    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null) : IDataRetentionService
 {
 
     private static readonly int[] ActiveOperationStates =
@@ -87,15 +94,29 @@ internal sealed partial class DataRetentionService(
         ?? settings.CurrentValue.Retention
         ?? new RetentionSettings();
 
-    private readonly DataRetentionLeaseMaintainer _leaseMaintainer = new(
-        operations.RenewLeaseAsync,
-        timeProvider);
+    private readonly DataRetentionLeaseMaintainer _leaseMaintainer =
+        leaseMaintainer
+        ?? new DataRetentionLeaseMaintainer(
+            operations.RenewLeaseAsync,
+            timeProvider);
 
     private readonly CovenantErasureCoordinator? _covenantErasureCoordinator =
         covenantErasureCoordinator;
 
+    private readonly CovenantResetCheckpointInitiator? _covenantResetCheckpointInitiator =
+        covenantResetCheckpointInitiator;
+
     private readonly CovenantDisclosureExposureReader _covenantExposureReader =
         covenantExposureReader ?? new CovenantDisclosureExposureReader();
+
+    private readonly CovenantRequestedOperationStarter? _requestedOperationStarter =
+        requestedOperationStarter;
+
+    private readonly ICovenantFactoryErasureApplyRequestDigestCalculator _factoryApplyRequestDigests =
+        factoryApplyRequestDigests ?? new CovenantFactoryErasureApplyRequestDigestCalculator();
+
+    private readonly ICovenantErasureEffectDigestCalculator _covenantErasureEffectDigests =
+        covenantErasureEffectDigests ?? new CovenantErasureEffectDigestCalculator();
 
     public async Task<DataRetentionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default)
@@ -449,30 +470,87 @@ internal sealed partial class DataRetentionService(
     /// is a property of the shape rather than a rule six methods have to keep remembering. The builders
     /// receive no gate at all and therefore cannot take a second one.
     ///
-    /// <para>The inventory is attached after the plan is fingerprinted and is deliberately outside
-    /// <c>ComputePlanId</c>. It is a report, not a candidate set: folding it into the identity would
-    /// make every prune plan expire the moment an unrelated turn wrote a Covenant version, and an
-    /// operator would be told their sweep changed when nothing it selects had moved.</para>
+    /// <para>For prune and workspace reset, the inventory is a report rather than a candidate set and
+    /// remains outside <c>ComputePlanId</c>. Folding it into either identity would make a preview
+    /// expire when an unrelated Covenant record changed. An explicit <c>ResetMemory(Covenant)</c> or
+    /// <c>FactoryReset</c> instead binds its versioned, invariant five-aggregate authority and
+    /// disclosure count kind into the plan ID, so the confirmed preview covers the inventory it showed.</para>
     /// </remarks>
     public async Task<DataRetentionPlan> PlanAsync(
         DataRetentionRequest request,
         CancellationToken cancellationToken = default)
     {
 
-        ArgumentNullException.ThrowIfNull(request);
-
-        ICovenantSnapshotReadLease? lease = await AcquireCovenantPlanningCapabilityAsync(
+        Result<DataRetentionPlanAdmission> admission = await PlanAdmissionAsync(
             request,
             cancellationToken).ConfigureAwait(false);
 
-        if (lease is null)
+        if (admission.IsFailure)
         {
 
             return await BuildPlanAsync(request, cancellationToken).ConfigureAwait(false);
 
         }
 
-        await using (lease.ConfigureAwait(false))
+        if (admission.Value.ReadLease is not null)
+        {
+
+            await using (admission.Value.ReadLease.ConfigureAwait(false))
+            {
+
+                return admission.Value.Plan;
+
+            }
+
+        }
+
+        return admission.Value.Plan;
+
+    }
+
+    public async Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken = default,
+        DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        Result<ICovenantSnapshotReadLease?> leaseResult = await AcquireCovenantPlanningAdmissionAsync(
+            request,
+            capability,
+            cancellationToken).ConfigureAwait(false);
+
+        if (leaseResult.IsFailure)
+        {
+
+            return Result<DataRetentionPlanAdmission>.Failure(leaseResult.Error);
+
+        }
+
+        ICovenantSnapshotReadLease? lease = leaseResult.Value;
+
+        if (lease is null)
+        {
+
+            if (RequiresCovenantPlanningCapability(request, capability))
+            {
+
+                return Result<DataRetentionPlanAdmission>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.MaintenanceFailed,
+                        "The required Covenant planning capability is unavailable."));
+
+            }
+
+            return Result<DataRetentionPlanAdmission>.Success(
+                new DataRetentionPlanAdmission(
+                    await BuildPlanAsync(request, cancellationToken).ConfigureAwait(false),
+                    ReadLease: null));
+
+        }
+
+        try
         {
 
             DataRetentionPlan plan = await BuildPlanAsync(
@@ -483,11 +561,41 @@ internal sealed partial class DataRetentionService(
                 lease,
                 cancellationToken).ConfigureAwait(false);
 
-            return inventory is null ? plan : plan with { Covenant = inventory };
+            return Result<DataRetentionPlanAdmission>.Success(
+                new DataRetentionPlanAdmission(
+                    inventory is null ? plan : BindCovenantErasurePlanIdentity(plan, inventory),
+                    lease));
+
+        }
+        catch
+        {
+
+            await lease.DisposeAsync().ConfigureAwait(false);
+
+            throw;
 
         }
 
     }
+
+    private static bool RequiresCovenantPlanningCapability(
+        DataRetentionRequest request,
+        DataRetentionPlanAdmissionCapability capability) =>
+        capability is DataRetentionPlanAdmissionCapability.Installation
+        || request is
+        {
+            Operation: DataRetentionOperation.Prune or DataRetentionOperation.FactoryReset,
+        }
+        || request is
+        {
+            Operation: DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant,
+        }
+        || request is
+        {
+            Operation: DataRetentionOperation.ResetWorkspace,
+            Workspace: not null,
+        };
 
     /// <summary>
     /// Which Covenant read capability, if any, this request's inventory needs.
@@ -498,23 +606,33 @@ internal sealed partial class DataRetentionService(
     /// take the installation-wide capability. Every other operation reports no Covenant inventory at
     /// all, because none of them is a decision an operator makes about the family.
     /// </remarks>
-    private async ValueTask<ICovenantSnapshotReadLease?> AcquireCovenantPlanningCapabilityAsync(
+    private async ValueTask<Result<ICovenantSnapshotReadLease?>> AcquireCovenantPlanningAdmissionAsync(
+        DataRetentionRequest request,
+        DataRetentionPlanAdmissionCapability capability,
+        CancellationToken cancellationToken) =>
+        capability is DataRetentionPlanAdmissionCapability.Installation
+            ? await AcquireCovenantInstallationPlanningAdmissionAsync(cancellationToken).ConfigureAwait(false)
+            : await AcquireCovenantRequestPlanningAdmissionAsync(
+                request,
+                cancellationToken).ConfigureAwait(false);
+
+    private async ValueTask<Result<ICovenantSnapshotReadLease?>> AcquireCovenantRequestPlanningAdmissionAsync(
         DataRetentionRequest request,
         CancellationToken cancellationToken) =>
         request switch
         {
 
             { Operation: DataRetentionOperation.ResetWorkspace, Workspace: { } workspace } =>
-                await TryAcquireCovenantScopedReadAsync(
+                await AcquireCovenantScopedPlanningAdmissionAsync(
                     workspace.CampaignId,
                     cancellationToken).ConfigureAwait(false),
 
             { Operation: DataRetentionOperation.Prune }
                 or { Operation: DataRetentionOperation.FactoryReset }
                 or { Operation: DataRetentionOperation.ResetMemory, MemoryScope: MemoryResetScope.Covenant } =>
-                await TryAcquireCovenantInstallationReadAsync(cancellationToken).ConfigureAwait(false),
+                await AcquireCovenantInstallationPlanningAdmissionAsync(cancellationToken).ConfigureAwait(false),
 
-            _ => null,
+            _ => Result<ICovenantSnapshotReadLease?>.Success(null),
 
         };
 
@@ -561,6 +679,33 @@ internal sealed partial class DataRetentionService(
     {
 
         ArgumentNullException.ThrowIfNull(request);
+
+        if (request.Request is
+            {
+                Operation: DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant,
+            })
+        {
+
+            return await ApplyCovenantResetAsync(request, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        if (request.Request.Operation is DataRetentionOperation.FactoryReset)
+        {
+
+            return await ApplyFactoryResetRouteAsync(request, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        return await ApplyOrdinaryAsync(request, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> ApplyOrdinaryAsync(
+        DataRetentionApplyRequest request,
+        CancellationToken cancellationToken)
+    {
 
         DataRetentionPlan current;
 
@@ -808,6 +953,7 @@ internal sealed partial class DataRetentionService(
                 DataRetentionOperation.FactoryReset =>
                     await ApplyFactoryResetAsync(
                         operation.Id,
+                        ownerId,
                         current,
                         cancellationToken).ConfigureAwait(false),
 
@@ -974,6 +1120,590 @@ internal sealed partial class DataRetentionService(
         }
 
     }
+
+    private async Task<Result<DataRetentionApplyResult>> ApplyCovenantResetAsync(
+        DataRetentionApplyRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        if (_covenantResetCheckpointInitiator is null || _covenantErasureCoordinator is null)
+        {
+
+            return Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.MaintenanceFailed,
+                    "The Covenant erasure lifecycle is unavailable."));
+
+        }
+
+        Result<DataRetentionPlanAdmission> admitted;
+
+        try
+        {
+
+            admitted = await PlanAdmissionAsync(
+                request.Request,
+                cancellationToken,
+                DataRetentionPlanAdmissionCapability.Installation).ConfigureAwait(false);
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Covenant reset refused an inventory that could not be proven safe.");
+
+            return Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.IntegrityFailure,
+                    "The Covenant reset inventory could not be proven safely."));
+
+        }
+
+        if (admitted.IsFailure)
+        {
+
+            return Result<DataRetentionApplyResult>.Failure(admitted.Error);
+
+        }
+
+        ICovenantSnapshotReadLease? planningLease = admitted.Value.ReadLease;
+
+        LongRunningOperation? operation = null;
+
+        string? ownerId = null;
+
+        try
+        {
+
+            DataRetentionPlan current = admitted.Value.Plan;
+
+            if (planningLease is null
+                || planningLease.Snapshot.Kind is not CovenantLeaseKind.InstallationRead
+                || planningLease.Snapshot.Coverage is not CovenantLeaseCoverage.Installation
+                || planningLease.Snapshot.DatasetGeneration is not { } datasetGeneration
+                || datasetGeneration == Guid.Empty
+                || current.Covenant is not { } inventory)
+            {
+
+                return Result<DataRetentionApplyResult>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "The Covenant reset requires one current installation inventory."));
+
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.ExpectedPlanId)
+                && !string.Equals(request.ExpectedPlanId, current.PlanId, StringComparison.Ordinal))
+            {
+
+                return Result<DataRetentionApplyResult>.Failure(
+                    new Error(
+                        ErrorCodes.Data.PlanChanged,
+                        "The deletion plan changed after preview; request a new dry-run before applying."));
+
+            }
+
+            if (current.Blockers.Length > 0)
+            {
+
+                return Result<DataRetentionApplyResult>.Failure(
+                    new Error(ErrorCodes.Data.Blocked, current.Blockers[0].Message));
+
+            }
+
+            if (current.Conflicts.Length > 0)
+            {
+
+                return Result<DataRetentionApplyResult>.Failure(
+                    new Error(ErrorCodes.Data.Conflict, current.Conflicts[0].Message));
+
+            }
+
+            ownerId = "data-retention:" + Guid.NewGuid().ToString("N");
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+
+            operation = await operations.TryStartSingleFlightAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionMutation,
+                    LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                    $"Applying {request.Request.Operation} data-retention plan {current.PlanId}.",
+                    now),
+                ownerId,
+                now,
+                now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+                cancellationToken).ConfigureAwait(false);
+
+            if (operation is null)
+            {
+
+                return Result<DataRetentionApplyResult>.Failure(
+                    new Error(
+                        ErrorCodes.Data.Conflict,
+                        await DescribeRetentionConflictAsync(cancellationToken).ConfigureAwait(false)));
+
+            }
+
+            Result currentLease = await planningLease
+                .RevalidateAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (currentLease.IsFailure)
+            {
+
+                return await FailCovenantResetAsync(
+                    operation,
+                    ownerId,
+                    currentLease.Error,
+                    LongRunningOperationState.Failed).ConfigureAwait(false);
+
+            }
+
+            CovenantErasureEffectDigestInput effect = new(
+                CovenantExclusiveOperation.CovenantReset,
+                current.PlanId,
+                datasetGeneration,
+                inventory.Rows,
+                inventory.ManagedFiles,
+                inventory.LocalArtifacts,
+                inventory.AffectedSessions,
+                inventory.PossibleDisclosures,
+                inventory.DisclosureCountKind);
+
+            Result<CovenantResetCheckpointInitiator.GateAdmission> prepared =
+                await _covenantResetCheckpointInitiator
+                    .PrepareCovenantResetInventoryAsync(
+                        operation,
+                        ownerId,
+                        effect,
+                        requestedOperationId: null,
+                        MemoryResetScope.Covenant,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (prepared.IsFailure)
+            {
+
+                return await FailCovenantResetAsync(
+                    operation,
+                    ownerId,
+                    prepared.Error,
+                    LongRunningOperationState.Failed).ConfigureAwait(false);
+
+            }
+
+            LongRunningOperation? committed = await operations
+                .GetAsync(operation.Id, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (committed?.CheckpointPayload is not { Length: > 0 } payload)
+            {
+
+                return await FailCovenantResetAsync(
+                    operation,
+                    ownerId,
+                    new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "The committed Covenant reset checkpoint could not be reloaded."),
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+
+            }
+
+            Result<CovenantErasureCheckpointState> checkpoint =
+                CovenantErasureCheckpointState.FromMutationCheckpoint(
+                    committed.Id,
+                    payload,
+                    out bool describesCovenantErasure);
+
+            if (!describesCovenantErasure
+                || checkpoint.IsFailure
+                || checkpoint.Value.Owner != prepared.Value.Owner)
+            {
+
+                Error invalid = checkpoint.IsFailure
+                    ? checkpoint.Error
+                    : new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "The committed Covenant reset checkpoint did not preserve its admitted owner.");
+
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    invalid,
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+
+            }
+
+            Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
+                planningLease).ConfigureAwait(false);
+
+            planningLease = null;
+
+            if (planningLeaseReleased.IsFailure)
+            {
+
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    planningLeaseReleased.Error,
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+
+            }
+
+            Result<CovenantErasureCompletion> erased = await _leaseMaintainer.RunAsync(
+                operation.Id,
+                ownerId,
+                async maintainedToken =>
+                {
+
+                    using CancellationTokenSource coordinatorCancellation =
+                        CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken,
+                            maintainedToken);
+
+                    return await _covenantErasureCoordinator
+                        .RunAsync(
+                            committed,
+                            checkpoint.Value,
+                            ownerId,
+                            coordinatorCancellation.Token)
+                        .ConfigureAwait(false);
+
+                },
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (erased.IsFailure)
+            {
+
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    erased.Error,
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+
+            }
+
+            if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen)
+            {
+
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    LongRunningOperationState.Failed).ConfigureAwait(false);
+
+            }
+
+            if (erased.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
+            {
+
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+
+            }
+
+            Result completed = await CompleteCovenantResetAsync(
+                operation.Id,
+                ownerId).ConfigureAwait(false);
+
+            if (completed.IsFailure)
+            {
+
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    completed.Error,
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+
+            }
+
+            return Result<DataRetentionApplyResult>.Success(EmptyApply(operation.Id, current));
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            if (operation is not null && !string.IsNullOrWhiteSpace(ownerId))
+            {
+
+                await TryParkCancelledCovenantResetAsync(operation, ownerId).ConfigureAwait(false);
+
+            }
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogError(
+                ex,
+                "Direct Covenant reset failed unexpectedly after durable operation admission.");
+
+            if (operation is null || string.IsNullOrWhiteSpace(ownerId))
+            {
+
+                return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
+
+            }
+
+            return await FailUnexpectedCovenantResetAsync(operation, ownerId).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            if (planningLease is not null)
+            {
+
+                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease).ConfigureAwait(false);
+
+            }
+
+        }
+
+    }
+
+    private async Task TryParkCancelledCovenantResetAsync(
+        LongRunningOperation operation,
+        string ownerId)
+    {
+
+        try
+        {
+
+            LongRunningOperation current = await operations
+                .GetAsync(operation.Id, CancellationToken.None)
+                .ConfigureAwait(false)
+                ?? operation;
+
+            _ = await operations.TryTransitionAsync(
+                current.Id,
+                current.Revision,
+                ownerId,
+                LongRunningOperationState.ReconciliationRequired,
+                timeProvider.GetUtcNow(),
+                ErrorCodes.Covenant.MaintenanceFailed,
+                CancellationToken.None).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Cancelled Covenant reset operation {OperationId} could not surrender its lease.",
+                operation.Id);
+
+        }
+
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> FailCovenantResetAsync(
+        LongRunningOperation operation,
+        string ownerId,
+        Error error,
+        LongRunningOperationState state)
+    {
+
+        try
+        {
+
+            LongRunningOperation latest = await operations
+                .GetAsync(operation.Id, CancellationToken.None)
+                .ConfigureAwait(false)
+                ?? operation;
+
+            bool transitioned = await operations.TryTransitionAsync(
+                operation.Id,
+                latest.Revision,
+                ownerId,
+                state,
+                timeProvider.GetUtcNow(),
+                error.Code,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return Result<DataRetentionApplyResult>.Failure(
+                transitioned
+                    ? error
+                    : CovenantMaintenanceFailure());
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Covenant reset operation {OperationId} could not record its typed failure.",
+                operation.Id);
+
+            return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
+
+        }
+
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> FailUnexpectedCovenantResetAsync(
+        LongRunningOperation operation,
+        string ownerId)
+    {
+
+        Error failure = CovenantMaintenanceFailure();
+
+        try
+        {
+
+            LongRunningOperation current = await operations
+                .GetAsync(operation.Id, CancellationToken.None)
+                .ConfigureAwait(false)
+                ?? operation;
+
+            bool effectsMayExist = current.CheckpointVersion != 0
+                || current.CheckpointPayload is not null
+                || current.CheckpointReference is not null;
+
+            return await FailCovenantResetAsync(
+                current,
+                ownerId,
+                failure,
+                effectsMayExist
+                    ? LongRunningOperationState.ReconciliationRequired
+                    : LongRunningOperationState.Failed).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Covenant reset operation {OperationId} could not classify its durable effect boundary.",
+                operation.Id);
+
+            return Result<DataRetentionApplyResult>.Failure(failure);
+
+        }
+
+    }
+
+    private async Task<Result> TryDisposeCovenantPlanningLeaseAsync(
+        ICovenantSnapshotReadLease planningLease)
+    {
+
+        try
+        {
+
+            await planningLease.DisposeAsync().ConfigureAwait(false);
+
+            return Result.Success();
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "The direct Covenant reset planning lease could not be released cleanly.");
+
+            return Result.Failure(CovenantMaintenanceFailure());
+
+        }
+
+    }
+
+    private static Error CovenantMaintenanceFailure() =>
+        new(
+            ErrorCodes.Covenant.MaintenanceFailed,
+            "The Covenant reset lifecycle could not be recorded safely.");
+
+    private const int CovenantCompletionMaximumAttempts = 8;
+
+    private static readonly TimeSpan CovenantCompletionRetryDelay = TimeSpan.FromMilliseconds(20);
+
+    private async Task<Result> CompleteCovenantResetAsync(
+        Guid operationId,
+        string ownerId)
+    {
+
+        using CancellationTokenSource completion = new(TimeSpan.FromSeconds(5), timeProvider);
+
+        try
+        {
+
+            for (int attempt = 0; attempt < CovenantCompletionMaximumAttempts; attempt++)
+            {
+
+                LongRunningOperation? current = await operations
+                    .GetAsync(operationId, completion.Token)
+                    .ConfigureAwait(false);
+
+                if (current?.State is LongRunningOperationState.Completed)
+                {
+
+                    return Result.Success();
+
+                }
+
+                if (current is null
+                    || !string.Equals(current.LeaseOwner, ownerId, StringComparison.Ordinal)
+                    || current.State is not LongRunningOperationState.Running
+                        and not LongRunningOperationState.Waiting
+                        and not LongRunningOperationState.Cancelling)
+                {
+
+                    return Result.Failure(CovenantMaintenanceFailure());
+
+                }
+
+                bool completed = await operations.TryTransitionAsync(
+                    operationId,
+                    current.Revision,
+                    ownerId,
+                    LongRunningOperationState.Completed,
+                    timeProvider.GetUtcNow(),
+                    cancellationToken: completion.Token).ConfigureAwait(false);
+
+                if (completed)
+                {
+
+                    return Result.Success();
+
+                }
+
+                await Task.Delay(
+                    CovenantCompletionRetryDelay,
+                    timeProvider,
+                    completion.Token).ConfigureAwait(false);
+
+            }
+
+            return Result.Failure(CovenantMaintenanceFailure());
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Covenant reset operation {OperationId} could not finalize after committed reopen.",
+                operationId);
+
+            return Result.Failure(CovenantMaintenanceFailure());
+
+        }
+
+    }
+
+    private static Error CovenantResetFailure(string? errorCode) =>
+        new(
+            string.IsNullOrWhiteSpace(errorCode)
+                ? ErrorCodes.Covenant.MaintenanceFailed
+                : errorCode,
+            "The Covenant reset did not reach a committed reopen disposition.");
 
     /// <summary>
     /// Surrenders a cancelled apply's lease to <see cref="LongRunningOperationState.ReconciliationRequired"/>,
@@ -1453,20 +2183,11 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
-    /// Plans a Covenant memory reset, and refuses it.
+    /// Plans a content-free Covenant memory-reset inventory.
     /// </summary>
     /// <remarks>
-    /// The scope exists so the family is inventoried and so the route, the CLI, and the typed client
-    /// all speak the same word for it. Actually erasing it is a different operation entirely: admission
-    /// has to close, every live lease has to drain, exact phases have to be checkpointed, storage health
-    /// has to be proven, and authority has to be republished before anything reopens. Running the
-    /// ordinary memory-reset path over the family instead would delete protected rows while readers
-    /// still held leases over them, and would leave no evidence of what it removed.
-    ///
-    /// <para>The refusal is a plan conflict rather than an empty plan because an empty plan reads as
-    /// "there is nothing to erase", which is the opposite of true here. It is fingerprinted into the
-    /// plan id like any other conflict, so an apply cannot slip past it with a stale identity
-    /// (§10.20.1).</para>
+    /// The inventory is preview authority only. Covenant erasure continues through its dedicated
+    /// lifecycle rather than the ordinary memory-reset executor.
     /// </remarks>
     private async Task<DataRetentionPlan> BuildCovenantResetMemoryPlanAsync(
         DataRetentionRequest request,
@@ -1491,13 +2212,7 @@ internal sealed partial class DataRetentionService(
                 ? []
                 : [new DataRetentionPlanItem(RetentionDataClass.Covenant, 0, 0, 0, rows)],
             [],
-            [
-                new DataRetentionConflict(
-                    DataRetentionConflictCodes.CovenantResetRequiresErasureCoordinator,
-                    string.Empty,
-                    "The production Covenant erasure coordinator exists but is not yet wired to this route. "
-                        + "No Covenant state was changed."),
-            ],
+            [],
             [],
             requiresConfirmation: true);
 
@@ -5790,13 +6505,11 @@ internal sealed partial class DataRetentionService(
     /// body, or the request-identity row, because a retry with a changed plan would otherwise
     /// reconstruct an owner that matched a closed scope it has no right to adopt.
     ///
-    /// <para>This build has no erasure coordinator to hand that owner to, so an interrupted reset is
-    /// parked rather than resumed: <see cref="LongRunningOperationState.ReconciliationRequired"/>
-    /// keeps the checkpoint active and admission closed, which is the same outcome a manual blocker
-    /// produces once the coordinator exists. Repeating the pass is therefore idempotent from every
-    /// one of the ten phases — it rebuilds the identical owner, writes nothing, and replaces no
-    /// dataset. Abandoning it instead would discard the only durable record of a half-erased family
-    /// (§10.20.3).</para>
+    /// <para>An interrupted reset is resumed by the erasure coordinator with that exact owner while
+    /// the durable operation lease is maintained. If exact ownership cannot be established, lease
+    /// maintenance is lost, or the coordinator cannot safely finish, recovery returns a typed
+    /// requires-attention result so the checkpoint and closed admission remain available for operator
+    /// reconciliation (§10.20.3).</para>
     /// </remarks>
     private async Task<LongRunningOperationRecoveryResult> RecoverCovenantResetMutationAsync(
         LongRunningOperation operation,
@@ -5846,13 +6559,34 @@ internal sealed partial class DataRetentionService(
             state.Value.Phase,
             operation.Id);
 
-        Result<CovenantErasureCompletion> recovered = await _covenantErasureCoordinator
-            .RunAsync(
-                operation,
-                state.Value,
+        Result<CovenantErasureCompletion> recovered;
+
+        try
+        {
+
+            recovered = await _leaseMaintainer.RunAsync(
+                operation.Id,
                 operation.LeaseOwner,
-                cancellationToken)
-            .ConfigureAwait(false);
+                maintainedToken => _covenantErasureCoordinator.RunAsync(
+                    operation,
+                    state.Value,
+                    operation.LeaseOwner,
+                    maintainedToken),
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (DataRetentionLeaseLostException ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Covenant reset recovery lost ownership of durable operation {OperationId}.",
+                operation.Id);
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.MaintenanceFailed);
+
+        }
 
         return MapCovenantErasureRecovery(recovered);
 

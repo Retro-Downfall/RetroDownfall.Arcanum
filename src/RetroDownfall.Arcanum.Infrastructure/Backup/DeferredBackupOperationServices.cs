@@ -130,6 +130,11 @@ internal sealed class DeferredBackupOperationStore(
         CancellationToken cancellationToken = default) =>
         Service.FindRequestIdentityAsync(operationId, cancellationToken);
 
+    public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+        Guid requestedOperationId,
+        CancellationToken cancellationToken = default) =>
+        Service.FindByRequestedOperationIdAsync(requestedOperationId, cancellationToken);
+
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,
         CancellationToken cancellationToken = default) =>

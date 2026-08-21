@@ -14,6 +14,15 @@ using RetroDownfall.Arcanum.Infrastructure.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+internal sealed record InstallationResetOnlineDataCompletion(
+    Guid ServerOperationId,
+    Guid RequestedOperationId,
+    string DataPlanId,
+    long RowsDeleted,
+    long FilesDeleted,
+    long EstimatedBytesDeleted,
+    long DerivedRecordsDeleted);
+
 internal sealed record InstallationResetActiveRecord(
     int Version,
     Guid OperationId,
@@ -27,7 +36,9 @@ internal sealed record InstallationResetActiveRecord(
     long FilesDeleted,
     long EstimatedBytesDeleted,
     InstallationResetCredentialResult[] CredentialResults,
-    string? LastErrorCode);
+    string? LastErrorCode,
+    InstallationResetDataHandoff? DataHandoff = null,
+    InstallationResetOnlineDataCompletion? OnlineDataCompletion = null);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -47,6 +58,10 @@ internal interface IInstallationResetActiveStore
 
     Task<Result> RetireAsync(
         Guid operationId,
+        CancellationToken cancellationToken);
+
+    Task<Result> RetirePreEffectAsync(
+        InstallationResetOnlineDataHandoff handoff,
         CancellationToken cancellationToken);
 
 }
@@ -75,7 +90,12 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
     public string ActivePath { get; }
 
-    public async Task<Result<InstallationResetActiveRecord?>> ReadAsync(
+    public Task<Result<InstallationResetActiveRecord?>> ReadAsync(
+        CancellationToken cancellationToken) =>
+        ReadAsync(expectedIdentity: null, cancellationToken);
+
+    private async Task<Result<InstallationResetActiveRecord?>> ReadAsync(
+        FileHandleIdentity? expectedIdentity,
         CancellationToken cancellationToken)
     {
 
@@ -89,7 +109,11 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         }
 
         using SecureFileReadResult read = await SecureFileReader
-            .ReadBytesAsync(ActivePath, MaxBytes, cancellationToken)
+            .ReadBytesAsync(
+                ActivePath,
+                MaxBytes,
+                cancellationToken,
+                expectedIdentity)
             .ConfigureAwait(false);
 
         if (read.Status is not SecureFileReadStatus.Success)
@@ -161,7 +185,10 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 || !string.Equals(
                     existing.AcceptedBinding.BindingId,
                     record.AcceptedBinding.BindingId,
-                    StringComparison.Ordinal)))
+                    StringComparison.Ordinal)
+                || existing.DataHandoff != record.DataHandoff
+                || existing.OnlineDataCompletion is not null
+                    && existing.OnlineDataCompletion != record.OnlineDataCompletion))
         {
 
             return Failure(
@@ -294,6 +321,86 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
     }
 
+    public async Task<Result> RetirePreEffectAsync(
+        InstallationResetOnlineDataHandoff handoff,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(handoff);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!File.Exists(ActivePath) && !Directory.Exists(ActivePath))
+        {
+
+            return Result.Success();
+
+        }
+
+        if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                ActivePath,
+                FileSystemObjectKind.RegularFile,
+                out IdentityOwnedFileSystemArtifact artifact))
+        {
+
+            return Failure(
+                "The installation reset active record requires recovery.",
+                ErrorCodes.Data.RecoveryRequired);
+
+        }
+
+        Result<InstallationResetActiveRecord?> read = await ReadAsync(
+            artifact.Metadata.Identity,
+            cancellationToken).ConfigureAwait(false);
+
+        if (read.IsFailure)
+        {
+
+            return Result.Failure(read.Error);
+
+        }
+
+        if (read.Value is not { } record
+            || record.OperationId != handoff.RequestedOperationId
+            || !string.Equals(
+                record.PlanId,
+                handoff.InstallationPlanId,
+                StringComparison.Ordinal)
+            || record.Scope is not (InstallationResetScope.Global or InstallationResetScope.All)
+            || record.Phase is not InstallationResetPhase.Prepared
+            || record.DataHandoff is not InstallationResetDataHandoff.HostFactoryErasure
+            || record.AcceptedBinding.DataPlanIds.Length != 1
+            || !string.Equals(
+                record.AcceptedBinding.DataPlanIds[0],
+                handoff.DataPlanId,
+                StringComparison.Ordinal))
+        {
+
+            return Failure(
+                "A different installation reset owns the active record.",
+                ErrorCodes.Data.ResetInProgress);
+
+        }
+
+        if (handoff.DataResetCompleted
+            || record.PointOfNoReturn
+            || record.OnlineDataCompletion is not null)
+        {
+
+            return Failure(
+                "The online data reset outcome must be recovered before retirement.",
+                ErrorCodes.Data.RecoveryRequired);
+
+        }
+
+        return IdentityOwnedFileSystemCleanup.TryDelete(artifact)
+            ? Result.Success()
+            : Failure(
+                "The installation reset active record requires recovery.",
+                ErrorCodes.Data.RecoveryRequired);
+
+    }
+
     private static Result Failure(
         string message,
         string code = ErrorCodes.Data.ControlPathUnavailable) =>
@@ -302,10 +409,55 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
     private static Result<T> Failure<T>(string message) =>
         Result<T>.Failure(new Error(ErrorCodes.Data.ControlPathUnavailable, message));
 
-    private static bool IsValid(InstallationResetActiveRecord record) =>
-        record.Version == CurrentVersion
-        && record.OperationId != Guid.Empty
-        && !string.IsNullOrWhiteSpace(record.PlanId)
-        && !string.IsNullOrWhiteSpace(record.AcceptedBinding.BindingId);
+    private static bool IsValid(InstallationResetActiveRecord record)
+    {
+
+        if (record.Version != CurrentVersion
+            || record.OperationId == Guid.Empty
+            || string.IsNullOrWhiteSpace(record.PlanId)
+            || string.IsNullOrWhiteSpace(record.AcceptedBinding.BindingId))
+        {
+
+            return false;
+
+        }
+
+        if (record.DataHandoff is null)
+        {
+
+            return record.OnlineDataCompletion is null;
+
+        }
+
+        if (record.DataHandoff is not InstallationResetDataHandoff.HostFactoryErasure
+            || record.Scope is not (InstallationResetScope.Global or InstallationResetScope.All)
+            || record.AcceptedBinding.DataPlanIds.Length != 1
+            || string.IsNullOrWhiteSpace(record.AcceptedBinding.DataPlanIds[0]))
+        {
+
+            return false;
+
+        }
+
+        if (record.OnlineDataCompletion is not { } completion)
+        {
+
+            return record.Phase is InstallationResetPhase.Prepared;
+
+        }
+
+        return completion.ServerOperationId != Guid.Empty
+            && completion.RequestedOperationId == record.OperationId
+            && completion.ServerOperationId != completion.RequestedOperationId
+            && string.Equals(
+                completion.DataPlanId,
+                record.AcceptedBinding.DataPlanIds[0],
+                StringComparison.Ordinal)
+            && completion.RowsDeleted >= 0
+            && completion.FilesDeleted >= 0
+            && completion.EstimatedBytesDeleted >= 0
+            && completion.DerivedRecordsDeleted >= 0;
+
+    }
 
 }

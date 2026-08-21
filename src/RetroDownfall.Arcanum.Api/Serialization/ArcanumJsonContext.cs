@@ -60,6 +60,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(InstallationResetPhase))]
 [JsonSerializable(typeof(InstallationResetItemStatus))]
 [JsonSerializable(typeof(InstallationResetTargetRole))]
+[JsonSerializable(typeof(InstallationResetDataHandoff))]
 [JsonSerializable(typeof(InstallationResetPlanRequest))]
 [JsonSerializable(typeof(InstallationResetApplyRequest))]
 [JsonSerializable(typeof(InstallationResetDataPlanRequest))]

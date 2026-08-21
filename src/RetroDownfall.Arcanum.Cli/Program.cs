@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
@@ -94,8 +95,13 @@ internal static class Program
 
         ActiveInstallationReset? active = activeRead.Value;
 
+        bool recoveryServe = active is not null
+            && string.Equals(command, "serve", StringComparison.Ordinal)
+            && InstallationResetHostStartupAdmission.AllowsRecoveryHost(active);
+
         if (active is null
-            || (resetResume && preflight.Scope == active.Scope))
+            || (resetResume && preflight.Scope == active.Scope)
+            || recoveryServe)
         {
 
             return await continuation().ConfigureAwait(false);

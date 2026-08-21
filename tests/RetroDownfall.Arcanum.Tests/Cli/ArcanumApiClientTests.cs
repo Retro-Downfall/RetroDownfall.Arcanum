@@ -5,8 +5,10 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -93,6 +95,261 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(
             "{\"scope\":\"Workspace\",\"workspace\":{\"campaignId\":\"44444444-4444-4444-4444-444444444444\",\"workspaceRoot\":\"/workspace\"}}",
             sentJson);
+
+    }
+
+    [Fact]
+    public async Task ResetDataMemoryAsync_posts_the_preview_plan_id()
+    {
+
+        string? sentJson = null;
+
+        DataRetentionApplyResult expected = new(
+            Guid.Parse("53535353-5353-5353-5353-535353535353"),
+            "memory-plan-53",
+            RowsDeleted: 0,
+            FilesDeleted: 0,
+            EstimatedBytesDeleted: 0,
+            DerivedRecordsDeleted: 0,
+            Reconciled: true,
+            Blockers: [],
+            Conflicts: []);
+
+        RecordingHandler handler = new(requestMessage =>
+        {
+
+            sentJson = requestMessage.Content!
+                .ReadAsStringAsync()
+                .GetAwaiter()
+                .GetResult();
+
+            byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<DataRetentionApplyResult>(expected, true, null),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+
+                Content = new ByteArrayContent(payload),
+
+            };
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        Result<DataRetentionApplyResult> result = await client.ResetDataMemoryAsync(
+            new MemoryResetRequest(
+                MemoryResetScope.Covenant,
+                ExpectedPlanId: "memory-plan-53"));
+
+        Assert.True(result.IsSuccess);
+
+        HttpRequestMessage sent = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Post, sent.Method);
+
+        Assert.Equal("/api/data/memory/reset", sent.RequestUri!.AbsolutePath);
+
+        Assert.Equal(
+            "{\"scope\":\"Covenant\",\"expectedPlanId\":\"memory-plan-53\"}",
+            sentJson);
+
+    }
+
+    [Theory]
+    [InlineData(false, "{\"confirmation\":\"factory-reset\"}")]
+    [InlineData(true, "{\"confirmation\":\"factory-reset\",\"expectedPlanId\":\"factory-plan-128\",\"requestedOperationId\":\"53535353-5353-4353-8353-535353535353\"}")]
+    public async Task FactoryResetDataAsync_emits_named_fields_together_and_omits_nulls(
+        bool named,
+        string expectedJson)
+    {
+
+        string? sentJson = null;
+
+        DataRetentionApplyResult expected = new(
+            Guid.Parse("54545454-5454-4454-8454-545454545454"),
+            "factory-plan-128",
+            RowsDeleted: 0,
+            FilesDeleted: 0,
+            EstimatedBytesDeleted: 0,
+            DerivedRecordsDeleted: 0,
+            Reconciled: true,
+            Blockers: [],
+            Conflicts: [],
+            RequestedOperationId: named
+                ? Guid.Parse("53535353-5353-4353-8353-535353535353")
+                : null);
+
+        RecordingHandler handler = new(requestMessage =>
+        {
+
+            sentJson = requestMessage.Content!
+                .ReadAsStringAsync()
+                .GetAwaiter()
+                .GetResult();
+
+            byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<DataRetentionApplyResult>(expected, true, null),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+
+                Content = new ByteArrayContent(payload),
+
+            };
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        FactoryResetRequest request = named
+            ? new FactoryResetRequest(
+                "factory-reset",
+                ExpectedPlanId: "factory-plan-128",
+                RequestedOperationId: Guid.Parse("53535353-5353-4353-8353-535353535353"))
+            : new FactoryResetRequest("factory-reset");
+
+        Result<DataRetentionApplyResult> result = await client.FactoryResetDataAsync(request);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(expectedJson, sentJson);
+
+    }
+
+    [Fact]
+    public async Task Installation_reset_online_validator_carries_the_matching_online_plan()
+    {
+
+        DataRetentionPlan onlinePlan = CreateDataRetentionPlan(
+            "factory-plan-71",
+            new DataRetentionCovenantInventory(
+                Rows: 4,
+                ManagedFiles: 3,
+                LocalArtifacts: 2,
+                AffectedSessions: 1,
+                PossibleDisclosures: 2,
+                DisclosureCountKind: CovenantDisclosureCountKind.LowerBound));
+
+        RecordingHandler handler = new(_ => CreateDataRetentionPlanResponse(
+            new ApiResponse<DataRetentionPlan>(onlinePlan, true, null)));
+
+        InstallationResetOnlinePlanValidator validator = new(
+            CreateClient(handler, apiKey: "test-key"));
+
+        Result<InstallationResetOnlinePlanValidation> result = await validator.ValidateAsync(
+            CreateInstallationResetPlan("factory-plan-71"),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("factory-plan-71", result.Value.Plan?.PlanId);
+
+        Assert.Equal(onlinePlan.Covenant, result.Value.Plan?.Covenant);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Post, request.Method);
+
+        Assert.Equal("/api/data/factory-reset/plan", request.RequestUri!.AbsolutePath);
+
+    }
+
+    [Fact]
+    public async Task Installation_reset_online_validator_returns_unreachable_failure()
+    {
+
+        RecordingHandler handler = new(_ => throw new HttpRequestException("unreachable"));
+
+        InstallationResetOnlinePlanValidator validator = new(
+            CreateClient(handler, apiKey: "test-key"));
+
+        Result<InstallationResetOnlinePlanValidation> result = await validator.ValidateAsync(
+            CreateInstallationResetPlan("factory-plan-72"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Connection.Unreachable, result.Error.Code);
+
+        Assert.Single(handler.Requests);
+
+    }
+
+    [Fact]
+    public async Task Installation_reset_online_validator_returns_missing_api_key_failure()
+    {
+
+        RecordingHandler handler = new(_ => throw new InvalidOperationException(
+            "The request must not be sent without an API key."));
+
+        InstallationResetOnlinePlanValidator validator = new(
+            CreateClient(handler, apiKey: null));
+
+        Result<InstallationResetOnlinePlanValidation> result = await validator.ValidateAsync(
+            CreateInstallationResetPlan("factory-plan-73"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Security.MissingApiKey, result.Error.Code);
+
+        Assert.Empty(handler.Requests);
+
+    }
+
+    [Fact]
+    public async Task Installation_reset_online_validator_propagates_other_host_failure()
+    {
+
+        RecordingHandler handler = new(_ => CreateDataRetentionPlanResponse(
+            new ApiResponse<DataRetentionPlan>(
+                null,
+                false,
+                new Error("Test.HostFailure", "The host rejected the plan.")),
+            HttpStatusCode.Conflict));
+
+        InstallationResetOnlinePlanValidator validator = new(
+            CreateClient(handler, apiKey: "test-key"));
+
+        Result<InstallationResetOnlinePlanValidation> result = await validator.ValidateAsync(
+            CreateInstallationResetPlan("factory-plan-74"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Test.HostFailure", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Installation_reset_online_validator_accepts_a_different_authenticated_plan_id()
+    {
+
+        DataRetentionPlan onlinePlan = CreateDataRetentionPlan("other-plan-75", covenant: null);
+
+        RecordingHandler handler = new(_ => CreateDataRetentionPlanResponse(
+            new ApiResponse<DataRetentionPlan>(
+                onlinePlan,
+                true,
+                null)));
+
+        InstallationResetOnlinePlanValidator validator = new(
+            CreateClient(handler, apiKey: "test-key"));
+
+        Result<InstallationResetOnlinePlanValidation> result = await validator.ValidateAsync(
+            CreateInstallationResetPlan("factory-plan-75"),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(onlinePlan.PlanId, result.Value.Plan?.PlanId);
+
+        Assert.NotEqual("factory-plan-75", result.Value.Plan?.PlanId);
+
+        Assert.Equivalent(onlinePlan, result.Value.Plan, strict: true);
 
     }
 
@@ -1047,6 +1304,71 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Session.NotFound, result.Error.Code);
+
+    }
+
+    private static InstallationResetPlan CreateInstallationResetPlan(string dataPlanId) =>
+        new(
+            "installation-plan-71",
+            InstallationResetScope.Global,
+            Workspace: null,
+            new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero),
+            DataInventoryAvailable: true,
+            CredentialInventoryAvailable: true,
+            Targets: [],
+            Credentials: [],
+            PreservedBackups: [],
+            Exclusions: [],
+            Blockers: [],
+            Rows: 0,
+            Files: 0,
+            EstimatedBytes: 0,
+            new InstallationResetAcceptedBinding(
+                "binding-71",
+                SelectedRoots: [],
+                ExcludedRoots: [],
+                PreservedBackups: [],
+                CredentialAccounts: [],
+                DataPlanIds: [dataPlanId]));
+
+    private static DataRetentionPlan CreateDataRetentionPlan(
+        string planId,
+        DataRetentionCovenantInventory? covenant) =>
+        new(
+            planId,
+            new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+            new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero),
+            Items: [],
+            Blockers: [],
+            Conflicts: [],
+            Rows: 0,
+            Files: 0,
+            EstimatedBytes: 0,
+            DerivedRecords: 0,
+            CandidateIds: [],
+            RequiresConfirmation: true,
+            Covenant: covenant);
+
+    private static HttpResponseMessage CreateDataRetentionPlanResponse(
+        ApiResponse<DataRetentionPlan> envelope,
+        HttpStatusCode status = HttpStatusCode.OK)
+    {
+
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+            envelope,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        HttpResponseMessage response = new(status)
+        {
+
+            Content = new ByteArrayContent(payload),
+
+        };
+
+        response.Content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        return response;
 
     }
 

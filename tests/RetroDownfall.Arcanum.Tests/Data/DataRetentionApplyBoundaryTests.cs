@@ -709,6 +709,11 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken cancellationToken = default) =>
             inner.FindRequestIdentityAsync(operationId, cancellationToken);
 
+        public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+            Guid requestedOperationId,
+            CancellationToken cancellationToken = default) =>
+            inner.FindByRequestedOperationIdAsync(requestedOperationId, cancellationToken);
+
         public Task<LongRunningOperation> CreateAsync(
             LongRunningOperationCreateRequest request,
             CancellationToken cancellationToken = default) =>

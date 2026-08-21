@@ -135,6 +135,14 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
         Assert.Equal("/selected/workspace", active.WorkspaceRoot);
 
+        Assert.Equal(record.OperationId, active.OperationId);
+
+        Assert.Equal(record.Phase, active.Phase);
+
+        Assert.Equal(record.DataHandoff, active.DataHandoff);
+
+        Assert.False(active.OnlineDataCompletionDurable);
+
         Assert.Equal(before, await File.ReadAllBytesAsync(activeStore.ActivePath));
 
     }
@@ -198,7 +206,8 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
             FilesDeleted: 0,
             EstimatedBytesDeleted: 0,
             CredentialResults: [],
-            LastErrorCode: null);
+            LastErrorCode: null,
+            DataHandoff: InstallationResetDataHandoff.HostFactoryErasure);
 
     }
 

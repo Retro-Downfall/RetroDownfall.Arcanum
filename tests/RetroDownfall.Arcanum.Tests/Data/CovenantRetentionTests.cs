@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
+using RetroDownfall.Arcanum.Api.Serialization;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -14,6 +16,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
@@ -21,6 +25,8 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
+
+using System.Text.Json;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -418,7 +424,7 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     [SkippableFact]
 
-    public async Task Covenant_memory_reset_plans_content_free_counts_and_refuses_to_apply_here()
+    public async Task Covenant_memory_reset_plan_reports_content_free_aggregates_without_an_activation_conflict()
     {
 
         RequireSqlCipher();
@@ -437,12 +443,168 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
             request,
             CancellationToken.None);
 
-        Assert.NotNull(plan.Covenant);
+        Assert.Empty(plan.Conflicts);
 
-        Assert.Contains(
-            plan.Conflicts,
-            conflict => conflict.Code
-                == DataRetentionConflictCodes.CovenantResetRequiresErasureCoordinator);
+        DataRetentionCovenantInventory inventory = Assert.IsType<DataRetentionCovenantInventory>(
+            plan.Covenant);
+
+        Assert.True(inventory.Rows > 0);
+
+        Assert.Equal(1, inventory.ManagedFiles);
+
+        Assert.Equal(1, inventory.LocalArtifacts);
+
+        Assert.Equal(1, inventory.AffectedSessions);
+
+        Assert.Equal(3, inventory.PossibleDisclosures);
+
+        Assert.Equal(CovenantDisclosureCountKind.Exact, inventory.DisclosureCountKind);
+
+        string serializedPlan = JsonSerializer.Serialize(
+            plan,
+            ArcanumJsonContext.Default.DataRetentionPlan);
+
+        Assert.DoesNotContain("project/goal", serializedPlan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("a protected summary", serializedPlan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(CovenantRetentionSeed.SessionId, serializedPlan, StringComparison.Ordinal);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(CovenantInventoryAggregate.Rows)]
+
+    [InlineData(CovenantInventoryAggregate.ManagedFiles)]
+
+    [InlineData(CovenantInventoryAggregate.LocalArtifacts)]
+
+    [InlineData(CovenantInventoryAggregate.AffectedSessions)]
+
+    [InlineData(CovenantInventoryAggregate.DisclosureExposure)]
+
+    public async Task Explicit_covenant_reset_and_factory_plan_ids_bind_every_content_free_inventory_aggregate_without_expiring_prune_or_workspace(
+        CovenantInventoryAggregate aggregate)
+    {
+
+        RequireSqlCipher();
+
+        await SeedCovenantFamilyAsync(CancellationToken.None);
+
+        IDataRetentionService service = CreateService(
+            covenantGate: new RecordingCovenantOperationGate());
+
+        DataRetentionRequest covenantReset = new(
+            DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant);
+
+        DataRetentionRequest factoryReset = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionRequest prune = new(DataRetentionOperation.Prune);
+
+        DataRetentionRequest workspaceReset = await CreateWorkspaceResetRequestAsync(
+            CancellationToken.None);
+
+        DataRetentionPlan covenantBefore = await service.PlanAsync(
+            covenantReset,
+            CancellationToken.None);
+
+        DataRetentionPlan factoryBefore = await service.PlanAsync(
+            factoryReset,
+            CancellationToken.None);
+
+        DataRetentionPlan pruneBefore = await service.PlanAsync(
+            prune,
+            CancellationToken.None);
+
+        DataRetentionPlan workspaceBefore = await service.PlanAsync(
+            workspaceReset,
+            CancellationToken.None);
+
+        Assert.Empty(workspaceBefore.Blockers);
+
+        Assert.Empty(workspaceBefore.Conflicts);
+
+        await ChangeCovenantInventoryAggregateAsync(
+            aggregate,
+            CancellationToken.None);
+
+        DataRetentionPlan covenantAfter = await service.PlanAsync(
+            covenantReset,
+            CancellationToken.None);
+
+        DataRetentionPlan factoryAfter = await service.PlanAsync(
+            factoryReset,
+            CancellationToken.None);
+
+        DataRetentionPlan pruneAfter = await service.PlanAsync(
+            prune,
+            CancellationToken.None);
+
+        DataRetentionPlan workspaceAfter = await service.PlanAsync(
+            workspaceReset,
+            CancellationToken.None);
+
+        Assert.Empty(workspaceAfter.Blockers);
+
+        Assert.Empty(workspaceAfter.Conflicts);
+
+        DataRetentionCovenantInventory inventoryBefore = Assert.IsType<DataRetentionCovenantInventory>(
+            covenantBefore.Covenant);
+
+        DataRetentionCovenantInventory inventoryAfter = Assert.IsType<DataRetentionCovenantInventory>(
+            covenantAfter.Covenant);
+
+        DataRetentionCovenantInventory workspaceInventoryBefore =
+            Assert.IsType<DataRetentionCovenantInventory>(workspaceBefore.Covenant);
+
+        DataRetentionCovenantInventory workspaceInventoryAfter =
+            Assert.IsType<DataRetentionCovenantInventory>(workspaceAfter.Covenant);
+
+        AssertCovenantInventoryAggregateChanged(
+            aggregate,
+            inventoryBefore,
+            inventoryAfter);
+
+        AssertCovenantInventoryAggregateChanged(
+            aggregate,
+            workspaceInventoryBefore,
+            workspaceInventoryAfter);
+
+        Assert.NotEqual(covenantBefore.PlanId, covenantAfter.PlanId);
+
+        Assert.NotEqual(factoryBefore.PlanId, factoryAfter.PlanId);
+
+        Assert.Equal(pruneBefore.PlanId, pruneAfter.PlanId);
+
+        Assert.Equal(workspaceBefore.PlanId, workspaceAfter.PlanId);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Covenant_memory_reset_apply_without_route_components_fails_closed_without_mutating()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCovenantFamilyAsync(CancellationToken.None);
+
+        IReadOnlyDictionary<string, long> before = await CountCovenantTablesAsync(
+            CancellationToken.None);
+
+        IDataRetentionService service = CreateService(covenantGate: new RecordingCovenantOperationGate());
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Empty(plan.Conflicts);
 
         Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -450,10 +612,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         Assert.True(applied.IsFailure);
 
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, applied.Error.Code);
+
         IReadOnlyDictionary<string, long> after = await CountCovenantTablesAsync(
             CancellationToken.None);
 
-        Assert.NotEqual(0, after.Values.Sum());
+        Assert.Equal(before, after);
 
     }
 
@@ -527,6 +691,155 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(1, gate.PeakConcurrentLeases);
 
         Assert.Equal(0, gate.LiveLeases);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Factory_workspace_plan_admission_takes_one_installation_read_lease()
+    {
+
+        RequireSqlCipher();
+
+        Guid campaignId = new("22222222-2222-4222-8222-222222222222");
+
+        RecordingCovenantOperationGate gate = new();
+
+        IDataRetentionService service = CreateService(covenantGate: gate);
+
+        Result<DataRetentionPlanAdmission> admission = await service.PlanAdmissionAsync(
+            new DataRetentionRequest(
+                DataRetentionOperation.ResetWorkspace,
+                Workspace: new DataRetentionWorkspaceBinding(campaignId, _root)),
+            CancellationToken.None,
+            DataRetentionPlanAdmissionCapability.Installation);
+
+        Assert.True(admission.IsSuccess);
+
+        Assert.NotNull(admission.Value.ReadLease);
+
+        Assert.Equal(["installation-read"], gate.Acquisitions);
+
+        Assert.Equal(1, gate.PeakConcurrentLeases);
+
+        await admission.Value.ReadLease.DisposeAsync();
+
+        Assert.Equal(0, gate.LiveLeases);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Covenant_plan_admission_preserves_a_failed_installation_read_while_plan_async_stays_compatible()
+    {
+
+        RequireSqlCipher();
+
+        Error failure = new(
+            ErrorCodes.Covenant.ErasureIncomplete,
+            "Covenant erasure remains incomplete.");
+
+        RecordingCovenantOperationGate gate = new()
+        {
+
+            InstallationReadFailure = failure,
+
+        };
+
+        IDataRetentionService service = CreateService(covenantGate: gate);
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant);
+
+        Result<DataRetentionPlanAdmission> admission = await service.PlanAdmissionAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(admission.IsFailure);
+
+        Assert.Equal(failure, admission.Error);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
+
+        Assert.Equal(request, plan.Request);
+
+        Assert.Null(plan.Covenant);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(false, false)]
+
+    [InlineData(false, true)]
+
+    [InlineData(true, false)]
+
+    public async Task Protected_plan_admission_without_a_gate_returns_a_typed_refusal(
+        bool installation,
+        bool workspace)
+    {
+
+        RequireSqlCipher();
+
+        IDataRetentionService service = CreateService(covenantGate: null);
+
+        DataRetentionRequest request = installation
+            ? new DataRetentionRequest(DataRetentionOperation.FactoryReset)
+            : workspace
+                ? new DataRetentionRequest(
+                    DataRetentionOperation.ResetWorkspace,
+                    Workspace: new DataRetentionWorkspaceBinding(
+                        Guid.Parse("22222222-2222-4222-8222-222222222222"),
+                        _root))
+                : new DataRetentionRequest(
+                    DataRetentionOperation.ResetMemory,
+                    MemoryScope: MemoryResetScope.Covenant);
+
+        DataRetentionPlanAdmissionCapability capability = installation
+            ? DataRetentionPlanAdmissionCapability.Installation
+            : DataRetentionPlanAdmissionCapability.Request;
+
+        Result<DataRetentionPlanAdmission> admission = await service.PlanAdmissionAsync(
+            request,
+            CancellationToken.None,
+            capability);
+
+        Assert.True(admission.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, admission.Error.Code);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public async Task Ordinary_plan_without_a_gate_remains_available(bool workspace)
+    {
+
+        RequireSqlCipher();
+
+        IDataRetentionService service = CreateService(covenantGate: null);
+
+        DataRetentionRequest request = workspace
+            ? new DataRetentionRequest(
+                DataRetentionOperation.ResetWorkspace,
+                Workspace: new DataRetentionWorkspaceBinding(
+                    Guid.Parse("22222222-2222-4222-8222-222222222222"),
+                    _root))
+            : new DataRetentionRequest(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(request, plan.Request);
+
+        Assert.Null(plan.Covenant);
 
     }
 
@@ -644,6 +957,264 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     }
 
+    public enum CovenantInventoryAggregate
+    {
+
+        Rows,
+
+        ManagedFiles,
+
+        LocalArtifacts,
+
+        AffectedSessions,
+
+        DisclosureExposure,
+
+    }
+
+    private static void AssertCovenantInventoryAggregateChanged(
+        CovenantInventoryAggregate aggregate,
+        DataRetentionCovenantInventory before,
+        DataRetentionCovenantInventory after)
+    {
+
+        switch (aggregate)
+        {
+
+            case CovenantInventoryAggregate.Rows:
+            {
+
+                Assert.Equal(before.Rows + 1, after.Rows);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.ManagedFiles:
+            {
+
+                Assert.Equal(before.ManagedFiles + 1, after.ManagedFiles);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.LocalArtifacts:
+            {
+
+                Assert.Equal(before.LocalArtifacts + 1, after.LocalArtifacts);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.AffectedSessions:
+            {
+
+                Assert.Equal(before.AffectedSessions - 1, after.AffectedSessions);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.DisclosureExposure:
+            {
+
+                Assert.Equal(before.PossibleDisclosures + 1, after.PossibleDisclosures);
+
+                Assert.Equal(CovenantDisclosureCountKind.LowerBound, after.DisclosureCountKind);
+
+                return;
+
+            }
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(aggregate), aggregate, null);
+
+        }
+
+    }
+
+    private async Task ChangeCovenantInventoryAggregateAsync(
+        CovenantInventoryAggregate aggregate,
+        CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        switch (aggregate)
+        {
+
+            case CovenantInventoryAggregate.Rows:
+            {
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO external_disclosure_receipts (
+                        OriginInstallationId, SubjectKind, SubjectId, SubjectOrdinal, EffectCategoryCode,
+                        CategoryPhysicalAttemptOrdinal, EffectIdentityDigest, DestinationCode,
+                        RevocabilityCode, DestinationDigest, SensitivityCode, GenerationProvenanceModeCode,
+                        ExactGenerationIds, GenerationBloom, DisclosedAtUtc)
+                    SELECT OriginInstallationId, SubjectKind, SubjectId, SubjectOrdinal + 1,
+                           EffectCategoryCode, CategoryPhysicalAttemptOrdinal + 1,
+                           X'1111111111111111111111111111111111111111111111111111111111111111',
+                           DestinationCode, RevocabilityCode, DestinationDigest, SensitivityCode,
+                           GenerationProvenanceModeCode, ExactGenerationIds, GenerationBloom, DisclosedAtUtc
+                    FROM external_disclosure_receipts
+                    WHERE SubjectId = 'ffffffff-7777-4777-8777-ffffffffffff'
+                    LIMIT 1;
+                    """,
+                    cancellationToken);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.ManagedFiles:
+            {
+
+                using CovenantSqliteAuthorizationScope writer =
+                    CovenantSqliteConnectionInitializer.Instance.Authorize(
+                        connection,
+                        CovenantSqliteAuthorizationKind.ManagedFileIntentMutation);
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO managed_file_write_intents (
+                        WriteOperationId, StableEffectIdentityDigest, ArtifactId, SensitivityLabelId,
+                        SensitivityLabelDigest, PendingArtifactSensitivityLabel, DurableLocationEvidence,
+                        ExpectedContentHash, ExpectedContentLength, PhaseCode, Revision, RetryCount,
+                        CreatedAtUtc, UpdatedAtUtc)
+                    SELECT '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e711',
+                           X'2222222222222222222222222222222222222222222222222222222222222222',
+                           ArtifactId, SensitivityLabelId, SensitivityLabelDigest, zeroblob(64),
+                           DurableLocationEvidence, ExpectedContentHash, ExpectedContentLength,
+                           1, 0, 0, '2026-01-02T00:00:00.0000000Z', '2026-01-02T00:00:00.0000000Z'
+                    FROM managed_file_write_intents
+                    WHERE WriteOperationId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e706';
+                    """,
+                    cancellationToken);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.LocalArtifacts:
+            {
+
+                using CovenantSqliteAuthorizationScope maintenance =
+                    CovenantSqliteConnectionInitializer.Instance.Authorize(
+                        connection,
+                        CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance);
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE local_erasure_work_items
+                    SET StateCode = 4,
+                        CheckpointRevision = CheckpointRevision + 1,
+                        UpdatedAtUtc = '2026-01-02T00:00:00.0000000Z'
+                    WHERE WorkItemId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e707';
+                    """,
+                    cancellationToken);
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO local_erasure_work_items (
+                        WorkItemId, ErasureOperationId, SourceWriteOperationId, ExpectedSourceRevision,
+                        ArtifactId, SourceSensitivityLabelId, DurableLocationEvidence,
+                        ExpectedOwnershipEvidence, StateCode, CheckpointRevision, RetryCount,
+                        CreatedAtUtc, UpdatedAtUtc)
+                    SELECT '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e712',
+                           '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e713', SourceWriteOperationId,
+                           ExpectedSourceRevision, ArtifactId, SourceSensitivityLabelId,
+                           DurableLocationEvidence, ExpectedOwnershipEvidence, 1, 0, 0,
+                           '2026-01-02T00:00:00.0000000Z', '2026-01-02T00:00:00.0000000Z'
+                    FROM local_erasure_work_items
+                    WHERE WorkItemId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e707';
+                    """,
+                    cancellationToken);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.AffectedSessions:
+            {
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE session_sensitivity_state
+                    SET TaintedArtifactCount = 0,
+                        MaximumSensitivityCode = 0,
+                        Revision = Revision + 1,
+                        UpdatedAtUtc = '2026-01-02T00:00:00.0000000Z'
+                    WHERE SessionId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e701';
+                    """,
+                    cancellationToken);
+
+                return;
+
+            }
+
+            case CovenantInventoryAggregate.DisclosureExposure:
+            {
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE external_disclosure_state
+                    SET CountKindCode = 2,
+                        JoinedCount = JoinedCount + 1,
+                        UpdatedAtUtc = '2026-01-02T00:00:00.0000000Z'
+                    WHERE DestinationCode = 1
+                        AND RevocabilityCode = 2;
+                    """,
+                    cancellationToken);
+
+                return;
+
+            }
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(aggregate), aggregate, null);
+
+        }
+
+    }
+
+    private async Task<DataRetentionRequest> CreateWorkspaceResetRequestAsync(
+        CancellationToken cancellationToken)
+    {
+
+        Guid campaignId = new("55555555-5555-4555-8555-555555555555");
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "Campaigns"
+                ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+            VALUES
+                (@id, @name, @name, @path, 0, '{}', @at, @at);
+            """,
+            cancellationToken,
+            ("@id", campaignId.ToString()),
+            ("@name", campaignId.ToString("N")),
+            ("@path", _root),
+            ("@at", "2026-01-02T00:00:00.0000000Z"));
+
+        return new DataRetentionRequest(
+            DataRetentionOperation.ResetWorkspace,
+            Workspace: new DataRetentionWorkspaceBinding(campaignId, _root));
+
+    }
+
     private static RetentionRuleSettings Rule(int days = 1) =>
         new()
         {
@@ -724,6 +1295,28 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         object? value = await command.ExecuteScalarAsync(cancellationToken);
 
         return Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+
+    }
+
+    private static async Task ExecuteAsync(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters)
+        {
+
+            _ = command.Parameters.AddWithValue(name, value);
+
+        }
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
     }
 

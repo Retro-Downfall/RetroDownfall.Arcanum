@@ -682,7 +682,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             _secretStore,
             new GrimoireDbPassphraseSource(),
             _tempDir,
-            new ActiveResetProbe());
+            new ActiveResetProbe(
+                new ActiveInstallationReset(
+                    InstallationResetScope.Global,
+                    WorkspaceRoot: null,
+                    PlanId: "active-plan")));
 
         InvalidOperationException error =
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -697,6 +701,113 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             "maintenance lock",
             error.Message,
             StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(_dbPath));
+
+    }
+
+    [Theory]
+
+    [InlineData(InstallationResetScope.Global)]
+
+    [InlineData(InstallationResetScope.All)]
+
+    public async Task StartAsync_allows_proof_free_prepared_host_handoff_to_reach_host_lock(
+        InstallationResetScope scope)
+    {
+
+        using ArcanumMaintenanceLock? held =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(held);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            new ActiveResetProbe(CreateHostRecoveryActive(scope)));
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.StartAsync(CancellationToken.None));
+
+        Assert.Contains(
+            "maintenance lock",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            "factory reset",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(_dbPath));
+
+    }
+
+    [Fact]
+    public async Task StartAsync_blocks_proof_complete_later_and_workspace_handoffs_before_host_lock()
+    {
+
+        ActiveInstallationReset recoverable =
+            CreateHostRecoveryActive(InstallationResetScope.Global);
+
+        ActiveInstallationReset[] blocked =
+        [
+            recoverable with
+            {
+                OnlineDataCompletionDurable = true,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.DataResetComplete,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.OfflineCleanupComplete,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.Verified,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.Completed,
+            },
+            CreateHostRecoveryActive(InstallationResetScope.Workspace),
+        ];
+
+        using ArcanumMaintenanceLock? held =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(held);
+
+        foreach (ActiveInstallationReset active in blocked)
+        {
+
+            GrimoireDatabaseHostedService service = new(
+                _scopeFactory,
+                _secretStore,
+                new GrimoireDbPassphraseSource(),
+                _tempDir,
+                new ActiveResetProbe(active));
+
+            InvalidOperationException error =
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    service.StartAsync(CancellationToken.None));
+
+            Assert.Contains(
+                "factory reset",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain(
+                "maintenance lock",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+        }
 
         Assert.False(File.Exists(_dbPath));
 
@@ -840,16 +951,27 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
-    private sealed class ActiveResetProbe : IInstallationStartupProbe
+    private static ActiveInstallationReset CreateHostRecoveryActive(
+        InstallationResetScope scope) =>
+        new(
+            scope,
+            WorkspaceRoot: scope is InstallationResetScope.Workspace or InstallationResetScope.All
+                ? "/workspace"
+                : null,
+            PlanId: "active-plan",
+            OperationId: Guid.Parse("51515151-5151-4151-8151-515151515151"),
+            Phase: InstallationResetPhase.Prepared,
+            DataHandoff: InstallationResetDataHandoff.HostFactoryErasure,
+            OnlineDataCompletionDurable: false);
+
+    private sealed class ActiveResetProbe(
+        ActiveInstallationReset active) : IInstallationStartupProbe
     {
 
         public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<ActiveInstallationReset?>.Success(
-                new ActiveInstallationReset(
-                    InstallationResetScope.Global,
-                    WorkspaceRoot: null,
-                    PlanId: "active-plan")));
+                active));
 
         public Result<bool> IsFreshInstallation() =>
             Result<bool>.Success(false);

@@ -1240,6 +1240,11 @@ public sealed class BackupServiceTests : IDisposable
             CancellationToken cancellationToken = default) =>
             Task.FromResult<LongRunningOperationRequestIdentity?>(null);
 
+        public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+            Guid requestedOperationId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<LongRunningOperationRequestIdentityMatch?>(null);
+
         public Task<LongRunningOperation> CreateAsync(
             LongRunningOperationCreateRequest request,
             CancellationToken cancellationToken = default) =>

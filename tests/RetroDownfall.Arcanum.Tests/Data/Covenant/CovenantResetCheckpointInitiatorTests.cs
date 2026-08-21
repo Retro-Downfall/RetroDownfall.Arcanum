@@ -111,6 +111,47 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
     }
 
+    private static async Task<(
+        FakeLongRunningOperationStore Store,
+        LongRunningOperation Operation,
+        Guid RequestedOperationId,
+        CovenantErasureEffectDigestInput Effect)> RunningNamedFactoryAsync(
+            CovenantDigest? storedEffect = null)
+    {
+
+        FakeLongRunningOperationStore store = new(Clock);
+
+        Guid requested = Guid.Parse("33333333-3333-4333-8333-333333333333");
+
+        CovenantErasureEffectDigestInput effect = Effect(
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+
+        CovenantDigest identityEffect = storedEffect
+            ?? new CovenantErasureEffectDigestCalculator().Compute(effect).Value;
+
+        LongRunningOperationRequestIdentityResult created = await store.ResolveOrCreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Named healthy-catalog factory erasure",
+                Clock.GetUtcNow()),
+            new LongRunningOperationRequestIdentity(
+                requested,
+                new CovenantDigest(new byte[32]),
+                identityEffect));
+
+        LongRunningOperation operation = created.Operation!;
+
+        _ = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "owner-118",
+            Clock.GetUtcNow(),
+            Clock.GetUtcNow().AddMinutes(2));
+
+        return (store, (await store.GetAsync(operation.Id))!, requested, effect);
+
+    }
+
     [Fact]
     public async Task A_server_generated_reset_commits_inventory_prepared_before_it_yields_an_owner()
     {
@@ -395,6 +436,192 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(
             CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
             admitted.Value.Owner.Operation);
+
+    }
+
+    [Fact]
+    public async Task Factory_requested_identity_is_verified_before_the_v1_checkpoint_is_published()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation, Guid requested, CovenantErasureEffectDigestInput effect) =
+            await RunningNamedFactoryAsync();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(
+                store,
+                catalog: CatalogGuard(database),
+                gate: gate)
+            .PrepareFactoryErasureInventoryAsync(
+                operation,
+                "owner-118",
+                effect,
+                requested,
+                CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
+
+        Assert.Equal(1, store.RequestIdentityLookupCount);
+
+        LongRunningOperation stored = (await store.GetAsync(operation.Id))!;
+
+        Assert.Equal(DataRetentionFactoryResetCheckpointV1.CurrentVersion, stored.CheckpointVersion);
+
+        Result<DataRetentionFactoryResetCheckpointV1> checkpoint =
+            CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryReset(stored.CheckpointPayload!);
+
+        Assert.True(checkpoint.IsSuccess, checkpoint.IsFailure ? checkpoint.Error.Message : null);
+
+        CovenantDigest expectedEffect = new CovenantErasureEffectDigestCalculator()
+            .Compute(effect)
+            .Value;
+
+        Assert.Equal(
+            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(expectedEffect),
+            checkpoint.Value.EffectDigest);
+
+        Assert.Equal(operation.Id, admitted.Value.Owner.OperationId);
+
+        Assert.NotEqual(requested, admitted.Value.Owner.OperationId);
+
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Factory_requested_identity_mismatch_prevents_v1_checkpoint_publication(
+        bool mismatchRequestedId)
+    {
+
+        await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
+
+        CovenantDigest? storedEffect = mismatchRequestedId
+            ? null
+            : new CovenantDigest([.. Enumerable.Repeat((byte)0xAB, 32)]);
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation, Guid requested, CovenantErasureEffectDigestInput effect) =
+            await RunningNamedFactoryAsync(storedEffect);
+
+        Guid suppliedRequestedId = mismatchRequestedId
+            ? Guid.Parse("34343434-3434-4434-8434-343434343434")
+            : requested;
+
+        Result<CovenantResetCheckpointInitiator.GateAdmission> refused = await Initiator(
+                store,
+                catalog: CatalogGuard(database),
+                gate: CovenantOperationGateFixture.CreateGate())
+            .PrepareFactoryErasureInventoryAsync(
+                operation,
+                "owner-118",
+                effect,
+                suppliedRequestedId,
+                CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, refused.Error.Code);
+
+        Assert.Equal(1, store.RequestIdentityLookupCount);
+
+        LongRunningOperation stored = (await store.GetAsync(operation.Id))!;
+
+        Assert.Equal(0, stored.CheckpointVersion);
+
+        Assert.Null(stored.CheckpointPayload);
+
+    }
+
+    [Fact]
+    public async Task Factory_preparation_uses_the_callers_exact_installation_snapshot_without_nesting()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation) =
+            await RunningFactoryAsync();
+
+        RecordingCovenantOperationGate gate = new();
+
+        CovenantInstallationReadLease readLease = (await gate
+            .AcquireInstallationReadAsync(CancellationToken.None)).Value;
+
+        await using (readLease.ConfigureAwait(false))
+        {
+
+            Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(
+                    store,
+                    catalog: CatalogGuard(database),
+                    gate: gate)
+                .PrepareFactoryErasureInventoryAsync(
+                    operation,
+                    "owner-118",
+                    Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure) with
+                    {
+
+                        DatasetGeneration = readLease.Snapshot.DatasetGeneration!.Value,
+
+                    },
+                    requestedOperationId: null,
+                    readLease,
+                    CancellationToken.None);
+
+            Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
+
+            Assert.Equal(["installation-read"], gate.Acquisitions);
+
+            Assert.Equal(1, gate.PeakConcurrentLeases);
+
+            Assert.Equal(1, gate.LiveLeases);
+
+        }
+
+        Assert.Equal(0, gate.LiveLeases);
+
+    }
+
+    [Fact]
+    public async Task Factory_preparation_refuses_a_different_planning_snapshot_before_catalog_or_checkpoint()
+    {
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation) =
+            await RunningFactoryAsync();
+
+        RecordingCovenantOperationGate gate = new();
+
+        CovenantInstallationReadLease readLease = (await gate
+            .AcquireInstallationReadAsync(CancellationToken.None)).Value;
+
+        await using (readLease.ConfigureAwait(false))
+        {
+
+            CountingDigestCalculator digests = new();
+
+            Result<CovenantResetCheckpointInitiator.GateAdmission> refused = await Initiator(
+                    store,
+                    digests,
+                    UnusedCatalogGuard(),
+                    gate)
+                .PrepareFactoryErasureInventoryAsync(
+                    operation,
+                    "owner-118",
+                    Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure),
+                    requestedOperationId: null,
+                    readLease,
+                    CancellationToken.None);
+
+            Assert.True(refused.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, refused.Error.Code);
+
+            Assert.Equal(0, digests.ComputeCount);
+
+            Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
+
+            Assert.Equal(["installation-read"], gate.Acquisitions);
+
+        }
 
     }
 

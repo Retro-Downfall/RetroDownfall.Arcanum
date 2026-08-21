@@ -49,7 +49,11 @@ internal sealed class InstallationStartupProbe(
                 : new ActiveInstallationReset(
                     record.Scope,
                     record.Workspace?.WorkspaceRoot,
-                    record.PlanId));
+                    record.PlanId,
+                    record.OperationId,
+                    record.Phase,
+                    record.DataHandoff,
+                    record.OnlineDataCompletion is not null));
 
     }
 

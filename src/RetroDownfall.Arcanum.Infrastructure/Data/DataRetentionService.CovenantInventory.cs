@@ -1,5 +1,7 @@
 using System.Data.Common;
 
+using System.Globalization;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -85,6 +87,27 @@ internal sealed partial class DataRetentionService
 
     }
 
+    private async ValueTask<Result<ICovenantSnapshotReadLease?>> AcquireCovenantInstallationPlanningAdmissionAsync(
+        CancellationToken cancellationToken)
+    {
+
+        if (covenantGate is null)
+        {
+
+            return CovenantPlanningCapabilityUnavailable();
+
+        }
+
+        Result<CovenantInstallationReadLease> lease = await covenantGate
+            .AcquireInstallationReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return lease.IsFailure
+            ? Result<ICovenantSnapshotReadLease?>.Failure(lease.Error)
+            : Result<ICovenantSnapshotReadLease?>.Success(lease.Value);
+
+    }
+
     /// <summary>
     /// Takes exactly one read capability over one Campaign, or reports that none was available.
     /// </summary>
@@ -109,6 +132,46 @@ internal sealed partial class DataRetentionService
         return lease.IsSuccess ? lease.Value : null;
 
     }
+
+    private async ValueTask<Result<ICovenantSnapshotReadLease?>> AcquireCovenantScopedPlanningAdmissionAsync(
+        Guid campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        if (campaignId == Guid.Empty)
+        {
+
+            return Result<ICovenantSnapshotReadLease?>.Failure(
+                new Error(
+                    ErrorCodes.Data.InvalidRequest,
+                    "A scoped Covenant planning capability requires a Campaign identity."));
+
+        }
+
+        if (covenantGate is null)
+        {
+
+            return CovenantPlanningCapabilityUnavailable();
+
+        }
+
+        Result<CovenantReadLease> lease = await covenantGate
+            .AcquireReadAsync(
+                CovenantOperationScope.ForCampaign(campaignId),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return lease.IsFailure
+            ? Result<ICovenantSnapshotReadLease?>.Failure(lease.Error)
+            : Result<ICovenantSnapshotReadLease?>.Success(lease.Value);
+
+    }
+
+    private static Result<ICovenantSnapshotReadLease?> CovenantPlanningCapabilityUnavailable() =>
+        Result<ICovenantSnapshotReadLease?>.Failure(
+            new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "The required Covenant planning capability is unavailable."));
 
     /// <summary>
     /// Counts the family under a capability the caller already holds.
@@ -192,6 +255,62 @@ internal sealed partial class DataRetentionService
             exposure.CountKind);
 
     }
+
+    /// <summary>
+    /// Attaches Covenant inventory and makes it part of the identity only for an explicit Covenant
+    /// erasure decision.
+    /// </summary>
+    /// <remarks>
+    /// Ordinary prune and workspace plans report the same inventory, but do not select it. Binding
+    /// that report to their identity would invalidate a preview when unrelated Covenant evidence
+    /// changes. Covenant reset and factory reset do select the family, so every content-free aggregate
+    /// must instead be bound to the preview the operator confirmed.
+    /// </remarks>
+    private static DataRetentionPlan BindCovenantErasurePlanIdentity(
+        DataRetentionPlan plan,
+        DataRetentionCovenantInventory inventory)
+    {
+
+        ArgumentNullException.ThrowIfNull(plan);
+
+        ArgumentNullException.ThrowIfNull(inventory);
+
+        DataRetentionPlan attached = plan with { Covenant = inventory };
+
+        bool bindsInventory = plan.Request is
+            {
+                Operation: DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant,
+            }
+            or { Operation: DataRetentionOperation.FactoryReset };
+
+        if (!bindsInventory)
+        {
+
+            return attached;
+
+        }
+
+        return attached with
+        {
+
+            PlanId = ComputePlanId(
+                attached.Request,
+                attached.Items,
+                attached.Blockers,
+                attached.Conflicts,
+                attached.CandidateIds,
+                CovenantErasureInventoryAuthority(inventory)),
+
+        };
+
+    }
+
+    private static string CovenantErasureInventoryAuthority(
+        DataRetentionCovenantInventory inventory) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"covenant-erasure-inventory:v1:{inventory.Rows}:{inventory.ManagedFiles}:{inventory.LocalArtifacts}:{inventory.AffectedSessions}:{inventory.PossibleDisclosures}:{(int)inventory.DisclosureCountKind}");
 
     /// <summary>
     /// Folds the installation's nonrevocable disclosure buckets into one possible-attempt count.

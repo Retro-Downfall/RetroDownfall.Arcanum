@@ -8,7 +8,7 @@
 
 **Design thesis:** a memory system is safe only when every retained claim, derivative, retrieval, provider call, mutation, and disclosure remains bound to its origin, authority, scope, sensitivity, revision history, and evidence of use.
 
-**Document status:** current as of **2026-08-20**, reconciled through GitHub issue #127 and the accepted committed-transition/reopen design. Public reset and factory-erasure activation remains issue #128.
+**Document status:** current as of **2026-08-21**, reconciled through GitHub issue #128 and the activated Covenant reset/healthy-catalog factory-erasure design.
 
 **Branch parity.** This document and its companion [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md) are kept **byte-identical on `main` and `long-term-memory`**, so either branch can be read as the current architecture. The implementation they describe and the `Arcanum.DESIGN.md` sections they cite (§10.10–§10.20.7) currently live **only on `long-term-memory`**; §22 marks those links. Update the pair on whichever branch you are on, then mirror the change to the other in the same commit range.
 
@@ -71,23 +71,23 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#113** | Landed | `BackupRestoreProtectedStatePolicy`, `BackupRestoreProtectedStateInspector`, `BackupRestoreProtectedStatePurger`, and the ordered destructive-disclosure prompt contract. |
 | **#114** | Landed | `ICovenantExportPolicy` and `CovenantExportAdmission`, the `Covenant.PlaintextExportRefused` refusal before any Session export byte, and the typed content-free Campaign export exclusion counts. |
 | **#115** | Landed | `--protected-state` and `--map-campaign` on `arcanum backup restore`, the pure-Core `BackupRestoreCampaignMappingPolicy`, plan-time validation of every mapping against this installation's own Campaigns, and an import refusal that names the archived Campaign. |
-| **#116** | Landed | `RetentionDataClass.Covenant` and `MemoryResetScope.Covenant` with every code in both enums written literally, a settings catalog and policy store that refuse to give the class a rule and say why, the content-free `DataRetentionCovenantInventory`, one read capability per planning call acquired in `PlanAsync` itself, and a Covenant memory reset that plans and then refuses with `Data.CovenantResetRequiresErasureCoordinator`. |
+| **#116** | Landed | `RetentionDataClass.Covenant` and `MemoryResetScope.Covenant` with every code in both enums written literally, a settings catalog and policy store that refuse to give the class a rule and say why, the content-free `DataRetentionCovenantInventory`, one read capability per planning call, and the original safe reset refusal that #128 later retired by connecting the protected coordinator. |
 | **#117** | Landed | `ICovenantSensitiveArtifactPurger` and its coordinator over the shared erasure kernels, `RequireConditionalSensitivityRetentionPurge` with its write-once request-scoped authority, all six deletion routes dispatching through it, page-walking bulk Saga and embeddings-reset paths, `ICovenantLabeledArtifactGuard` on the three legacy raw deletes, and the destructive-disclosure ordering on `data reset-memory`. |
 | **#118** | Landed | `CovenantResetPhase` and `CovenantResetPhaseMachine` — ten literal codes declared once, failing closed on unknown, zero, skipped, and regressed — `DataRetentionMutationCheckpointV3` with its bounded optional Covenant arm, `DataRetentionFactoryResetCheckpointV1` over the same phases, the data-retention mutation descriptor moved to `BeforeStateWrites` with a bootstrap barrier, `CovenantResetCheckpointInitiator` making gate acquisition unreachable before `InventoryPrepared` commits, and `CovenantErasureEffectDigestCalculator` under two pinned domains. |
 | **#124** | Landed | Ten-phase coordinator, shared-kernel authority, warm-writer lifecycle seam, and one-shot disposition. |
 | **#125** | Landed | Canonical secure-delete transaction, connection drain, fresh dataset, monotonic epochs, and retained-evidence assertions. |
 | **#126** | Landed | Checked WAL truncation, compaction/export proof, sidecar absence, and immutable candidate reopen. |
 | **#127** | Landed | Composite runtime publication, all-six-token retirement, bounded inventory/catalog guard, serialized warm writer, production transition, exact-owner recovery/adoption, complete composition, and same/fresh-process acceptance. |
+| **#128** | Implemented | Dedicated Covenant reset preview; lifecycle authority and protected plan serialization; direct V3 reset coordinator entry; healthy-catalog V1 factory composition with ordinary cleanup between `ManagedArtifactsProcessed` and `HandlesClosed`; authenticated global/all plan rebinding; owner-only `Prepared + HostFactoryErasure` replay handoff and monotonic proof-before-shutdown; exact-owner lease maintenance through direct and recovered terminalization; and shared reset/global-factory external-retention disclosure before confirmation. |
 
-The shared internal persistence graph is registered in CLI and host with host-only initiation and recovery handlers. There is still **no Covenant route mapped, no Covenant command registered**, and the feature remains off by default; issue #128 owns reset and factory-erasure activation.
+The shared persistence graph is registered in CLI and host with host-only initiation and recovery handlers. The existing `/api/data` reset/factory lifecycle is activated, including `arcanum data reset-memory --scope covenant`; the dedicated Covenant inspection/mutation/repair routes and commands remain unmapped. The feature remains off by default.
 
 ### 2.2 What remains open
 
 | Issue | Size | Role |
 |---|---|---|
-| **#94** | XL | Internal Covenant family erasure is green through #127; #120–#123 remain for full installation reset and remediation. |
-| **#119** | XL | Internal reset/factory-erasure lifecycle #124–#127 is green; #128 owns public route entry. |
-| **#128** | M | Reset and factory-erasure route entry, retiring the coordinator refusal. |
+| **#94** | XL | Covenant family erasure and data-lifecycle activation are implemented through the #128 contract; #120–#123 remain for full installation reset and remediation. |
+| **#119** | XL | Reset/factory-erasure implementation through the #128 contract is present; parent completion remains. |
 | **#120** | L | The authenticated V2 installation-reset active record and its anti-rollback anchor. |
 | **#121** | L | Verified external remediation attestation for full installation reset. |
 | **#122** | XL | Host-tools marker-pair compare-deletion and Campaign-marker cleanup. |
@@ -813,7 +813,7 @@ This prevents the feedback loop in which frequent retrieval is mistaken for corr
 
 ## 14. Operator and agent surfaces
 
-The approved target operator surface is typed, authenticated, body-based, and no-store where it may carry protected information. Issue #88 froze the shapes, ports, error vocabulary, and HTTP status mapping; issue #89 shipped the pre-binding authority boundary and the feature gate. **No Covenant route is mapped and no Covenant command is registered yet** — that is issue #89's remaining surface work. Issue #115 is the one operator-facing exception, and deliberately not a new command: `--protected-state` and `--map-campaign` are options on the already-shipped `arcanum backup restore`.
+The approved target operator surface is typed, authenticated, body-based, and no-store where it may carry protected information. Issue #88 froze the shapes, ports, error vocabulary, and HTTP status mapping; issue #89 shipped the pre-binding authority boundary and the feature gate. **No dedicated Covenant inspection, mutation, repair, rebuild, path, or Session-binding route or command is registered yet** — that remains issue #89's surface work. The existing operator surfaces have two deliberate lifecycle exceptions: issue #115 adds `--protected-state` and `--map-campaign` to `arcanum backup restore`, while issue #128 maps protected reset planning/apply through `/api/data` and activates `arcanum data reset-memory --scope covenant` plus the healthy-catalog factory data phase.
 
 ### 14.1 Inspection
 
@@ -892,13 +892,23 @@ The exact receipt — including the frozen zero-child vector — publishes throu
 
 Covenant has no time-based retention rule. Explicit reset and healthy-catalog factory erasure share ten durable phases from `InventoryPrepared` to `ReopenedVerified`; legacy checkpoint versions retain their old paths. Gate acquisition remains unreachable until the first checkpoint commits.
 
+`POST /api/data/memory/reset/plan` returns the reset's five content-free aggregates under one installation read lease retained through protected serialization. The lease is revalidated before the first byte; the exact no-store/private tuple is applied and validators are stripped. The CLI carries the preview, not the capability, through the shared external-retention disclosure and prompt, then sends its `planId` as `expectedPlanId`. For explicit reset/factory erasure, that identity binds all five counts and their count kind; prune and workspace identities still exclude the report. Apply takes a fresh installation planning lease, rebuilds current state, refuses plan or inventory drift, validates the nonempty current dataset, commits the V3 owner, releases planning admission, and enters the coordinator directly. The preview lease never crosses confirmation. A successful reset reports reconciliation under the originally confirmed plan id and zero unproved deletion totals.
+
+Protected `Request` and `Installation` plan admission must return their required live snapshot lease or fail closed; there is no lease-free fallback for those capabilities. The ordinary `PlanAsync` wrapper still consumes/releases its own admission for prune and workspace callers, and feature-off status may omit the optional Covenant projection exactly as before.
+
 Preflight uses the exclusive lease's nonempty dataset and one private, unpooled, initialized, drain-enrolled read transaction. It exhausts labels and managed producers in nullable-`Guid` pages of at most 256 and, for factory erasure, proves the healthy catalog on that same WAL-visible snapshot. Partial/drifted catalog state or missing, duplicate, mismatched, or malformed ownership evidence refuses before effects. Database pages replay before canonical reset and managed pages after it. Nonrevocable disclosures fold with checked arithmetic into Exact or LowerBound exposure.
 
 The canonical transaction proves `secure_delete`, removes the owned family, stamps a fresh dataset, and preserves authority taint, disclosure evidence, Campaign markers, schema, and restore credentials. Local storage proof checks WAL truncation, compaction, export fallback, sidecar absence, and one immutable reopen. That reopen returns the exact candidate for composite key/authority/availability publication. The same warm writer is restored before any pre-effect rollback and reopened freshly only after successful publication.
 
 After immutable proof, caller cancellation cannot interrupt `ReopenedVerified`, publication, writer restart, disposition, or durable failure recording. Disposition is one-shot with no fallback; uncertainty remains `ReconciliationRequired` with `Covenant.MaintenanceFailed`. Current handlers resume only the leased durable owner. Lock-owning startup validates and adopts exactly one owner before readiness; no-lock CLI bootstrap does not scan or freeze.
 
-Real SQLCipher acceptance proves old-read-lease revocation and all-six-token rejection in one process, plus fresh-process adoption/resume from `InventoryPrepared`. The internal graph is composed. Public reset and healthy-catalog factory erasure still refuse without mutation; issue #128 owns activation. Full installation reset remains separate work and requires its own remediation evidence.
+Healthy-catalog factory erasure preserves the broad factory-reset contract without changing the frozen phases. Global apply requires a measurable current installation inventory and exclusive lifecycle independently of the inference feature policy; a missing lease, inventory, coordinator, or healthy catalog fails closed instead of deleting ordinary data alone. Its V1 owner runs the protected kernels first, then a required restart-idempotent ordinary cleanup after `ManagedArtifactsProcessed` and before `HandlesClosed`, while exclusive admission is still held. Recovery reruns the continuation while `ManagedArtifactsProcessed` is durable and skips it at `HandlesClosed` or later; legacy V0 checkpoint recovery is unchanged and is not a public bypass. Handle closure, WAL and sidecar proof, composite publication, fresh-writer and general-admission reopen, and exclusive release all follow ordinary cleanup. A same-snapshot plan or catalog mismatch fails with zero effects. The public result keeps the confirmed plan id and reports only executor-observed ordinary totals; the five Covenant aggregates remain inventory.
+
+Global/all installation planning binds the authenticated host's exact current factory-plan identity into the local installation inventory before dry-run output, disclosure, or confirmation. An unreachable host, missing API key, missing current Covenant inventory, or candidate mismatch fails before active state or shutdown; workspace stays on its offline path. After confirmation, an owner-only V1 active record publishes at `Prepared + HostFactoryErasure`. Its `OperationId` is the requested-operation replay key used to atomically start/replay the host factory LRO, while the host creates a distinct server operation ID. The key is never `RootOperationId`, a server identity, gate owner, or lease owner. A content-free monotonic proof binds both identities, the confirmed data plan, and observed ordinary totals before shutdown. The sequence is exactly `prepare -> host apply/replay -> proof -> shutdown -> lock -> offline continuation`; the offline phase trusts only that proof and never calls the lease-free factory path. Pre-effect `Data.PlanChanged` may retire the handoff, but cancellation or any uncertain host outcome preserves it for replay. Startup admits `serve` only for proof-absent global/all `Prepared + HostFactoryErasure`, solely to finish that replay; proof-bearing, legacy, and later active states remain blocking.
+
+One data-LRO lease maintainer begins immediately after named or unnamed durable factory start and spans re-plan, catalog proof, V1 checkpoint, coordinator, ordinary continuation, and terminalization. Ordinary continuation mutation compares operation ID, `Running`, exact owner, and live expiry. V0/V1 factory and V3 reset recovery use the same maintainer with the reconciler-adopted owner; ownership loss stops effects and becomes content-free requires-attention. No Covenant phase or checkpoint version changed.
+
+Real SQLCipher acceptance proves old-read-lease revocation and all-six-token rejection in one process, plus fresh-process exact-owner adoption/resume from `InventoryPrepared`. The `/api/data` reset/factory routes now await that graph through final release before writing a response. Dedicated Covenant management routes remain separate, and full installation reset still requires its own remediation evidence.
 
 Completion reports local secure erasure separately from external disclosure and never claims remote copies were erased.
 
@@ -953,9 +963,9 @@ flowchart LR
     Surfaces --> Verification["#92 Performance, AOT,<br/>security, and docs"]
 ```
 
-Phases 1 through 4 and the internal Covenant family-erasure lifecycle through #127 are green. What remains for #74:
+Phases 1 through 4 and the Covenant family-erasure lifecycle through the #128 route-activation contract are implemented. What remains for #74:
 
-- **#94:** public Covenant reset/factory-erasure entry (#128), then full installation erasure and remediation (#120–#123).
+- **#94:** full installation erasure and remediation (#120–#123); the #128 reset and healthy-catalog factory entry contract is implemented.
 - **#92:** performance, AOT, security, full-suite, review, and documentation qualification.
 
 Completing a child does not authorize feature enablement or closing #74 without the approved integration boundary.

@@ -2185,7 +2185,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         await File.WriteAllBytesAsync(auditPath, bytes);
 
-        IDataRetentionService service = CreateService();
+        DataRetentionService service = CreateService();
 
         DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
 
@@ -2201,17 +2201,53 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(bytes.LongLength, logs.EstimatedBytes);
 
-        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
-            new DataRetentionApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
+        (LongRunningOperationReconciliationSummary recovery, _) =
+            await ReconcileFactoryResetV0Async(
+                service,
+                "dated-log-factory-recovery-test");
 
-        Assert.True(result.IsSuccess, result.Error.Message);
+        Assert.Equal(1, recovery.Completed);
+
+        Assert.Equal(0, recovery.RequiresAttention);
 
         Assert.False(File.Exists(auditPath));
 
         Assert.False(Directory.Exists(quarantineDirectory));
 
-        Assert.True(result.Value.Reconciled);
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_FactoryReset_WithoutCovenantLifecycle_FailsClosedBeforeOperationOrDeletion()
+    {
+
+        RequireSqlCipher();
+
+        _ = await SeedSessionAsync(pinned: false);
+
+        DataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.Error.Code);
+
+        Assert.Equal(1, await CountAllAsync("Sessions"));
+
+        Assert.Empty(
+            await new LongRunningOperationStore(_db!).ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionFactoryReset,
+                    Limit: 10)));
 
     }
 
@@ -2696,7 +2732,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(externalBackup, "backup");
 
-        IDataRetentionService service = CreateService();
+        DataRetentionService service = CreateService();
 
         DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
 
@@ -2719,11 +2755,14 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             static item => item.DataClass == RetentionDataClass.DaemonExecutions
                 && item.Rows == 1);
 
-        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
-            new DataRetentionApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
+        (LongRunningOperationReconciliationSummary recovery, LongRunningOperation recoveryOperation) =
+            await ReconcileFactoryResetV0Async(
+                service,
+                "owned-data-factory-recovery-test");
 
-        Assert.True(result.IsSuccess, result.Error.Message);
+        Assert.Equal(1, recovery.Completed);
+
+        Assert.Equal(0, recovery.RequiresAttention);
 
         Assert.Equal(0, await CountAllAsync("Sessions"));
 
@@ -2759,11 +2798,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.True(File.Exists(externalBackup));
 
-        Assert.True(result.Value.Reconciled);
-
         LongRunningOperation remainingOperation = Assert.Single(
             await operations.ListAsync(
                 new LongRunningOperationQuery(Limit: 10)));
+
+        Assert.Equal(recoveryOperation.Id, remainingOperation.Id);
 
         Assert.NotEqual(priorOperation.Id, remainingOperation.Id);
 
@@ -2788,7 +2827,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(1, await CountAllAsync("tapestry_node_embeddings"));
 
-        IDataRetentionService service = CreateService();
+        DataRetentionService service = CreateService();
 
         DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
 
@@ -2802,11 +2841,14 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 .Where(static item => item.DataClass == RetentionDataClass.Tapestry)
                 .Sum(static item => item.DerivedRecords));
 
-        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
-            new DataRetentionApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
+        (LongRunningOperationReconciliationSummary recovery, _) =
+            await ReconcileFactoryResetV0Async(
+                service,
+                "tapestry-factory-recovery-test");
 
-        Assert.True(result.IsSuccess, result.Error.Message);
+        Assert.Equal(1, recovery.Completed);
+
+        Assert.Equal(0, recovery.RequiresAttention);
 
         Assert.Equal(0, await CountAllAsync("tapestry_nodes"));
 
@@ -2820,8 +2862,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(0, await CountAllAsync("tapestry_node_embeddings_vec"));
 
         }
-
-        Assert.True(result.Value.Reconciled);
 
     }
 
@@ -3146,22 +3186,18 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         DataRetentionService retention = CreateService();
 
-        Result<DataRetentionApplyResult>? reset = null;
+        LongRunningOperationReconciliationSummary? reset = null;
 
         attachments.AfterBytesCommittedBeforeDbForTesting = async cancellationToken =>
         {
 
-            DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+            (reset, _) = await ReconcileFactoryResetV0Async(
+                retention,
+                "attachment-race-factory-recovery-test");
 
-            DataRetentionPlan plan = await retention.PlanAsync(
-                request,
-                cancellationToken);
+            Assert.Equal(1, reset.Completed);
 
-            reset = await retention.ApplyAsync(
-                new DataRetentionApplyRequest(request, plan.PlanId),
-                cancellationToken);
-
-            Assert.True(reset.IsSuccess, reset.Error.Message);
+            Assert.Equal(0, reset.RequiresAttention);
 
         };
 
@@ -3178,7 +3214,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.NotNull(reset);
 
-        Assert.True(reset!.IsSuccess, reset.Error.Message);
+        Assert.Equal(1, reset!.Completed);
 
         Assert.Equal(0, await CountAllAsync("Sessions"));
 
@@ -3260,16 +3296,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         DataRetentionService service = CreateService();
 
-        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
-
-        DataRetentionPlan plan = await service.PlanAsync(
-            request,
-            CancellationToken.None);
-
         Func<string, FileHandleMetadata?>? previousSeam =
             FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
 
         int quarantinedFileReads = 0;
+
+        LongRunningOperationReconciliationSummary? firstRecovery = null;
 
         try
         {
@@ -3297,11 +3329,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
             };
 
-            Result<DataRetentionApplyResult> result = await service.ApplyAsync(
-                new DataRetentionApplyRequest(request, plan.PlanId),
-                CancellationToken.None);
+            (firstRecovery, _) = await ReconcileFactoryResetV0Async(
+                service,
+                "factory-finalizer-first-recovery-test");
 
-            Assert.True(result.IsFailure);
+            Assert.Equal(0, firstRecovery.Completed);
+
+            Assert.Equal(1, firstRecovery.RequiresAttention);
 
         }
         finally
@@ -3312,6 +3346,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         }
 
         Assert.Equal(0, await CountAllAsync("Sessions"));
+
+        Assert.NotNull(firstRecovery);
 
         Assert.Equal(0, await CountAllAsync("SessionAttachments"));
 
@@ -3419,13 +3455,105 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FactoryReset_lost_owner_cannot_renew_or_delete_for_the_new_owner(bool expired)
+    {
+
+        RequireSqlCipher();
+
+        _ = await SeedSessionAsync(pinned: false);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        FakeTimeProvider clock = new();
+
+        DateTimeOffset now = clock.GetUtcNow();
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Factory owner-loss guard.",
+                now));
+
+        const string formerOwner = "factory-former-owner";
+
+        LongRunningOperationLeaseResult firstLease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            formerOwner,
+            now,
+            now.AddMinutes(5));
+
+        Assert.True(firstLease.Acquired);
+
+        LongRunningOperation stale = firstLease.Operation;
+
+        LongRunningOperation before;
+
+        if (expired)
+        {
+
+            clock.Advance(TimeSpan.FromMinutes(6));
+
+            before = (await operations.GetAsync(operation.Id))!;
+
+        }
+        else
+        {
+
+            Assert.True(await operations.TryTransitionAsync(
+                stale.Id,
+                stale.Revision,
+                formerOwner,
+                LongRunningOperationState.ReconciliationRequired,
+                now,
+                ErrorCodes.Covenant.MaintenanceFailed));
+
+            LongRunningOperationLeaseResult adopted = await operations.TryAcquireLeaseAsync(
+                operation.Id,
+                "factory-adopted-owner",
+                now.AddSeconds(1),
+                now.AddMinutes(6));
+
+            Assert.True(adopted.Acquired);
+
+            before = adopted.Operation;
+
+        }
+
+        LongRunningOperationRecoveryResult result = await CreateService(
+            timeProvider: clock,
+            operationStore: operations).RecoverFactoryResetAsync(
+                stale,
+                CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
+
+        Assert.Equal(1, await _db!.Sessions.LongCountAsync());
+
+        LongRunningOperation after = Assert.IsType<LongRunningOperation>(
+            await operations.GetAsync(operation.Id));
+
+        Assert.Equal(before.LeaseOwner, after.LeaseOwner);
+
+        Assert.Equal(before.Revision, after.Revision);
+
+        Assert.Equal(before.LeaseExpiresAt, after.LeaseExpiresAt);
+
+    }
+
     private DataRetentionService CreateService(
         ArcanumSettings? settings = null,
         IDataRetentionPolicyStore? policyStore = null,
         TimeProvider? timeProvider = null,
         ILongRunningOperationStore? operationStore = null,
         ILogger<DataRetentionService>? logger = null,
-        CovenantErasureCoordinator? erasureCoordinator = null)
+        CovenantErasureCoordinator? erasureCoordinator = null,
+        DataRetentionLeaseMaintainer? leaseMaintainer = null)
     {
 
         ILongRunningOperationStore operations = operationStore
@@ -3441,7 +3569,52 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             _filesRoot,
             _logsRoot,
             policyStore,
-            covenantErasureCoordinator: erasureCoordinator);
+            covenantErasureCoordinator: erasureCoordinator,
+            leaseMaintainer: leaseMaintainer);
+
+    }
+
+    private async Task<(
+        LongRunningOperationReconciliationSummary Summary,
+        LongRunningOperation Operation)> ReconcileFactoryResetV0Async(
+            DataRetentionService service,
+            string workerId)
+    {
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Interrupted version-0 factory reset.",
+                startedAt));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            "crashed-factory-owner",
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(lease.Acquired);
+
+        LongRunningOperationReconciler reconciler = new(
+            operations,
+            [new DataRetentionFactoryResetRecoveryHandler(service)],
+            TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(
+            workerId,
+            maxOperations: 10,
+            maxConcurrency: 1,
+            CancellationToken.None);
+
+        return (
+            summary,
+            Assert.IsType<LongRunningOperation>(await operations.GetAsync(operation.Id)));
 
     }
 
@@ -4358,6 +4531,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Guid operationId,
             CancellationToken cancellationToken = default) =>
             inner.FindRequestIdentityAsync(operationId, cancellationToken);
+
+        public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+            Guid requestedOperationId,
+            CancellationToken cancellationToken = default) =>
+            inner.FindByRequestedOperationIdAsync(requestedOperationId, cancellationToken);
 
         public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
             LongRunningOperationQuery query,

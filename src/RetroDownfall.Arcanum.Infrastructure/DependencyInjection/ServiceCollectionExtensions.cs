@@ -861,9 +861,13 @@ public static class ServiceCollectionExtensions
 
         // One host-only producer of a Covenant erasure's effect digest, and one seam that makes
         // exclusive-gate acquisition unreachable before the InventoryPrepared checkpoint commits.
-        // The shared production coordinator now consumes the resulting checkpoint during recovery;
-        // the public route remains refused until its later route-integration slice.
+        // The shared production coordinator consumes the resulting checkpoint on both the direct
+        // reset route and durable recovery.
         services.AddSingleton<ICovenantErasureEffectDigestCalculator, CovenantErasureEffectDigestCalculator>();
+
+        services.AddSingleton<
+            ICovenantFactoryErasureApplyRequestDigestCalculator,
+            CovenantFactoryErasureApplyRequestDigestCalculator>();
 
         services.AddScoped<CovenantResetCheckpointInitiator>();
 

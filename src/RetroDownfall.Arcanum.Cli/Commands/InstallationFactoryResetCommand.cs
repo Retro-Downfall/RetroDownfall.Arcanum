@@ -28,22 +28,30 @@ internal interface IInstallationResetApplyBoundary
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken);
 
+    Task<Result<InstallationResetResult>> ApplyFreshAsync(
+        InstallationResetPlanRequest request,
+        InstallationResetPlan confirmedPlan,
+        CancellationToken cancellationToken);
+
 }
 
 internal interface IInstallationResetOnlinePlanValidator
 {
 
-    Task<Result> ValidateAsync(
+    Task<Result<InstallationResetOnlinePlanValidation>> ValidateAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken);
 
 }
 
+internal sealed record InstallationResetOnlinePlanValidation(
+    DataRetentionPlan? Plan);
+
 internal sealed class InstallationResetOnlinePlanValidator(
     ArcanumApiClient apiClient) : IInstallationResetOnlinePlanValidator
 {
 
-    public async Task<Result> ValidateAsync(
+    public async Task<Result<InstallationResetOnlinePlanValidation>> ValidateAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
     {
@@ -63,29 +71,12 @@ internal sealed class InstallationResetOnlinePlanValidator(
         if (online.IsFailure)
         {
 
-            return online.Error.Code is ErrorCodes.Connection.Unreachable
-                    or ErrorCodes.Security.MissingApiKey
-                ? Result.Success()
-                : Result.Failure(online.Error);
+            return Result<InstallationResetOnlinePlanValidation>.Failure(online.Error);
 
         }
 
-        string? expectedDataPlanId = plan.AcceptedBinding.DataPlanIds.SingleOrDefault();
-
-        if (expectedDataPlanId is null
-            || !string.Equals(
-                online.Value.PlanId,
-                expectedDataPlanId,
-                StringComparison.Ordinal))
-        {
-
-            return Result.Failure(new Error(
-                ErrorCodes.Data.PlanChanged,
-                "The authenticated host reported a different canonical data reset plan."));
-
-        }
-
-        return Result.Success();
+        return Result<InstallationResetOnlinePlanValidation>.Success(
+            new InstallationResetOnlinePlanValidation(online.Value));
 
     }
 
@@ -126,7 +117,9 @@ internal sealed class InstallationFactoryResetCommand(
     ICliEnvironment environment,
     IInstallationResetConfirmationPrompt confirmationPrompt,
     IInstallationResetApplyBoundary applyBoundary,
-    IInstallationResetOnlinePlanValidator onlinePlanValidator)
+    IInstallationResetOnlinePlanValidator onlinePlanValidator,
+    IInstallationResetOnlineDataHandoff onlineDataHandoff,
+    CovenantExternalRetentionDisclosureWriter disclosureWriter)
 {
 
     public async Task<int> Execute(
@@ -225,13 +218,45 @@ internal sealed class InstallationFactoryResetCommand(
 
         InstallationResetPlan plan = planned.Value;
 
-        Result onlineValidation = await onlinePlanValidator
-            .ValidateAsync(plan, cancellationToken).ConfigureAwait(false);
+        DataRetentionPlan? onlinePlan = null;
 
-        if (onlineValidation.IsFailure)
+        if (plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
 
-            return Fail(onlineValidation.Error);
+            Result<InstallationResetOnlinePlanValidation> onlineValidation =
+                await onlinePlanValidator
+                    .ValidateAsync(plan, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (onlineValidation.IsFailure)
+            {
+
+                return Fail(onlineValidation.Error);
+
+            }
+
+            onlinePlan = onlineValidation.Value.Plan;
+
+            if (onlinePlan?.Covenant is null)
+            {
+
+                return Fail(new Error(
+                    ErrorCodes.Data.InventoryUnavailable,
+                    "The authenticated host Covenant inventory is unavailable."));
+
+            }
+
+            Result<InstallationResetPlan> rebound = onlineDataHandoff
+                .BindOnlineDataPlan(request, plan, onlinePlan);
+
+            if (rebound.IsFailure)
+            {
+
+                return Fail(rebound.Error);
+
+            }
+
+            plan = rebound.Value;
 
         }
 
@@ -246,6 +271,13 @@ internal sealed class InstallationFactoryResetCommand(
 
         bool acknowledgedWithoutPrompt =
             invocationContext.Options.Yes && force;
+
+        if (plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+        {
+
+            disclosureWriter.Write(onlinePlan!.Covenant);
+
+        }
 
         if (!acknowledgedWithoutPrompt)
         {
@@ -281,8 +313,9 @@ internal sealed class InstallationFactoryResetCommand(
         }
 
         Result<InstallationResetResult> applied = await applyBoundary
-            .ApplyAsync(
-                new InstallationResetApplyRequest(request, plan.PlanId),
+            .ApplyFreshAsync(
+                request,
+                plan,
                 cancellationToken)
             .ConfigureAwait(false);
 

@@ -76,6 +76,14 @@ public enum InstallationResetTargetRole
 
 }
 
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<InstallationResetDataHandoff>))]
+public enum InstallationResetDataHandoff
+{
+
+    HostFactoryErasure,
+
+}
+
 public sealed record InstallationResetPlanRequest(
     [property: JsonRequired] InstallationResetScope Scope,
     [property: JsonRequired] string InvocationDirectory);
@@ -176,7 +184,17 @@ public sealed record InstallationResetResult(
 public sealed record ActiveInstallationReset(
     InstallationResetScope Scope,
     string? WorkspaceRoot,
-    string PlanId);
+    string PlanId,
+    Guid OperationId = default,
+    InstallationResetPhase Phase = InstallationResetPhase.Prepared,
+    InstallationResetDataHandoff? DataHandoff = null,
+    bool OnlineDataCompletionDurable = false);
+
+public sealed record InstallationResetOnlineDataHandoff(
+    Guid RequestedOperationId,
+    string InstallationPlanId,
+    string DataPlanId,
+    bool DataResetCompleted);
 
 public interface IInstallationStartupProbe
 {
@@ -197,6 +215,34 @@ public interface IInstallationResetService
 
     Task<Result<InstallationResetResult>> ApplyAsync(
         InstallationResetApplyRequest request,
+        CancellationToken cancellationToken = default);
+
+}
+
+public interface IInstallationResetOnlineDataHandoff
+{
+
+    Result<InstallationResetPlan> BindOnlineDataPlan(
+        InstallationResetPlanRequest request,
+        InstallationResetPlan localPlan,
+        DataRetentionPlan onlinePlan);
+
+    Task<Result<InstallationResetOnlineDataHandoff>> PrepareAsync(
+        InstallationResetApplyRequest request,
+        InstallationResetPlan confirmedPlan,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<InstallationResetOnlineDataHandoff?>> ReadAsync(
+        InstallationResetApplyRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> RecordCompletedAsync(
+        InstallationResetOnlineDataHandoff handoff,
+        DataRetentionApplyResult result,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> RetirePreEffectAsync(
+        InstallationResetOnlineDataHandoff handoff,
         CancellationToken cancellationToken = default);
 
 }

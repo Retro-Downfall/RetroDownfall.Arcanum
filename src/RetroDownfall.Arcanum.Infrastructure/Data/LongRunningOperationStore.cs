@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -238,7 +239,10 @@ internal sealed class LongRunningOperationStore(
                     // A different digest under the same name means the caller changed what it was
                     // asking for. Returning the existing operation would invite it to be treated as
                     // the one that was requested.
-                    if (!identity.ApplyRequestDigest.Bytes.AsSpan().SequenceEqual(existingDigest ?? []))
+                    if (existingDigest is not { Length: CovenantLimits.DigestBytes }
+                        || !CryptographicOperations.FixedTimeEquals(
+                            identity.ApplyRequestDigest.Bytes,
+                            existingDigest))
                     {
 
                         return new LongRunningOperationRequestIdentityResult(
@@ -576,6 +580,58 @@ internal sealed class LongRunningOperationStore(
                     : null;
             },
             cancellationToken);
+
+    public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+        Guid requestedOperationId,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (requestedOperationId == Guid.Empty)
+        {
+
+            throw new ArgumentException(
+                "A requested operation identity cannot be empty.",
+                nameof(requestedOperationId));
+
+        }
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                await using DbCommand cmd = connection.CreateCommand();
+                cmd.CommandText =
+                    $"""
+                    SELECT {SelectColumns},
+                           identity."RequestedOperationId",
+                           identity."ApplyRequestDigest",
+                           identity."EffectDigest"
+                    FROM "LongRunningOperations" AS operation
+                    INNER JOIN long_running_operation_request_identities AS identity
+                        ON identity."OperationId" = operation."Id"
+                    WHERE identity."RequestedOperationId" = @requested
+                    LIMIT 1
+                    """;
+                Add(cmd, "@requested", Format(requestedOperationId));
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    return null;
+
+                }
+
+                return new LongRunningOperationRequestIdentityMatch(
+                    Read(reader),
+                    new LongRunningOperationRequestIdentity(
+                        ParseGuid(reader.GetString(24)),
+                        new CovenantDigest((byte[])reader.GetValue(25)),
+                        new CovenantDigest((byte[])reader.GetValue(26))));
+            },
+            cancellationToken);
+
+    }
 
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,

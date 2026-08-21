@@ -104,6 +104,61 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Null(await store.FindRequestIdentityAsync(Guid.NewGuid()));
     }
 
+    /// <summary>
+    /// A replay after erasure must find its original server operation from the caller's durable
+    /// name before any new live inventory exists to plan.
+    /// </summary>
+    [SkippableFact]
+    public async Task FindByRequestedOperationIdAsync_ReturnsTheServerOperationAndCompleteIdentity()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+        DateTimeOffset now = new(2026, 8, 21, 12, 0, 0, TimeSpan.Zero);
+        Guid requested = Guid.Parse("41414141-4141-4141-8141-414141414141");
+        CovenantDigest apply = new([.. Enumerable.Repeat((byte)0x41, 32)]);
+        CovenantDigest effect = new([.. Enumerable.Repeat((byte)0x42, 32)]);
+
+        LongRunningOperationRequestIdentityResult created = await store.ResolveOrCreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Named healthy-catalog factory erasure.",
+                now),
+            new LongRunningOperationRequestIdentity(requested, apply, effect));
+
+        LongRunningOperationRequestIdentityMatch? match =
+            await store.FindByRequestedOperationIdAsync(requested);
+
+        Assert.NotNull(match);
+        Assert.Equal(created.Operation, match!.Operation);
+        Assert.Equal(requested, match.Identity.RequestedOperationId);
+        Assert.Equal(apply, match.Identity.ApplyRequestDigest);
+        Assert.Equal(effect, match.Identity.EffectDigest);
+        Assert.Null(match.Operation.RootOperationId);
+        Assert.Null(match.Operation.ParentOperationId);
+    }
+
+    [SkippableFact]
+    public async Task FindByRequestedOperationIdAsync_ReturnsNullForAnUnknownName()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+
+        Assert.Null(
+            await store.FindByRequestedOperationIdAsync(
+                Guid.Parse("42424242-4242-4242-8242-424242424242")));
+    }
+
+    [SkippableFact]
+    public async Task FindByRequestedOperationIdAsync_RefusesTheEmptyName()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => store.FindByRequestedOperationIdAsync(Guid.Empty));
+    }
+
     [SkippableFact]
     public async Task TryAcquireLeaseAsync_OnlyOneWorkerWinsUntilLeaseExpires()
     {

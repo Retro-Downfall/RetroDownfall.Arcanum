@@ -142,6 +142,10 @@ internal static class CliApplicationFactory
 
         services.AddArcanumInstallationReset(settingsSnapshot);
 
+        services.AddScoped<IInstallationResetOnlineDataHandoff>(serviceProvider =>
+            (IInstallationResetOnlineDataHandoff)serviceProvider
+                .GetRequiredService<IInstallationResetService>());
+
         services.AddSingleton<IInstallationStartupProbe>(static _ =>
             InstallationStartupProbe.CreateDefault());
 
@@ -311,6 +315,8 @@ internal static class CliApplicationFactory
         services.AddTransient<DataEncryptionCommands>();
 
         services.AddTransient<DataRetentionCommands>();
+
+        services.AddSingleton<CovenantExternalRetentionDisclosureWriter>();
 
         services.AddTransient<InstallationFactoryResetCommand>();
 

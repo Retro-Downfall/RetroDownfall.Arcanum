@@ -193,6 +193,130 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     [Theory]
 
+    [InlineData(InstallationResetScope.Global)]
+
+    [InlineData(InstallationResetScope.All)]
+
+    public async Task Program_admits_serve_for_proof_free_prepared_host_handoff(
+        InstallationResetScope scope)
+    {
+
+        FakeStartupProbe probe = new(CreateHostRecoveryActive(scope));
+
+        int continuationCalls = 0;
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            ["serve"],
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(31);
+
+            },
+            probe);
+
+        Assert.Equal(31, exitCode);
+
+        Assert.Equal(1, continuationCalls);
+
+        Assert.Equal(1, probe.ActiveReadCount);
+
+    }
+
+    [Fact]
+    public async Task Program_keeps_run_blocked_during_proof_free_host_recovery()
+    {
+
+        FakeStartupProbe probe = new(
+            CreateHostRecoveryActive(InstallationResetScope.Global));
+
+        int continuationCalls = 0;
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            ["run", "prompt"],
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(0);
+
+            },
+            probe);
+
+        Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+        Assert.Equal(0, continuationCalls);
+
+    }
+
+    [Fact]
+    public async Task Program_blocks_serve_for_legacy_proof_complete_later_and_workspace_states()
+    {
+
+        ActiveInstallationReset recoverable =
+            CreateHostRecoveryActive(InstallationResetScope.Global);
+
+        ActiveInstallationReset[] blocked =
+        [
+            recoverable with
+            {
+                DataHandoff = null,
+            },
+            recoverable with
+            {
+                OnlineDataCompletionDurable = true,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.DataResetComplete,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.OfflineCleanupComplete,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.Verified,
+            },
+            recoverable with
+            {
+                Phase = InstallationResetPhase.Completed,
+            },
+            CreateHostRecoveryActive(InstallationResetScope.Workspace),
+        ];
+
+        foreach (ActiveInstallationReset active in blocked)
+        {
+
+            FakeStartupProbe probe = new(active);
+
+            int continuationCalls = 0;
+
+            int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+                ["serve"],
+                () =>
+                {
+
+                    continuationCalls++;
+
+                    return Task.FromResult(0);
+
+                },
+                probe);
+
+            Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+            Assert.Equal(0, continuationCalls);
+
+        }
+
+    }
+
+    [Theory]
+
     [InlineData("run", "--help")]
 
     [InlineData("serve", "-h")]
@@ -263,6 +387,19 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     private static string[] Split(string commandLine) =>
         commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+    private static ActiveInstallationReset CreateHostRecoveryActive(
+        InstallationResetScope scope) =>
+        new(
+            scope,
+            WorkspaceRoot: scope is InstallationResetScope.Workspace or InstallationResetScope.All
+                ? "/workspace"
+                : null,
+            PlanId: "active-plan",
+            OperationId: Guid.Parse("51515151-5151-4151-8151-515151515151"),
+            Phase: InstallationResetPhase.Prepared,
+            DataHandoff: InstallationResetDataHandoff.HostFactoryErasure,
+            OnlineDataCompletionDurable: false);
 
     private sealed class FakeStartupProbe(
         ActiveInstallationReset? active) : IInstallationStartupProbe

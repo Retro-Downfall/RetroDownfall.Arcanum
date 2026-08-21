@@ -12,11 +12,21 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Cli.Commands;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Cli.Services;
+
+using RetroDownfall.Arcanum.Cli.UX;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
@@ -393,7 +403,19 @@ public sealed class DataRetentionCommandTests
         string commandLine)
     {
 
-        RecordingHandler handler = new(_ => ErrorResponse());
+        DataRetentionPlan resetPlan = CreatePlan() with
+        {
+            Request = new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Entry),
+        };
+
+        RecordingHandler handler = new(request =>
+            request.Path == "/api/data/memory/reset/plan"
+                ? SuccessResponse(
+                    resetPlan,
+                    ArcanumJsonContext.Default.ApiResponseDataRetentionPlan)
+                : ErrorResponse());
 
         _ = RunCommand(handler, Split(commandLine));
 
@@ -404,14 +426,14 @@ public sealed class DataRetentionCommandTests
         // second write and that the write lands where it is supposed to.
         RecordedRequest request = Assert.Single(
             handler.Requests,
-            static recorded => recorded.Path != "/api/data/prune/plan");
+            static recorded => recorded.Path != "/api/data/memory/reset/plan");
 
         Assert.Equal(new HttpMethod(method), request.Method);
 
         Assert.Equal(path, request.Path);
 
         Assert.All(
-            handler.Requests.Where(static recorded => recorded.Path == "/api/data/prune/plan"),
+            handler.Requests.Where(static recorded => recorded.Path == "/api/data/memory/reset/plan"),
             static preview => Assert.Equal(HttpMethod.Post, preview.Method));
 
         if (path == "/api/data/retention")
@@ -432,6 +454,16 @@ public sealed class DataRetentionCommandTests
         {
 
             Assert.Contains("entry", request.Body, StringComparison.OrdinalIgnoreCase);
+
+            RecordedRequest preview = Assert.Single(
+                handler.Requests,
+                static recorded => recorded.Path == "/api/data/memory/reset/plan");
+
+            MemoryResetRequest? previewBody = JsonSerializer.Deserialize(
+                preview.Body,
+                ArcanumJsonContext.Default.MemoryResetRequest);
+
+            Assert.Equal(MemoryResetScope.Entry, previewBody?.Scope);
 
         }
 
@@ -459,17 +491,258 @@ public sealed class DataRetentionCommandTests
         string commandLine)
     {
 
-        RecordingHandler handler = new(_ => ErrorResponse());
+        bool resetMemory = commandLine.Contains(
+            "reset-memory",
+            StringComparison.Ordinal);
+
+        DataRetentionPlan resetPlan = CreatePlan() with
+        {
+            Request = new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Entry),
+        };
+
+        RecordingHandler handler = new(request => resetMemory
+            && request.Path == "/api/data/memory/reset/plan"
+                ? SuccessResponse(
+                    resetPlan,
+                    ArcanumJsonContext.Default.ApiResponseDataRetentionPlan)
+                : ErrorResponse());
 
         CliTestResult result = RunCommand(handler, Split(commandLine));
 
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
+        string expectedPreviewPath = resetMemory
+            ? "/api/data/memory/reset/plan"
+            : "/api/data/prune/plan";
+
         Assert.All(
             handler.Requests,
-            static request => Assert.Equal("/api/data/prune/plan", request.Path));
+            request => Assert.Equal(expectedPreviewPath, request.Path));
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+
+    [InlineData(CovenantDisclosureCountKind.Exact, "exactly 2 physical attempts")]
+
+    [InlineData(CovenantDisclosureCountKind.LowerBound, "at least 2 physical attempts")]
+
+    public void Reset_memory_discloses_the_server_inventory_before_a_decline(
+        CovenantDisclosureCountKind countKind,
+        string expectedCount)
+    {
+
+        DataRetentionPlan plan = CreatePlan() with
+        {
+            Request = new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant),
+            Covenant = new DataRetentionCovenantInventory(
+                Rows: 4,
+                ManagedFiles: 3,
+                LocalArtifacts: 2,
+                AffectedSessions: 1,
+                PossibleDisclosures: 2,
+                DisclosureCountKind: countKind),
+        };
+
+        RecordingConfirmationPrompt prompt = new(confirmed: false);
+
+        RecordingHandler handler = new(request => request.Path switch
+        {
+            "/api/data/memory/reset/plan" => SuccessResponse(
+                plan,
+                ArcanumJsonContext.Default.ApiResponseDataRetentionPlan),
+            _ => ErrorResponse(),
+        });
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["data", "reset-memory", "--scope", "covenant"],
+            prompt);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        RecordedRequest preview = Assert.Single(handler.Requests);
+
+        Assert.Equal("/api/data/memory/reset/plan", preview.Path);
+
+        Assert.Contains("Reset the covenant memory scope?", prompt.Question, StringComparison.Ordinal);
+
+        int disclosure = result.Error.IndexOf(
+            CovenantExternalRetentionDisclosure.DestructiveOperationText,
+            StringComparison.Ordinal);
+
+        int count = result.Error.IndexOf(expectedCount, StringComparison.Ordinal);
+
+        int help = result.Error.IndexOf(
+            "Retention guidance: README.md#covenant-provider-retention-and-deletion",
+            StringComparison.Ordinal);
+
+        int cancelled = result.Error.IndexOf("Memory reset cancelled.", StringComparison.Ordinal);
+
+        Assert.True(disclosure >= 0);
+
+        Assert.True(count > disclosure);
+
+        Assert.True(help > count);
+
+        Assert.True(cancelled > help);
+
+    }
+
+    [Fact]
+    public void Json_reset_memory_writes_disclosure_to_diagnostics_and_one_apply_document()
+    {
+
+        DataRetentionPlan plan = CreatePlan() with
+        {
+            Request = new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant),
+            Covenant = new DataRetentionCovenantInventory(
+                Rows: 4,
+                ManagedFiles: 3,
+                LocalArtifacts: 2,
+                AffectedSessions: 1,
+                PossibleDisclosures: 1,
+                DisclosureCountKind: CovenantDisclosureCountKind.Exact),
+        };
+
+        DataRetentionApplyResult applied = CreateApplyResult(plan.PlanId);
+
+        RecordingHandler handler = new(request => request.Path switch
+        {
+            "/api/data/memory/reset/plan" => SuccessResponse(
+                plan,
+                ArcanumJsonContext.Default.ApiResponseDataRetentionPlan),
+            "/api/data/memory/reset" => SuccessResponse(
+                applied,
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult),
+            _ => ErrorResponse(),
+        });
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["--json", "--yes", "data", "reset-memory", "--scope", "covenant"]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Contains(
+            CovenantExternalRetentionDisclosure.DestructiveOperationText,
+            result.Error,
+            StringComparison.Ordinal);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(plan.PlanId, document.RootElement.GetProperty("planId").GetString());
+
+        Assert.Equal(
+            applied.OperationId,
+            document.RootElement.GetProperty("operationId").GetGuid());
+
+        RecordedRequest applyRequest = Assert.Single(
+            handler.Requests,
+            static request => request.Path == "/api/data/memory/reset");
+
+        using JsonDocument apply = JsonDocument.Parse(applyRequest.Body);
+
+        Assert.Equal(
+            plan.PlanId,
+            apply.RootElement.GetProperty("expectedPlanId").GetString());
+
+    }
+
+    [Fact]
+    public async Task Reset_memory_orders_preview_disclosure_targets_prompt_and_apply()
+    {
+
+        DataRetentionPlan plan = CreatePlan() with
+        {
+            Request = new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant),
+            Covenant = new DataRetentionCovenantInventory(
+                Rows: 4,
+                ManagedFiles: 3,
+                LocalArtifacts: 2,
+                AffectedSessions: 1,
+                PossibleDisclosures: 1,
+                DisclosureCountKind: CovenantDisclosureCountKind.Exact),
+        };
+
+        List<string> events = [];
+
+        RecordingHandler handler = new(request => request.Path switch
+        {
+            "/api/data/memory/reset/plan" => SuccessResponse(
+                plan,
+                ArcanumJsonContext.Default.ApiResponseDataRetentionPlan),
+            "/api/data/memory/reset" => SuccessResponse(
+                CreateApplyResult(plan.PlanId),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult),
+            _ => ErrorResponse(),
+        }, events);
+
+        OrderedConsoleDispatcher dispatcher = new(events);
+
+        DataRetentionCommands commands = new(
+            new ArcanumApiClient(
+                new FakeHttpClientFactory(handler),
+                new FakeSecretStore("test-key")),
+            dispatcher,
+            new FixedInvocationContext(),
+            new RecordingConfirmationPrompt(confirmed: true, events: events),
+            new CovenantExternalRetentionDisclosureWriter(
+                dispatcher,
+                Options.Create(
+                    new ArcanumSettings
+                    {
+                        Providers =
+                        [
+                            new ProviderSettings
+                            {
+                                Name = "Claude Code",
+                                Type = AiProviderKind.ClaudeCodeCli,
+                            },
+                            new ProviderSettings
+                            {
+                                Name = "House gateway",
+                                Type = AiProviderKind.OpenAICompatible,
+                                Endpoint = "https://gateway.internal.example/v1",
+                            },
+                        ],
+                    })));
+
+        int exitCode = await commands.ResetMemory(
+            "covenant",
+            CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.Success, exitCode);
+
+        Assert.Equal(
+            [
+                "POST /api/data/memory/reset/plan",
+                CovenantExternalRetentionDisclosure.DestructiveOperationText,
+                "This installation's own receipts record exactly 1 physical attempt that could have carried protected content out of it. Nothing this reset does can revoke any of them.",
+                "  Retention guidance (Claude Code): https://privacy.claude.com/en/collections/10672565-data-handling-retention",
+                "  Retention guidance (House gateway): compendium:providers",
+                "  Retention guidance: README.md#covenant-provider-retention-and-deletion",
+                "<prompt>",
+                "POST /api/data/memory/reset",
+            ],
+            events.Take(8));
+
+        Assert.Contains(
+            "\"expectedPlanId\":\"plan-exact-43\"",
+            Assert.Single(
+                handler.Requests,
+                static request => request.Path == "/api/data/memory/reset").Body,
+            StringComparison.Ordinal);
 
     }
 
@@ -722,7 +995,8 @@ public sealed class DataRetentionCommandTests
     }
 
     private sealed class RecordingConfirmationPrompt(
-        bool confirmed) : IConfirmationPrompt
+        bool confirmed,
+        List<string>? events = null) : IConfirmationPrompt
     {
 
         public string Question { get; private set; } = string.Empty;
@@ -734,6 +1008,8 @@ public sealed class DataRetentionCommandTests
 
             Question = question;
 
+            events?.Add("<prompt>");
+
             return Task.FromResult(confirmed);
 
         }
@@ -741,7 +1017,8 @@ public sealed class DataRetentionCommandTests
     }
 
     private sealed class RecordingHandler(
-        Func<RecordedRequest, HttpResponseMessage>? responder = null)
+        Func<RecordedRequest, HttpResponseMessage>? responder = null,
+        List<string>? events = null)
         : HttpMessageHandler
     {
 
@@ -765,6 +1042,8 @@ public sealed class DataRetentionCommandTests
 
             Requests.Add(recorded);
 
+            events?.Add($"{recorded.Method} {recorded.Path}");
+
             return responder is null
                 ? new HttpResponseMessage(HttpStatusCode.NotFound)
                 : responder(recorded);
@@ -777,5 +1056,33 @@ public sealed class DataRetentionCommandTests
         HttpMethod Method,
         string Path,
         string Body);
+
+    private sealed class OrderedConsoleDispatcher(List<string> events) : IConsoleDispatcher
+    {
+
+        public void WritePayload(string value) => events.Add(value);
+
+        public void WriteDiagnostic(string value) => events.Add(value);
+
+        public void WriteVerbose(string value) => events.Add(value);
+
+        public void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo) =>
+            events.Add("<json>");
+
+        public void WriteJson(JsonElement value) => events.Add("<json>");
+
+        public void BeginJsonStream() => events.Add("<json-stream>");
+
+    }
+
+    private sealed class FixedInvocationContext : ICliInvocationContext
+    {
+
+        public CliInvocationOptions Options { get; } = new(
+            Json: false,
+            Plain: true,
+            Yes: false);
+
+    }
 
 }

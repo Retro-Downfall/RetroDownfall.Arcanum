@@ -21,7 +21,14 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
     private readonly Func<CancellationToken, Task<Result<bool>>> _quitServer;
 
+    private readonly Func<
+        FactoryResetRequest,
+        CancellationToken,
+        Task<Result<DataRetentionApplyResult>>> _applyFactoryReset;
+
     private readonly IInstallationResetService _resetService;
+
+    private readonly IInstallationResetOnlineDataHandoff _onlineDataHandoff;
 
     private readonly Func<string, IDisposable?> _tryAcquireMaintenanceLock;
 
@@ -30,10 +37,13 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
     public InstallationResetApplyBoundary(
         ArcanumApiClient apiClient,
         IInstallationResetService resetService,
+        IInstallationResetOnlineDataHandoff onlineDataHandoff,
         TimeProvider timeProvider)
         : this(
             apiClient.QuitServerAsync,
+            apiClient.FactoryResetDataAsync,
             resetService,
+            onlineDataHandoff,
             static guardedDirectory => ArcanumMaintenanceLock.TryAcquire(guardedDirectory),
             timeProvider)
     {
@@ -42,14 +52,23 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
     internal InstallationResetApplyBoundary(
         Func<CancellationToken, Task<Result<bool>>> quitServer,
+        Func<
+            FactoryResetRequest,
+            CancellationToken,
+            Task<Result<DataRetentionApplyResult>>> applyFactoryReset,
         IInstallationResetService resetService,
+        IInstallationResetOnlineDataHandoff onlineDataHandoff,
         Func<string, IDisposable?> tryAcquireMaintenanceLock,
         TimeProvider timeProvider)
     {
 
         _quitServer = quitServer;
 
+        _applyFactoryReset = applyFactoryReset;
+
         _resetService = resetService;
+
+        _onlineDataHandoff = onlineDataHandoff;
 
         _tryAcquireMaintenanceLock = tryAcquireMaintenanceLock;
 
@@ -63,6 +82,163 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
     {
 
         ArgumentNullException.ThrowIfNull(request);
+
+        if (request.Request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+        {
+
+            Result<InstallationResetOnlineDataHandoff?> active =
+                await _onlineDataHandoff
+                    .ReadAsync(request, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (active.IsSuccess && active.Value is { } handoff)
+            {
+
+                return await ApplyPreparedHandoffAsync(
+                    request,
+                    handoff,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            if (active.IsSuccess)
+            {
+
+                return Result<InstallationResetResult>.Failure(new Error(
+                    ErrorCodes.Data.ResetInProgress,
+                    "The durable installation reset handoff is no longer available."));
+
+            }
+
+            if (active.IsFailure
+                && !string.Equals(
+                    active.Error.Code,
+                    ErrorCodes.Data.ResetInProgress,
+                    StringComparison.Ordinal))
+            {
+
+                return Result<InstallationResetResult>.Failure(active.Error);
+
+            }
+
+        }
+
+        return await ApplyOfflineAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<InstallationResetResult>> ApplyFreshAsync(
+        InstallationResetPlanRequest request,
+        InstallationResetPlan confirmedPlan,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        ArgumentNullException.ThrowIfNull(confirmedPlan);
+
+        InstallationResetApplyRequest applyRequest = new(
+            request,
+            confirmedPlan.PlanId);
+
+        if (request.Scope is InstallationResetScope.Workspace)
+        {
+
+            return await ApplyOfflineAsync(applyRequest, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        Result<InstallationResetOnlineDataHandoff> prepared =
+            await _onlineDataHandoff
+                .PrepareAsync(
+                    applyRequest,
+                    confirmedPlan,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        if (prepared.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(prepared.Error);
+
+        }
+
+        return await ApplyPreparedHandoffAsync(
+            applyRequest,
+            prepared.Value,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task<Result<InstallationResetResult>> ApplyPreparedHandoffAsync(
+        InstallationResetApplyRequest request,
+        InstallationResetOnlineDataHandoff handoff,
+        CancellationToken cancellationToken)
+    {
+
+        if (!handoff.DataResetCompleted)
+        {
+
+            Result<DataRetentionApplyResult> applied = await _applyFactoryReset(
+                new FactoryResetRequest(
+                    "factory-reset",
+                    handoff.DataPlanId,
+                    handoff.RequestedOperationId),
+                cancellationToken).ConfigureAwait(false);
+
+            if (applied.IsFailure)
+            {
+
+                if (string.Equals(
+                        applied.Error.Code,
+                        ErrorCodes.Data.PlanChanged,
+                        StringComparison.Ordinal))
+                {
+
+                    Result retired = await _onlineDataHandoff
+                        .RetirePreEffectAsync(handoff, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (retired.IsFailure)
+                    {
+
+                        return Result<InstallationResetResult>.Failure(retired.Error);
+
+                    }
+
+                }
+
+                return Result<InstallationResetResult>.Failure(applied.Error);
+
+            }
+
+            Result recorded = await _onlineDataHandoff
+                .RecordCompletedAsync(
+                    handoff,
+                    applied.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (recorded.IsFailure)
+            {
+
+                return Result<InstallationResetResult>.Failure(recorded.Error);
+
+            }
+
+        }
+
+        return await ApplyOfflineAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private async Task<Result<InstallationResetResult>> ApplyOfflineAsync(
+        InstallationResetApplyRequest request,
+        CancellationToken cancellationToken)
+    {
 
         Result<bool> shutdown = await _quitServer(cancellationToken)
             .ConfigureAwait(false);

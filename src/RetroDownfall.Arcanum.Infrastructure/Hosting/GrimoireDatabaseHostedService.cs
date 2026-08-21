@@ -12,6 +12,18 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+internal static class InstallationResetHostStartupAdmission
+{
+
+    public static bool AllowsRecoveryHost(
+        ActiveInstallationReset active) =>
+        active.Scope is InstallationResetScope.Global or InstallationResetScope.All
+        && active.Phase is InstallationResetPhase.Prepared
+        && active.DataHandoff is InstallationResetDataHandoff.HostFactoryErasure
+        && !active.OnlineDataCompletionDurable;
+
+}
+
 [ExcludeFromCodeCoverage] // Reason: IHostedService DB bootstrap
 public sealed class GrimoireDatabaseHostedService(
     IServiceScopeFactory scopeFactory,
@@ -62,7 +74,8 @@ public sealed class GrimoireDatabaseHostedService(
 
         }
 
-        if (activeRead.Value is not null)
+        if (activeRead.Value is { } active
+            && !InstallationResetHostStartupAdmission.AllowsRecoveryHost(active))
         {
 
             InvalidOperationException exception = new(

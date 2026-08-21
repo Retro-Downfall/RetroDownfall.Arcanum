@@ -244,6 +244,10 @@ public sealed record LongRunningOperationRequestIdentityResult(
     LongRunningOperationRequestIdentityOutcome Outcome,
     LongRunningOperation? Operation);
 
+public sealed record LongRunningOperationRequestIdentityMatch(
+    LongRunningOperation Operation,
+    LongRunningOperationRequestIdentity Identity);
+
 public sealed record LongRunningOperationQuery(
     string? Kind = null,
     LongRunningOperationState? State = null,
@@ -381,6 +385,10 @@ public interface ILongRunningOperationStore
     /// </remarks>
     Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
         Guid operationId,
+        CancellationToken cancellationToken = default);
+
+    Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+        Guid requestedOperationId,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<LongRunningOperation>> ListAsync(

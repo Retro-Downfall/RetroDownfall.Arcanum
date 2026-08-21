@@ -72,6 +72,10 @@ public sealed class InstallationResetContractTests
             "0",
             ArcanumJsonContext.Default.InstallationResetItemStatus));
 
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(
+            "0",
+            ArcanumJsonContext.Default.InstallationResetDataHandoff));
+
     }
 
     [Fact]

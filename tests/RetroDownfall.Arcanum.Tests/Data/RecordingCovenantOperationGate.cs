@@ -33,6 +33,8 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
 
     private int _peak;
 
+    internal Error? InstallationReadFailure { get; init; }
+
     /// <summary>Every granted capability, in acquisition order.</summary>
     internal IReadOnlyList<string> Acquisitions
     {
@@ -92,6 +94,14 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
     {
 
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (InstallationReadFailure is { } failure)
+        {
+
+            return ValueTask.FromResult(
+                Result<CovenantInstallationReadLease>.Failure(failure));
+
+        }
 
         return ValueTask.FromResult(
             Result<CovenantInstallationReadLease>.Success(

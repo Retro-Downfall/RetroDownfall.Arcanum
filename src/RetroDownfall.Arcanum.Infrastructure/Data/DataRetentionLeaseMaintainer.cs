@@ -118,7 +118,14 @@ internal sealed class DataRetentionLeaseMaintainer
                 if (!renewed)
                 {
 
-                    throw new InvalidOperationException(
+                    if (actionTask.IsCompleted)
+                    {
+
+                        return await actionTask.ConfigureAwait(false);
+
+                    }
+
+                    throw new DataRetentionLeaseLostException(
                         "The retention operation lost its durable lease while applying a candidate.");
 
                 }
@@ -168,3 +175,6 @@ internal sealed class DataRetentionLeaseMaintainer
     }
 
 }
+
+internal sealed class DataRetentionLeaseLostException(string message)
+    : InvalidOperationException(message);

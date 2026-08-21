@@ -12,6 +12,770 @@ public sealed class InstallationResetServiceTests
 {
 
     [Fact]
+    public async Task BindOnlineDataPlan_rebinds_only_the_Covenant_aware_data_identity()
+    {
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        InstallationResetService service = new(
+            new FakeDataService(localDataPlan),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        DataRetentionPlan onlinePlan = localDataPlan with
+        {
+            PlanId = "online-covenant-plan",
+            GeneratedAt = localDataPlan.GeneratedAt.AddMinutes(1),
+            Covenant = new DataRetentionCovenantInventory(
+                Rows: 11,
+                ManagedFiles: 2,
+                LocalArtifacts: 3,
+                AffectedSessions: 4,
+                PossibleDisclosures: 5,
+                Core.Covenant.CovenantDisclosureCountKind.Exact),
+        };
+
+        Result<InstallationResetPlan> result = service.BindOnlineDataPlan(
+            request,
+            localPlan,
+            onlinePlan);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        InstallationResetPlan rebound = result.Value;
+
+        Assert.NotEqual(localPlan.PlanId, rebound.PlanId);
+
+        Assert.NotEqual(
+            localPlan.AcceptedBinding.BindingId,
+            rebound.AcceptedBinding.BindingId);
+
+        Assert.Equal([onlinePlan.PlanId], rebound.AcceptedBinding.DataPlanIds);
+
+        InstallationResetTargetDescriptor database = Assert.Single(
+            rebound.Targets,
+            static target => target.Role is InstallationResetTargetRole.Database);
+
+        Assert.Equal(
+            "canonical-data-plan:" + onlinePlan.PlanId,
+            database.DatabasePredicate);
+
+        Assert.Equal(localPlan.Scope, rebound.Scope);
+
+        Assert.Equal(localPlan.Workspace, rebound.Workspace);
+
+        Assert.Equal(localPlan.GeneratedAt, rebound.GeneratedAt);
+
+        Assert.Equal(localPlan.AcceptedBinding.SelectedRoots, rebound.AcceptedBinding.SelectedRoots);
+
+        Assert.Equal(localPlan.AcceptedBinding.ExcludedRoots, rebound.AcceptedBinding.ExcludedRoots);
+
+        Assert.Equal(localPlan.PreservedBackups, rebound.PreservedBackups);
+
+        Assert.Equal(localPlan.Credentials, rebound.Credentials);
+
+        Assert.Equal(localPlan.Exclusions, rebound.Exclusions);
+
+        Assert.Equal(localPlan.Blockers, rebound.Blockers);
+
+        Assert.Equal(localPlan.Rows, rebound.Rows);
+
+        Assert.Equal(localPlan.Files, rebound.Files);
+
+        Assert.Equal(localPlan.EstimatedBytes, rebound.EstimatedBytes);
+
+        Assert.Contains(
+            rebound.Targets,
+            static target => target.Role is InstallationResetTargetRole.Daemon
+                && target.ResourceId == "platform-daemon-registration");
+
+    }
+
+    [Theory]
+    [InlineData("request")]
+    [InlineData("items")]
+    [InlineData("blockers")]
+    [InlineData("conflicts")]
+    [InlineData("rows")]
+    [InlineData("files")]
+    [InlineData("estimated-bytes")]
+    [InlineData("derived-records")]
+    [InlineData("candidate-ids")]
+    [InlineData("requires-confirmation")]
+    public async Task BindOnlineDataPlan_rejects_each_changed_ordinary_candidate_dimension(
+        string dimension)
+    {
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        InstallationResetService service = new(
+            new FakeDataService(localDataPlan),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        DataRetentionPlan changed = MutateOrdinaryPlan(
+            localDataPlan with
+            {
+                PlanId = "online-covenant-plan",
+                Covenant = new DataRetentionCovenantInventory(
+                    Rows: 11,
+                    ManagedFiles: 2,
+                    LocalArtifacts: 3,
+                    AffectedSessions: 4,
+                    PossibleDisclosures: 5,
+                    Core.Covenant.CovenantDisclosureCountKind.Exact),
+            },
+            dimension);
+
+        Result<InstallationResetPlan> result = service.BindOnlineDataPlan(
+            request,
+            localPlan,
+            changed);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
+
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    public async Task BindOnlineDataPlan_rejects_a_missing_online_data_identity(
+        string onlinePlanId)
+    {
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        InstallationResetService service = new(
+            new FakeDataService(localDataPlan),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetPlan> result = service.BindOnlineDataPlan(
+            request,
+            localPlan,
+            localDataPlan with { PlanId = onlinePlanId });
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task PrepareOnlineDataHandoff_revalidates_the_rebound_plan_before_publication()
+    {
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = new(
+            new FakeDataService(
+                localDataPlan,
+                localDataPlan with { CandidateIds = ["changed"] }),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        InstallationResetPlan rebound = service.BindOnlineDataPlan(
+            planRequest,
+            localPlan,
+            localDataPlan with { PlanId = "online-data-plan" }).Value;
+
+        Result<InstallationResetOnlineDataHandoff> result = await service.PrepareAsync(
+            new InstallationResetApplyRequest(planRequest, rebound.PlanId),
+            rebound,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
+
+        Assert.False(active.Written);
+
+    }
+
+    [Fact]
+    public async Task PrepareOnlineDataHandoff_publishes_one_idempotent_Prepared_owner()
+    {
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = new(
+            new FakeDataService(localDataPlan),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        InstallationResetPlan rebound = service.BindOnlineDataPlan(
+            planRequest,
+            localPlan,
+            localDataPlan with { PlanId = "online-data-plan" }).Value;
+
+        InstallationResetApplyRequest applyRequest = new(planRequest, rebound.PlanId);
+
+        Result<InstallationResetOnlineDataHandoff> prepared = await service.PrepareAsync(
+            applyRequest,
+            rebound,
+            CancellationToken.None);
+
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+        Assert.NotEqual(Guid.Empty, prepared.Value.RequestedOperationId);
+
+        Assert.Equal(rebound.PlanId, prepared.Value.InstallationPlanId);
+
+        Assert.Equal("online-data-plan", prepared.Value.DataPlanId);
+
+        Assert.False(prepared.Value.DataResetCompleted);
+
+        InstallationResetActiveRecord record = Assert.IsType<InstallationResetActiveRecord>(
+            active.Record);
+
+        Assert.Equal(prepared.Value.RequestedOperationId, record.OperationId);
+
+        Assert.Equal(InstallationResetPhase.Prepared, record.Phase);
+
+        Assert.Equal(InstallationResetDataHandoff.HostFactoryErasure, record.DataHandoff);
+
+        Assert.Null(record.OnlineDataCompletion);
+
+        Result<InstallationResetOnlineDataHandoff?> replay = await service.ReadAsync(
+            applyRequest,
+            CancellationToken.None);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.Equal(prepared.Value, replay.Value);
+
+        Assert.Single(active.Writes);
+
+    }
+
+    [Fact]
+    public async Task PrepareOnlineDataHandoff_rejects_workspace_and_later_phase_records()
+    {
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = new(
+            new FakeDataService(localDataPlan),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        InstallationResetPlan rebound = service.BindOnlineDataPlan(
+            planRequest,
+            localPlan,
+            localDataPlan with { PlanId = "online-data-plan" }).Value;
+
+        InstallationResetActiveRecord later = CreateActive(
+            rebound,
+            InstallationResetPhase.DataResetComplete) with
+        {
+            DataHandoff = InstallationResetDataHandoff.HostFactoryErasure,
+        };
+
+        active.Seed(later);
+
+        Result<InstallationResetOnlineDataHandoff?> result = await service.ReadAsync(
+            new InstallationResetApplyRequest(planRequest, rebound.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ResetInProgress, result.Error.Code);
+
+        InstallationResetPlanRequest workspaceRequest = new(
+            InstallationResetScope.Workspace,
+            "/invocation");
+
+        Result<InstallationResetOnlineDataHandoff> workspace = await service.PrepareAsync(
+            new InstallationResetApplyRequest(workspaceRequest, rebound.PlanId),
+            rebound with { Scope = InstallationResetScope.Workspace },
+            CancellationToken.None);
+
+        Assert.True(workspace.IsFailure);
+
+    }
+
+    [Theory]
+    [InlineData("unreconciled")]
+    [InlineData("data-plan")]
+    [InlineData("requested-operation")]
+    [InlineData("missing-requested-operation")]
+    [InlineData("server-operation")]
+    [InlineData("negative-count")]
+    public async Task RecordCompleted_rejects_every_untrusted_host_completion_dimension(
+        string dimension)
+    {
+
+        PreparedOnlineHandoffFixture fixture = await PrepareOnlineHandoffAsync();
+
+        DataRetentionApplyResult completion = CreateOnlineDataCompletion(
+            fixture.Handoff);
+
+        completion = dimension switch
+        {
+            "unreconciled" => completion with { Reconciled = false },
+            "data-plan" => completion with { PlanId = "different-data-plan" },
+            "requested-operation" => completion with
+            {
+                RequestedOperationId = Guid.Parse(
+                    "41414141-4141-4141-8141-414141414141"),
+            },
+            "missing-requested-operation" => completion with
+            {
+                RequestedOperationId = null,
+            },
+            "server-operation" => completion with
+            {
+                OperationId = fixture.Handoff.RequestedOperationId,
+            },
+            "negative-count" => completion with { RowsDeleted = -1 },
+            _ => throw new ArgumentOutOfRangeException(nameof(dimension)),
+        };
+
+        Result recorded = await fixture.Service.RecordCompletedAsync(
+            fixture.Handoff,
+            completion,
+            CancellationToken.None);
+
+        Assert.True(recorded.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, recorded.Error.Code);
+
+        Assert.Null(fixture.Active.Record!.OnlineDataCompletion);
+
+        Assert.Single(fixture.Active.Writes);
+
+        Assert.False(fixture.Active.Retired);
+
+    }
+
+    [Fact]
+    public async Task RecordCompleted_durably_appends_one_monotonic_content_free_proof()
+    {
+
+        PreparedOnlineHandoffFixture fixture = await PrepareOnlineHandoffAsync();
+
+        DataRetentionApplyResult completion = CreateOnlineDataCompletion(
+            fixture.Handoff);
+
+        Result first = await fixture.Service.RecordCompletedAsync(
+            fixture.Handoff,
+            completion,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        InstallationResetActiveRecord proven = Assert.IsType<InstallationResetActiveRecord>(
+            fixture.Active.Record);
+
+        Assert.Equal(InstallationResetPhase.Prepared, proven.Phase);
+
+        Assert.False(proven.PointOfNoReturn);
+
+        InstallationResetOnlineDataCompletion proof =
+            Assert.IsType<InstallationResetOnlineDataCompletion>(
+                proven.OnlineDataCompletion);
+
+        Assert.Equal(completion.OperationId, proof.ServerOperationId);
+
+        Assert.Equal(fixture.Handoff.RequestedOperationId, proof.RequestedOperationId);
+
+        Assert.Equal(fixture.Handoff.DataPlanId, proof.DataPlanId);
+
+        Assert.Equal(7, proof.RowsDeleted);
+
+        Assert.Equal(3, proof.FilesDeleted);
+
+        Assert.Equal(19, proof.EstimatedBytesDeleted);
+
+        Assert.Equal(2, proof.DerivedRecordsDeleted);
+
+        Result replay = await fixture.Service.RecordCompletedAsync(
+            fixture.Handoff,
+            completion,
+            CancellationToken.None);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.Equal(2, fixture.Active.Writes.Count);
+
+        Result<InstallationResetOnlineDataHandoff?> read = await fixture.Service.ReadAsync(
+            fixture.Request,
+            CancellationToken.None);
+
+        Assert.True(read.IsSuccess, read.Error.Message);
+
+        Assert.True(read.Value!.DataResetCompleted);
+
+        Result changed = await fixture.Service.RecordCompletedAsync(
+            fixture.Handoff,
+            completion with
+            {
+                OperationId = Guid.Parse("42424242-4242-4242-8242-424242424242"),
+            },
+            CancellationToken.None);
+
+        Assert.True(changed.IsFailure);
+
+        Assert.Equivalent(proof, fixture.Active.Record!.OnlineDataCompletion, strict: true);
+
+        Assert.False(fixture.Active.Retired);
+
+    }
+
+    [Fact]
+    public async Task RetirePreEffect_retires_only_the_exact_unproven_Prepared_handoff()
+    {
+
+        PreparedOnlineHandoffFixture fixture = await PrepareOnlineHandoffAsync();
+
+        Result mismatch = await fixture.Service.RetirePreEffectAsync(
+            fixture.Handoff with
+            {
+                RequestedOperationId = Guid.Parse(
+                    "43434343-4343-4343-8343-434343434343"),
+            },
+            CancellationToken.None);
+
+        Assert.True(mismatch.IsFailure);
+
+        Assert.False(fixture.Active.Retired);
+
+        Assert.NotNull(fixture.Active.Record);
+
+        Result retired = await fixture.Service.RetirePreEffectAsync(
+            fixture.Handoff,
+            CancellationToken.None);
+
+        Assert.True(retired.IsSuccess, retired.Error.Message);
+
+        Assert.True(fixture.Active.Retired);
+
+        Assert.Equal(
+            fixture.Handoff.RequestedOperationId,
+            Assert.Single(fixture.Active.RetiredOperationIds));
+
+    }
+
+    [Fact]
+    public async Task RetirePreEffect_preserves_a_durable_completion_proof()
+    {
+
+        PreparedOnlineHandoffFixture fixture = await PrepareOnlineHandoffAsync();
+
+        Assert.True((await fixture.Service.RecordCompletedAsync(
+            fixture.Handoff,
+            CreateOnlineDataCompletion(fixture.Handoff),
+            CancellationToken.None)).IsSuccess);
+
+        Result retired = await fixture.Service.RetirePreEffectAsync(
+            fixture.Handoff,
+            CancellationToken.None);
+
+        Assert.True(retired.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, retired.Error.Code);
+
+        Assert.False(fixture.Active.Retired);
+
+        Assert.NotNull(fixture.Active.Record!.OnlineDataCompletion);
+
+    }
+
+    [Fact]
+    public async Task Prepared_online_handoff_without_durable_proof_never_mutates_offline()
+    {
+
+        PreparedOnlineHandoffFixture fixture = await PrepareOnlineHandoffAsync();
+
+        Result<InstallationResetResult> result = await fixture.Service.ApplyAsync(
+            fixture.Request,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Value.ErrorCode);
+
+        Assert.False(fixture.PreDataMutation.Executed);
+
+        Assert.Empty(fixture.Data.ApplyRequests);
+
+        Assert.False(fixture.OfflineCleanup.Executed);
+
+        Assert.Empty(fixture.Credentials.DeleteRequests);
+
+        Assert.False(fixture.Active.Retired);
+
+        Assert.Equal(InstallationResetPhase.Prepared, fixture.Active.Record!.Phase);
+
+    }
+
+    [Fact]
+    public async Task Prepared_online_handoff_All_uses_proof_when_the_Campaign_catalog_is_gone()
+    {
+
+        string workspaceRoot = Path.GetFullPath(Path.Combine(
+            "/tmp",
+            "online-handoff-all-workspace"));
+
+        FakeWorkspaceResolver resolver = new(
+            new DataRetentionWorkspaceBinding(Guid.NewGuid(), workspaceRoot));
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        FakeDataService data = new(localDataPlan);
+
+        FakeActiveStore active = new();
+
+        FakePreDataMutation preDataMutation = new();
+
+        InstallationResetService service = new(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: resolver,
+            preDataMutation: preDataMutation);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            Path.Combine(workspaceRoot, "src"));
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        InstallationResetPlan rebound = service.BindOnlineDataPlan(
+            planRequest,
+            localPlan,
+            localDataPlan with { PlanId = "online-data-plan" }).Value;
+
+        InstallationResetApplyRequest request = new(planRequest, rebound.PlanId);
+
+        InstallationResetOnlineDataHandoff handoff = (await service.PrepareAsync(
+            request,
+            rebound,
+            CancellationToken.None)).Value;
+
+        Assert.True((await service.RecordCompletedAsync(
+            handoff,
+            CreateOnlineDataCompletion(handoff),
+            CancellationToken.None)).IsSuccess);
+
+        resolver.Failure = new Error(
+            ErrorCodes.Data.InventoryUnavailable,
+            "The Campaign catalog was removed by the authenticated host reset.");
+
+        Result<InstallationResetResult> result = await service.ApplyAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(InstallationResetPhase.Completed, result.Value.Phase);
+
+        Assert.True(preDataMutation.Executed);
+
+        Assert.Empty(data.ApplyRequests);
+
+        Assert.True(active.Retired);
+
+    }
+
+    [Fact]
+    public async Task Prepared_online_handoff_All_can_replay_when_the_Campaign_catalog_is_gone()
+    {
+
+        string workspaceRoot = Path.GetFullPath(Path.Combine(
+            "/tmp",
+            "online-handoff-all-replay-workspace"));
+
+        FakeWorkspaceResolver resolver = new(
+            new DataRetentionWorkspaceBinding(Guid.NewGuid(), workspaceRoot));
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        FakeDataService data = new(localDataPlan);
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = new(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: resolver);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            Path.Combine(workspaceRoot, "src"));
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        InstallationResetPlan rebound = service.BindOnlineDataPlan(
+            planRequest,
+            localPlan,
+            localDataPlan with { PlanId = "online-data-plan" }).Value;
+
+        InstallationResetApplyRequest request = new(planRequest, rebound.PlanId);
+
+        InstallationResetOnlineDataHandoff prepared = (await service.PrepareAsync(
+            request,
+            rebound,
+            CancellationToken.None)).Value;
+
+        resolver.Failure = new Error(
+            ErrorCodes.Data.InventoryUnavailable,
+            "The Campaign catalog may already have been removed by the host reset.");
+
+        Result<InstallationResetOnlineDataHandoff?> replay = await service.ReadAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.Equal(prepared, replay.Value);
+
+        Assert.False(replay.Value!.DataResetCompleted);
+
+        Assert.Empty(data.ApplyRequests);
+
+        Assert.False(active.Retired);
+
+    }
+
+    [Fact]
+    public async Task Prepared_online_handoff_with_durable_proof_runs_daemon_and_skips_offline_factory()
+    {
+
+        PreparedOnlineHandoffFixture fixture = await PrepareOnlineHandoffAsync(
+            [
+                new InstallationResetCredentialSummary(
+                    "accepted-account",
+                    InstallationResetItemStatus.Pending),
+            ]);
+
+        DataRetentionApplyResult completion = CreateOnlineDataCompletion(
+            fixture.Handoff);
+
+        Assert.True((await fixture.Service.RecordCompletedAsync(
+            fixture.Handoff,
+            completion,
+            CancellationToken.None)).IsSuccess);
+
+        Result<InstallationResetResult> result = await fixture.Service.ApplyAsync(
+            fixture.Request,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.False(result.Value.ResumeRequired);
+
+        Assert.True(result.Value.PointOfNoReturn);
+
+        Assert.Equal(7, result.Value.RowsDeleted);
+
+        Assert.Equal(3, result.Value.FilesDeleted);
+
+        Assert.Equal(19, result.Value.EstimatedBytesDeleted);
+
+        Assert.True(fixture.PreDataMutation.Executed);
+
+        Assert.Empty(fixture.Data.ApplyRequests);
+
+        Assert.True(fixture.OfflineCleanup.Executed);
+
+        Assert.NotEmpty(fixture.Credentials.DeleteRequests);
+
+        Assert.Equal(
+            InstallationResetItemStatus.Deleted,
+            Assert.Single(result.Value.CredentialResults).Status);
+
+        InstallationResetActiveRecord dataCheckpoint = Assert.Single(
+            fixture.Active.Writes,
+            static record => record.Phase is InstallationResetPhase.DataResetComplete);
+
+        Assert.True(dataCheckpoint.PointOfNoReturn);
+
+        Assert.Equal(7, dataCheckpoint.RowsDeleted);
+
+        Assert.Equal(3, dataCheckpoint.FilesDeleted);
+
+        Assert.Equal(19, dataCheckpoint.EstimatedBytesDeleted);
+
+        Assert.NotNull(dataCheckpoint.OnlineDataCompletion);
+
+        Assert.True(fixture.Active.Retired);
+
+    }
+
+    [Fact]
     public async Task Workspace_apply_preserves_global_daemon_registration()
     {
 
@@ -1617,6 +2381,77 @@ public sealed class InstallationResetServiceTests
 
     }
 
+    private static async Task<PreparedOnlineHandoffFixture> PrepareOnlineHandoffAsync(
+        InstallationResetCredentialSummary[]? credentialInventory = null)
+    {
+
+        DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
+
+        FakeDataService data = new(localDataPlan);
+
+        FakeCredentialInventory credentials = new(credentialInventory ?? []);
+
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup offlineCleanup = new();
+
+        FakePreDataMutation preDataMutation = new();
+
+        InstallationResetService service = new(
+            data,
+            credentials,
+            active,
+            offlineCleanup,
+            preDataMutation: preDataMutation);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        InstallationResetPlan rebound = service.BindOnlineDataPlan(
+            planRequest,
+            localPlan,
+            localDataPlan with { PlanId = "online-data-plan" }).Value;
+
+        InstallationResetApplyRequest request = new(
+            planRequest,
+            rebound.PlanId);
+
+        InstallationResetOnlineDataHandoff handoff = (await service.PrepareAsync(
+            request,
+            rebound,
+            CancellationToken.None)).Value;
+
+        return new PreparedOnlineHandoffFixture(
+            service,
+            data,
+            credentials,
+            active,
+            offlineCleanup,
+            preDataMutation,
+            request,
+            handoff);
+
+    }
+
+    private static DataRetentionApplyResult CreateOnlineDataCompletion(
+        InstallationResetOnlineDataHandoff handoff) =>
+        new(
+            OperationId: Guid.Parse("40404040-4040-4040-8040-404040404040"),
+            PlanId: handoff.DataPlanId,
+            RowsDeleted: 7,
+            FilesDeleted: 3,
+            EstimatedBytesDeleted: 19,
+            DerivedRecordsDeleted: 2,
+            Reconciled: true,
+            Blockers: [],
+            Conflicts: [],
+            RequestedOperationId: handoff.RequestedOperationId);
+
     private static InstallationResetActiveRecord CreateActive(
         InstallationResetPlan plan,
         InstallationResetPhase phase,
@@ -1635,6 +2470,16 @@ public sealed class InstallationResetServiceTests
             EstimatedBytesDeleted: 0,
             CredentialResults: [],
             LastErrorCode: null);
+
+    private sealed record PreparedOnlineHandoffFixture(
+        InstallationResetService Service,
+        FakeDataService Data,
+        FakeCredentialInventory Credentials,
+        FakeActiveStore Active,
+        FakeOfflineCleanup OfflineCleanup,
+        FakePreDataMutation PreDataMutation,
+        InstallationResetApplyRequest Request,
+        InstallationResetOnlineDataHandoff Handoff);
 
     private static DataRetentionPlan CreateDataPlan(string planId) =>
         new(
@@ -1657,6 +2502,58 @@ public sealed class InstallationResetServiceTests
             DerivedRecords: 2,
             CandidateIds: ["candidate"],
             RequiresConfirmation: true);
+
+    private static DataRetentionPlan MutateOrdinaryPlan(
+        DataRetentionPlan plan,
+        string dimension) =>
+        dimension switch
+        {
+            "request" => plan with
+            {
+                Request = new DataRetentionRequest(DataRetentionOperation.Prune),
+            },
+            "items" => plan with
+            {
+                Items =
+                [
+                    plan.Items[0] with { DerivedRecords = 99 },
+                ],
+            },
+            "blockers" => plan with
+            {
+                Blockers =
+                [
+                    new DataRetentionBlocker(
+                        RetentionDataClass.WorkspaceChunks,
+                        "resource",
+                        ErrorCodes.Data.Blocked,
+                        "blocked"),
+                ],
+            },
+            "conflicts" => plan with
+            {
+                Conflicts =
+                [
+                    new DataRetentionConflict("conflict", "resource", "conflict"),
+                ],
+            },
+            "rows" => plan with { Rows = plan.Rows + 1 },
+            "files" => plan with { Files = plan.Files + 1 },
+            "estimated-bytes" => plan with
+            {
+                EstimatedBytes = plan.EstimatedBytes + 1,
+            },
+            "derived-records" => plan with
+            {
+                DerivedRecords = plan.DerivedRecords + 1,
+            },
+            "candidate-ids" => plan with { CandidateIds = ["changed"] },
+            "requires-confirmation" => plan with
+            {
+                RequiresConfirmation = !plan.RequiresConfirmation,
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(dimension)),
+        };
 
     private static Result<InstallationResetFileSystemInventory> InventoryWithIdentity(
         string identity) =>
@@ -1864,6 +2761,11 @@ public sealed class InstallationResetServiceTests
             return Task.FromResult(Result.Success());
 
         }
+
+        public Task<Result> RetirePreEffectAsync(
+            InstallationResetOnlineDataHandoff handoff,
+            CancellationToken cancellationToken) =>
+            RetireAsync(handoff.RequestedOperationId, cancellationToken);
 
     }
 

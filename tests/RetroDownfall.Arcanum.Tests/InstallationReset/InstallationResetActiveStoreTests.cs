@@ -4,10 +4,13 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 {
 
@@ -15,7 +18,14 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
     public Task InitializeAsync() => _workspace.InitializeAsync();
 
-    public Task DisposeAsync() => _workspace.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+
+        SecureFileReader.AfterOpenForTests = null;
+
+        await _workspace.DisposeAsync();
+
+    }
 
     [Fact]
     public async Task Missing_active_record_is_a_no_create_read()
@@ -89,6 +99,68 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Host_handoff_and_completion_proof_round_trip_without_changing_V1()
+    {
+
+        InstallationResetActiveStore store = new(
+            _workspace.CreateSubdir("arcanum"));
+
+        InstallationResetActiveRecord prepared = CreateRecord(
+            InstallationResetPhase.Prepared) with
+        {
+            DataHandoff = InstallationResetDataHandoff.HostFactoryErasure,
+        };
+
+        Assert.True((await store.WriteAsync(prepared, CancellationToken.None)).IsSuccess);
+
+        InstallationResetActiveRecord proven = prepared with
+        {
+            OnlineDataCompletion = new InstallationResetOnlineDataCompletion(
+                ServerOperationId: Guid.NewGuid(),
+                RequestedOperationId: prepared.OperationId,
+                DataPlanId: "data-plan",
+                RowsDeleted: 7,
+                FilesDeleted: 3,
+                EstimatedBytesDeleted: 19,
+                DerivedRecordsDeleted: 2),
+        };
+
+        Assert.True((await store.WriteAsync(proven, CancellationToken.None)).IsSuccess);
+
+        InstallationResetActiveRecord read = Assert.IsType<InstallationResetActiveRecord>(
+            (await store.ReadAsync(CancellationToken.None)).Value);
+
+        Assert.Equal(1, read.Version);
+
+        Assert.Equivalent(proven, read, strict: true);
+
+    }
+
+    [Fact]
+    public async Task Legacy_V1_record_without_handoff_fields_remains_readable()
+    {
+
+        InstallationResetActiveStore store = new(
+            _workspace.CreateSubdir("arcanum"));
+
+        const string json = """
+            {"version":1,"operationId":"11111111-1111-1111-1111-111111111111","planId":"composite-plan","scope":"Global","workspace":null,"acceptedBinding":{"bindingId":"binding","selectedRoots":["/selected"],"excludedRoots":[],"preservedBackups":[],"credentialAccounts":[],"dataPlanIds":["data-plan"]},"phase":"Prepared","pointOfNoReturn":false,"rowsDeleted":0,"filesDeleted":0,"estimatedBytesDeleted":0,"credentialResults":[],"lastErrorCode":null}
+            """;
+
+        await File.WriteAllTextAsync(store.ActivePath, json);
+
+        Result<InstallationResetActiveRecord?> result = await store.ReadAsync(
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Null(result.Value!.DataHandoff);
+
+        Assert.Null(result.Value.OnlineDataCompletion);
+
+    }
+
+    [Fact]
     public async Task Oversized_record_is_rejected_before_publication()
     {
 
@@ -127,6 +199,34 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             InstallationResetPhase.Prepared) with
         {
             PlanId = string.Empty,
+        };
+
+        Result result = await store.WriteAsync(invalid, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, result.Error.Code);
+
+        Assert.False(File.Exists(store.ActivePath));
+
+    }
+
+    [Fact]
+    public async Task Host_handoff_requires_one_nonempty_data_plan_identity()
+    {
+
+        InstallationResetActiveStore store = new(
+            _workspace.CreateSubdir("arcanum"));
+
+        InstallationResetActiveRecord invalid = CreateRecord(
+            InstallationResetPhase.Prepared) with
+        {
+            AcceptedBinding = CreateRecord(InstallationResetPhase.Prepared)
+                .AcceptedBinding with
+            {
+                DataPlanIds = [" "],
+            },
+            DataHandoff = InstallationResetDataHandoff.HostFactoryErasure,
         };
 
         Result result = await store.WriteAsync(invalid, CancellationToken.None);
@@ -200,6 +300,83 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.True(retired.IsSuccess);
 
         Assert.False(File.Exists(store.ActivePath));
+
+    }
+
+    [Fact]
+    public async Task Pre_effect_retirement_never_deletes_a_concurrently_published_proof()
+    {
+
+        InstallationResetActiveStore store = new(
+            _workspace.CreateSubdir("arcanum"));
+
+        InstallationResetActiveRecord prepared = CreateRecord(
+            InstallationResetPhase.Prepared) with
+        {
+            DataHandoff = InstallationResetDataHandoff.HostFactoryErasure,
+        };
+
+        Assert.True((await store.WriteAsync(prepared, CancellationToken.None)).IsSuccess);
+
+        InstallationResetActiveRecord proven = prepared with
+        {
+            OnlineDataCompletion = new InstallationResetOnlineDataCompletion(
+                ServerOperationId: Guid.Parse(
+                    "45454545-4545-4545-8545-454545454545"),
+                RequestedOperationId: prepared.OperationId,
+                DataPlanId: "data-plan",
+                RowsDeleted: 7,
+                FilesDeleted: 3,
+                EstimatedBytesDeleted: 19,
+                DerivedRecordsDeleted: 2),
+        };
+
+        bool proofPublished = false;
+
+        SecureFileReader.AfterOpenForTests = openedPath =>
+        {
+
+            if (!string.Equals(openedPath, store.ActivePath, StringComparison.Ordinal))
+            {
+
+                return;
+
+            }
+
+            SecureFileReader.AfterOpenForTests = null;
+
+            Result published = store.WriteAsync(
+                    proven,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+
+            Assert.True(published.IsSuccess, published.Error.Message);
+
+            proofPublished = true;
+
+        };
+
+        InstallationResetOnlineDataHandoff handoff = new(
+            prepared.OperationId,
+            prepared.PlanId,
+            "data-plan",
+            DataResetCompleted: false);
+
+        Result retired = await store.RetirePreEffectAsync(
+            handoff,
+            CancellationToken.None);
+
+        Assert.True(proofPublished);
+
+        Assert.True(retired.IsFailure);
+
+        Assert.True(File.Exists(store.ActivePath));
+
+        InstallationResetActiveRecord read = Assert.IsType<InstallationResetActiveRecord>(
+            (await store.ReadAsync(CancellationToken.None)).Value);
+
+        Assert.Equivalent(proven.OnlineDataCompletion, read.OnlineDataCompletion, strict: true);
 
     }
 

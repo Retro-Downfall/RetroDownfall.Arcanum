@@ -12,9 +12,15 @@ using Microsoft.AspNetCore.Routing;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using RetroDownfall.Arcanum.Api.Security;
+
+using RetroDownfall.Arcanum.Api.TheForge;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -236,11 +242,59 @@ internal static class DataRetentionEndpoints
                             new DataRetentionRequest(
                                 DataRetentionOperation.ResetMemory,
                                 TargetId: null,
-                                request.Scope)),
+                                request.Scope),
+                            request.ExpectedPlanId),
                         httpContext,
                         cancellationToken)
                     .ConfigureAwait(false))
-            .WithName("ResetDataRetentionMemory");
+            .WithName("ResetDataRetentionMemory")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
+
+        apiGroup.MapPost(
+            "/data/memory/reset/plan",
+            async (
+                MemoryResetRequest? request,
+                IDataRetentionService service,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+            {
+
+                if (request is null)
+                {
+
+                    return Failure(
+                        httpContext,
+                        new Error(
+                            ErrorCodes.Data.InvalidRequest,
+                            "An explicit memory reset scope is required."),
+                        StatusCodes.Status400BadRequest,
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+                }
+
+                Result<DataRetentionPlanAdmission> admission = await service
+                    .PlanAdmissionAsync(
+                        new DataRetentionRequest(
+                            DataRetentionOperation.ResetMemory,
+                            TargetId: null,
+                            request.Scope),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                return admission.IsSuccess
+                    ? PlanSuccess(
+                        httpContext,
+                        admission.Value,
+                        requiresReadLease: request.Scope is MemoryResetScope.Covenant)
+                    : Failure(
+                        httpContext,
+                        admission.Error,
+                        ResolveStatusCode(admission.Error.Code),
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+            })
+            .WithName("PlanDataRetentionMemoryReset")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
 
         apiGroup.MapPost(
             "/data/factory-reset/plan",
@@ -296,17 +350,27 @@ internal static class DataRetentionEndpoints
 
                 }
 
-                DataRetentionPlan plan = await service
-                    .PlanAsync(dataRequest, cancellationToken)
+                Result<DataRetentionPlanAdmission> admission = await service
+                    .PlanAdmissionAsync(
+                        dataRequest,
+                        cancellationToken,
+                        DataRetentionPlanAdmissionCapability.Installation)
                     .ConfigureAwait(false);
 
-                return Success(
-                    httpContext,
-                    plan,
-                    ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+                return admission.IsSuccess
+                    ? PlanSuccess(
+                        httpContext,
+                        admission.Value,
+                        requiresReadLease: true)
+                    : Failure(
+                        httpContext,
+                        admission.Error,
+                        ResolveStatusCode(admission.Error.Code),
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
 
             })
-            .WithName("PlanFactoryResetDataRetention");
+            .WithName("PlanFactoryResetDataRetention")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
 
         apiGroup.MapPost(
             "/data/factory-reset",
@@ -333,17 +397,36 @@ internal static class DataRetentionEndpoints
 
                 }
 
+                FactoryResetRequest confirmedRequest = request!;
+
+                if ((confirmedRequest.ExpectedPlanId is null)
+                    != (confirmedRequest.RequestedOperationId is null))
+                {
+
+                    return Failure(
+                        httpContext,
+                        new Error(
+                            ErrorCodes.Data.InvalidRequest,
+                            "A factory reset's expected plan and requested operation identity must be supplied together."),
+                        StatusCodes.Status400BadRequest,
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+                }
+
                 return await Apply(
                         service,
                         new DataRetentionApplyRequest(
                             new DataRetentionRequest(
-                                DataRetentionOperation.FactoryReset)),
+                                DataRetentionOperation.FactoryReset),
+                            confirmedRequest.ExpectedPlanId,
+                            confirmedRequest.RequestedOperationId),
                         httpContext,
                         cancellationToken)
                     .ConfigureAwait(false);
 
             })
-            .WithName("FactoryResetDataRetention");
+            .WithName("FactoryResetDataRetention")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
 
         return apiGroup;
 
@@ -383,6 +466,44 @@ internal static class DataRetentionEndpoints
 
     }
 
+    private static IResult PlanSuccess(
+        HttpContext httpContext,
+        DataRetentionPlanAdmission admission,
+        bool requiresReadLease)
+    {
+
+        if (admission.ReadLease is { } lease)
+        {
+
+            return new CovenantProtectedJsonResult<DataRetentionPlan>(
+                lease,
+                Result<DataRetentionPlan>.Success(admission.Plan),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        }
+
+        if (requiresReadLease)
+        {
+
+            Error error = new(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "The required Covenant planning capability is unavailable.");
+
+            return Failure(
+                httpContext,
+                error,
+                ResolveStatusCode(error.Code),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        }
+
+        return Success(
+            httpContext,
+            admission.Plan,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+    }
+
     private static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
@@ -402,7 +523,7 @@ internal static class DataRetentionEndpoints
             ErrorCodes.Data.ReconciliationFailed =>
                 StatusCodes.Status500InternalServerError,
 
-            _ => StatusCodes.Status500InternalServerError,
+            _ => ArcanumErrorMapper.ResolveStatusCode(errorCode),
 
         };
 

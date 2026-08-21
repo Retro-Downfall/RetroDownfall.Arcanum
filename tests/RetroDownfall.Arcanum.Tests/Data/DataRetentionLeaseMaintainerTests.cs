@@ -66,38 +66,84 @@ public sealed class DataRetentionLeaseMaintainerTests
             leaseDuration: TimeSpan.FromSeconds(1),
             heartbeatInterval: TimeSpan.FromMilliseconds(20));
 
-        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => maintainer.RunAsync(
-                Guid.NewGuid(),
-                "retention-owner",
-                async cancellationToken =>
-                {
-
-                    try
+        DataRetentionLeaseLostException error =
+            await Assert.ThrowsAsync<DataRetentionLeaseLostException>(
+                () => maintainer.RunAsync(
+                    Guid.NewGuid(),
+                    "retention-owner",
+                    async cancellationToken =>
                     {
 
-                        await Task.Delay(
-                            Timeout.InfiniteTimeSpan,
-                            cancellationToken);
+                        try
+                        {
 
-                        return 42;
+                            await Task.Delay(
+                                Timeout.InfiniteTimeSpan,
+                                cancellationToken);
 
-                    }
-                    finally
-                    {
+                            return 42;
 
-                        cancellationObserved.TrySetResult();
+                        }
+                        finally
+                        {
 
-                    }
+                            cancellationObserved.TrySetResult();
 
-                },
-                CancellationToken.None));
+                        }
+
+                    },
+                    CancellationToken.None));
 
         Assert.Equal(
             "The retention operation lost its durable lease while applying a candidate.",
             error.Message);
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+    }
+
+    [Fact]
+
+    public async Task RunAsync_WhenTerminalActionCompletesDuringRenewal_ReturnsTheTerminalResult()
+    {
+
+        TaskCompletionSource renewalStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource allowRenewal = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource<int> terminalResult = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        DataRetentionLeaseMaintainer maintainer = new(
+            async (_, _, _, _, cancellationToken) =>
+            {
+
+                renewalStarted.TrySetResult();
+
+                await allowRenewal.Task.WaitAsync(cancellationToken);
+
+                return false;
+
+            },
+            TimeProvider.System,
+            leaseDuration: TimeSpan.FromSeconds(1),
+            heartbeatInterval: TimeSpan.FromMilliseconds(20));
+
+        Task<int> running = maintainer.RunAsync(
+            Guid.NewGuid(),
+            "retention-terminal-owner",
+            _ => terminalResult.Task,
+            CancellationToken.None);
+
+        await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        terminalResult.TrySetResult(42);
+
+        allowRenewal.TrySetResult();
+
+        Assert.Equal(42, await running.WaitAsync(TimeSpan.FromSeconds(1)));
 
     }
 

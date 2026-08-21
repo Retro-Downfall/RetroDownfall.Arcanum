@@ -167,6 +167,70 @@ internal sealed class CovenantResetCheckpointInitiator(
 
         await using CovenantInstallationReadLease readLease = acquired.Value;
 
+        return await PrepareFactoryErasureInventoryCoreAsync(
+            operation,
+            ownerId,
+            effect,
+            requestedOperationId,
+            readLease,
+            requireExactSnapshot: false,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Commits a factory-erasure inventory under the caller's exact installation planning lease.
+    /// </summary>
+    /// <remarks>
+    /// Ownership stays with the caller. This overload neither acquires nor disposes a capability, so
+    /// the snapshot used to build the confirmed plan remains live through catalog proof, lease
+    /// revalidation, and the V1 checkpoint commit.
+    /// </remarks>
+    internal async Task<Result<GateAdmission>> PrepareFactoryErasureInventoryAsync(
+        LongRunningOperation operation,
+        string ownerId,
+        CovenantErasureEffectDigestInput effect,
+        Guid? requestedOperationId,
+        CovenantInstallationReadLease readLease,
+        CancellationToken cancellationToken) =>
+        await PrepareFactoryErasureInventoryCoreAsync(
+            operation,
+            ownerId,
+            effect,
+            requestedOperationId,
+            readLease,
+            requireExactSnapshot: true,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<Result<GateAdmission>> PrepareFactoryErasureInventoryCoreAsync(
+        LongRunningOperation operation,
+        string ownerId,
+        CovenantErasureEffectDigestInput effect,
+        Guid? requestedOperationId,
+        CovenantInstallationReadLease readLease,
+        bool requireExactSnapshot,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(effect);
+
+        ArgumentNullException.ThrowIfNull(readLease);
+
+        if (requireExactSnapshot
+            && (readLease.Snapshot.Kind is not CovenantLeaseKind.InstallationRead
+                || readLease.Snapshot.Coverage is not CovenantLeaseCoverage.Installation
+                || readLease.Snapshot.DatasetGeneration is not { } datasetGeneration
+                || datasetGeneration == Guid.Empty
+                || datasetGeneration != effect.DatasetGeneration))
+        {
+
+            return Result<GateAdmission>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.IntegrityFailure,
+                    "Healthy-catalog factory erasure requires its exact installation planning snapshot."));
+
+        }
+
         Result healthy = await healthyCatalog
             .RequireHealthyAsync(cancellationToken)
             .ConfigureAwait(false);

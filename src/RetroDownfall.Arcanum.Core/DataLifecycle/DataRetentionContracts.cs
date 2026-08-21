@@ -1,8 +1,8 @@
 using System.Text.Json.Serialization;
 
-using RetroDownfall.Arcanum.Core.Configuration;
-
 using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -132,8 +132,8 @@ public enum MemoryResetScope
     Lexicon = 4,
 
     /// <summary>
-    /// The Covenant family. Inventoried and planned here; erasure is the exclusive erasure
-    /// coordinator's, and this build refuses to apply it (§10.20.1).
+    /// The Covenant family. Inventoried and planned here; apply enters the exclusive erasure
+    /// coordinator rather than the ordinary memory-reset executor (§10.20.1).
     /// </summary>
     Covenant = 5,
 
@@ -152,7 +152,8 @@ public sealed record DataRetentionWorkspaceBinding(
 
 public sealed record DataRetentionApplyRequest(
     [property: JsonRequired] DataRetentionRequest Request,
-    string? ExpectedPlanId = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? RequestedOperationId = null);
 
 public sealed record RetentionRuleUpdateRequest(
     [property: JsonRequired] string DataClass,
@@ -160,31 +161,13 @@ public sealed record RetentionRuleUpdateRequest(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Days = null);
 
 public sealed record MemoryResetRequest(
-    [property: JsonRequired] MemoryResetScope Scope);
+    [property: JsonRequired] MemoryResetScope Scope,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null);
 
 public sealed record FactoryResetRequest(
-    [property: JsonRequired] string Confirmation);
-
-/// <summary>
-/// The retention conflict codes this assembly owns.
-/// </summary>
-public static class DataRetentionConflictCodes
-{
-
-    /// <summary>
-    /// A Covenant memory reset was planned but cannot be applied by this build.
-    /// </summary>
-    /// <remarks>
-    /// Erasing the Covenant family means draining admission, checkpointing exact phases, proving
-    /// storage health, and republishing authority. None of that exists yet, and running the ordinary
-    /// memory-reset path over the family instead would delete protected rows with live readers still
-    /// holding leases over them. Refusing is the only honest answer while the coordinator is unbuilt
-    /// (§10.20.1).
-    /// </remarks>
-    public const string CovenantResetRequiresErasureCoordinator =
-        "Data.CovenantResetRequiresErasureCoordinator";
-
-}
+    [property: JsonRequired] string Confirmation,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? RequestedOperationId = null);
 
 /// <summary>
 /// The content-free installation inventory of the Covenant family.
@@ -262,6 +245,30 @@ public sealed record DataRetentionPlan(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DataRetentionCovenantInventory? Covenant = null);
 
+/// <summary>
+/// A plan and the optional Covenant read lease that protects its response until serialization ends.
+/// </summary>
+/// <remarks>
+/// The lease is transferred to the HTTP result, which revalidates it immediately before writing and
+/// disposes it after the final byte. Callers that only need a plan use <see cref="IDataRetentionService.PlanAsync"/>,
+/// which preserves the legacy ownership boundary by disposing any lease before it returns.
+/// </remarks>
+public sealed record DataRetentionPlanAdmission(
+    DataRetentionPlan Plan,
+    ICovenantSnapshotReadLease? ReadLease);
+
+/// <summary>
+/// The Covenant capability a plan-admission caller needs held through its response.
+/// </summary>
+public enum DataRetentionPlanAdmissionCapability
+{
+
+    Request = 0,
+
+    Installation = 1,
+
+}
+
 public sealed record DataRetentionApplyResult(
     Guid OperationId,
     string PlanId,
@@ -271,7 +278,8 @@ public sealed record DataRetentionApplyResult(
     long DerivedRecordsDeleted,
     bool Reconciled,
     DataRetentionBlocker[] Blockers,
-    DataRetentionConflict[] Conflicts);
+    DataRetentionConflict[] Conflicts,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? RequestedOperationId = null);
 
 public interface IDataRetentionService
 {
@@ -282,6 +290,11 @@ public interface IDataRetentionService
     Task<DataRetentionPlan> PlanAsync(
         DataRetentionRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken = default,
+        DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request);
 
     Task<Result<DataRetentionApplyResult>> ApplyAsync(
         DataRetentionApplyRequest request,

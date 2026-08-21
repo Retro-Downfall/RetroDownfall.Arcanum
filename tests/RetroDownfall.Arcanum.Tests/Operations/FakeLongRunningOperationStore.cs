@@ -196,6 +196,38 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
     }
 
+    public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+        Guid requestedOperationId,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (requestedOperationId == Guid.Empty)
+        {
+
+            throw new ArgumentException(
+                "A requested operation identity cannot be empty.",
+                nameof(requestedOperationId));
+
+        }
+
+        lock (_gate)
+        {
+
+            KeyValuePair<Guid, LongRunningOperationRequestIdentity> match =
+                _requestIdentities.FirstOrDefault(
+                    pair => pair.Value.RequestedOperationId == requestedOperationId);
+
+            return Task.FromResult<LongRunningOperationRequestIdentityMatch?>(
+                match.Value is null
+                    ? null
+                    : new LongRunningOperationRequestIdentityMatch(
+                        _operations[match.Key],
+                        match.Value));
+
+        }
+
+    }
+
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,
         CancellationToken cancellationToken = default)
@@ -477,6 +509,11 @@ internal sealed class PagingOnlyOperationStore(ILongRunningOperationStore inner)
 
     public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
         Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+        Guid requestedOperationId,
         CancellationToken cancellationToken = default) =>
         throw OutsideItsScope();
 

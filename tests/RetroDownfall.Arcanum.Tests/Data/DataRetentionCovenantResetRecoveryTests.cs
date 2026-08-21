@@ -2,6 +2,8 @@ using Microsoft.Extensions.Logging;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
+using Microsoft.EntityFrameworkCore;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -57,6 +59,247 @@ public sealed partial class DataRetentionServiceTests
         }
 
         return data;
+
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Recovery_maintains_the_exact_adopted_owner_while_the_coordinator_is_paused(
+        bool factoryReset)
+    {
+
+        RequireSqlCipher();
+
+        TimeSpan recoveryLease = TimeSpan.FromMinutes(2);
+
+        TimeSpan heartbeat = TimeSpan.FromSeconds(30);
+
+        RecoveryTimeProvider clock = new(
+            new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
+            operations,
+            factoryReset,
+            CovenantResetPhase.InventoryPrepared,
+            startedAt: clock.GetUtcNow().Subtract(TimeSpan.FromMinutes(5)),
+            leaseDuration: TimeSpan.FromMinutes(1));
+
+        RecoveryPause pause = new();
+
+        DataRetentionLeaseMaintainer maintainer = new(
+            async (operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken) =>
+            {
+
+                return await operations.RenewLeaseAsync(
+                    operationId,
+                    ownerId,
+                    utcNow,
+                    leaseExpiresAt,
+                    cancellationToken);
+
+            },
+            clock,
+            leaseDuration: recoveryLease,
+            heartbeatInterval: heartbeat);
+
+        DataRetentionService service = CreateService(
+            timeProvider: clock,
+            operationStore: operations,
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhase.InventoryPrepared,
+                pause: pause,
+                timeProvider: clock),
+            leaseMaintainer: maintainer);
+
+        ILongRunningOperationRecoveryHandler handler = factoryReset
+            ? new DataRetentionFactoryResetRecoveryHandler(service)
+            : new DataRetentionMutationRecoveryHandler(service);
+
+        LongRunningOperationReconciler reconciler = new(
+            operations,
+            [handler],
+            clock,
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        const string adoptedOwner = "fake-time-recovery-owner";
+
+        DateTimeOffset adoptedAt = clock.GetUtcNow();
+
+        Task<LongRunningOperationReconciliationSummary> recovering = reconciler.ReconcileNowAsync(
+            adoptedOwner,
+            maxOperations: 1,
+            maxConcurrency: 1,
+            CancellationToken.None);
+
+        await pause.WaitUntilPausedAsync();
+
+        LongRunningOperation adopted = (await operations.GetAsync(operation.Id))!;
+
+        LongRunningOperation? maintainedWhilePaused = null;
+
+        try
+        {
+
+            await clock.WaitForScheduledTimerCountAsync(1).WaitAsync(TimeSpan.FromSeconds(5));
+
+            for (int heartbeatNumber = 1; heartbeatNumber <= 6; heartbeatNumber++)
+            {
+
+                clock.Advance(heartbeat);
+
+                await clock
+                    .WaitForScheduledTimerCountAsync(heartbeatNumber + 1)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+            }
+
+            maintainedWhilePaused = await operations.GetAsync(operation.Id);
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+        }
+
+        Assert.NotNull(maintainedWhilePaused);
+
+        LongRunningOperation duringPause = maintainedWhilePaused;
+
+        LongRunningOperationReconciliationSummary result = await recovering.WaitAsync(
+            TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, result.Claimed);
+
+        Assert.Equal(1, result.Completed);
+
+        Assert.Equal(adoptedOwner, adopted.LeaseOwner);
+
+        Assert.Equal(adoptedAt.Add(recoveryLease), adopted.LeaseExpiresAt);
+
+        Assert.True(clock.GetUtcNow() > adopted.LeaseExpiresAt);
+
+        Assert.Equal(adoptedOwner, duringPause.LeaseOwner);
+
+        Assert.True(duringPause.LeaseExpiresAt > clock.GetUtcNow());
+
+        Assert.True(duringPause.Revision >= adopted.Revision + 6);
+
+        LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
+
+        Assert.Equal(LongRunningOperationState.Completed, after.State);
+
+        Assert.Null(after.LeaseOwner);
+
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Recovery_owner_loss_cancels_without_overwriting_the_new_owner(bool factoryReset)
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedRecoveryCheckpointAsync(
+            operations,
+            factoryReset,
+            CovenantResetPhase.InventoryPrepared);
+
+        RecoveryPause pause = new();
+
+        TaskCompletionSource<LongRunningOperation> adopted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        DataRetentionLeaseMaintainer maintainer = new(
+            async (operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken) =>
+            {
+
+                LongRunningOperation current = (await operations.GetAsync(
+                    operationId,
+                    cancellationToken))!;
+
+                Assert.True(await operations.TryTransitionAsync(
+                    operationId,
+                    current.Revision,
+                    ownerId,
+                    LongRunningOperationState.ReconciliationRequired,
+                    utcNow,
+                    ErrorCodes.Covenant.MaintenanceFailed,
+                    cancellationToken));
+
+                LongRunningOperationLeaseResult replacement = await operations.TryAcquireLeaseAsync(
+                    operationId,
+                    "replacement-recovery-owner",
+                    utcNow,
+                    leaseExpiresAt,
+                    cancellationToken);
+
+                Assert.True(replacement.Acquired);
+
+                adopted.TrySetResult(replacement.Operation);
+
+                return false;
+
+            },
+            TimeProvider.System,
+            leaseDuration: TimeSpan.FromMinutes(10),
+            heartbeatInterval: TimeSpan.FromMilliseconds(20));
+
+        DataRetentionService service = CreateService(
+            operationStore: operations,
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhase.InventoryPrepared,
+                pause: pause),
+            leaseMaintainer: maintainer);
+
+        LongRunningOperation snapshot = (await operations.GetAsync(operation.Id))!;
+
+        Task<LongRunningOperationRecoveryResult> recovering = factoryReset
+            ? service.RecoverFactoryResetAsync(snapshot, CancellationToken.None)
+            : service.RecoverMutationAsync(snapshot, CancellationToken.None);
+
+        await pause.WaitUntilPausedAsync();
+
+        LongRunningOperation replacement;
+
+        try
+        {
+
+            replacement = await adopted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        }
+        finally
+        {
+
+            pause.Release();
+
+        }
+
+        LongRunningOperationRecoveryResult result = await recovering.WaitAsync(
+            TimeSpan.FromSeconds(10));
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
+
+        LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
+
+        Assert.Equal(replacement.LeaseOwner, after.LeaseOwner);
+
+        Assert.Equal(replacement.Revision, after.Revision);
+
+        Assert.Equal(replacement.LeaseExpiresAt, after.LeaseExpiresAt);
 
     }
 
@@ -333,6 +576,8 @@ public sealed partial class DataRetentionServiceTests
 
         RequireSqlCipher();
 
+        _ = await SeedSessionAsync(pinned: false);
+
         LongRunningOperationStore operations = new(_db!);
 
         LongRunningOperation operation = await SeedCheckpointAsync(
@@ -363,6 +608,72 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(
             CovenantResetPhase.ReopenedVerified,
+            CovenantRecoveryCheckpointCodec
+                .DecodeDataRetentionFactoryReset(after.CheckpointPayload!)
+                .Value
+                .Phase);
+
+        long ordinarySessions = await _db!.Sessions.LongCountAsync();
+
+        Assert.Equal(
+            phase < CovenantResetPhase.HandlesClosed ? 0 : 1,
+            ordinarySessions);
+
+    }
+
+    [SkippableFact]
+
+    public async Task RecoverFactoryResetAsync_WhenOrdinaryContinuationFails_KeepsAdmissionClosedAtManagedBoundary()
+    {
+
+        RequireSqlCipher();
+
+        _ = await SeedSessionAsync(pinned: false);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedCheckpointAsync(
+            operations,
+            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+            payload: null,
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
+                new DataRetentionFactoryResetCheckpointV1(
+                    DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                    id,
+                    CovenantResetEffect,
+                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                    CovenantResetPhase.ManagedArtifactsProcessed)));
+
+        _ = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Conflicting operation blocks factory continuation.",
+                DateTimeOffset.UtcNow));
+
+        DataRetentionService service = CreateService(
+            operationStore: operations,
+            erasureCoordinator: RecoveryCoordinator(
+                operations,
+                operation,
+                CovenantResetPhase.ManagedArtifactsProcessed));
+
+        LongRunningOperationRecoveryResult result = await service.RecoverFactoryResetAsync(
+            (await operations.GetAsync(operation.Id))!,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Data.Conflict, result.ErrorCode);
+
+        Assert.Equal(1, await _db!.Sessions.LongCountAsync());
+
+        LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
+
+        Assert.Equal(
+            CovenantResetPhase.ManagedArtifactsProcessed,
             CovenantRecoveryCheckpointCodec
                 .DecodeDataRetentionFactoryReset(after.CheckpointPayload!)
                 .Value
@@ -470,7 +781,9 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperationStore operations,
         LongRunningOperation operation,
         CovenantResetPhase phase,
-        RecoveryDisposition disposition = RecoveryDisposition.Commit)
+        RecoveryDisposition disposition = RecoveryDisposition.Commit,
+        RecoveryPause? pause = null,
+        TimeProvider? timeProvider = null)
     {
 
         Result<CovenantErasureCheckpointState> checkpoint = operation.Kind
@@ -494,39 +807,53 @@ public sealed partial class DataRetentionServiceTests
             scope: null,
             cleanupOnlyHistoricalCampaign: false);
 
+        TimeProvider clock = timeProvider ?? TimeProvider.System;
+
         return new CovenantErasureCoordinator(
-            new LongRunningOperationCoordinator(operations, TimeProvider.System),
+            new LongRunningOperationCoordinator(operations, clock),
             operations,
             gate,
             new RecoveryArtifactKernel(),
             new RecoveryManagedFileKernel(),
-            new RecoveryInventory(disposition),
+            new RecoveryInventory(disposition, pause),
             new RecoveryTransition(disposition),
             new RecoveryWriterLifecycle(),
-            TimeProvider.System,
+            clock,
             NullLogger<CovenantErasureCoordinator>.Instance);
 
     }
 
-    private sealed class RecoveryInventory(RecoveryDisposition disposition)
+    private sealed class RecoveryInventory(
+        RecoveryDisposition disposition,
+        RecoveryPause? pause = null)
         : ICovenantErasureInventorySource
     {
 
-        public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
+        public async Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(
-                disposition == RecoveryDisposition.Rollback
-                    ? Result<CovenantErasureInventorySummary>.Failure(
-                        new Error(
-                            ErrorCodes.Covenant.IntegrityFailure,
-                            "The recovery inventory was refused."))
-                    : Result<CovenantErasureInventorySummary>.Success(
-                        new CovenantErasureInventorySummary(
-                            0,
-                            0,
-                            new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact))));
+            CancellationToken cancellationToken)
+        {
+
+            if (pause is not null)
+            {
+
+                await pause.WaitForReleaseAsync(cancellationToken);
+
+            }
+
+            return disposition == RecoveryDisposition.Rollback
+                ? Result<CovenantErasureInventorySummary>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "The recovery inventory was refused."))
+                : Result<CovenantErasureInventorySummary>.Success(
+                    new CovenantErasureInventorySummary(
+                        0,
+                        0,
+                        new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact)));
+
+        }
 
         public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
@@ -659,9 +986,345 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    private async Task<LongRunningOperation> SeedRecoveryCheckpointAsync(
+        LongRunningOperationStore operations,
+        bool factoryReset,
+        CovenantResetPhase phase,
+        DateTimeOffset? startedAt = null,
+        TimeSpan? leaseDuration = null) =>
+        factoryReset
+            ? await SeedCheckpointAsync(
+                operations,
+                DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                payload: null,
+                kind: LongRunningOperationKinds.DataRetentionFactoryReset,
+                policy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                checkpointFactory: id => CovenantRecoveryCheckpointCodec.Encode(
+                    new DataRetentionFactoryResetCheckpointV1(
+                        DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                        id,
+                        CovenantResetEffect,
+                        CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                        phase)),
+                startedAt: startedAt,
+                leaseDuration: leaseDuration)
+            : await SeedCovenantResetCheckpointAsync(
+                operations,
+                phase,
+                startedAt,
+                leaseDuration);
+
+    private sealed class RecoveryPause
+    {
+
+        private readonly TaskCompletionSource _paused = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal void Release() => _release.TrySetResult();
+
+        internal Task WaitUntilPausedAsync() => _paused.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        internal async Task WaitForReleaseAsync(CancellationToken cancellationToken)
+        {
+
+            _paused.TrySetResult();
+
+            await _release.Task.WaitAsync(cancellationToken);
+
+        }
+
+    }
+
+    private sealed class RecoveryTimeProvider(DateTimeOffset initialUtcNow) : TimeProvider
+    {
+
+        private readonly object _gate = new();
+
+        private readonly List<RecoveryTimer> _timers = [];
+
+        private readonly List<(int ExpectedCount, TaskCompletionSource Completion)> _waiters = [];
+
+        private DateTimeOffset _utcNow = initialUtcNow;
+
+        private int _scheduledTimerCount;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+
+            lock (_gate)
+            {
+
+                return _utcNow;
+
+            }
+
+        }
+
+        public override long GetTimestamp() => GetUtcNow().UtcTicks;
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+
+            ArgumentNullException.ThrowIfNull(callback);
+
+            RecoveryTimer timer = new(this, callback, state);
+
+            _ = timer.Change(dueTime, period);
+
+            return timer;
+
+        }
+
+        internal void Advance(TimeSpan amount)
+        {
+
+            if (amount < TimeSpan.Zero)
+            {
+
+                throw new ArgumentOutOfRangeException(nameof(amount));
+
+            }
+
+            List<(TimerCallback Callback, object? State)> callbacks = [];
+
+            lock (_gate)
+            {
+
+                _utcNow = _utcNow.Add(amount);
+
+                foreach (RecoveryTimer timer in _timers.ToArray())
+                {
+
+                    timer.CollectDueCallbacks(_utcNow, callbacks);
+
+                }
+
+            }
+
+            foreach ((TimerCallback callback, object? state) in callbacks)
+            {
+
+                callback(state);
+
+            }
+
+        }
+
+        internal Task WaitForScheduledTimerCountAsync(int expectedCount)
+        {
+
+            lock (_gate)
+            {
+
+                if (_scheduledTimerCount >= expectedCount)
+                {
+
+                    return Task.CompletedTask;
+
+                }
+
+                TaskCompletionSource waiter = new(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                _waiters.Add((expectedCount, waiter));
+
+                return waiter.Task;
+
+            }
+
+        }
+
+        private void ChangeTimer(
+            RecoveryTimer timer,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+
+            if (dueTime < Timeout.InfiniteTimeSpan)
+            {
+
+                throw new ArgumentOutOfRangeException(nameof(dueTime));
+
+            }
+
+            if (period < Timeout.InfiniteTimeSpan || period == TimeSpan.Zero)
+            {
+
+                throw new ArgumentOutOfRangeException(nameof(period));
+
+            }
+
+            List<TaskCompletionSource> completed = [];
+
+            lock (_gate)
+            {
+
+                if (timer.Disposed)
+                {
+
+                    throw new ObjectDisposedException(nameof(RecoveryTimer));
+
+                }
+
+                if (!_timers.Contains(timer))
+                {
+
+                    _timers.Add(timer);
+
+                }
+
+                timer.DueAt = dueTime == Timeout.InfiniteTimeSpan
+                    ? null
+                    : _utcNow.Add(dueTime);
+
+                timer.Period = period;
+
+                if (dueTime != Timeout.InfiniteTimeSpan)
+                {
+
+                    _scheduledTimerCount++;
+
+                    for (int index = _waiters.Count - 1; index >= 0; index--)
+                    {
+
+                        if (_waiters[index].ExpectedCount > _scheduledTimerCount)
+                        {
+
+                            continue;
+
+                        }
+
+                        completed.Add(_waiters[index].Completion);
+
+                        _waiters.RemoveAt(index);
+
+                    }
+
+                }
+
+            }
+
+            foreach (TaskCompletionSource waiter in completed)
+            {
+
+                waiter.TrySetResult();
+
+            }
+
+        }
+
+        private void RemoveTimer(RecoveryTimer timer)
+        {
+
+            lock (_gate)
+            {
+
+                _ = _timers.Remove(timer);
+
+            }
+
+        }
+
+        private sealed class RecoveryTimer(
+            RecoveryTimeProvider owner,
+            TimerCallback callback,
+            object? state)
+            : ITimer
+        {
+
+            internal bool Disposed { get; private set; }
+
+            internal DateTimeOffset? DueAt { get; set; }
+
+            internal TimeSpan Period { get; set; } = Timeout.InfiniteTimeSpan;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+
+                owner.ChangeTimer(this, dueTime, period);
+
+                return true;
+
+            }
+
+            public void Dispose()
+            {
+
+                if (Disposed)
+                {
+
+                    return;
+
+                }
+
+                Disposed = true;
+
+                owner.RemoveTimer(this);
+
+            }
+
+            public ValueTask DisposeAsync()
+            {
+
+                Dispose();
+
+                return ValueTask.CompletedTask;
+
+            }
+
+            internal void CollectDueCallbacks(
+                DateTimeOffset now,
+                List<(TimerCallback Callback, object? State)> callbacks)
+            {
+
+                if (Disposed || DueAt is not DateTimeOffset dueAt || dueAt > now)
+                {
+
+                    return;
+
+                }
+
+                callbacks.Add((callback, state));
+
+                if (Period == Timeout.InfiniteTimeSpan)
+                {
+
+                    DueAt = null;
+
+                    return;
+
+                }
+
+                do
+                {
+
+                    dueAt = dueAt.Add(Period);
+
+                }
+                while (dueAt <= now);
+
+                DueAt = dueAt;
+
+            }
+
+        }
+
+    }
+
     private async Task<LongRunningOperation> SeedCovenantResetCheckpointAsync(
         LongRunningOperationStore operations,
-        CovenantResetPhase phase) =>
+        CovenantResetPhase phase,
+        DateTimeOffset? startedAt = null,
+        TimeSpan? leaseDuration = null) =>
         await SeedCheckpointAsync(
             operations,
             DataRetentionMutationCheckpointV3.CurrentVersion,
@@ -675,7 +1338,9 @@ public sealed partial class DataRetentionServiceTests
                         id,
                         CovenantResetEffect,
                         CovenantExclusiveOperation.CovenantReset,
-                        phase))));
+                        phase))),
+            startedAt: startedAt,
+            leaseDuration: leaseDuration);
 
     /// <summary>
     /// Leaves the row in the exact state a dead process leaves behind: the checkpoint it managed to
@@ -688,10 +1353,14 @@ public sealed partial class DataRetentionServiceTests
         string kind = LongRunningOperationKinds.DataRetentionMutation,
         LongRunningOperationRecoveryPolicy policy =
             LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-        Func<Guid, byte[]>? checkpointFactory = null)
+        Func<Guid, byte[]>? checkpointFactory = null,
+        DateTimeOffset? startedAt = null,
+        TimeSpan? leaseDuration = null)
     {
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = startedAt ?? DateTimeOffset.UtcNow;
+
+        TimeSpan ownedFor = leaseDuration ?? TimeSpan.FromMinutes(5);
 
         const string ownerId = "covenant-reset-recovery-test";
 
@@ -706,7 +1375,7 @@ public sealed partial class DataRetentionServiceTests
             operation.Id,
             ownerId,
             now,
-            now.AddMinutes(5));
+            now.Add(ownedFor));
 
         Assert.True(lease.Acquired);
 

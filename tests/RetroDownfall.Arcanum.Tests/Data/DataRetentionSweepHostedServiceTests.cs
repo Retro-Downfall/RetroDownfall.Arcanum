@@ -90,6 +90,16 @@ public sealed class DataRetentionSweepHostedServiceTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
+            DataRetentionRequest request,
+            CancellationToken cancellationToken = default,
+            DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request) =>
+            Task.FromResult(
+                Result<DataRetentionPlanAdmission>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.MaintenanceFailed,
+                        "This sweep-only test service cannot provide Covenant plan admission.")));
+
         public Task<Result<DataRetentionApplyResult>> ApplyAsync(
             DataRetentionApplyRequest request,
             CancellationToken cancellationToken = default)

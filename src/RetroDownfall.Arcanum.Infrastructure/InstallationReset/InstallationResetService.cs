@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 using System.Globalization;
 
 using System.Security.Cryptography;
@@ -167,7 +169,8 @@ internal sealed class InstallationResetService(
     IInstallationResetWorkspaceResolver? workspaceResolver = null,
     IInstallationResetStateRoots? stateRoots = null,
     IInstallationResetPreDataMutation? preDataMutation = null,
-    InstallationResetControlPaths? controlPaths = null) : IInstallationResetService
+    InstallationResetControlPaths? controlPaths = null)
+    : IInstallationResetService, IInstallationResetOnlineDataHandoff
 {
 
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -177,6 +180,12 @@ internal sealed class InstallationResetService(
 
     private readonly IInstallationResetPreDataMutation _preDataMutation =
         preDataMutation ?? NoopInstallationResetPreDataMutation.Instance;
+
+    private readonly ConcurrentDictionary<string, DataRetentionPlan> _localDataPlans =
+        new(StringComparer.Ordinal);
+
+    private readonly ConcurrentDictionary<string, DataRetentionPlan> _onlineDataPlans =
+        new(StringComparer.Ordinal);
 
     public async Task<Result<InstallationResetPlan>> PlanAsync(
         InstallationResetPlanRequest request,
@@ -366,7 +375,7 @@ internal sealed class InstallationResetService(
             credentials,
             fileInventory.Targets);
 
-        return Result<InstallationResetPlan>.Success(new InstallationResetPlan(
+        InstallationResetPlan plan = new(
             planId,
             request.Scope,
             workspace,
@@ -382,7 +391,384 @@ internal sealed class InstallationResetService(
             canonical?.Rows,
             checked((canonical?.Files ?? 0) + fileInventory.Files),
             checked((canonical?.EstimatedBytes ?? 0) + fileInventory.EstimatedBytes),
-            accepted));
+            accepted);
+
+        if (canonical is not null)
+        {
+
+            _localDataPlans[plan.PlanId] = canonical;
+
+        }
+
+        return Result<InstallationResetPlan>.Success(plan);
+
+    }
+
+    public Result<InstallationResetPlan> BindOnlineDataPlan(
+        InstallationResetPlanRequest request,
+        InstallationResetPlan localPlan,
+        DataRetentionPlan onlinePlan)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        ArgumentNullException.ThrowIfNull(localPlan);
+
+        ArgumentNullException.ThrowIfNull(onlinePlan);
+
+        if (request.Scope is InstallationResetScope.Workspace
+            || localPlan.Scope != request.Scope
+            || localPlan.AcceptedBinding.DataPlanIds.Length != 1
+            || string.IsNullOrWhiteSpace(onlinePlan.PlanId)
+            || !_localDataPlans.TryGetValue(localPlan.PlanId, out DataRetentionPlan? localData)
+            || !SameOrdinaryDataPlan(localData, onlinePlan))
+        {
+
+            return PlanChanged<InstallationResetPlan>();
+
+        }
+
+        InstallationResetAcceptedBinding provisional = localPlan.AcceptedBinding with
+        {
+            BindingId = string.Empty,
+            DataPlanIds = [onlinePlan.PlanId],
+        };
+
+        InstallationResetAcceptedBinding reboundBinding = provisional with
+        {
+            BindingId = ComputeBindingId(request, provisional),
+        };
+
+        InstallationResetTargetDescriptor[] reboundTargets =
+        [
+            .. localPlan.Targets.Select(target =>
+                target.Role is InstallationResetTargetRole.Database
+                    ? target with
+                    {
+                        DatabasePredicate = "canonical-data-plan:" + onlinePlan.PlanId,
+                    }
+                    : target),
+        ];
+
+        string planId = ComputePlanId(
+            request,
+            reboundBinding,
+            onlinePlan,
+            localPlan.Credentials,
+            [.. reboundTargets.Where(static target =>
+                target.Role is InstallationResetTargetRole.FileSystem)]);
+
+        InstallationResetPlan rebound = localPlan with
+        {
+            PlanId = planId,
+            Targets = reboundTargets,
+            AcceptedBinding = reboundBinding,
+        };
+
+        _onlineDataPlans[rebound.PlanId] = onlinePlan;
+
+        return Result<InstallationResetPlan>.Success(rebound);
+
+    }
+
+    public async Task<Result<InstallationResetOnlineDataHandoff>> PrepareAsync(
+        InstallationResetApplyRequest request,
+        InstallationResetPlan confirmedPlan,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        ArgumentNullException.ThrowIfNull(confirmedPlan);
+
+        if (request.Request.Scope is InstallationResetScope.Workspace
+            || confirmedPlan.Scope != request.Request.Scope
+            || !string.Equals(
+                request.ExpectedPlanId,
+                confirmedPlan.PlanId,
+                StringComparison.Ordinal))
+        {
+
+            return PlanChanged<InstallationResetOnlineDataHandoff>();
+
+        }
+
+        Result<InstallationResetActiveRecord?> activeRead = await activeStore
+            .ReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff>.Failure(activeRead.Error);
+
+        }
+
+        if (activeRead.Value is { } existing)
+        {
+
+            Result validation = await ValidateResumeAsync(
+                existing,
+                request,
+                cancellationToken).ConfigureAwait(false);
+
+            if (validation.IsFailure)
+            {
+
+                return Result<InstallationResetOnlineDataHandoff>.Failure(validation.Error);
+
+            }
+
+            Result<InstallationResetOnlineDataHandoff> replay = ReadPreparedHandoff(
+                existing,
+                request);
+
+            return replay;
+
+        }
+
+        if (!_onlineDataPlans.TryGetValue(
+                confirmedPlan.PlanId,
+                out DataRetentionPlan? onlinePlan))
+        {
+
+            return PlanChanged<InstallationResetOnlineDataHandoff>();
+
+        }
+
+        Result<InstallationResetPlan> replanned = await PlanAsync(
+            request.Request,
+            cancellationToken).ConfigureAwait(false);
+
+        if (replanned.IsFailure)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff>.Failure(replanned.Error);
+
+        }
+
+        Result<InstallationResetPlan> rebound = BindOnlineDataPlan(
+            request.Request,
+            replanned.Value,
+            onlinePlan);
+
+        if (rebound.IsFailure
+            || !SameAcceptedInstallationPlan(rebound.Value, confirmedPlan))
+        {
+
+            return PlanChanged<InstallationResetOnlineDataHandoff>();
+
+        }
+
+        if (!confirmedPlan.CredentialInventoryAvailable)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff>.Failure(new Error(
+                ErrorCodes.Data.CredentialInventoryUnavailable,
+                "The accepted credential inventory is unavailable."));
+
+        }
+
+        if (confirmedPlan.Blockers.Length > 0)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff>.Failure(new Error(
+                ErrorCodes.Data.Blocked,
+                confirmedPlan.Blockers[0].Message));
+
+        }
+
+        Guid requestedOperationId = Guid.NewGuid();
+
+        InstallationResetActiveRecord prepared = new(
+            InstallationResetActiveStore.CurrentVersion,
+            requestedOperationId,
+            confirmedPlan.PlanId,
+            confirmedPlan.Scope,
+            confirmedPlan.Workspace,
+            confirmedPlan.AcceptedBinding,
+            InstallationResetPhase.Prepared,
+            PointOfNoReturn: false,
+            RowsDeleted: 0,
+            FilesDeleted: 0,
+            EstimatedBytesDeleted: 0,
+            CredentialResults: [],
+            LastErrorCode: null,
+            DataHandoff: InstallationResetDataHandoff.HostFactoryErasure);
+
+        Result published = await activeStore.WriteAsync(
+            prepared,
+            cancellationToken).ConfigureAwait(false);
+
+        if (published.IsFailure)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff>.Failure(published.Error);
+
+        }
+
+        return Result<InstallationResetOnlineDataHandoff>.Success(
+            BuildOnlineDataHandoff(prepared));
+
+    }
+
+    public async Task<Result<InstallationResetOnlineDataHandoff?>> ReadAsync(
+        InstallationResetApplyRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        Result<InstallationResetActiveRecord?> activeRead = await activeStore
+            .ReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff?>.Failure(activeRead.Error);
+
+        }
+
+        if (activeRead.Value is not { } active)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff?>.Success(null);
+
+        }
+
+        Result validation = await ValidateResumeAsync(
+            active,
+            request,
+            cancellationToken).ConfigureAwait(false);
+
+        if (validation.IsFailure)
+        {
+
+            return Result<InstallationResetOnlineDataHandoff?>.Failure(validation.Error);
+
+        }
+
+        Result<InstallationResetOnlineDataHandoff> handoff = ReadPreparedHandoff(
+            active,
+            request);
+
+        return handoff.IsSuccess
+            ? Result<InstallationResetOnlineDataHandoff?>.Success(handoff.Value)
+            : Result<InstallationResetOnlineDataHandoff?>.Failure(handoff.Error);
+
+    }
+
+    public async Task<Result> RecordCompletedAsync(
+        InstallationResetOnlineDataHandoff handoff,
+        DataRetentionApplyResult result,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(handoff);
+
+        ArgumentNullException.ThrowIfNull(result);
+
+        if (!IsTrustedOnlineDataCompletion(handoff, result))
+        {
+
+            return OnlineCompletionMismatch();
+
+        }
+
+        Result<InstallationResetActiveRecord?> activeRead = await activeStore
+            .ReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            return Result.Failure(activeRead.Error);
+
+        }
+
+        if (activeRead.Value is not { } active
+            || !MatchesPreparedHandoff(active, handoff))
+        {
+
+            return OnlineCompletionMismatch();
+
+        }
+
+        InstallationResetOnlineDataCompletion proof = new(
+            result.OperationId,
+            handoff.RequestedOperationId,
+            handoff.DataPlanId,
+            result.RowsDeleted,
+            result.FilesDeleted,
+            result.EstimatedBytesDeleted,
+            result.DerivedRecordsDeleted);
+
+        if (active.OnlineDataCompletion is { } existing)
+        {
+
+            return existing == proof
+                ? Result.Success()
+                : OnlineCompletionMismatch();
+
+        }
+
+        return await activeStore.WriteAsync(
+            active with
+            {
+                OnlineDataCompletion = proof,
+                LastErrorCode = null,
+            },
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result> RetirePreEffectAsync(
+        InstallationResetOnlineDataHandoff handoff,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(handoff);
+
+        Result<InstallationResetActiveRecord?> activeRead = await activeStore
+            .ReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            return Result.Failure(activeRead.Error);
+
+        }
+
+        if (activeRead.Value is not { } active)
+        {
+
+            return Result.Success();
+
+        }
+
+        if (!MatchesPreparedHandoff(active, handoff))
+        {
+
+            return ResumeMismatch();
+
+        }
+
+        if (handoff.DataResetCompleted
+            || active.PointOfNoReturn
+            || active.OnlineDataCompletion is not null)
+        {
+
+            return Result.Failure(new Error(
+                ErrorCodes.Data.RecoveryRequired,
+                "The online data reset outcome must be recovered before retirement."));
+
+        }
+
+        return await activeStore.RetirePreEffectAsync(
+            handoff,
+            cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -557,6 +943,25 @@ internal sealed class InstallationResetService(
         if (active.Phase is InstallationResetPhase.Prepared)
         {
 
+            InstallationResetOnlineDataCompletion? onlineCompletion = null;
+
+            if (active.DataHandoff is not null
+                || active.OnlineDataCompletion is not null)
+            {
+
+                if (!TryGetOnlineDataCompletion(active, out onlineCompletion))
+                {
+
+                    return Resumable(
+                        active,
+                        new Error(
+                            ErrorCodes.Data.RecoveryRequired,
+                            "The authenticated host data reset requires recovery."));
+
+                }
+
+            }
+
             Result preData = active.Scope is InstallationResetScope.Workspace
                 ? Result.Success()
                 : await _preDataMutation
@@ -595,66 +1000,85 @@ internal sealed class InstallationResetService(
 
                 }
 
-                string dataPlanId = active.AcceptedBinding.DataPlanIds[0];
-
-                DataRetentionRequest dataRequest = active.Scope is InstallationResetScope.Workspace
-                    ? new DataRetentionRequest(
-                        DataRetentionOperation.ResetWorkspace,
-                        Workspace: active.Workspace)
-                    : new DataRetentionRequest(DataRetentionOperation.FactoryReset);
-
-                Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
-                    new DataRetentionApplyRequest(dataRequest, dataPlanId),
-                    cancellationToken).ConfigureAwait(false);
-
-                if (applied.IsFailure)
+                if (onlineCompletion is not null)
                 {
 
-                    if (applied.Error.Code is ErrorCodes.Data.RecoveryRequired
-                            or ErrorCodes.Data.ReconciliationFailed)
+                    active = active with
+                    {
+                        Phase = InstallationResetPhase.DataResetComplete,
+                        PointOfNoReturn = true,
+                        RowsDeleted = onlineCompletion.RowsDeleted,
+                        FilesDeleted = onlineCompletion.FilesDeleted,
+                        EstimatedBytesDeleted = onlineCompletion.EstimatedBytesDeleted,
+                        LastErrorCode = null,
+                    };
+
+                }
+                else
+                {
+
+                    string dataPlanId = active.AcceptedBinding.DataPlanIds[0];
+
+                    DataRetentionRequest dataRequest = active.Scope is InstallationResetScope.Workspace
+                        ? new DataRetentionRequest(
+                            DataRetentionOperation.ResetWorkspace,
+                            Workspace: active.Workspace)
+                        : new DataRetentionRequest(DataRetentionOperation.FactoryReset);
+
+                    Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
+                        new DataRetentionApplyRequest(dataRequest, dataPlanId),
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (applied.IsFailure)
                     {
 
-                        active = active with
+                        if (applied.Error.Code is ErrorCodes.Data.RecoveryRequired
+                                or ErrorCodes.Data.ReconciliationFailed)
                         {
-                            PointOfNoReturn = true,
-                            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
-                        };
 
-                        Result recoveryCheckpoint = await activeStore.WriteAsync(
-                            active,
+                            active = active with
+                            {
+                                PointOfNoReturn = true,
+                                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+                            };
+
+                            Result recoveryCheckpoint = await activeStore.WriteAsync(
+                                active,
+                                cancellationToken).ConfigureAwait(false);
+
+                            return recoveryCheckpoint.IsFailure
+                                ? Resumable(active, recoveryCheckpoint.Error)
+                                : Resumable(
+                                active,
+                                new Error(
+                                    ErrorCodes.Data.RecoveryRequired,
+                                    "The canonical data reset outcome requires recovery."));
+
+                        }
+
+                        Result retired = await activeStore.RetireAsync(
+                            active.OperationId,
                             cancellationToken).ConfigureAwait(false);
 
-                        return recoveryCheckpoint.IsFailure
-                            ? Resumable(active, recoveryCheckpoint.Error)
-                            : Resumable(
-                            active,
-                            new Error(
-                                ErrorCodes.Data.RecoveryRequired,
-                                "The canonical data reset outcome requires recovery."));
+                        return retired.IsSuccess
+                            ? Result<InstallationResetResult>.Failure(applied.Error)
+                            : Resumable(active, retired.Error);
 
                     }
 
-                    Result retired = await activeStore.RetireAsync(
-                        active.OperationId,
-                        cancellationToken).ConfigureAwait(false);
+                    DataRetentionApplyResult dataResult = applied.Value;
 
-                    return retired.IsSuccess
-                        ? Result<InstallationResetResult>.Failure(applied.Error)
-                        : Resumable(active, retired.Error);
+                    active = active with
+                    {
+                        Phase = InstallationResetPhase.DataResetComplete,
+                        PointOfNoReturn = true,
+                        RowsDeleted = dataResult.RowsDeleted,
+                        FilesDeleted = dataResult.FilesDeleted,
+                        EstimatedBytesDeleted = dataResult.EstimatedBytesDeleted,
+                        LastErrorCode = null,
+                    };
 
                 }
-
-                DataRetentionApplyResult dataResult = applied.Value;
-
-                active = active with
-                {
-                    Phase = InstallationResetPhase.DataResetComplete,
-                    PointOfNoReturn = true,
-                    RowsDeleted = dataResult.RowsDeleted,
-                    FilesDeleted = dataResult.FilesDeleted,
-                    EstimatedBytesDeleted = dataResult.EstimatedBytesDeleted,
-                    LastErrorCode = null,
-                };
 
                 progress.Active = active;
 
@@ -906,7 +1330,8 @@ internal sealed class InstallationResetService(
 
             }
 
-            if (active.PointOfNoReturn)
+            if (active.PointOfNoReturn
+                || IsPreparedOnlineDataHandoff(active))
             {
 
                 return Result.Success();
@@ -1269,6 +1694,168 @@ internal sealed class InstallationResetService(
         Result.Failure(new Error(
             ErrorCodes.Data.ResetInProgress,
             "A different installation reset owns the active operation."));
+
+    private static Result<T> PlanChanged<T>() =>
+        Result<T>.Failure(new Error(
+            ErrorCodes.Data.PlanChanged,
+            "The canonical data plan changed after the installation plan was created."));
+
+    private static Result OnlineCompletionMismatch() =>
+        Result.Failure(new Error(
+            ErrorCodes.Data.ReconciliationFailed,
+            "The authenticated host data reset completion proof did not reconcile."));
+
+    private static bool IsTrustedOnlineDataCompletion(
+        InstallationResetOnlineDataHandoff handoff,
+        DataRetentionApplyResult result) =>
+        handoff.RequestedOperationId != Guid.Empty
+        && !string.IsNullOrWhiteSpace(handoff.InstallationPlanId)
+        && !string.IsNullOrWhiteSpace(handoff.DataPlanId)
+        && result.OperationId != Guid.Empty
+        && result.OperationId != handoff.RequestedOperationId
+        && result.RequestedOperationId == handoff.RequestedOperationId
+        && string.Equals(result.PlanId, handoff.DataPlanId, StringComparison.Ordinal)
+        && result.Reconciled
+        && result.Blockers.Length == 0
+        && result.Conflicts.Length == 0
+        && result.RowsDeleted >= 0
+        && result.FilesDeleted >= 0
+        && result.EstimatedBytesDeleted >= 0
+        && result.DerivedRecordsDeleted >= 0;
+
+    private static bool MatchesPreparedHandoff(
+        InstallationResetActiveRecord active,
+        InstallationResetOnlineDataHandoff handoff) =>
+        active.Scope is InstallationResetScope.Global or InstallationResetScope.All
+        && active.Phase is InstallationResetPhase.Prepared
+        && active.DataHandoff is InstallationResetDataHandoff.HostFactoryErasure
+        && active.AcceptedBinding.DataPlanIds.Length == 1
+        && active.OperationId == handoff.RequestedOperationId
+        && string.Equals(
+            active.PlanId,
+            handoff.InstallationPlanId,
+            StringComparison.Ordinal)
+        && string.Equals(
+            active.AcceptedBinding.DataPlanIds[0],
+            handoff.DataPlanId,
+            StringComparison.Ordinal);
+
+    private static bool TryGetOnlineDataCompletion(
+        InstallationResetActiveRecord active,
+        out InstallationResetOnlineDataCompletion? completion)
+    {
+
+        completion = active.OnlineDataCompletion;
+
+        return active.Scope is InstallationResetScope.Global or InstallationResetScope.All
+            && active.Phase is InstallationResetPhase.Prepared
+            && active.DataHandoff is InstallationResetDataHandoff.HostFactoryErasure
+            && active.AcceptedBinding.DataPlanIds.Length == 1
+            && completion is not null
+            && completion.ServerOperationId != Guid.Empty
+            && completion.ServerOperationId != active.OperationId
+            && completion.RequestedOperationId == active.OperationId
+            && string.Equals(
+                completion.DataPlanId,
+                active.AcceptedBinding.DataPlanIds[0],
+                StringComparison.Ordinal)
+            && completion.RowsDeleted >= 0
+            && completion.FilesDeleted >= 0
+            && completion.EstimatedBytesDeleted >= 0
+            && completion.DerivedRecordsDeleted >= 0;
+
+    }
+
+    private static bool IsPreparedOnlineDataHandoff(
+        InstallationResetActiveRecord active) =>
+        active.Scope is InstallationResetScope.Global or InstallationResetScope.All
+        && active.Phase is InstallationResetPhase.Prepared
+        && active.DataHandoff is InstallationResetDataHandoff.HostFactoryErasure
+        && active.AcceptedBinding.DataPlanIds.Length == 1
+        && !string.IsNullOrWhiteSpace(active.AcceptedBinding.DataPlanIds[0])
+        && (active.OnlineDataCompletion is null
+            || TryGetOnlineDataCompletion(active, out _));
+
+    private static Result<InstallationResetOnlineDataHandoff> ReadPreparedHandoff(
+        InstallationResetActiveRecord active,
+        InstallationResetApplyRequest request)
+    {
+
+        if (active.Scope is not (InstallationResetScope.Global or InstallationResetScope.All)
+            || active.Scope != request.Request.Scope
+            || active.Phase is not InstallationResetPhase.Prepared
+            || active.DataHandoff is not InstallationResetDataHandoff.HostFactoryErasure
+            || active.AcceptedBinding.DataPlanIds.Length != 1
+            || !string.Equals(
+                active.PlanId,
+                request.ExpectedPlanId,
+                StringComparison.Ordinal))
+        {
+
+            return Result<InstallationResetOnlineDataHandoff>.Failure(new Error(
+                ErrorCodes.Data.ResetInProgress,
+                "A different installation reset owns the active operation."));
+
+        }
+
+        return Result<InstallationResetOnlineDataHandoff>.Success(
+            BuildOnlineDataHandoff(active));
+
+    }
+
+    private static InstallationResetOnlineDataHandoff BuildOnlineDataHandoff(
+        InstallationResetActiveRecord active) =>
+        new(
+            active.OperationId,
+            active.PlanId,
+            active.AcceptedBinding.DataPlanIds[0],
+            active.OnlineDataCompletion is not null);
+
+    private static bool SameAcceptedInstallationPlan(
+        InstallationResetPlan current,
+        InstallationResetPlan confirmed) =>
+        string.Equals(current.PlanId, confirmed.PlanId, StringComparison.Ordinal)
+        && current.Scope == confirmed.Scope
+        && current.Workspace == confirmed.Workspace
+        && current.DataInventoryAvailable == confirmed.DataInventoryAvailable
+        && current.CredentialInventoryAvailable == confirmed.CredentialInventoryAvailable
+        && current.Targets.SequenceEqual(confirmed.Targets)
+        && current.Credentials.SequenceEqual(confirmed.Credentials)
+        && current.PreservedBackups.SequenceEqual(confirmed.PreservedBackups)
+        && current.Exclusions.SequenceEqual(confirmed.Exclusions)
+        && current.Blockers.SequenceEqual(confirmed.Blockers)
+        && current.Rows == confirmed.Rows
+        && current.Files == confirmed.Files
+        && current.EstimatedBytes == confirmed.EstimatedBytes
+        && SameAcceptedBinding(current.AcceptedBinding, confirmed.AcceptedBinding);
+
+    private static bool SameAcceptedBinding(
+        InstallationResetAcceptedBinding current,
+        InstallationResetAcceptedBinding confirmed) =>
+        string.Equals(current.BindingId, confirmed.BindingId, StringComparison.Ordinal)
+        && current.SelectedRoots.SequenceEqual(confirmed.SelectedRoots, PathComparer)
+        && current.ExcludedRoots.SequenceEqual(confirmed.ExcludedRoots, PathComparer)
+        && current.PreservedBackups.SequenceEqual(confirmed.PreservedBackups)
+        && current.CredentialAccounts.SequenceEqual(
+            confirmed.CredentialAccounts,
+            StringComparer.Ordinal)
+        && current.DataPlanIds.SequenceEqual(
+            confirmed.DataPlanIds,
+            StringComparer.Ordinal);
+
+    private static bool SameOrdinaryDataPlan(
+        DataRetentionPlan local,
+        DataRetentionPlan online) =>
+        local.Request == online.Request
+        && local.Items.SequenceEqual(online.Items)
+        && local.Blockers.SequenceEqual(online.Blockers)
+        && local.Conflicts.SequenceEqual(online.Conflicts)
+        && local.Rows == online.Rows
+        && local.Files == online.Files
+        && local.EstimatedBytes == online.EstimatedBytes
+        && local.DerivedRecords == online.DerivedRecords
+        && local.CandidateIds.SequenceEqual(online.CandidateIds, StringComparer.Ordinal)
+        && local.RequiresConfirmation == online.RequiresConfirmation;
 
     private static InstallationResetResult BuildResult(
         InstallationResetActiveRecord active,

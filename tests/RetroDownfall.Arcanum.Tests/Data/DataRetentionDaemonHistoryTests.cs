@@ -290,192 +290,6 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 
     }
 
-    [SkippableFact]
-
-    public async Task FactoryReset_BlocksOnRunningDaemonAndClearsTerminalHistoryAfterItStops()
-    {
-
-        RequireSqlCipher();
-
-        FakeTimeProvider time = new();
-
-        InMemoryDaemonExecutionRepository repository = new(
-            new InMemoryLogRingBuffer(),
-            time);
-
-        string completed = await repository.StartAsync(
-            "daemon-completed",
-            "Daemon Completed",
-            CancellationToken.None);
-
-        _ = await repository.CompleteAsync(completed, CancellationToken.None);
-
-        string running = await repository.StartAsync(
-            "daemon-running",
-            "Daemon Running",
-            CancellationToken.None);
-
-        DataRetentionService service = CreateService(
-            CreateSettings(),
-            repository,
-            time);
-
-        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
-
-        DataRetentionPlan blocked = await service.PlanAsync(
-            request,
-            CancellationToken.None);
-
-        Assert.Contains(
-            blocked.Conflicts,
-            conflict => conflict.Code == "Data.DaemonExecutionActive"
-                && conflict.ResourceId == running);
-
-        Assert.NotNull(
-            await repository.GetAsync(
-                running,
-                CancellationToken.None));
-
-        _ = await repository.CancelAsync(running, CancellationToken.None);
-
-        DataRetentionPlan ready = await service.PlanAsync(
-            request,
-            CancellationToken.None);
-
-        Assert.DoesNotContain(
-            ready.Conflicts,
-            static conflict => conflict.Code == "Data.DaemonExecutionActive");
-
-        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
-            new DataRetentionApplyRequest(request, ready.PlanId),
-            CancellationToken.None);
-
-        Assert.True(applied.IsSuccess, applied.Error.Message);
-
-        Assert.True(applied.Value.Reconciled);
-
-        Assert.Empty(
-            await repository.GetHistoryAsync(
-                null,
-                CancellationToken.None));
-
-    }
-
-    [SkippableFact]
-
-    public async Task FactoryReset_HoldsDaemonStartGateUntilCleanupCompletes()
-    {
-
-        RequireSqlCipher();
-
-        FakeTimeProvider time = new();
-
-        InMemoryDaemonExecutionRepository repository = new(
-            new InMemoryLogRingBuffer(),
-            time);
-
-        BlockingDaemonMutationGate gate = new(repository);
-
-        DataRetentionService service = CreateService(
-            CreateSettings(),
-            repository,
-            time,
-            gate);
-
-        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
-
-        DataRetentionPlan plan = await service.PlanAsync(
-            request,
-            CancellationToken.None);
-
-        Task<Result<DataRetentionApplyResult>> reset = service.ApplyAsync(
-            new DataRetentionApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
-
-        await gate.Acquired.WaitAsync(TimeSpan.FromSeconds(5));
-
-        Task<string> start = repository.StartAsync(
-            "daemon-after-reset",
-            "Daemon After Reset",
-            CancellationToken.None);
-
-        Task winner = await Task.WhenAny(
-            start,
-            Task.Delay(TimeSpan.FromMilliseconds(100)));
-
-        Assert.NotSame(start, winner);
-
-        gate.Release();
-
-        Result<DataRetentionApplyResult> applied = await reset;
-
-        string executionId = await start;
-
-        Assert.True(applied.IsSuccess, applied.Error.Message);
-
-        Assert.NotNull(
-            await repository.GetAsync(
-                executionId,
-                CancellationToken.None));
-
-    }
-
-    [SkippableTheory]
-
-    [InlineData(5)]
-
-    [InlineData(6)]
-
-    public async Task FactoryReset_NewDaemonConflictAtApplyBoundaryTerminalizesMarkerBeforeDeletion(
-        int activateOnHistoryCall)
-    {
-
-        RequireSqlCipher();
-
-        FakeTimeProvider time = new();
-
-        ActivatingDaemonRepository repository = new(time, activateOnHistoryCall);
-
-        DataRetentionService service = CreateService(
-            CreateSettings(),
-            repository,
-            time);
-
-        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
-
-        DataRetentionPlan plan = await service.PlanAsync(
-            request,
-            CancellationToken.None);
-
-        Assert.Empty(plan.Conflicts);
-
-        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
-            new DataRetentionApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
-
-        Assert.True(applied.IsFailure);
-
-        Assert.Equal(ErrorCodes.Data.Conflict, applied.Error.Code);
-
-        Assert.NotNull(
-            await repository.GetAsync(
-                ActivatingDaemonRepository.ExecutionId,
-                CancellationToken.None));
-
-        LongRunningOperationStore operations = new(_db!);
-
-        LongRunningOperation marker = Assert.Single(
-            await operations.ListAsync(
-                new LongRunningOperationQuery(
-                    Kind: LongRunningOperationKinds.DataRetentionFactoryReset,
-                    Limit: 10)));
-
-        Assert.Equal(LongRunningOperationState.Failed, marker.State);
-
-        Assert.Equal(ErrorCodes.Data.Conflict, marker.TerminalErrorCode);
-
-    }
-
     private DataRetentionService CreateService(
         ArcanumSettings settings,
         IDaemonExecutionRepository repository,
@@ -528,7 +342,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
-    private sealed class ActivatingDaemonRepository(
+    internal sealed class ActivatingDaemonRepository(
         TimeProvider time,
         int activateOnHistoryCall) : IDaemonExecutionRepository
     {
@@ -627,7 +441,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 
     }
 
-    private sealed class BlockingDaemonMutationGate(
+    internal sealed class BlockingDaemonMutationGate(
         IDaemonExecutionMutationGate inner) : IDaemonExecutionMutationGate
     {
 

@@ -523,12 +523,63 @@ internal sealed class CovenantErasureCoordinator(
         LongRunningOperation operation,
         CovenantErasureCheckpointState checkpoint,
         string ownerId,
+        CancellationToken cancellationToken) =>
+        await RunAsync(
+            operation,
+            checkpoint,
+            ownerId,
+            factoryContinuation: null,
+            CovenantExclusiveOperation.CovenantReset,
+            cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Runs, or resumes, a healthy-catalog factory erasure with its required ordinary cleanup.
+    /// </summary>
+    /// <remarks>
+    /// The continuation is restart-idempotent and deliberately is not a new phase. It runs after
+    /// <c>ManagedArtifactsProcessed</c> is durable and before <c>HandlesClosed</c>; therefore recovery
+    /// repeats it while the former is the durable boundary and skips it once the latter is durable.
+    /// </remarks>
+    internal async Task<Result<CovenantErasureCompletion>> RunAsync(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        string ownerId,
+        Func<CancellationToken, Task<Result>> factoryContinuation,
+        CancellationToken cancellationToken) =>
+        await RunAsync(
+            operation,
+            checkpoint,
+            ownerId,
+            factoryContinuation,
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<Result<CovenantErasureCompletion>> RunAsync(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        string ownerId,
+        Func<CancellationToken, Task<Result>>? factoryContinuation,
+        CovenantExclusiveOperation requiredOperation,
         CancellationToken cancellationToken)
     {
 
         ArgumentNullException.ThrowIfNull(operation);
 
         ArgumentNullException.ThrowIfNull(checkpoint);
+
+        if (checkpoint.Operation != requiredOperation
+            || requiredOperation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
+                && factoryContinuation is null)
+        {
+
+            return Result<CovenantErasureCompletion>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.InvalidScope,
+                    requiredOperation == CovenantExclusiveOperation.CovenantReset
+                        ? "The reset erasure entry point accepts only a Covenant reset."
+                        : "A healthy-catalog factory erasure requires its ordinary cleanup continuation."));
+
+        }
 
         Result admissible = RequireResumableCheckpoint(operation, checkpoint);
 
@@ -544,10 +595,12 @@ internal sealed class CovenantErasureCoordinator(
             checkpoint.Operation,
             checkpoint.EffectDigest);
 
-        // Acquire closes a scope for the first time; resume adopts one this operation already closed
-        // and never reopened. Using the wrong verb is not a style choice: acquiring an already-closed
-        // scope is refused, and resuming a scope nobody closed has nothing to adopt.
-        Result<CovenantExclusiveLease> acquired = checkpoint.Phase == CovenantResetPhaseMachine.First
+        // InventoryPrepared may be entering for the first time or resuming a drained gate.
+        // ReopenedVerified may likewise follow a successful reopen whose post-disposition journal
+        // finalizer lost its CAS. Every destructive intermediate phase is resume-only: acquiring an
+        // open scope there would repeat effects whose checkpoint says admission must still be closed.
+        Result<CovenantExclusiveLease> acquired = checkpoint.Phase is CovenantResetPhase.InventoryPrepared
+            or CovenantResetPhase.ReopenedVerified
             ? await _gate.ResumeOrAcquireExclusiveAsync(owner, cancellationToken).ConfigureAwait(false)
             : await _gate.ResumeExclusiveAsync(owner, cancellationToken).ConfigureAwait(false);
 
@@ -590,6 +643,7 @@ internal sealed class CovenantErasureCoordinator(
             ownerId,
             lease,
             authority.Value,
+            factoryContinuation,
             cancellationToken).ConfigureAwait(false);
 
     }
@@ -601,6 +655,7 @@ internal sealed class CovenantErasureCoordinator(
         string ownerId,
         CovenantExclusiveLease lease,
         CovenantArtifactErasureAuthority authority,
+        Func<CancellationToken, Task<Result>>? factoryContinuation,
         CancellationToken cancellationToken)
     {
 
@@ -737,6 +792,21 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
+            if (state.Phase < CovenantResetPhase.HandlesClosed
+                && factoryContinuation is not null)
+            {
+
+                Result continued = await factoryContinuation(cancellationToken).ConfigureAwait(false);
+
+                if (continued.IsFailure)
+                {
+
+                    throw new CovenantErasureStepFailedException(continued.Error);
+
+                }
+
+            }
+
             state = await AdvanceAsync(
                 operation,
                 state,
@@ -855,6 +925,12 @@ internal sealed class CovenantErasureCoordinator(
                     lease,
                     progress,
                     interrupted).ConfigureAwait(false);
+
+        }
+        catch (DataRetentionLeaseLostException)
+        {
+
+            throw;
 
         }
         catch (Exception)
