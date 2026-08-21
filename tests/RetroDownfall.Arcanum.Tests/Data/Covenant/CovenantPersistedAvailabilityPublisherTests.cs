@@ -2,7 +2,9 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -44,6 +46,8 @@ public sealed class CovenantPersistedAvailabilityPublisherTests : IAsyncLifetime
 
         CovenantAvailability availability = new();
 
+        CovenantAvailabilitySnapshot before = availability.Current;
+
         bool published = await CovenantPersistedAvailabilityPublisher.PublishAsync(
             availability,
             _database.Connection,
@@ -54,6 +58,8 @@ public sealed class CovenantPersistedAvailabilityPublisherTests : IAsyncLifetime
         Assert.True(published);
 
         CovenantAvailabilitySnapshot snapshot = availability.Current;
+
+        Assert.Equal(before.Generation + 1, snapshot.Generation);
 
         // The identity every turn snapshot binds, and the one value whose absence closes the gate.
         Assert.NotNull(snapshot.DatasetGeneration);
@@ -176,6 +182,139 @@ public sealed class CovenantPersistedAvailabilityPublisherTests : IAsyncLifetime
         Assert.Equal(
             CovenantFtsSynchronizationState.Unavailable,
             availability.Current.FtsSynchronization);
+
+    }
+
+    [Fact]
+    public async Task Persisted_state_publication_exposes_one_complete_predecessor_then_one_complete_successor()
+    {
+
+        using BlockingCovenantRuntimePublicationCheckpoint checkpoint = new(
+            CovenantRuntimePublicationStep.AvailabilityBeforeSwap,
+            CovenantRuntimePublicationStep.AvailabilityAfterSwap);
+
+        using CovenantRuntimeGenerationProvider runtime = new(checkpoint);
+
+        CovenantAvailability availability = new(runtime);
+
+        Guid datasetGeneration = await PersistedDatasetGenerationAsync();
+
+        CovenantAvailabilitySnapshot predecessor = availability.PublishPersistedState(
+            datasetGeneration,
+            canonicalSequence: 3,
+            coreCampaignDeletionSequence: 2,
+            appliedDatasetGeneration: datasetGeneration,
+            appliedSequence: 3,
+            appliedCampaignDeletionSequence: 2,
+            acceleratorEpoch: 4,
+            CovenantFtsSynchronizationState.Synchronized,
+            rebuildRequired: false,
+            CovenantHealthTransition.Bootstrap);
+
+        checkpoint.Arm();
+
+        Task<CovenantAvailabilitySnapshot> publishing = Task.Run(() =>
+        {
+
+            return availability.PublishPersistedState(
+                datasetGeneration,
+                canonicalSequence: 8,
+                coreCampaignDeletionSequence: 5,
+                appliedDatasetGeneration: datasetGeneration,
+                appliedSequence: 7,
+                appliedCampaignDeletionSequence: 4,
+                acceleratorEpoch: 9,
+                CovenantFtsSynchronizationState.Dirty,
+                rebuildRequired: true,
+                CovenantHealthTransition.AcceleratorSynchronization);
+
+        });
+
+        checkpoint.WaitForBeforeSwap();
+
+        Assert.False(publishing.IsCompleted);
+
+        Assert.Same(predecessor, availability.Current);
+
+        Assert.Equal(datasetGeneration, availability.Current.DatasetGeneration);
+
+        Assert.Equal(3, availability.Current.CanonicalSequence);
+
+        Assert.Equal(2, availability.Current.CoreCampaignDeletionSequence);
+
+        Assert.Equal(datasetGeneration, availability.Current.AppliedDatasetGeneration);
+
+        Assert.Equal(3, availability.Current.AppliedSequence);
+
+        Assert.Equal(2, availability.Current.AppliedCampaignDeletionSequence);
+
+        Assert.Equal(4UL, availability.Current.AcceleratorEpoch);
+
+        Assert.Equal(CovenantFtsSynchronizationState.Synchronized, availability.Current.FtsSynchronization);
+
+        Assert.False(availability.Current.RebuildRequired);
+
+        checkpoint.AdvanceToAfterSwap();
+
+        Assert.False(publishing.IsCompleted);
+
+        CovenantAvailabilitySnapshot insideSuccessor = availability.Current;
+
+        Assert.NotSame(predecessor, insideSuccessor);
+
+        Assert.Equal(predecessor.Generation + 1, insideSuccessor.Generation);
+
+        Assert.Equal(datasetGeneration, insideSuccessor.DatasetGeneration);
+
+        Assert.Equal(8, insideSuccessor.CanonicalSequence);
+
+        Assert.Equal(5, insideSuccessor.CoreCampaignDeletionSequence);
+
+        Assert.Equal(datasetGeneration, insideSuccessor.AppliedDatasetGeneration);
+
+        Assert.Equal(7, insideSuccessor.AppliedSequence);
+
+        Assert.Equal(4, insideSuccessor.AppliedCampaignDeletionSequence);
+
+        Assert.Equal(9UL, insideSuccessor.AcceleratorEpoch);
+
+        Assert.Equal(CovenantFtsSynchronizationState.Dirty, insideSuccessor.FtsSynchronization);
+
+        Assert.True(insideSuccessor.RebuildRequired);
+
+        checkpoint.ReleaseAfterSwap();
+
+        CovenantAvailabilitySnapshot successor = await publishing;
+
+        checkpoint.AssertNoFailure();
+
+        Assert.Same(insideSuccessor, successor);
+
+        Assert.Same(successor, availability.Current);
+
+        Assert.Equal(predecessor.Generation + 1, successor.Generation);
+
+        Assert.Equal(datasetGeneration, successor.DatasetGeneration);
+
+        Assert.Equal(8, successor.CanonicalSequence);
+
+        Assert.Equal(5, successor.CoreCampaignDeletionSequence);
+
+        Assert.Equal(datasetGeneration, successor.AppliedDatasetGeneration);
+
+        Assert.Equal(7, successor.AppliedSequence);
+
+        Assert.Equal(4, successor.AppliedCampaignDeletionSequence);
+
+        Assert.Equal(9UL, successor.AcceleratorEpoch);
+
+        Assert.Equal(CovenantFtsSynchronizationState.Dirty, successor.FtsSynchronization);
+
+        Assert.True(successor.RebuildRequired);
+
+        Assert.Equal(
+            CovenantHealthTransition.AcceleratorSynchronization,
+            successor.LastHealthTransition);
 
     }
 

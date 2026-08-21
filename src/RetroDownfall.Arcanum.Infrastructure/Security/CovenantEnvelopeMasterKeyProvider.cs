@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
@@ -22,9 +23,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// (key, nonce) pair and AES-GCM offers nothing after that. Diagnostic tags must repeat across a
 /// restart, because a correlation label that changed every boot would correlate nothing.</para>
 ///
-/// <para>Counters are per purpose, start at one, and are handed out by interlocked increment. At the
-/// rollover bound the family stops issuing rather than wrapping; wrapping would silently reuse a
-/// nonce under a live key.</para>
+/// <para>Counters are per purpose, start at one, and are handed out under the same lock that copies
+/// their key. At the rollover bound the family stops issuing rather than wrapping; wrapping would
+/// silently reuse a nonce under a live key.</para>
 /// </remarks>
 internal sealed class CovenantEnvelopeMasterKeyProvider
     : ICovenantEnvelopeMasterKeyProvider, ICovenantDiagnosticKeySource, IDisposable
@@ -38,33 +39,98 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
 
     private const string DiagnosticLabel = "Arcanum.Covenant.Diagnostics.v1";
 
-    private readonly Lock _transitionLock = new();
+    private readonly CovenantRuntimeGenerationProvider _runtime;
+
+    private readonly bool _ownsRuntime;
+
+    private readonly ICovenantEnvelopeDerivationCheckpoint _derivationCheckpoint;
+
+    private readonly ICovenantEnvelopeKeyAccessCheckpoint _keyAccessCheckpoint;
 
     private readonly byte[] _bootSalt = RandomNumberGenerator.GetBytes(32);
 
     private byte[]? _root;
 
-    private CovenantEnvelopeKeyGeneration? _current;
-
     private bool _disposed;
 
+    public CovenantEnvelopeMasterKeyProvider()
+        : this(
+            new CovenantRuntimeGenerationProvider(),
+            CovenantEnvelopeDerivationCheckpoint.None,
+            CovenantEnvelopeKeyAccessCheckpoint.None,
+            ownsRuntime: true)
+    {
+    }
+
+    internal CovenantEnvelopeMasterKeyProvider(CovenantRuntimeGenerationProvider runtime)
+        : this(
+            runtime,
+            CovenantEnvelopeDerivationCheckpoint.None,
+            CovenantEnvelopeKeyAccessCheckpoint.None,
+            ownsRuntime: false)
+    {
+    }
+
+    internal CovenantEnvelopeMasterKeyProvider(
+        ICovenantEnvelopeDerivationCheckpoint derivationCheckpoint)
+        : this(
+            new CovenantRuntimeGenerationProvider(),
+            derivationCheckpoint,
+            CovenantEnvelopeKeyAccessCheckpoint.None,
+            ownsRuntime: true)
+    {
+    }
+
+    internal CovenantEnvelopeMasterKeyProvider(
+        ICovenantEnvelopeDerivationCheckpoint derivationCheckpoint,
+        ICovenantEnvelopeKeyAccessCheckpoint keyAccessCheckpoint)
+        : this(
+            new CovenantRuntimeGenerationProvider(),
+            derivationCheckpoint,
+            keyAccessCheckpoint,
+            ownsRuntime: true)
+    {
+    }
+
+    internal CovenantEnvelopeMasterKeyProvider(
+        CovenantRuntimeGenerationProvider runtime,
+        ICovenantEnvelopeDerivationCheckpoint derivationCheckpoint,
+        ICovenantEnvelopeKeyAccessCheckpoint keyAccessCheckpoint,
+        bool ownsRuntime = false)
+    {
+
+        _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+
+        _derivationCheckpoint =
+            derivationCheckpoint ?? throw new ArgumentNullException(nameof(derivationCheckpoint));
+
+        _keyAccessCheckpoint =
+            keyAccessCheckpoint ?? throw new ArgumentNullException(nameof(keyAccessCheckpoint));
+
+        _ownsRuntime = ownsRuntime;
+
+    }
+
     /// <inheritdoc/>
-    public CovenantEnvelopeKeyGeneration? Current => Volatile.Read(ref _current);
+    public CovenantEnvelopeKeyGeneration? Current => _runtime.Current.Keys;
+
+    internal CovenantRuntimeGenerationProvider Runtime => _runtime;
 
     /// <summary>
-    /// Takes the startup master material once, derives the root, and publishes the first generation.
+    /// Takes startup master material once and prepares the key families available from persisted state.
     /// </summary>
     /// <remarks>
     /// <paramref name="masterKeyMaterial"/> is zeroized before this returns, whether it succeeded or
     /// not. The caller keeps no copy: the whole reason this method takes a mutable buffer rather than
-    /// a string is that a string cannot be cleared.
+    /// a string is that a string cannot be cleared. The returned generation stays caller-owned and
+    /// unpublished until the composite runtime holder initializes keys and authority together.
     /// </remarks>
-    public Result Initialize(
+    internal Result<CovenantPreparedEnvelopeKeyGeneration> PrepareInitial(
         Span<byte> masterKeyMaterial,
-        CovenantCommittedAuthorityTransition transition)
+        CovenantEnvelopeBootstrapKeyInput input)
     {
 
-        ArgumentNullException.ThrowIfNull(transition);
+        ArgumentNullException.ThrowIfNull(input);
 
         // Deriving Covenant envelope keys puts Covenant-authorizing material in this process, so it
         // latches residence for the same reason a canonical connection does (§10.12).
@@ -75,41 +141,65 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
 
             if (masterKeyMaterial.IsEmpty)
             {
-                return Result.Failure(
+                return Result<CovenantPreparedEnvelopeKeyGeneration>.Failure(
                     new Error(
                         ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                         "No master key material is available to derive Covenant envelope keys."));
             }
 
-            lock (_transitionLock)
+            using Lock.Scope scope = _runtime.EnterScope();
+
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if (_root is not null)
+            {
+                return Result<CovenantPreparedEnvelopeKeyGeneration>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.LifecycleConflict,
+                        "Covenant envelope master material has already been taken for this process."));
+            }
+
+            byte[] root = new byte[32];
+
+            byte[] rootBinding = Encoding.UTF8.GetBytes(input.InstallationIdentity);
+
+            try
             {
 
-                ObjectDisposedException.ThrowIf(_disposed, this);
-
-                if (_root is not null)
+                try
                 {
-                    return Result.Failure(
-                        new Error(
-                            ErrorCodes.Covenant.LifecycleConflict,
-                            "Covenant envelope master material has already been taken for this process."));
+
+                    HKDF.DeriveKey(
+                        HashAlgorithmName.SHA256,
+                        masterKeyMaterial,
+                        root,
+                        salt: RootSalt,
+                        info: rootBinding);
+
+                }
+                finally
+                {
+
+                    ZeroAndObserve(rootBinding, CovenantEnvelopeSensitiveBufferKind.RootBinding);
+
                 }
 
-                byte[] root = new byte[32];
-
-                HKDF.DeriveKey(
-                    HashAlgorithmName.SHA256,
-                    masterKeyMaterial,
-                    root,
-                    salt: RootSalt,
-                    info: Encoding.UTF8.GetBytes(transition.InstallationIdentity));
+                CovenantEnvelopeKeyGeneration generation = Derive(root, input);
 
                 _root = root;
 
-                _ = Interlocked.Exchange(ref _current, Derive(root, transition));
+                return Result<CovenantPreparedEnvelopeKeyGeneration>.Success(
+                    new CovenantPreparedEnvelopeKeyGeneration(_runtime, generation));
 
             }
+            catch (Exception)
+            {
 
-            return Result.Success();
+                CryptographicOperations.ZeroMemory(root);
+
+                return Result<CovenantPreparedEnvelopeKeyGeneration>.Failure(DerivationFailure().Error);
+
+            }
 
         }
         finally
@@ -122,37 +212,47 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
     }
 
     /// <summary>
-    /// Derives and publishes a fresh generation for one already-committed transition.
+    /// Derives a fresh unpublished generation whose caller owns until publication or abandonment.
     /// </summary>
-    /// <remarks>
-    /// Derivation happens before the swap, so a derivation failure leaves the previous generation in
-    /// force and the caller's gate closed rather than leaving the process with no keys at all.
-    /// </remarks>
-    public Result Rekey(CovenantCommittedAuthorityTransition transition)
+    public Result<CovenantPreparedEnvelopeKeyGeneration> PrepareRekey(
+        CovenantCommittedAuthorityTransition transition)
     {
 
         ArgumentNullException.ThrowIfNull(transition);
 
-        lock (_transitionLock)
+        using (_runtime.EnterScope())
         {
 
             ObjectDisposedException.ThrowIf(_disposed, this);
 
             if (_root is not { } root)
             {
-                return Result.Failure(
+                return Result<CovenantPreparedEnvelopeKeyGeneration>.Failure(
                     new Error(
                         ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                         "Covenant envelope master material has not been established."));
             }
 
-            CovenantEnvelopeKeyGeneration next = Derive(root, transition);
+            try
+            {
 
-            CovenantEnvelopeKeyGeneration? previous = Interlocked.Exchange(ref _current, next);
+                CovenantEnvelopeKeyGeneration generation = Derive(
+                    root,
+                    new CovenantEnvelopeBootstrapKeyInput(
+                        transition.InstallationIdentity,
+                        transition.MasterKeyVersion,
+                        transition.CanonicalEnvelopeEpoch,
+                        transition.RecoveryEnvelopeEpoch,
+                        transition.Capability.DatasetGeneration));
 
-            previous?.Dispose();
+                return Result<CovenantPreparedEnvelopeKeyGeneration>.Success(
+                    new CovenantPreparedEnvelopeKeyGeneration(_runtime, generation));
 
-            return Result.Success();
+            }
+            catch (Exception)
+            {
+                return Result<CovenantPreparedEnvelopeKeyGeneration>.Failure(DerivationFailure().Error);
+            }
 
         }
 
@@ -164,23 +264,99 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
 
         keyVersion = 0;
 
-        if (Volatile.Read(ref _current) is not { } generation)
+        using (_runtime.EnterScope())
         {
-            return false;
+
+            if (_runtime.Current.Keys is not { } generation)
+            {
+                return false;
+            }
+
+            return generation.TryCopyDiagnosticKey(
+                destination,
+                _keyAccessCheckpoint,
+                out keyVersion);
+
         }
 
-        ReadOnlySpan<byte> key = generation.DiagnosticKey;
+    }
 
-        if (key.Length != 32 || destination.Length < key.Length)
+    public CovenantEnvelopeKeyCopyStatus TryCopyPurposeKeyAndReserve(
+        CovenantEnvelopePurpose purpose,
+        Span<byte> destination,
+        out CovenantEnvelopeKeyReservation reservation)
+    {
+
+        using (_runtime.EnterScope())
         {
-            return false;
+
+            CovenantRuntimeGenerationState current = _runtime.Current;
+
+            if (current.Keys is not { } generation)
+            {
+
+                reservation = default;
+
+                return CovenantEnvelopeKeyCopyStatus.NoGeneration;
+
+            }
+
+            return generation.TryCopyPurposeKeyAndReserve(
+                purpose,
+                destination,
+                current.RuntimeAuthorityGeneration,
+                out reservation);
+
         }
 
-        key.CopyTo(destination);
+    }
 
-        keyVersion = generation.Snapshot.MasterKeyVersion;
+    public CovenantEnvelopeKeyCopyStatus TryCopyPurposeKey(
+        CovenantEnvelopePurpose purpose,
+        Span<byte> destination,
+        out CovenantEnvelopeKeyCapture capture)
+    {
 
-        return true;
+        using (_runtime.EnterScope())
+        {
+
+            CovenantRuntimeGenerationState current = _runtime.Current;
+
+            if (current.Keys is not { } generation)
+            {
+
+                capture = default;
+
+                return CovenantEnvelopeKeyCopyStatus.NoGeneration;
+
+            }
+
+            return generation.TryCopyPurposeKey(
+                purpose,
+                destination,
+                current.RuntimeAuthorityGeneration,
+                out capture);
+
+        }
+
+    }
+
+    public CovenantEnvelopeMaterializationLease AcquireMaterializationLease(
+        long runtimeAuthorityGeneration,
+        CovenantEnvelopeKeyGenerationIdentity identity)
+    {
+
+        ArgumentNullException.ThrowIfNull(identity);
+
+        Lock.Scope scope = _runtime.EnterScope();
+
+        CovenantRuntimeGenerationState current = _runtime.Current;
+
+        bool isCurrent = current.RuntimeAuthorityGeneration == runtimeAuthorityGeneration
+            && current.Keys is { } generation
+            && ReferenceEquals(generation.Identity, identity);
+
+        return new CovenantEnvelopeMaterializationLease(scope, isCurrent);
 
     }
 
@@ -188,7 +364,7 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
     public void Dispose()
     {
 
-        lock (_transitionLock)
+        using (_runtime.EnterScope())
         {
 
             if (_disposed)
@@ -197,8 +373,6 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
             }
 
             _disposed = true;
-
-            Interlocked.Exchange(ref _current, null)?.Dispose();
 
             if (_root is { } root)
             {
@@ -213,80 +387,202 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
 
         }
 
+        if (_ownsRuntime)
+        {
+
+            _runtime.Dispose();
+
+        }
+
     }
 
     private CovenantEnvelopeKeyGeneration Derive(
         byte[] root,
-        CovenantCommittedAuthorityTransition transition)
+        CovenantEnvelopeBootstrapKeyInput input)
     {
 
         byte[][] purposeKeys = new byte[CovenantEnvelopeKeyGeneration.PurposeCount][];
 
-        foreach (CovenantEnvelopePurpose purpose in Enum.GetValues<CovenantEnvelopePurpose>())
+        byte[] generationSalt = RandomNumberGenerator.GetBytes(32);
+
+        byte[]? diagnosticKey = null;
+
+        int purposeKeysDerived = 0;
+
+        try
         {
 
-            bool datasetKeyed = CovenantEnvelopeLimits.IsDatasetKeyed(purpose);
+            // Deliberately boot-salt-free and epoch-free: a diagnostic tag has to correlate across
+            // restarts and across dataset resets, and only a master-key rotation should change it.
+            byte[] diagnosticBinding = Encoding.UTF8.GetBytes(input.InstallationIdentity);
 
-            // A dataset-keyed purpose with no dataset generation has nothing to bind to. Deriving a
-            // key from a placeholder would produce tokens that survive the very reset that removed
-            // the dataset, so the family stays unkeyed and every issuance fails closed instead.
-            if (datasetKeyed && transition.DatasetGeneration is null)
+            try
             {
 
-                purposeKeys[(int)purpose - 1] = [];
+                byte[] diagnosticInfo = BuildInfo(
+                    DiagnosticLabel,
+                    bootSalt: [],
+                    generationSalt: [],
+                    epoch: input.MasterKeyVersion,
+                    binding: diagnosticBinding);
 
-                continue;
+                try
+                {
+
+                    diagnosticKey = HKDF.DeriveKey(
+                        HashAlgorithmName.SHA256,
+                        root,
+                        outputLength: 32,
+                        salt: PurposeSalt,
+                        info: diagnosticInfo);
+
+                    _derivationCheckpoint.Reached(
+                        CovenantEnvelopeDerivationStep.DiagnosticKeyDerived,
+                        purposeKeysDerived);
+
+                }
+                finally
+                {
+
+                    ZeroAndObserve(
+                        diagnosticInfo,
+                        CovenantEnvelopeSensitiveBufferKind.DiagnosticInfo);
+
+                }
+
+            }
+            finally
+            {
+
+                ZeroAndObserve(
+                    diagnosticBinding,
+                    CovenantEnvelopeSensitiveBufferKind.DiagnosticBinding);
 
             }
 
-            long epoch = datasetKeyed
-                ? transition.CanonicalEnvelopeEpoch
-                : transition.RecoveryEnvelopeEpoch;
+            foreach (CovenantEnvelopePurpose purpose in Enum.GetValues<CovenantEnvelopePurpose>())
+            {
 
-            byte[] binding = datasetKeyed
-                ? transition.DatasetGeneration!.Value.ToByteArray(bigEndian: true)
-                : Encoding.UTF8.GetBytes(transition.InstallationIdentity);
+                bool datasetKeyed = CovenantEnvelopeLimits.IsDatasetKeyed(purpose);
 
-            purposeKeys[(int)purpose - 1] = HKDF.DeriveKey(
-                HashAlgorithmName.SHA256,
-                root,
-                outputLength: 32,
-                salt: PurposeSalt,
-                info: BuildInfo(CovenantEnvelopeLimits.Label(purpose), _bootSalt, epoch, binding));
+                // A dataset-keyed purpose with no dataset generation has nothing to bind to. Deriving a
+                // key from a placeholder would produce tokens that survive the very reset that removed
+                // the dataset, so the family stays unkeyed and every issuance fails closed instead.
+                if (datasetKeyed && input.DatasetGeneration is null)
+                {
+
+                    purposeKeys[(int)purpose - 1] = [];
+
+                    continue;
+
+                }
+
+                long epoch = datasetKeyed
+                    ? input.CanonicalEnvelopeEpoch
+                    : input.RecoveryEnvelopeEpoch;
+
+                byte[] binding = datasetKeyed
+                    ? input.DatasetGeneration!.Value.ToByteArray(bigEndian: true)
+                    : Encoding.UTF8.GetBytes(input.InstallationIdentity);
+
+                try
+                {
+
+                    byte[] info = BuildInfo(
+                        CovenantEnvelopeLimits.Label(purpose),
+                        _bootSalt,
+                        generationSalt,
+                        epoch,
+                        binding);
+
+                    try
+                    {
+
+                        purposeKeys[(int)purpose - 1] = HKDF.DeriveKey(
+                            HashAlgorithmName.SHA256,
+                            root,
+                            outputLength: 32,
+                            salt: PurposeSalt,
+                            info: info);
+
+                        purposeKeysDerived++;
+
+                        _derivationCheckpoint.Reached(
+                            CovenantEnvelopeDerivationStep.PurposeKeyDerived,
+                            purposeKeysDerived);
+
+                    }
+                    finally
+                    {
+
+                        ZeroAndObserve(info, CovenantEnvelopeSensitiveBufferKind.PurposeInfo);
+
+                    }
+
+                }
+                finally
+                {
+
+                    ZeroAndObserve(binding, CovenantEnvelopeSensitiveBufferKind.PurposeBinding);
+
+                }
+
+            }
+
+            return new CovenantEnvelopeKeyGeneration(
+                new CovenantEnvelopeKeySnapshot(
+                    input.MasterKeyVersion,
+                    input.CanonicalEnvelopeEpoch,
+                    input.RecoveryEnvelopeEpoch,
+                    input.InstallationIdentity,
+                    input.DatasetGeneration),
+                purposeKeys,
+                diagnosticKey,
+                _derivationCheckpoint);
+
+        }
+        catch
+        {
+
+            foreach (byte[]? purposeKey in purposeKeys)
+            {
+
+                if (purposeKey is { Length: > 0 })
+                {
+                    ZeroAndObserve(purposeKey, CovenantEnvelopeSensitiveBufferKind.PurposeKey);
+                }
+
+            }
+
+            if (diagnosticKey is not null)
+            {
+                ZeroAndObserve(diagnosticKey, CovenantEnvelopeSensitiveBufferKind.DiagnosticKey);
+            }
+
+            throw;
+
+        }
+        finally
+        {
+
+            ZeroAndObserve(generationSalt, CovenantEnvelopeSensitiveBufferKind.GenerationSalt);
 
         }
 
-        // Deliberately boot-salt-free and epoch-free: a diagnostic tag has to correlate across
-        // restarts and across dataset resets, and only a master-key rotation should change it.
-        byte[] diagnosticKey = HKDF.DeriveKey(
-            HashAlgorithmName.SHA256,
-            root,
-            outputLength: 32,
-            salt: PurposeSalt,
-            info: BuildInfo(
-                DiagnosticLabel,
-                bootSalt: [],
-                epoch: transition.MasterKeyVersion,
-                binding: Encoding.UTF8.GetBytes(transition.InstallationIdentity)));
-
-        return new CovenantEnvelopeKeyGeneration(
-            new CovenantEnvelopeKeySnapshot(
-                transition.MasterKeyVersion,
-                transition.CanonicalEnvelopeEpoch,
-                transition.RecoveryEnvelopeEpoch,
-                transition.InstallationIdentity,
-                transition.DatasetGeneration),
-            purposeKeys,
-            diagnosticKey);
-
     }
 
-    private static byte[] BuildInfo(string label, ReadOnlySpan<byte> bootSalt, long epoch, ReadOnlySpan<byte> binding)
+    private static byte[] BuildInfo(
+        string label,
+        ReadOnlySpan<byte> bootSalt,
+        ReadOnlySpan<byte> generationSalt,
+        long epoch,
+        ReadOnlySpan<byte> binding)
     {
 
         int labelBytes = Encoding.UTF8.GetByteCount(label);
 
-        byte[] info = new byte[labelBytes + 1 + bootSalt.Length + 8 + binding.Length];
+        byte[] info = new byte[
+            labelBytes + 1 + bootSalt.Length + generationSalt.Length + 8 + binding.Length];
 
         _ = Encoding.UTF8.GetBytes(label, info);
 
@@ -298,6 +594,10 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
 
         offset += bootSalt.Length;
 
+        generationSalt.CopyTo(info.AsSpan(offset));
+
+        offset += generationSalt.Length;
+
         BinaryPrimitives.WriteInt64BigEndian(info.AsSpan(offset), epoch);
 
         offset += 8;
@@ -307,6 +607,264 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
         return info;
 
     }
+
+    private void ZeroAndObserve(byte[] buffer, CovenantEnvelopeSensitiveBufferKind kind)
+    {
+
+        CryptographicOperations.ZeroMemory(buffer);
+
+        _derivationCheckpoint.Zeroized(kind, IsZero(buffer));
+
+    }
+
+    private static bool IsZero(ReadOnlySpan<byte> buffer)
+    {
+
+        foreach (byte value in buffer)
+        {
+
+            if (value != 0)
+            {
+                return false;
+            }
+
+        }
+
+        return true;
+
+    }
+
+    private static Result DerivationFailure() =>
+        Result.Failure(
+            new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "Covenant envelope key derivation failed."));
+
+}
+
+/// <summary>Content-free checkpoints exposed only for deterministic derivation fault tests.</summary>
+internal interface ICovenantEnvelopeDerivationCheckpoint
+{
+
+    void Reached(CovenantEnvelopeDerivationStep step, int purposeKeysDerived);
+
+    void Zeroized(CovenantEnvelopeSensitiveBufferKind kind, bool isZero);
+
+}
+
+internal enum CovenantEnvelopeDerivationStep
+{
+
+    DiagnosticKeyDerived = 1,
+
+    PurposeKeyDerived = 2,
+
+}
+
+internal enum CovenantEnvelopeSensitiveBufferKind
+{
+
+    RootBinding = 1,
+
+    GenerationSalt = 2,
+
+    PurposeBinding = 3,
+
+    PurposeInfo = 4,
+
+    DiagnosticBinding = 5,
+
+    DiagnosticInfo = 6,
+
+    PurposeKey = 7,
+
+    DiagnosticKey = 8,
+
+}
+
+internal static class CovenantEnvelopeDerivationCheckpoint
+{
+
+    internal static ICovenantEnvelopeDerivationCheckpoint None { get; } = new NoOpCheckpoint();
+
+    private sealed class NoOpCheckpoint : ICovenantEnvelopeDerivationCheckpoint
+    {
+
+        public void Reached(CovenantEnvelopeDerivationStep step, int purposeKeysDerived)
+        {
+        }
+
+        public void Zeroized(CovenantEnvelopeSensitiveBufferKind kind, bool isZero)
+        {
+        }
+
+    }
+
+}
+
+/// <summary>Content-free checkpoints exposed only for deterministic key-copy race tests.</summary>
+internal interface ICovenantEnvelopeKeyAccessCheckpoint
+{
+
+    void Reached(CovenantEnvelopeKeyAccessStep step);
+
+}
+
+internal enum CovenantEnvelopeKeyAccessStep
+{
+
+    DiagnosticKeyCopied = 1,
+
+}
+
+internal static class CovenantEnvelopeKeyAccessCheckpoint
+{
+
+    internal static ICovenantEnvelopeKeyAccessCheckpoint None { get; } = new NoOpCheckpoint();
+
+    private sealed class NoOpCheckpoint : ICovenantEnvelopeKeyAccessCheckpoint
+    {
+
+        public void Reached(CovenantEnvelopeKeyAccessStep step)
+        {
+        }
+
+    }
+
+}
+
+/// <summary>
+/// Startup-only persisted facts used to derive a complete or recovery-only envelope generation.
+/// </summary>
+internal sealed record CovenantEnvelopeBootstrapKeyInput
+{
+
+    internal CovenantEnvelopeBootstrapKeyInput(
+        string installationIdentity,
+        uint masterKeyVersion,
+        long canonicalEnvelopeEpoch,
+        long recoveryEnvelopeEpoch,
+        Guid? datasetGeneration)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(installationIdentity);
+
+        if (masterKeyVersion == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(masterKeyVersion));
+        }
+
+        if (canonicalEnvelopeEpoch <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(canonicalEnvelopeEpoch));
+        }
+
+        if (recoveryEnvelopeEpoch <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(recoveryEnvelopeEpoch));
+        }
+
+        if (datasetGeneration == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "An empty dataset generation is indistinguishable from an absent one.",
+                nameof(datasetGeneration));
+        }
+
+        InstallationIdentity = installationIdentity;
+
+        MasterKeyVersion = masterKeyVersion;
+
+        CanonicalEnvelopeEpoch = canonicalEnvelopeEpoch;
+
+        RecoveryEnvelopeEpoch = recoveryEnvelopeEpoch;
+
+        DatasetGeneration = datasetGeneration;
+
+    }
+
+    internal string InstallationIdentity { get; }
+
+    internal uint MasterKeyVersion { get; }
+
+    internal long CanonicalEnvelopeEpoch { get; }
+
+    internal long RecoveryEnvelopeEpoch { get; }
+
+    internal Guid? DatasetGeneration { get; }
+
+}
+
+/// <summary>
+/// Owns one unpublished key generation until it is abandoned or transferred for publication.
+/// </summary>
+internal sealed class CovenantPreparedEnvelopeKeyGeneration : IDisposable
+{
+
+    private readonly object _owner;
+
+    private CovenantEnvelopeKeyGeneration? _generation;
+
+    internal CovenantPreparedEnvelopeKeyGeneration(
+        object owner,
+        CovenantEnvelopeKeyGeneration generation)
+    {
+
+        _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+
+        _generation = generation ?? throw new ArgumentNullException(nameof(generation));
+
+    }
+
+    internal bool IsOwnedBy(object owner) => ReferenceEquals(_owner, owner);
+
+    internal bool Matches(CovenantCommittedAuthorityTransition transition)
+    {
+
+        ArgumentNullException.ThrowIfNull(transition);
+
+        CovenantEnvelopeKeySnapshot? snapshot = Volatile.Read(ref _generation)?.Snapshot;
+
+        return snapshot is not null
+            && snapshot.MasterKeyVersion == transition.MasterKeyVersion
+            && snapshot.CanonicalEnvelopeEpoch == transition.CanonicalEnvelopeEpoch
+            && snapshot.RecoveryEnvelopeEpoch == transition.RecoveryEnvelopeEpoch
+            && string.Equals(
+                snapshot.InstallationIdentity,
+                transition.InstallationIdentity,
+                StringComparison.Ordinal)
+            && snapshot.DatasetGeneration == transition.Capability.DatasetGeneration;
+
+    }
+
+    internal bool Matches(
+        CovenantAuthoritySnapshot authority,
+        CovenantAvailabilitySnapshot availability)
+    {
+
+        ArgumentNullException.ThrowIfNull(authority);
+
+        ArgumentNullException.ThrowIfNull(availability);
+
+        CovenantEnvelopeKeySnapshot? snapshot = Volatile.Read(ref _generation)?.Snapshot;
+
+        return snapshot is not null
+            && snapshot.MasterKeyVersion == authority.MasterKeyVersion
+            && snapshot.RecoveryEnvelopeEpoch == authority.RecoveryEnvelopeEpoch
+            && string.Equals(
+                snapshot.InstallationIdentity,
+                authority.InstallationIdentity,
+                StringComparison.Ordinal)
+            && (snapshot.DatasetGeneration is null
+                || snapshot.DatasetGeneration == availability.DatasetGeneration);
+
+    }
+
+    internal CovenantEnvelopeKeyGeneration Take() =>
+        Interlocked.Exchange(ref _generation, null)
+        ?? throw new InvalidOperationException("This prepared Covenant envelope generation is no longer owned.");
+
+    public void Dispose() => Interlocked.Exchange(ref _generation, null)?.Dispose();
 
 }
 
@@ -319,7 +877,74 @@ internal interface ICovenantEnvelopeMasterKeyProvider
     /// <summary>The published generation, or <see langword="null"/> before initialization.</summary>
     CovenantEnvelopeKeyGeneration? Current { get; }
 
+    CovenantEnvelopeKeyCopyStatus TryCopyPurposeKeyAndReserve(
+        CovenantEnvelopePurpose purpose,
+        Span<byte> destination,
+        out CovenantEnvelopeKeyReservation reservation);
+
+    CovenantEnvelopeKeyCopyStatus TryCopyPurposeKey(
+        CovenantEnvelopePurpose purpose,
+        Span<byte> destination,
+        out CovenantEnvelopeKeyCapture capture);
+
+    CovenantEnvelopeMaterializationLease AcquireMaterializationLease(
+        long runtimeAuthorityGeneration,
+        CovenantEnvelopeKeyGenerationIdentity identity);
+
 }
+
+internal enum CovenantEnvelopeKeyCopyStatus
+{
+
+    Success = 1,
+
+    NoGeneration = 2,
+
+    PurposeUnavailable = 3,
+
+    CounterExhausted = 4,
+
+}
+
+internal sealed class CovenantEnvelopeKeyGenerationIdentity
+{
+}
+
+/// <summary>
+/// Holds the provider transition lock from identity proof through synchronous result materialization.
+/// </summary>
+internal ref struct CovenantEnvelopeMaterializationLease
+{
+
+    private Lock.Scope _scope;
+
+    internal CovenantEnvelopeMaterializationLease(Lock.Scope scope, bool isCurrent)
+    {
+
+        _scope = scope;
+
+        IsCurrent = isCurrent;
+
+    }
+
+    internal bool IsCurrent { get; }
+
+    public void Dispose() => _scope.Dispose();
+
+}
+
+internal readonly record struct CovenantEnvelopeKeyReservation(
+    long RuntimeAuthorityGeneration,
+    CovenantEnvelopeKeyGenerationIdentity Identity,
+    CovenantEnvelopeKeySnapshot Snapshot,
+    long Epoch,
+    ulong Counter);
+
+internal readonly record struct CovenantEnvelopeKeyCapture(
+    long RuntimeAuthorityGeneration,
+    CovenantEnvelopeKeyGenerationIdentity Identity,
+    CovenantEnvelopeKeySnapshot Snapshot,
+    long Epoch);
 
 /// <summary>
 /// One immutable set of purpose keys, their counters, and the nonsecret identity they bind.
@@ -337,8 +962,14 @@ internal sealed class CovenantEnvelopeKeyGeneration : IDisposable
 
     private readonly byte[] _diagnosticKey;
 
-    // Signed storage because Interlocked has no unsigned overload worth the cast noise. The rollover
-    // bound is far below long.MaxValue, so the counter is refused long before the sign bit matters.
+    private readonly ICovenantEnvelopeDerivationCheckpoint _derivationCheckpoint;
+
+    private readonly Lock _keyLock = new();
+
+    private readonly CovenantEnvelopeKeyGenerationIdentity _identity = new();
+
+    // Signed storage keeps the rollover comparison simple. The bound is far below long.MaxValue, so
+    // the counter is refused long before the sign bit matters.
     private readonly long[] _counters = new long[PurposeCount];
 
     private int _disposed;
@@ -346,7 +977,8 @@ internal sealed class CovenantEnvelopeKeyGeneration : IDisposable
     internal CovenantEnvelopeKeyGeneration(
         CovenantEnvelopeKeySnapshot snapshot,
         byte[][] purposeKeys,
-        byte[] diagnosticKey)
+        byte[] diagnosticKey,
+        ICovenantEnvelopeDerivationCheckpoint derivationCheckpoint)
     {
 
         Snapshot = snapshot;
@@ -355,22 +987,125 @@ internal sealed class CovenantEnvelopeKeyGeneration : IDisposable
 
         _diagnosticKey = diagnosticKey;
 
+        _derivationCheckpoint = derivationCheckpoint;
+
     }
 
     internal CovenantEnvelopeKeySnapshot Snapshot { get; }
 
-    /// <summary>
-    /// The key for one purpose, or an empty span when that family is unkeyed in this generation.
-    /// </summary>
-    internal ReadOnlySpan<byte> PurposeKey(CovenantEnvelopePurpose purpose) =>
-        Volatile.Read(ref _disposed) == 0
-            ? _purposeKeys[(int)purpose - 1]
-            : [];
+    internal CovenantEnvelopeKeyGenerationIdentity Identity => _identity;
 
-    internal ReadOnlySpan<byte> DiagnosticKey =>
-        Volatile.Read(ref _disposed) == 0
-            ? _diagnosticKey
-            : [];
+    internal bool TryCopyDiagnosticKey(
+        Span<byte> destination,
+        ICovenantEnvelopeKeyAccessCheckpoint checkpoint,
+        out uint keyVersion)
+    {
+
+        lock (_keyLock)
+        {
+
+            keyVersion = 0;
+
+            if (_disposed != 0 || destination.Length < _diagnosticKey.Length)
+            {
+                return false;
+            }
+
+            _diagnosticKey.CopyTo(destination);
+
+            checkpoint.Reached(CovenantEnvelopeKeyAccessStep.DiagnosticKeyCopied);
+
+            keyVersion = Snapshot.MasterKeyVersion;
+
+            return true;
+
+        }
+
+    }
+
+    internal CovenantEnvelopeKeyCopyStatus TryCopyPurposeKeyAndReserve(
+        CovenantEnvelopePurpose purpose,
+        Span<byte> destination,
+        long runtimeAuthorityGeneration,
+        out CovenantEnvelopeKeyReservation reservation)
+    {
+
+        lock (_keyLock)
+        {
+
+            reservation = default;
+
+            if (_disposed != 0)
+            {
+                return CovenantEnvelopeKeyCopyStatus.NoGeneration;
+            }
+
+            byte[] key = _purposeKeys[(int)purpose - 1];
+
+            if (key.Length != 32 || destination.Length < key.Length)
+            {
+                return CovenantEnvelopeKeyCopyStatus.PurposeUnavailable;
+            }
+
+            long reserved = ++_counters[(int)purpose - 1];
+
+            if (reserved <= 0 || (ulong)reserved > CovenantEnvelopeLimits.CounterRolloverBound)
+            {
+                return CovenantEnvelopeKeyCopyStatus.CounterExhausted;
+            }
+
+            key.CopyTo(destination);
+
+            reservation = new CovenantEnvelopeKeyReservation(
+                runtimeAuthorityGeneration,
+                _identity,
+                Snapshot,
+                EpochFor(purpose),
+                (ulong)reserved);
+
+            return CovenantEnvelopeKeyCopyStatus.Success;
+
+        }
+
+    }
+
+    internal CovenantEnvelopeKeyCopyStatus TryCopyPurposeKey(
+        CovenantEnvelopePurpose purpose,
+        Span<byte> destination,
+        long runtimeAuthorityGeneration,
+        out CovenantEnvelopeKeyCapture capture)
+    {
+
+        lock (_keyLock)
+        {
+
+            capture = default;
+
+            if (_disposed != 0)
+            {
+                return CovenantEnvelopeKeyCopyStatus.NoGeneration;
+            }
+
+            byte[] key = _purposeKeys[(int)purpose - 1];
+
+            if (key.Length != 32 || destination.Length < key.Length)
+            {
+                return CovenantEnvelopeKeyCopyStatus.PurposeUnavailable;
+            }
+
+            key.CopyTo(destination);
+
+            capture = new CovenantEnvelopeKeyCapture(
+                runtimeAuthorityGeneration,
+                _identity,
+                Snapshot,
+                EpochFor(purpose));
+
+            return CovenantEnvelopeKeyCopyStatus.Success;
+
+        }
+
+    }
 
     /// <summary>
     /// The epoch this purpose family's key was derived under.
@@ -380,43 +1115,59 @@ internal sealed class CovenantEnvelopeKeyGeneration : IDisposable
             ? Snapshot.CanonicalEnvelopeEpoch
             : Snapshot.RecoveryEnvelopeEpoch;
 
-    /// <summary>
-    /// Reserves the next issuance ordinal, or reports that this family must re-key first.
-    /// </summary>
-    internal bool TryReserveCounter(CovenantEnvelopePurpose purpose, out ulong counter)
-    {
-
-        long reserved = Interlocked.Increment(ref _counters[(int)purpose - 1]);
-
-        if (reserved > 0 && (ulong)reserved <= CovenantEnvelopeLimits.CounterRolloverBound)
-        {
-
-            counter = (ulong)reserved;
-
-            return true;
-
-        }
-
-        counter = 0;
-
-        return false;
-
-    }
-
     public void Dispose()
     {
 
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        lock (_keyLock)
         {
-            return;
+
+            if (_disposed != 0)
+            {
+                return;
+            }
+
+            _disposed = 1;
+
+            foreach (byte[] key in _purposeKeys)
+            {
+
+                if (key.Length > 0)
+                {
+
+                    CryptographicOperations.ZeroMemory(key);
+
+                    _derivationCheckpoint.Zeroized(
+                        CovenantEnvelopeSensitiveBufferKind.PurposeKey,
+                        IsZero(key));
+
+                }
+
+            }
+
+            CryptographicOperations.ZeroMemory(_diagnosticKey);
+
+            _derivationCheckpoint.Zeroized(
+                CovenantEnvelopeSensitiveBufferKind.DiagnosticKey,
+                IsZero(_diagnosticKey));
+
         }
 
-        foreach (byte[] key in _purposeKeys)
+    }
+
+    private static bool IsZero(ReadOnlySpan<byte> buffer)
+    {
+
+        foreach (byte value in buffer)
         {
-            CryptographicOperations.ZeroMemory(key);
+
+            if (value != 0)
+            {
+                return false;
+            }
+
         }
 
-        CryptographicOperations.ZeroMemory(_diagnosticKey);
+        return true;
 
     }
 

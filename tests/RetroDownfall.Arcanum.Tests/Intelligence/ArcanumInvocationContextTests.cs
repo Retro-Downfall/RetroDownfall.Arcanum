@@ -69,7 +69,7 @@ public sealed class ArcanumInvocationContextTests
 
         CanonicalCampaignContext campaign = CampaignContext();
 
-        CovenantReadAuthorityEpoch epoch = CovenantReadAuthorityEpoch.CreateForTests(Installation, 7);
+        CovenantReadAuthorityEpoch epoch = CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7);
 
         Result<ArcanumInvocationContext> result = ArcanumInvocationContext.Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
@@ -97,7 +97,7 @@ public sealed class ArcanumInvocationContextTests
             InvocationAttendance.Unattended,
             CovenantContextPolicy.None,
             ToolPolicy.NoTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 7));
+            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, result.Error.Code);
@@ -137,7 +137,7 @@ public sealed class ArcanumInvocationContextTests
             InvocationAttendance.Attended,
             CovenantContextPolicy.None,
             ToolPolicy.AllTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 7));
+            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
 
         Assert.True(result.IsSuccess);
         Assert.False(result.Value.CanReadCovenant);
@@ -161,7 +161,7 @@ public sealed class ArcanumInvocationContextTests
                 InvocationAttendance.Attended,
                 CovenantContextPolicy.Default,
                 ToolPolicy.AllTools,
-                CovenantReadAuthorityEpoch.CreateForTests(Installation, 7));
+                CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
 
             Assert.True(result.IsSuccess);
             Assert.True(result.Value.CanReadCovenant);
@@ -180,7 +180,7 @@ public sealed class ArcanumInvocationContextTests
             InvocationAttendance.Attended,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 7));
+            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
 
         Assert.True(globalOnly.Value.CanReadCovenant);
         Assert.False(globalOnly.Value.CanStageCovenantMutation);
@@ -191,7 +191,7 @@ public sealed class ArcanumInvocationContextTests
             InvocationAttendance.Unattended,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 7));
+            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
 
         Assert.True(unattended.Value.CanReadCovenant);
         Assert.False(unattended.Value.CanStageCovenantMutation);
@@ -202,7 +202,7 @@ public sealed class ArcanumInvocationContextTests
             InvocationAttendance.Attended,
             CovenantContextPolicy.Default,
             ToolPolicy.NoTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 7));
+            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
 
         Assert.True(toolless.Value.CanReadCovenant);
         Assert.False(toolless.Value.CanStageCovenantMutation);
@@ -259,6 +259,7 @@ public sealed class ArcanumInvocationContextTests
         OperatorAuthorityContext context = OperatorAuthorityContext.CreateForTests(
             CovenantAuthorityRequirement.CovenantManage,
             Installation,
+            runtimeAuthorityGeneration: 1,
             authorityEpoch: 11,
             masterKeyVersion: 4);
 
@@ -271,6 +272,7 @@ public sealed class ArcanumInvocationContextTests
         OperatorAuthorityContext second = OperatorAuthorityContext.CreateForTests(
             CovenantAuthorityRequirement.CovenantManage,
             Installation,
+            runtimeAuthorityGeneration: 1,
             authorityEpoch: 11,
             masterKeyVersion: 4);
 
@@ -296,6 +298,7 @@ public sealed class ArcanumInvocationContextTests
         OperatorAuthorityContext read = OperatorAuthorityContext.CreateForTests(
             CovenantAuthorityRequirement.ProtectedRead,
             Installation,
+            runtimeAuthorityGeneration: 1,
             authorityEpoch: 11,
             masterKeyVersion: 4);
 
@@ -442,6 +445,7 @@ public sealed class ArcanumInvocationContextTests
 
     private static CovenantAuthoritySnapshot Snapshot(CovenantHostToolsState state) =>
         new(
+            RuntimeAuthorityGeneration: 1,
             Installation.ToString().ToUpperInvariant(),
             AuthorityEpoch: 11,
             MasterKeyVersion: 4,
@@ -456,6 +460,7 @@ public sealed class ArcanumInvocationContextTests
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             RegistrationId: Guid.Parse("5F6E7D8C-9B0A-4132-8455-667788990011"),
+            RuntimeAuthorityGeneration: 1,
             Kind: CovenantLeaseKind.Turn,
             Coverage: CovenantLeaseCoverage.Scoped,
             Scope: CovenantOperationScope.Global,

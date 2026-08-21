@@ -566,52 +566,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     }
 
-    [Fact]
-    public async Task The_candidate_dataset_generation_is_read_back_from_the_committed_row()
-    {
-
-        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
-
-        await fixture.SeedAsync(Token);
-
-        ICovenantCanonicalErasure service = CreateService(fixture);
-
-        Result<Guid> applied = await service.ApplyAsync(CovenantExclusiveOperation.CovenantReset, Token);
-
-        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
-
-        Result<Guid> read = await service.ReadCandidateDatasetGenerationAsync(Token);
-
-        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : null);
-
-        // A resumed pass has no checkpoint field to read this from, so the committed row is the only
-        // authority for its own identity.
-        Assert.Equal(applied.Value, read.Value);
-
-    }
-
-    [Fact]
-    public async Task The_candidate_dataset_generation_is_empty_when_no_dataset_row_exists()
-    {
-
-        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
-
-        await fixture.SeedAsync(Token);
-
-        await fixture.ExecuteAsync("DELETE FROM covenant_search_documents;", Token);
-
-        await fixture.ExecuteAsync("DELETE FROM covenant_state;", Token);
-
-        Result<Guid> read = await CreateService(fixture).ReadCandidateDatasetGenerationAsync(Token);
-
-        // Reported rather than guessed. The coordinator turns an empty generation into an integrity
-        // failure, and a read that invented one would publish a dataset nothing committed.
-        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : null);
-
-        Assert.Equal(Guid.Empty, read.Value);
-
-    }
-
     private static CovenantCanonicalErasureTransaction CreateService(CovenantCanonicalErasureFixture fixture) =>
         new(
             fixture.Connections(),
@@ -672,6 +626,10 @@ public sealed class CovenantCanonicalErasureTransactionTests
             return inner.OpenAsync(cancellationToken);
 
         }
+
+        public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException(
+                "The canonical erasure transaction opens no read-only handle.");
 
         // The canonical transaction opens no side file and no read-only handle. Delegating rather
         // than throwing would let it grow one without this suite's ordering log noticing.

@@ -1,9 +1,19 @@
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -78,6 +88,20 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.Same(typeof(CovenantOperationGate), Assert.Single(gates));
 
         Assert.NotNull(typeof(ICovenantOperationGate).GetMethod(nameof(ICovenantOperationGate.AcquireInstallationReadAsync)));
+
+    }
+
+    [Fact]
+    public void Resume_or_acquire_is_a_required_gate_operation()
+    {
+
+        MethodInfo method = Assert.IsAssignableFrom<MethodInfo>(
+            typeof(ICovenantOperationGate).GetMethod(
+                nameof(ICovenantOperationGate.ResumeOrAcquireExclusiveAsync)));
+
+        Assert.True(method.IsAbstract);
+
+        Assert.Null(method.GetMethodBody());
 
     }
 
@@ -188,6 +212,44 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRegistration<CovenantOperationGate>(services, ServiceLifetime.Singleton);
 
+        AssertSingleRegistration<CovenantRuntimeGenerationProvider>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantRuntimeGenerationProvider>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<CovenantAvailability>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantAvailability>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<CovenantAuthoritySnapshotProvider>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantAuthoritySnapshotProvider>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantConnectionDrain>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantMaintenanceConnectionFactory>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<CovenantHealthyCatalogErasureGuard>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<CovenantManagedFileErasureRequestReader>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<CovenantDisclosureExposureReader>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<CovenantErasureStartupRecoveryOwnerAdopter>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantCanonicalErasure>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantLocalErasureStorageHealth>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<CovenantDisclosureWriter>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantDisclosureJournal>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantDisclosureWriterLifecycle>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantAuthorityTransitionPublisher>(services, ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<ICovenantCommittedTransitionPublisher>(services, ServiceLifetime.Singleton);
+
         AssertSingleRegistration<ICovenantCampaignScopeProbe>(services, ServiceLifetime.Singleton);
 
         AssertSingleRegistration<ICovenantCompiler>(services, ServiceLifetime.Singleton);
@@ -213,6 +275,115 @@ public sealed class CovenantArchitectureBoundaryTests
         AssertSingleRegistration<CovenantIndexRebuilder>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<ICovenantConnectionSource>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<CovenantErasureInventorySource>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<ICovenantErasureInventorySource>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<CovenantErasureTransition>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<ICovenantErasureTransition>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<CovenantErasureCoordinator>(services, ServiceLifetime.Scoped);
+
+    }
+
+    [Fact]
+    public async Task Cli_composition_validates_the_complete_covenant_graph()
+    {
+
+        ServiceCollection services = [];
+
+        services.AddLogging();
+
+        services.AddArcanumCliClientStack();
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(CovenantResetCheckpointInitiator));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(ICovenantErasureEffectDigestCalculator));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(DataRetentionService));
+
+        await AssertCompleteCovenantGraphAsync(services, isHost: false);
+
+    }
+
+    [Fact]
+    public async Task Full_host_composition_validates_the_complete_covenant_graph()
+    {
+
+        HostApplicationBuilder builder = Host.CreateApplicationBuilder();
+
+        builder.Services.AddSingleton<IWeaveService>(static _ => null!);
+
+        builder.Services.AddSingleton<IArcanumIntelligenceProvider>(static _ => null!);
+
+        builder.Services.AddSingleton<IHumanPromptRegistry>(static _ => null!);
+
+        builder.Services.AddSingleton<IModelTokenEstimator>(static _ => null!);
+
+        builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+
+        AssertSingleRegistration<CovenantResetCheckpointInitiator>(
+            builder.Services,
+            ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<ICovenantErasureEffectDigestCalculator>(
+            builder.Services,
+            ServiceLifetime.Singleton);
+
+        AssertSingleRegistration<DataRetentionService>(
+            builder.Services,
+            ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<IDataRetentionService>(
+            builder.Services,
+            ServiceLifetime.Scoped);
+
+        AssertSingleRecoveryHandler<DataRetentionRecoveryHandler>(builder.Services);
+
+        AssertSingleRecoveryHandler<DataRetentionMutationRecoveryHandler>(builder.Services);
+
+        AssertSingleRecoveryHandler<DataRetentionFactoryResetRecoveryHandler>(builder.Services);
+
+        await AssertCompleteCovenantGraphAsync(builder.Services, isHost: true);
+
+    }
+
+    [Fact]
+    public void Covenant_runtime_facades_expose_no_independent_live_state_mutator()
+    {
+
+        Type[] facades =
+        [
+            typeof(ICovenantEnvelopeMasterKeyProvider),
+            typeof(ICovenantAuthoritySnapshotProvider),
+            typeof(ICovenantAvailability),
+        ];
+
+        foreach (Type facade in facades)
+        {
+
+            Assert.All(
+                facade.GetProperties(),
+                static property => Assert.Null(property.SetMethod));
+
+            Assert.DoesNotContain(
+                facade.GetMethods(),
+                static method => !method.IsSpecialName
+                    && (method.Name.StartsWith("Initialize", StringComparison.Ordinal)
+                        || method.Name.StartsWith("Publish", StringComparison.Ordinal)
+                        || method.Name.StartsWith("Replace", StringComparison.Ordinal)
+                        || method.Name.StartsWith("Retire", StringComparison.Ordinal)
+                        || method.Name.StartsWith("Set", StringComparison.Ordinal)));
+
+        }
 
     }
 
@@ -247,6 +418,161 @@ public sealed class CovenantArchitectureBoundaryTests
             candidate => candidate.ServiceType == typeof(TService));
 
         Assert.Equal(expected, descriptor.Lifetime);
+
+    }
+
+    private static void AssertSingleRecoveryHandler<THandler>(IServiceCollection services)
+    {
+
+        ServiceDescriptor descriptor = Assert.Single(
+            services,
+            static candidate => candidate.ServiceType == typeof(ILongRunningOperationRecoveryHandler)
+                && candidate.ImplementationType == typeof(THandler));
+
+        Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+
+    }
+
+    private static async Task AssertCompleteCovenantGraphAsync(
+        IServiceCollection services,
+        bool isHost)
+    {
+
+        SqliteNativeRuntime.Instance.Initialize();
+
+        await using ServiceProvider provider = services.BuildServiceProvider(
+            new ServiceProviderOptions
+            {
+                ValidateOnBuild = true,
+                ValidateScopes = true,
+            });
+
+        IGrimoireDbPassphraseSource passphrase = provider
+            .GetRequiredService<IGrimoireDbPassphraseSource>();
+
+        Assert.IsType<GrimoireDbPassphraseSource>(passphrase)
+            .SetPassphrase("task-8-composition-validation");
+
+        await using AsyncServiceScope firstScope = provider.CreateAsyncScope();
+
+        await using AsyncServiceScope secondScope = provider.CreateAsyncScope();
+
+        CovenantErasureCoordinator firstCoordinator = firstScope.ServiceProvider
+            .GetRequiredService<CovenantErasureCoordinator>();
+
+        CovenantErasureCoordinator secondCoordinator = secondScope.ServiceProvider
+            .GetRequiredService<CovenantErasureCoordinator>();
+
+        Assert.NotSame(firstCoordinator, secondCoordinator);
+
+        CovenantErasureInventorySource firstInventory = firstScope.ServiceProvider
+            .GetRequiredService<CovenantErasureInventorySource>();
+
+        Assert.Same(
+            firstInventory,
+            firstScope.ServiceProvider.GetRequiredService<ICovenantErasureInventorySource>());
+
+        Assert.NotSame(
+            firstInventory,
+            secondScope.ServiceProvider.GetRequiredService<CovenantErasureInventorySource>());
+
+        CovenantErasureTransition firstTransition = firstScope.ServiceProvider
+            .GetRequiredService<CovenantErasureTransition>();
+
+        Assert.Same(
+            firstTransition,
+            firstScope.ServiceProvider.GetRequiredService<ICovenantErasureTransition>());
+
+        Assert.NotSame(
+            firstTransition,
+            secondScope.ServiceProvider.GetRequiredService<CovenantErasureTransition>());
+
+        Assert.Same(
+            provider.GetRequiredService<ICovenantDisclosureJournal>(),
+            provider.GetRequiredService<ICovenantDisclosureWriterLifecycle>());
+
+        CovenantRuntimeGenerationProvider runtime = provider
+            .GetRequiredService<CovenantRuntimeGenerationProvider>();
+
+        Assert.Same(
+            runtime,
+            provider.GetRequiredService<ICovenantRuntimeGenerationProvider>());
+
+        Assert.Same(
+            runtime,
+            RuntimeHolder(provider.GetRequiredService<CovenantEnvelopeMasterKeyProvider>()));
+
+        Assert.Same(
+            runtime,
+            RuntimeHolder(provider.GetRequiredService<CovenantAuthoritySnapshotProvider>()));
+
+        Assert.Same(
+            runtime,
+            RuntimeHolder(provider.GetRequiredService<CovenantAvailability>()));
+
+        Assert.Same(
+            runtime,
+            RuntimeHolder(provider.GetRequiredService<CovenantOperationGate>()));
+
+        Assert.Same(
+            provider.GetRequiredService<ICovenantConnectionDrain>(),
+            firstScope.ServiceProvider.GetRequiredService<ICovenantConnectionDrain>());
+
+        Assert.Same(
+            provider.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+            firstScope.ServiceProvider.GetRequiredService<ICovenantMaintenanceConnectionFactory>());
+
+        Assert.Same(
+            provider.GetRequiredService<ICovenantCanonicalErasure>(),
+            firstScope.ServiceProvider.GetRequiredService<ICovenantCanonicalErasure>());
+
+        Assert.Same(
+            provider.GetRequiredService<ICovenantLocalErasureStorageHealth>(),
+            firstScope.ServiceProvider.GetRequiredService<ICovenantLocalErasureStorageHealth>());
+
+        Assert.Same(
+            provider.GetRequiredService<CovenantErasureStartupRecoveryOwnerAdopter>(),
+            firstScope.ServiceProvider.GetRequiredService<CovenantErasureStartupRecoveryOwnerAdopter>());
+
+        Assert.Same(
+            provider.GetRequiredService<CovenantManagedFileErasureRequestReader>(),
+            firstScope.ServiceProvider.GetRequiredService<CovenantManagedFileErasureRequestReader>());
+
+        Assert.Same(
+            provider.GetRequiredService<CovenantDisclosureExposureReader>(),
+            firstScope.ServiceProvider.GetRequiredService<CovenantDisclosureExposureReader>());
+
+        Assert.Same(
+            provider.GetRequiredService<ICovenantAuthorityTransitionPublisher>(),
+            provider.GetRequiredService<ICovenantCommittedTransitionPublisher>());
+
+        if (isHost)
+        {
+
+            _ = firstScope.ServiceProvider.GetRequiredService<CovenantResetCheckpointInitiator>();
+
+            _ = provider.GetRequiredService<ICovenantErasureEffectDigestCalculator>();
+
+        }
+        else
+        {
+
+            Assert.Null(firstScope.ServiceProvider.GetService<CovenantResetCheckpointInitiator>());
+
+            Assert.Null(provider.GetService<ICovenantErasureEffectDigestCalculator>());
+
+        }
+
+    }
+
+    private static CovenantRuntimeGenerationProvider RuntimeHolder(object facade)
+    {
+
+        FieldInfo field = Assert.Single(
+            facade.GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic),
+            static candidate => candidate.FieldType == typeof(CovenantRuntimeGenerationProvider));
+
+        return Assert.IsType<CovenantRuntimeGenerationProvider>(field.GetValue(facade));
 
     }
 

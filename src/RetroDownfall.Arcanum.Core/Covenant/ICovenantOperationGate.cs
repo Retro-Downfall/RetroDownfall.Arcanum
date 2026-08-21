@@ -60,6 +60,14 @@ public interface ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Resumes this exact installation owner when a durable closure exists, or acquires a fresh
+    /// closure only when the decision observes no installation closure at all.
+    /// </summary>
+    ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken);
+
     ValueTask<Result<CovenantCampaignExclusiveLease>> ResumeCampaignExclusiveAsync(
         Guid campaignId,
         CovenantExclusiveRecoveryOwner owner,

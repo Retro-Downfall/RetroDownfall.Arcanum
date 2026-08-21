@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -13,7 +14,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// Raw-SQL operation ledger stored inside the encrypted Grimoire. All ownership and lifecycle
 /// mutations are compare-and-swap updates; no process-local lock is required for correctness.
 /// </summary>
-internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunningOperationStore
+internal sealed class LongRunningOperationStore(
+    ArcanumDbContext db,
+    ICovenantConnectionDrain? covenantDrain = null) : ILongRunningOperationStore, IDisposable
 {
     private const int MaxKindLength = 100;
 
@@ -36,6 +39,22 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
         db.Database.GetDbConnection() is SqliteConnection sqlite
             ? sqlite.ConnectionString
             : null;
+
+    private IDisposable? _covenantDrainEnrolment =
+        covenantDrain is not null && db.Database.GetDbConnection() is SqliteConnection sqlite
+            ? covenantDrain.Register(sqlite)
+            : null;
+
+    /// <summary>
+    /// Releases the scoped ledger handle from the process-wide Covenant drain.
+    /// </summary>
+    /// <remarks>
+    /// The connection is enrolled before its first open. Destructive maintenance can therefore
+    /// close it before a file replacement, and the next store call reopens the same EF connection
+    /// object against the installed candidate instead of continuing on the detached old file.
+    /// </remarks>
+    public void Dispose() =>
+        Interlocked.Exchange(ref _covenantDrainEnrolment, null)?.Dispose();
 
     public Task<LongRunningOperation> CreateAsync(
         LongRunningOperationCreateRequest request,
@@ -623,7 +642,11 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                         OR (
                             "State" = @attention
                             AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
-                            AND "TerminalErrorCode" = @retentionRecoveryError))
+                            AND "TerminalErrorCode" = @retentionRecoveryError)
+                        OR (
+                            "State" = @attention
+                            AND "Kind" IN (@retentionMutation, @retentionFactory)
+                            AND "TerminalErrorCode" = @covenantMaintenanceError))
                       AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     ORDER BY COALESCE("LeaseExpiresAt", "CreatedAt"), "Id"
                     LIMIT @limit
@@ -637,6 +660,7 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
                 Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
                 Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
+                Add(cmd, "@covenantMaintenanceError", ErrorCodes.Covenant.MaintenanceFailed);
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@limit", Math.Clamp(limit, 1, 1_000));
                 return await ReadAllAsync(cmd, cancellationToken).ConfigureAwait(false);
@@ -681,6 +705,10 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                               AND "TerminalErrorCode" = @retentionRecoveryError)
                           OR (
                               "State" = @attention
+                              AND "Kind" IN (@retentionMutation, @retentionFactory)
+                              AND "TerminalErrorCode" = @covenantMaintenanceError)
+                          OR (
+                              "State" = @attention
                               AND "Kind" = @a2aInbound
                               AND "TerminalErrorCode" = @a2aParked))
                       AND ("LeaseOwner" IS NULL OR "LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
@@ -694,6 +722,7 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
                 Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
                 Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
+                Add(cmd, "@covenantMaintenanceError", ErrorCodes.Covenant.MaintenanceFailed);
 
                 // A Sending parked awaiting a peer's answer is flagged rather than closed, and the answer
                 // may arrive processes later — so that flagged row has to stay claimable, or the record

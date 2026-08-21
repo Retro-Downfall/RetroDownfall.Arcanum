@@ -101,13 +101,6 @@ internal static class CovenantPersistedAvailabilityPublisher
         // until it lands, so it keeps the flag set (see CovenantFtsRebuildState).
         bool rebuildRequired = state.RebuildState != CovenantFtsRebuildState.Idle;
 
-        _ = availability.PublishCanonicalState(
-            state.DatasetGeneration,
-            state.CanonicalSequence,
-            state.CoreCampaignDeletionSequence,
-            rebuildRequired,
-            transition);
-
         // The same comparison CovenantSearchSourceSnapshot.AcceleratorEligible makes. Publishing
         // Synchronized on a trailing tuple would let the accelerator answer from a projection that
         // is missing committed mutations.
@@ -121,7 +114,10 @@ internal static class CovenantPersistedAvailabilityPublisher
                 ? CovenantFtsSynchronizationState.Synchronized
                 : CovenantFtsSynchronizationState.Dirty;
 
-        _ = availability.PublishAcceleratorState(
+        _ = availability.PublishPersistedState(
+            state.DatasetGeneration,
+            state.CanonicalSequence,
+            state.CoreCampaignDeletionSequence,
             state.AppliedDatasetGeneration,
             state.AppliedSequence,
             state.AppliedCampaignDeletionSequence,

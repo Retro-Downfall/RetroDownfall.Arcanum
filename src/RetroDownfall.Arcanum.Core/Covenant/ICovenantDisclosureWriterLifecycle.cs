@@ -14,10 +14,11 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 ///
 /// <para>The two members are deliberately not symmetric in what they permit. Quiescing is safe at any
 /// point and is performed before the first artifact is touched, so a writer that was already stopped
-/// simply stays stopped. Reopening may happen only after
-/// <see cref="ICovenantAuthorityTransitionPublisher"/> has published the committed transition: a warm
-/// writer reacquired against the old authority would append receipts under keys the erasure has
-/// already invalidated.</para>
+/// simply stays stopped. If work refuses before its first effect, reopening restores that same old
+/// authority before the exclusive scope can reopen. After immutable proof, reopening instead happens
+/// only after <see cref="ICovenantAuthorityTransitionPublisher"/> publishes the committed transition:
+/// a warm writer reacquired earlier would append receipts under keys the erasure is about to
+/// invalidate.</para>
 ///
 /// <para>A failure from either member is recoverable rather than terminal, and neither may report
 /// success it cannot prove. A quiesce that could not confirm the writer stopped must fail, because
@@ -37,11 +38,12 @@ public interface ICovenantDisclosureWriterLifecycle
     ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// Acquires a new warm writer lease against the freshly published authority.
+    /// Acquires a warm writer lease against the authority currently published by the runtime.
     /// </summary>
     /// <remarks>
-    /// Called only after publication succeeded and only while the exclusive gate is still held. A
-    /// failure here happens before the caller's one reopening decision, so it selects
+    /// Always called while the exclusive gate is still held. Before the first destructive effect it
+    /// restores the old warm writer so rollback can safely reopen admission. After immutable proof it
+    /// follows authority publication; failure there selects
     /// <see cref="CovenantExclusiveLeaseDisposition.KeepClosed"/> rather than reversing an erasure
     /// that is already proven.
     /// </remarks>

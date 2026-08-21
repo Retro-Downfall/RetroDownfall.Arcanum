@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -27,13 +28,22 @@ public sealed class CovenantAuthorityStartupReconcilerTests
 
         await using CovenantSchemaScratchDatabase database = await CreateAsync();
 
-        CovenantAuthoritySnapshotProvider provider = new();
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantAuthoritySnapshotProvider provider = new(runtime);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        Guid dataset = await ReadDatasetGenerationAsync(database.Connection);
+
+        CovenantAvailabilitySnapshot availability = runtime.PublishAvailability(
+            _ => Healthy(dataset));
 
         await CovenantAuthorityStartupReconciler.ReconcileAsync(
             database.Connection,
-            provider,
-            new CovenantEnvelopeMasterKeyProvider(),
-            Unavailable(),
+            runtime,
+            new CovenantEnvelopeMasterKeyProvider(runtime),
+            availability,
             Permitted(),
             "master-key",
             CancellationToken.None);
@@ -41,6 +51,222 @@ public sealed class CovenantAuthorityStartupReconcilerTests
         Assert.NotNull(provider.Current);
 
         Assert.Equal(Installation, provider.Current!.InstallationIdentity);
+
+        Assert.Equal(dataset, runtime.Current.Keys!.Snapshot.DatasetGeneration);
+
+    }
+
+    [Fact]
+    public async Task An_unavailable_canonical_tier_publishes_only_recovery_key_families()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        await AssertRecoveryOnlyAsync(database, Unavailable());
+
+    }
+
+    [Fact]
+    public async Task A_degraded_canonical_tier_publishes_only_recovery_key_families()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        Guid dataset = await ReadDatasetGenerationAsync(database.Connection);
+
+        await AssertRecoveryOnlyAsync(
+            database,
+            Healthy(dataset) with
+            {
+
+                Canonical = CovenantCapabilityState.Degraded,
+
+                CanonicalSchemaVersion = null,
+
+                CanonicalDiagnosticCode = "covenant.canonical_degraded",
+
+            });
+
+    }
+
+    [Fact]
+    public async Task An_absent_canonical_envelope_row_publishes_only_recovery_key_families()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        Guid dataset = await ReadDatasetGenerationAsync(database.Connection);
+
+        await database.ExecuteAsync(
+            "DELETE FROM covenant_state WHERE StateKey = 1;",
+            CancellationToken.None);
+
+        await AssertRecoveryOnlyAsync(database, Healthy(dataset));
+
+    }
+
+    [Fact]
+    public async Task A_master_version_mismatched_envelope_publishes_only_recovery_key_families()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        Guid dataset = await ReadDatasetGenerationAsync(database.Connection);
+
+        await database.ExecuteAsync(
+            "UPDATE covenant_state SET EnvelopeMasterKeyVersion = 2 WHERE StateKey = 1;",
+            CancellationToken.None);
+
+        await AssertRecoveryOnlyAsync(database, Healthy(dataset));
+
+    }
+
+    [Fact]
+    public async Task Bootstrap_preparation_exposes_no_mixed_authority_and_key_state()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        using BlockingDerivationCheckpoint checkpoint = new();
+
+        using CovenantEnvelopeMasterKeyProvider keys = new(
+            runtime,
+            checkpoint,
+            CovenantEnvelopeKeyAccessCheckpoint.None);
+
+        CovenantAvailabilitySnapshot availability = runtime.PublishAvailability(
+            _ => Unavailable());
+
+        Task reconciliation = Task.Run(
+            () => CovenantAuthorityStartupReconciler.ReconcileAsync(
+                database.Connection,
+                runtime,
+                keys,
+                availability,
+                Permitted(),
+                "master-key",
+                CancellationToken.None));
+
+        checkpoint.WaitUntilReached();
+
+        Assert.Null(runtime.Current.Keys);
+
+        Assert.Null(runtime.Current.ActiveAuthority);
+
+        checkpoint.Release();
+
+        await reconciliation;
+
+        Assert.NotNull(runtime.Current.Keys);
+
+        Assert.NotNull(runtime.Current.ActiveAuthority);
+
+    }
+
+    [Fact]
+    public async Task An_availability_winner_during_bootstrap_makes_initialization_stale()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantRuntimeGenerationState expected = runtime.Current;
+
+        CovenantAvailabilitySnapshot? winner = null;
+
+        PublishingDerivationCheckpoint checkpoint = new(() =>
+        {
+
+            winner = runtime.PublishAvailability(current => current with
+            {
+
+                FeatureEnabled = true,
+
+                Canonical = CovenantCapabilityState.Degraded,
+
+                CanonicalDiagnosticCode = "covenant.bootstrap_winner",
+
+                Accelerator = CovenantCapabilityState.Degraded,
+
+                AcceleratorDiagnosticCode = "covenant.accelerator_winner",
+
+            });
+
+        });
+
+        using CovenantEnvelopeMasterKeyProvider keys = new(
+            runtime,
+            checkpoint,
+            CovenantEnvelopeKeyAccessCheckpoint.None);
+
+        await CovenantAuthorityStartupReconciler.ReconcileAsync(
+            database.Connection,
+            runtime,
+            keys,
+            expected.Availability,
+            Permitted(),
+            "master-key",
+            CancellationToken.None);
+
+        Assert.NotNull(winner);
+
+        Assert.Same(winner, runtime.Current.Availability);
+
+        Assert.True(runtime.Current.Availability.FeatureEnabled);
+
+        Assert.Equal(CovenantCapabilityState.Degraded, runtime.Current.Availability.Canonical);
+
+        Assert.Equal("covenant.bootstrap_winner", runtime.Current.Availability.CanonicalDiagnosticCode);
+
+        Assert.Equal(CovenantCapabilityState.Degraded, runtime.Current.Availability.Accelerator);
+
+        Assert.Equal("covenant.accelerator_winner", runtime.Current.Availability.AcceleratorDiagnosticCode);
+
+        Assert.Null(runtime.Current.Keys);
+
+        Assert.Null(runtime.Current.ActiveAuthority);
+
+    }
+
+    [Fact]
+    public async Task Bootstrap_derivation_failure_exposes_neither_authority_nor_any_key_family()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        using CovenantEnvelopeMasterKeyProvider keys = new(
+            runtime,
+            new FailingDerivationCheckpoint(),
+            CovenantEnvelopeKeyAccessCheckpoint.None);
+
+        CovenantAvailabilitySnapshot availability = runtime.PublishAvailability(
+            _ => Unavailable());
+
+        await CovenantAuthorityStartupReconciler.ReconcileAsync(
+            database.Connection,
+            runtime,
+            keys,
+            availability,
+            Permitted(),
+            "master-key",
+            CancellationToken.None);
+
+        Assert.Null(runtime.Current.ActiveAuthority);
+
+        Assert.Null(runtime.Current.Keys);
+
+        Assert.Null(keys.Current);
 
     }
 
@@ -50,18 +276,22 @@ public sealed class CovenantAuthorityStartupReconcilerTests
 
         await using CovenantSchemaScratchDatabase database = await CreateAsync();
 
-        CovenantAuthoritySnapshotProvider provider = new();
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantAuthoritySnapshotProvider provider = new(runtime);
 
         await CovenantAuthorityStartupReconciler.ReconcileAsync(
             database.Connection,
-            provider,
-            new CovenantEnvelopeMasterKeyProvider(),
+            runtime,
+            new CovenantEnvelopeMasterKeyProvider(runtime),
             Unavailable(),
             Tainted(),
             "master-key",
             CancellationToken.None);
 
         Assert.Null(provider.Current);
+
+        Assert.Null(runtime.Current.Keys);
 
     }
 
@@ -71,18 +301,22 @@ public sealed class CovenantAuthorityStartupReconcilerTests
 
         await using CovenantSchemaScratchDatabase database = await CreateAsync();
 
-        CovenantAuthoritySnapshotProvider provider = new();
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantAuthoritySnapshotProvider provider = new(runtime);
 
         await CovenantAuthorityStartupReconciler.ReconcileAsync(
             database.Connection,
-            provider,
-            new CovenantEnvelopeMasterKeyProvider(),
+            runtime,
+            new CovenantEnvelopeMasterKeyProvider(runtime),
             Unavailable(),
             new HostProcessToolsRuntimePolicy(),
             "master-key",
             CancellationToken.None);
 
         Assert.Null(provider.Current);
+
+        Assert.Null(runtime.Current.Keys);
 
     }
 
@@ -141,6 +375,94 @@ public sealed class CovenantAuthorityStartupReconcilerTests
             CanonicalDiagnosticCode: null,
             AcceleratorDiagnosticCode: null);
 
+    private static CovenantAvailabilitySnapshot Healthy(Guid dataset) =>
+        Unavailable() with
+        {
+
+            FeatureEnabled = true,
+
+            Canonical = CovenantCapabilityState.Healthy,
+
+            CanonicalSchemaVersion = 1,
+
+            CanonicalInstalledFingerprint = "sha256-canonical",
+
+            DatasetGeneration = dataset,
+
+            CanonicalDiagnosticCode = null,
+
+        };
+
+    private static async Task AssertRecoveryOnlyAsync(
+        CovenantSchemaScratchDatabase database,
+        CovenantAvailabilitySnapshot availability)
+    {
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
+
+        CovenantAuthoritySnapshotProvider authority = new(runtime);
+
+        CovenantEnvelopeCodec codec = new(keys, TimeProvider.System);
+
+        CovenantAvailabilitySnapshot published = runtime.PublishAvailability(
+            _ => availability);
+
+        await CovenantAuthorityStartupReconciler.ReconcileAsync(
+            database.Connection,
+            runtime,
+            keys,
+            published,
+            Permitted(),
+            "master-key",
+            CancellationToken.None);
+
+        Assert.NotNull(authority.Current);
+
+        Assert.NotNull(keys.Current);
+
+        Assert.Null(keys.Current!.Snapshot.DatasetGeneration);
+
+        foreach (CovenantEnvelopePurpose purpose in Enum.GetValues<CovenantEnvelopePurpose>())
+        {
+
+            Result<string> encoded = codec.Encode(purpose, [1], TimeSpan.FromMinutes(1));
+
+            if (CovenantEnvelopeLimits.IsDatasetKeyed(purpose))
+            {
+
+                Assert.True(encoded.IsFailure);
+
+                Assert.Equal(ErrorCodes.Covenant.Unavailable, encoded.Error.Code);
+
+            }
+            else
+            {
+
+                Assert.True(encoded.IsSuccess);
+
+            }
+
+        }
+
+    }
+
+    private static async Task<Guid> ReadDatasetGenerationAsync(SqliteConnection connection)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
+
+        object? value = await command.ExecuteScalarAsync(CancellationToken.None);
+
+        byte[] bytes = Assert.IsType<byte[]>(value);
+
+        return new Guid(bytes);
+
+    }
+
     private static async Task<CovenantSchemaScratchDatabase> CreateAsync()
     {
 
@@ -186,6 +508,89 @@ public sealed class CovenantAuthorityStartupReconcilerTests
 
             throw;
 
+        }
+
+    }
+
+    private sealed class BlockingDerivationCheckpoint : ICovenantEnvelopeDerivationCheckpoint, IDisposable
+    {
+
+        private readonly ManualResetEventSlim _reached = new();
+
+        private readonly ManualResetEventSlim _release = new();
+
+        private int _blocked;
+
+        public void Reached(CovenantEnvelopeDerivationStep step, int purposeKeysDerived)
+        {
+
+            if (step != CovenantEnvelopeDerivationStep.PurposeKeyDerived
+                || Interlocked.Exchange(ref _blocked, 1) != 0)
+            {
+
+                return;
+
+            }
+
+            _reached.Set();
+
+            _release.Wait();
+
+        }
+
+        public void Zeroized(CovenantEnvelopeSensitiveBufferKind kind, bool isZero)
+        {
+        }
+
+        internal void WaitUntilReached() => Assert.True(_reached.Wait(TimeSpan.FromSeconds(5)));
+
+        internal void Release() => _release.Set();
+
+        public void Dispose()
+        {
+
+            _reached.Dispose();
+
+            _release.Dispose();
+
+        }
+
+    }
+
+    private sealed class FailingDerivationCheckpoint : ICovenantEnvelopeDerivationCheckpoint
+    {
+
+        public void Reached(CovenantEnvelopeDerivationStep step, int purposeKeysDerived) =>
+            throw new InvalidOperationException("Injected bootstrap derivation failure.");
+
+        public void Zeroized(CovenantEnvelopeSensitiveBufferKind kind, bool isZero)
+        {
+        }
+
+    }
+
+    private sealed class PublishingDerivationCheckpoint(Action publish) : ICovenantEnvelopeDerivationCheckpoint
+    {
+
+        private readonly Action _publish = publish ?? throw new ArgumentNullException(nameof(publish));
+
+        private int _published;
+
+        public void Reached(CovenantEnvelopeDerivationStep step, int purposeKeysDerived)
+        {
+
+            if (step == CovenantEnvelopeDerivationStep.PurposeKeyDerived
+                && Interlocked.Exchange(ref _published, 1) == 0)
+            {
+
+                _publish();
+
+            }
+
+        }
+
+        public void Zeroized(CovenantEnvelopeSensitiveBufferKind kind, bool isZero)
+        {
         }
 
     }

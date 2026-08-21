@@ -1,7 +1,5 @@
 using System.Data.Common;
 
-using System.Globalization;
-
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -9,6 +7,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -173,16 +173,23 @@ internal sealed partial class DataRetentionService
             "TaintedArtifactCount > 0",
             cancellationToken).ConfigureAwait(false);
 
-        (long possibleDisclosures, CovenantDisclosureCountKind countKind) =
+        CovenantDisclosureExposure? exposure =
             await ReadNonrevocableDisclosureExposureAsync(cancellationToken).ConfigureAwait(false);
+
+        if (exposure is null)
+        {
+
+            return null;
+
+        }
 
         return new DataRetentionCovenantInventory(
             rows,
             managedFiles,
             localArtifacts,
             affectedSessions,
-            possibleDisclosures,
-            countKind);
+            exposure.PossibleAttempts,
+            exposure.CountKind);
 
     }
 
@@ -199,7 +206,7 @@ internal sealed partial class DataRetentionService
     /// <see cref="BackupRestoreProtectedStateInspector"/> performs over an archive, applied to the live
     /// installation instead.</para>
     /// </remarks>
-    private async Task<(long PossibleAttempts, CovenantDisclosureCountKind CountKind)>
+    private async Task<CovenantDisclosureExposure?>
         ReadNonrevocableDisclosureExposureAsync(CancellationToken cancellationToken)
     {
 
@@ -208,43 +215,25 @@ internal sealed partial class DataRetentionService
                 cancellationToken).ConfigureAwait(false))
         {
 
-            return (0, CovenantDisclosureCountKind.Exact);
+            return new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact);
 
         }
 
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText = """
-            SELECT COALESCE(SUM(JoinedCount), 0), COALESCE(MAX(CountKindCode), 1)
-            FROM external_disclosure_state
-            WHERE RevocabilityCode = 2;
-            """;
-
-        await using DbDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        if (connection is not Microsoft.Data.Sqlite.SqliteConnection sqlite)
         {
 
-            return (0, CovenantDisclosureCountKind.Exact);
+            return null;
 
         }
 
-        long attempts = Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture);
+        Result<CovenantDisclosureExposure> exposure = await _covenantExposureReader
+            .ReadWithinAsync(sqlite, transaction: null, cancellationToken)
+            .ConfigureAwait(false);
 
-        long kindCode = Convert.ToInt64(reader.GetValue(1), CultureInfo.InvariantCulture);
-
-        // MAX over the code is the join, not a shortcut: LowerBound is 2 and Exact is 1, so a single
-        // lower-bound bucket carries the whole total to LowerBound exactly as the algebra requires.
-        return (
-            attempts,
-            kindCode == (long)CovenantDisclosureCountKind.LowerBound
-                ? CovenantDisclosureCountKind.LowerBound
-                : CovenantDisclosureCountKind.Exact);
+        return exposure.IsSuccess ? exposure.Value : null;
 
     }
 

@@ -77,6 +77,16 @@ public sealed class CovenantContextProvider(
         try
         {
 
+            if (invocation.ReadAuthorityEpoch is not { } readEpoch
+                || !readEpoch.Matches(lease.Value.Snapshot))
+            {
+
+                return new Error(
+                    ErrorCodes.Covenant.StaleSnapshot,
+                    "Covenant runtime authority changed between invocation admission and turn acquisition.");
+
+            }
+
             Result<CovenantTurnContext> planned = await LoadAndLinkAsync(
                 invocation,
                 campaign,

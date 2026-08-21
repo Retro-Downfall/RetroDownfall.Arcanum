@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
@@ -22,6 +23,10 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
     private int _listCallCount;
 
     private readonly ConcurrentQueue<LeaseAcquisition> _leaseAcquisitions = new();
+
+    internal Func<LongRunningOperation?, LongRunningOperation?>? GetOverride { get; set; }
+
+    internal Func<LongRunningOperation?, bool?>? TryTransitionOverride { get; set; }
 
     public IReadOnlyCollection<LongRunningOperation> Operations => [.. _operations.Values];
 
@@ -81,6 +86,15 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         _operations[operation.Id] = operation;
 
         return operation;
+    }
+
+    internal void Add(LongRunningOperation operation)
+    {
+
+        ArgumentNullException.ThrowIfNull(operation);
+
+        _operations[operation.Id] = operation;
+
     }
 
     public Task<LongRunningOperation> CreateAsync(
@@ -144,8 +158,16 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         CancellationToken cancellationToken = default) =>
         Task.FromResult<LongRunningOperation?>(Seed(request.Kind, request.RecoveryPolicy));
 
-    public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default) =>
-        Task.FromResult(_operations.TryGetValue(operationId, out LongRunningOperation? operation) ? operation : null);
+    public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default)
+    {
+        LongRunningOperation? operation =
+            _operations.TryGetValue(operationId, out LongRunningOperation? current) ? current : null;
+
+        return Task.FromResult(
+            GetOverride is { } readOverride
+                ? readOverride(operation)
+                : operation);
+    }
 
     /// <summary>
     /// How many times a caller asked for a request-identity row, so a test can prove the all-null
@@ -192,7 +214,8 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         [
             .. _operations.Values
                 .Where(operation => operation.State is LongRunningOperationState.Running
-                    or LongRunningOperationState.Waiting)
+                    or LongRunningOperationState.Waiting
+                    || IsRecoverableAttention(operation))
                 .Where(operation => operation.LeaseExpiresAt is null || operation.LeaseExpiresAt <= utcNow)
                 .OrderBy(static operation => operation.CreatedAt)
                 .Take(limit),
@@ -219,6 +242,8 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
             bool claimable = current.State is LongRunningOperationState.Pending
                 || (current.State is LongRunningOperationState.Running or LongRunningOperationState.Waiting
+                    && (current.LeaseExpiresAt is null || current.LeaseExpiresAt <= utcNow))
+                || (IsRecoverableAttention(current)
                     && (current.LeaseExpiresAt is null || current.LeaseExpiresAt <= utcNow));
 
             if (!claimable)
@@ -291,26 +316,40 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
         string? terminalErrorCode = null,
         CancellationToken cancellationToken = default)
     {
+        LongRunningOperation? observed =
+            _operations.TryGetValue(operationId, out LongRunningOperation? value) ? value : null;
+
+        if (TryTransitionOverride?.Invoke(observed) is { } overridden)
+        {
+            return Task.FromResult(overridden);
+        }
+
         lock (_gate)
         {
             if (!_operations.TryGetValue(operationId, out LongRunningOperation? current)
-                || current.Revision != expectedRevision)
+                || current.Revision != expectedRevision
+                || (ownerId is not null
+                    && !string.Equals(current.LeaseOwner, ownerId, StringComparison.Ordinal)))
             {
                 return Task.FromResult(false);
             }
 
-            bool terminal = state is LongRunningOperationState.Completed
+            bool releasesLease = state is LongRunningOperationState.Completed
                 or LongRunningOperationState.Failed
                 or LongRunningOperationState.Abandoned
                 or LongRunningOperationState.ReconciliationRequired;
+
+            bool completed = state is LongRunningOperationState.Completed
+                or LongRunningOperationState.Failed
+                or LongRunningOperationState.Abandoned;
 
             _operations[operationId] = current with
             {
                 State = state,
                 TerminalErrorCode = terminalErrorCode,
-                CompletedAt = terminal ? utcNow : current.CompletedAt,
-                LeaseOwner = terminal ? null : current.LeaseOwner,
-                LeaseExpiresAt = terminal ? null : current.LeaseExpiresAt,
+                CompletedAt = completed ? utcNow : null,
+                LeaseOwner = releasesLease ? null : current.LeaseOwner,
+                LeaseExpiresAt = releasesLease ? null : current.LeaseExpiresAt,
                 Revision = current.Revision + 1,
             };
 
@@ -355,6 +394,22 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
         return Task.FromResult<IReadOnlyList<LongRunningOperationCount>>(counts);
     }
+
+    private static bool IsRecoverableAttention(LongRunningOperation operation) =>
+        operation.State == LongRunningOperationState.ReconciliationRequired
+        && ((operation.Kind is LongRunningOperationKinds.DataRetentionPrune
+                    or LongRunningOperationKinds.DataRetentionMutation
+                    or LongRunningOperationKinds.DataRetentionFactoryReset
+                && string.Equals(
+                    operation.TerminalErrorCode,
+                    ErrorCodes.Data.ReconciliationFailed,
+                    StringComparison.Ordinal))
+            || (operation.Kind is LongRunningOperationKinds.DataRetentionMutation
+                    or LongRunningOperationKinds.DataRetentionFactoryReset
+                && string.Equals(
+                    operation.TerminalErrorCode,
+                    ErrorCodes.Covenant.MaintenanceFailed,
+                    StringComparison.Ordinal)));
 }
 
 /// <summary>Recording handler that lets a test choose the recovery outcome per kind.</summary>

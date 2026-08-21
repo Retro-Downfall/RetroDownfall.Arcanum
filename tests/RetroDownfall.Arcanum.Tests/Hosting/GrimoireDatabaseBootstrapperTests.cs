@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -18,6 +19,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Covenant;
 using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -56,7 +58,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         ServiceCollection services = new();
 
-        services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
+        services.AddSingleton<GrimoireDbReadiness>();
+
+        services.AddSingleton<IGrimoireDbReadiness>(
+            static sp => sp.GetRequiredService<GrimoireDbReadiness>());
 
         // The OS-secret boundary the authenticated restore journal is anchored in. Without it the
         // bootstrap cannot read an anchor at all, and the restore-recovery phases have nothing to
@@ -795,6 +800,37 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Lock_owning_bootstrap_publishes_the_adoption_boundary_immediately_before_readiness()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        using IServiceScope scope = _scopeFactory.CreateScope();
+
+        GrimoireDbReadiness readiness = scope.ServiceProvider.GetRequiredService<GrimoireDbReadiness>();
+
+        readiness.ProbeAdoptionAtMarkReady = true;
+
+        using ArcanumMaintenanceLock? held = ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(held);
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            held,
+            CancellationToken.None);
+
+        Assert.True(readiness.IsReady);
+
+        Assert.True(readiness.AdoptionRefusedAtMarkReady);
+
+    }
+
     private bool IsReady()
     {
 
@@ -843,12 +879,42 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
-    private sealed class GrimoireDbReadiness : IGrimoireDbReadiness
+    private sealed class GrimoireDbReadiness(CovenantOperationGate gate) : IGrimoireDbReadiness
     {
 
         public bool IsReady { get; private set; }
 
-        public void MarkReady() => IsReady = true;
+        public bool ProbeAdoptionAtMarkReady { get; set; }
+
+        public bool AdoptionRefusedAtMarkReady { get; private set; }
+
+        public void MarkReady()
+        {
+
+            if (ProbeAdoptionAtMarkReady)
+            {
+
+                try
+                {
+
+                    gate.AdoptDurableRecoveryOwner(
+                        CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+                        scope: null,
+                        cleanupOnlyHistoricalCampaign: false);
+
+                }
+                catch (InvalidOperationException)
+                {
+
+                    AdoptionRefusedAtMarkReady = true;
+
+                }
+
+            }
+
+            IsReady = true;
+
+        }
 
         public Task WaitUntilReadyAsync(CancellationToken cancellationToken = default) =>
             IsReady ? Task.CompletedTask : Task.Delay(Timeout.Infinite, cancellationToken);

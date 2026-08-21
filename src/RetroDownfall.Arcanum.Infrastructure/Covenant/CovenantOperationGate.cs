@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -27,9 +28,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
     private static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(30);
 
-    private readonly ICovenantAvailability _availability;
-
-    private readonly ICovenantAuthoritySnapshotProvider _authority;
+    private readonly CovenantRuntimeGenerationProvider _runtime;
 
     private readonly ICovenantCampaignScopeProbe _campaigns;
 
@@ -48,21 +47,16 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     private bool _readinessPublished;
 
     internal CovenantOperationGate(
-        ICovenantAvailability availability,
-        ICovenantAuthoritySnapshotProvider authority,
+        CovenantRuntimeGenerationProvider runtime,
         ICovenantCampaignScopeProbe campaigns,
         TimeSpan? drainTimeout = null)
     {
 
-        ArgumentNullException.ThrowIfNull(availability);
-
-        ArgumentNullException.ThrowIfNull(authority);
+        ArgumentNullException.ThrowIfNull(runtime);
 
         ArgumentNullException.ThrowIfNull(campaigns);
 
-        _availability = availability;
-
-        _authority = authority;
+        _runtime = runtime;
 
         _campaigns = campaigns;
 
@@ -286,6 +280,24 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             owner,
             cancellationToken,
             static registration => new CovenantExclusiveLease(registration));
+
+    }
+
+    public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken)
+    {
+
+        if (owner.Operation is CovenantExclusiveOperation.CampaignPathMutation
+            or CovenantExclusiveOperation.CampaignDelete
+            or CovenantExclusiveOperation.ProtectedSessionTransfer)
+        {
+
+            return ValueTask.FromResult<Result<CovenantExclusiveLease>>(ForbiddenOperationShape());
+
+        }
+
+        return ResumeOrAcquireInstallationAsync(owner, cancellationToken);
 
     }
 
@@ -569,6 +581,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 this,
                 new CovenantOperationLeaseSnapshot(
                     RegistrationId: Guid.NewGuid(),
+                    RuntimeAuthorityGeneration: facts.Value.RuntimeAuthorityGeneration,
                     Kind: kind,
                     Coverage: coverage,
                     Scope: scope,
@@ -619,6 +632,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         }
 
         Closure closure = new(owner, slot, scope, leaseKind);
+
+        closure.AcquisitionInProgress = true;
 
         List<ScopedRegistration> draining;
 
@@ -674,6 +689,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
             closure.LiveRegistration = registration;
 
+            closure.AcquisitionInProgress = false;
+
             return create(registration);
 
         }
@@ -687,15 +704,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         Func<ICovenantExclusiveLeaseRegistration, TLease> create)
         where TLease : CovenantExclusiveOperationLease
     {
-
-        Result<GateFacts> facts = CaptureFacts(requireCanonical: false);
-
-        if (facts.IsFailure)
-        {
-
-            return facts.Error;
-
-        }
 
         lock (_sync)
         {
@@ -711,12 +719,23 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
             }
 
-            if (closure.LiveRegistration is not null)
+            if (closure.LiveRegistration is not null || closure.AcquisitionInProgress)
             {
 
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This closed Covenant scope already has a live recovery lease.");
+
+            }
+
+            // Match the gate's exact durable closure before consulting the runtime's retired marker.
+            // This keeps retired durable counters unreachable to a caller that merely guessed an owner.
+            Result<GateFacts> facts = CaptureFacts(requireCanonical: false, owner);
+
+            if (facts.IsFailure)
+            {
+
+                return facts.Error;
 
             }
 
@@ -733,9 +752,145 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
     }
 
+    private async ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireInstallationAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<GateFacts> acquisitionFacts;
+
+        Closure acquiredClosure;
+
+        List<ScopedRegistration> draining;
+
+        lock (_sync)
+        {
+
+            Closure? existing = FindClosure(ClosureSlot.Installation, campaignId: null);
+
+            if (existing is not null)
+            {
+
+                if (existing.Owner != owner)
+                {
+
+                    return new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "Another Covenant recovery owner already holds this scope closed.");
+
+                }
+
+                if (existing.LiveRegistration is not null || existing.AcquisitionInProgress)
+                {
+
+                    return new Error(
+                        ErrorCodes.Covenant.LifecycleConflict,
+                        "This closed Covenant scope already has a live recovery lease.");
+
+                }
+
+                Result<GateFacts> recoveryFacts = CaptureFacts(requireCanonical: false, owner);
+
+                if (recoveryFacts.IsFailure)
+                {
+
+                    return recoveryFacts.Error;
+
+                }
+
+                ExclusiveRegistration resumed = new(
+                    this,
+                    existing,
+                    BuildExclusiveSnapshot(existing, recoveryFacts.Value));
+
+                existing.LiveRegistration = resumed;
+
+                return new CovenantExclusiveLease(resumed);
+
+            }
+
+            acquisitionFacts = CaptureFacts(requireCanonical: false);
+
+            if (acquisitionFacts.IsFailure)
+            {
+
+                return acquisitionFacts.Error;
+
+            }
+
+            acquiredClosure = new Closure(
+                owner,
+                ClosureSlot.Installation,
+                scope: null,
+                CovenantLeaseKind.Exclusive)
+            {
+
+                AcquisitionInProgress = true,
+
+            };
+
+            if (!TryInstallClosure(acquiredClosure))
+            {
+
+                return new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "Another Covenant operation already owns this scope.");
+
+            }
+
+            draining = [.. _registrations.Values.Where(acquiredClosure.Covers)];
+
+        }
+
+        foreach (ScopedRegistration registration in draining)
+        {
+
+            registration.RequestRevocation();
+
+        }
+
+        bool drained = await DrainAsync(draining, cancellationToken).ConfigureAwait(false);
+
+        if (!drained)
+        {
+
+            lock (_sync)
+            {
+
+                RemoveClosure(acquiredClosure);
+
+            }
+
+            return new Error(
+                ErrorCodes.Covenant.MaintenanceFailed,
+                "Covenant leases over this scope did not drain within the operation bound, so nothing was changed.");
+
+        }
+
+        lock (_sync)
+        {
+
+            ExclusiveRegistration registration = new(
+                this,
+                acquiredClosure,
+                BuildExclusiveSnapshot(acquiredClosure, acquisitionFacts.Value));
+
+            acquiredClosure.LiveRegistration = registration;
+
+            acquiredClosure.AcquisitionInProgress = false;
+
+            return new CovenantExclusiveLease(registration);
+
+        }
+
+    }
+
     private static CovenantOperationLeaseSnapshot BuildExclusiveSnapshot(Closure closure, GateFacts facts) =>
         new(
             RegistrationId: Guid.NewGuid(),
+            RuntimeAuthorityGeneration: facts.RuntimeAuthorityGeneration,
             Kind: closure.LeaseKind,
             Coverage: closure.Scope is null ? CovenantLeaseCoverage.Installation : CovenantLeaseCoverage.Scoped,
             Scope: closure.Scope,
@@ -922,10 +1077,24 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 : null,
         };
 
-    private Result<GateFacts> CaptureFacts(bool requireCanonical)
+    private Result<GateFacts> CaptureFacts(
+        bool requireCanonical,
+        CovenantExclusiveRecoveryOwner? recoveryOwner = null)
     {
 
-        CovenantAuthoritySnapshot? authority = _authority.Current;
+        CovenantRuntimeGenerationState state = _runtime.Current;
+
+        CovenantAuthoritySnapshot? authority = state.ActiveAuthority;
+
+        if (authority is null
+            && recoveryOwner is { } owner
+            && state.AuthorityRetired
+            && state.RecoveryOwner == owner)
+        {
+
+            authority = state.AuthoritySlot;
+
+        }
 
         if (authority is null)
         {
@@ -936,7 +1105,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         }
 
-        CovenantAvailabilitySnapshot availability = _availability.Current;
+        CovenantAvailabilitySnapshot availability = state.Availability;
 
         if (requireCanonical
             && (availability.Canonical != CovenantCapabilityState.Healthy
@@ -952,6 +1121,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         return new GateFacts(
             availability.DatasetGeneration,
             availability.Generation,
+            authority.RuntimeAuthorityGeneration,
             authority.AuthorityEpoch,
             availability.CanonicalSequence,
             availability.AcceleratorEpoch,
@@ -962,9 +1132,24 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     private Result Revalidate(CovenantOperationLeaseSnapshot snapshot, bool exclusive)
     {
 
-        CovenantAuthoritySnapshot? authority = _authority.Current;
+        CovenantRuntimeGenerationState state = _runtime.Current;
 
-        if (authority is null || authority.AuthorityEpoch != snapshot.AuthorityEpoch)
+        CovenantAuthoritySnapshot? authority = state.ActiveAuthority;
+
+        if (exclusive
+            && authority is null
+            && snapshot.RecoveryOwner is { } owner
+            && state.AuthorityRetired
+            && state.RecoveryOwner == owner)
+        {
+
+            authority = state.AuthoritySlot;
+
+        }
+
+        if (authority is null
+            || authority.RuntimeAuthorityGeneration != snapshot.RuntimeAuthorityGeneration
+            || authority.AuthorityEpoch != snapshot.AuthorityEpoch)
         {
 
             return new Error(
@@ -973,7 +1158,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         }
 
-        CovenantAvailabilitySnapshot availability = _availability.Current;
+        CovenantAvailabilitySnapshot availability = state.Availability;
 
         if (snapshot.DatasetGeneration is { } captured && availability.DatasetGeneration != captured)
         {
@@ -1076,6 +1261,60 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
     }
 
+    private Result ExecuteWhileHeld(
+        ExclusiveRegistration registration,
+        Func<Result> callback)
+    {
+
+        lock (_sync)
+        {
+
+            Closure closure = registration.Closure;
+
+            if (!ReferenceEquals(FindClosure(closure.Slot, closure.Scope?.CampaignId), closure)
+                || !ReferenceEquals(closure.LiveRegistration, registration)
+                || registration.IsReleased
+                || registration.IsDispositionClaimed)
+            {
+
+                return new Error(
+                    ErrorCodes.Covenant.LifecycleConflict,
+                    "This exclusive Covenant lease no longer owns its exact closed scope.");
+
+            }
+
+            return callback();
+
+        }
+
+    }
+
+    private Result RevalidateExclusive(ExclusiveRegistration registration)
+    {
+
+        lock (_sync)
+        {
+
+            Closure closure = registration.Closure;
+
+            if (!ReferenceEquals(FindClosure(closure.Slot, closure.Scope?.CampaignId), closure)
+                || !ReferenceEquals(closure.LiveRegistration, registration)
+                || registration.IsReleased
+                || registration.IsDispositionClaimed)
+            {
+
+                return new Error(
+                    ErrorCodes.Covenant.StaleSnapshot,
+                    "This exclusive Covenant lease no longer owns its exact closed scope.");
+
+            }
+
+        }
+
+        return Revalidate(registration.Snapshot, exclusive: true);
+
+    }
+
     private enum ClosureSlot : byte
     {
 
@@ -1090,6 +1329,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     private readonly record struct GateFacts(
         Guid? DatasetGeneration,
         long CapabilityGeneration,
+        long RuntimeAuthorityGeneration,
         long AuthorityEpoch,
         long CanonicalSequence,
         ulong AcceleratorEpoch,
@@ -1114,6 +1354,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         public CovenantLeaseKind LeaseKind { get; } = leaseKind;
 
         public bool CleanupOnlyHistoricalCampaign { get; init; }
+
+        public bool AcquisitionInProgress { get; set; }
 
         /// <summary>
         /// The live recovery lease, or null while the scope is kept closed without one.
@@ -1243,6 +1485,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantOperationLeaseSnapshot snapshot) : ICovenantExclusiveLeaseRegistration
     {
 
+        private int _dispositionClaimed;
+
         private int _releaseClaimed;
 
         internal Closure Closure { get; } = closure;
@@ -1254,16 +1498,25 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         /// </summary>
         public CancellationToken Revocation => CancellationToken.None;
 
+        internal bool IsDispositionClaimed => Volatile.Read(ref _dispositionClaimed) != 0;
+
+        internal bool IsReleased => Volatile.Read(ref _releaseClaimed) != 0;
+
+        public Result ExecuteWhileHeld(Func<Result> callback)
+        {
+
+            ArgumentNullException.ThrowIfNull(callback);
+
+            return gate.ExecuteWhileHeld(this, callback);
+
+        }
+
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken)
         {
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            return ValueTask.FromResult(
-                Volatile.Read(ref _releaseClaimed) != 0
-                    ? Result.Failure(
-                        new Error(ErrorCodes.Covenant.StaleSnapshot, "This Covenant lease has already been released."))
-                    : gate.Revalidate(Snapshot, exclusive: true));
+            return ValueTask.FromResult(gate.RevalidateExclusive(this));
 
         }
 
@@ -1273,6 +1526,17 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         {
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (Interlocked.Exchange(ref _dispositionClaimed, 1) != 0)
+            {
+
+                return ValueTask.FromResult(
+                    Result.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.LifecycleConflict,
+                            "This exclusive Covenant registration has already used its disposition.")));
+
+            }
 
             return ValueTask.FromResult(gate.CompleteExclusive(this, disposition));
 

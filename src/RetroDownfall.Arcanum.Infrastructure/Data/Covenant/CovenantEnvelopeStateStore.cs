@@ -65,7 +65,7 @@ internal static class CovenantEnvelopeStateStore
         }
 
         return new CovenantEnvelopeStateRow(
-            new Guid(datasetGeneration, bigEndian: true),
+            new Guid(datasetGeneration),
             checked((uint)reader.GetInt64(1)),
             fingerprint,
             reader.GetInt64(3));

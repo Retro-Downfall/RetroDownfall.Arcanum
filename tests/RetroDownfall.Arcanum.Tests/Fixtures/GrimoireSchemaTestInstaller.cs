@@ -2,11 +2,13 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -139,38 +141,46 @@ internal static class GrimoireSchemaTestInstaller
 
         services.AddSingleton<GrimoireSchemaInstaller>();
 
-        services.AddSingleton<CovenantAvailability>();
+        services.AddSingleton<CovenantRuntimeGenerationProvider>();
+
+        services.AddSingleton(
+            static sp => new CovenantAvailability(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
 
         services.AddSingleton<ICovenantAvailability>(
             static sp => sp.GetRequiredService<CovenantAvailability>());
 
-        services.AddSingleton<CovenantAuthoritySnapshotProvider>();
+        services.AddSingleton(
+            static sp => new CovenantAuthoritySnapshotProvider(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
 
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
+
+        services.AddSingleton<ICovenantCampaignScopeProbe, FakeCovenantCampaignScopeProbe>();
+
+        services.AddSingleton(
+            static sp => new CovenantOperationGate(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
+                sp.GetRequiredService<ICovenantCampaignScopeProbe>()));
+
+        services.AddSingleton<ICovenantOperationGate>(
+            static sp => sp.GetRequiredService<CovenantOperationGate>());
 
         return services;
 
     }
 
     /// <summary>
-    /// A content-free stand-in for the real digest. The schema checks only the length, so the bytes
-    /// simply have to be stable and the right count.
+    /// The production fingerprint for the key the shared host fixture presents at startup.
     /// </summary>
-    private static byte[] CreateFingerprint()
-    {
-
-        byte[] fingerprint = new byte[32];
-
-        for (int index = 0; index < fingerprint.Length; index++)
-        {
-
-            fingerprint[index] = (byte)(index + 1);
-
-        }
-
-        return fingerprint;
-
-    }
+    /// <remarks>
+    /// The template is copied into a real host before that host runs schema convergence. A synthetic
+    /// fingerprint makes the copy look like a master-key rotation, so core authority advances while
+    /// the deliberately recovery-only mismatch policy leaves dataset-keyed envelopes unavailable.
+    /// Seeding the production digest keeps the template a faithful prior start of the same host.
+    /// </remarks>
+    private static byte[] CreateFingerprint() =>
+        CovenantAuthorityBootstrapper.ComputeMasterKeyFingerprint(GrimoireFixture.TestApiKey);
 
 }

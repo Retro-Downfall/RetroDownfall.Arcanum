@@ -3,36 +3,20 @@ using RetroDownfall.Arcanum.Core.Security;
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 /// <summary>
-/// Holds the one committed <see cref="CovenantAuthoritySnapshot"/> for the process.
+/// Projects the active <see cref="CovenantAuthoritySnapshot"/> from the process-wide runtime generation.
 /// </summary>
 /// <remarks>
-/// The whole record is swapped atomically rather than assembled field by field, so a reader can
-/// never observe a new authority epoch beside a stale host-tools state. That mixed view is the
-/// dangerous one: it would let a gate conclude an installation was clean under an epoch that was
-/// published precisely because it is not.
-///
-/// <para><see cref="Publish"/> is internal and is called only after the core install transaction
-/// commits. Publishing earlier would let a rolled-back transaction leave the process asserting an
-/// authority generation the database never recorded, and nothing would ever take it back.</para>
+/// The composite holder swaps keys, authority, and availability together, so this facade cannot
+/// publish or withdraw one member independently. A retired runtime generation deliberately projects
+/// null here even though the exact recovery owner may still use retained counters inside the holder.
 /// </remarks>
-internal sealed class CovenantAuthoritySnapshotProvider : ICovenantAuthoritySnapshotProvider
+internal sealed class CovenantAuthoritySnapshotProvider(
+    CovenantRuntimeGenerationProvider runtime) : ICovenantAuthoritySnapshotProvider
 {
 
-    private CovenantAuthoritySnapshot? _current;
+    private readonly CovenantRuntimeGenerationProvider _runtime =
+        runtime ?? throw new ArgumentNullException(nameof(runtime));
 
-    public CovenantAuthoritySnapshot? Current => Volatile.Read(ref _current);
-
-    /// <summary>
-    /// Publishes the committed snapshot. Call only after the transaction that established it has
-    /// committed.
-    /// </summary>
-    internal void Publish(CovenantAuthoritySnapshot snapshot)
-    {
-
-        ArgumentNullException.ThrowIfNull(snapshot);
-
-        _ = Interlocked.Exchange(ref _current, snapshot);
-
-    }
+    public CovenantAuthoritySnapshot? Current => _runtime.Current.ActiveAuthority;
 
 }

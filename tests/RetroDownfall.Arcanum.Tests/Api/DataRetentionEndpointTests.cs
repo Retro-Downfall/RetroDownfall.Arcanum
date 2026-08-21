@@ -210,6 +210,60 @@ public sealed class DataRetentionEndpointTests
 
     [SkippableFact]
 
+    public async Task Covenant_reset_plan_keeps_the_unwired_route_refusal_observable()
+    {
+
+        RequireSqlCipher();
+
+        await using AsyncServiceScope scope = _factory.Services.CreateAsyncScope();
+
+        IDataRetentionService service = scope.ServiceProvider
+            .GetRequiredService<IDataRetentionService>();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        DataRetentionConflict conflict = Assert.Single(plan.Conflicts);
+
+        Assert.Equal(
+            DataRetentionConflictCodes.CovenantResetRequiresErasureCoordinator,
+            conflict.Code);
+
+        Assert.Contains(
+            "production Covenant erasure coordinator exists but is not yet wired to this route",
+            conflict.Message,
+            StringComparison.Ordinal);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/memory/reset",
+            JsonContent(
+                new MemoryResetRequest(MemoryResetScope.Covenant),
+                ArcanumJsonContext.Default.MemoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        ApiResponse<DataRetentionApplyResult> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Data.Conflict, body.Error?.Code);
+
+        Assert.Contains(
+            "production Covenant erasure coordinator exists but is not yet wired to this route",
+            body.Error?.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+
     public async Task Factory_reset_requires_the_exact_confirmation_before_apply()
     {
 

@@ -1,8 +1,12 @@
+using System.Text;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -58,17 +62,88 @@ internal static class CovenantOperationGateFixture
         FakeCovenantAvailability? availability = null,
         FakeCovenantAuthorityProvider? authority = null,
         FakeCovenantCampaignScopeProbe? campaigns = null,
-        TimeSpan? drainTimeout = null) =>
-        new(
-            availability ?? new FakeCovenantAvailability(),
-            authority ?? new FakeCovenantAuthorityProvider(),
+        TimeSpan? drainTimeout = null)
+    {
+
+        FakeCovenantAvailability resolvedAvailability = availability ?? new FakeCovenantAvailability();
+
+        FakeCovenantAuthorityProvider resolvedAuthority = authority ?? new FakeCovenantAuthorityProvider();
+
+        CovenantRuntimeGenerationProvider runtime = new();
+
+        if (resolvedAuthority.Current is null)
+        {
+
+            _ = runtime.PublishAvailability(_ => resolvedAvailability.Current);
+
+            resolvedAvailability.Bind(runtime);
+
+            resolvedAuthority.Bind(runtime);
+
+            return new CovenantOperationGate(
+                runtime,
+                campaigns ?? new FakeCovenantCampaignScopeProbe(),
+                drainTimeout ?? TimeSpan.FromSeconds(5));
+
+        }
+
+        CovenantEnvelopeMasterKeyProvider keys = new(runtime);
+
+        Result<CovenantPreparedEnvelopeKeyGeneration> prepared = keys.PrepareInitial(
+            Encoding.UTF8.GetBytes("operation-gate-fixture-master-material"),
+            new CovenantEnvelopeBootstrapKeyInput(
+                resolvedAuthority.Current!.InstallationIdentity,
+                resolvedAuthority.Current.MasterKeyVersion,
+                canonicalEnvelopeEpoch: 1,
+                resolvedAuthority.Current.RecoveryEnvelopeEpoch,
+                resolvedAvailability.Current.DatasetGeneration));
+
+        if (prepared.IsFailure)
+        {
+
+            throw new InvalidOperationException(prepared.Error.Message);
+
+        }
+
+        using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
+
+        CovenantAvailabilitySnapshot bootAvailability = runtime.PublishAvailability(
+            _ => resolvedAvailability.Current);
+
+        CovenantRuntimeGenerationState expected = runtime.Current;
+
+        Result initialized = runtime.Initialize(
+            expected,
+            owned,
+            resolvedAuthority.Current,
+            bootAvailability);
+
+        if (initialized.IsFailure)
+        {
+
+            throw new InvalidOperationException(initialized.Error.Message);
+
+        }
+
+        resolvedAvailability.Bind(runtime, keys);
+
+        resolvedAuthority.Bind(runtime);
+
+        return new CovenantOperationGate(
+            runtime,
             campaigns ?? new FakeCovenantCampaignScopeProbe(),
             drainTimeout ?? TimeSpan.FromSeconds(5));
+
+    }
 
 }
 
 internal sealed class FakeCovenantAvailability : ICovenantAvailability
 {
+
+    private CovenantRuntimeGenerationProvider? _runtime;
+
+    private CovenantEnvelopeMasterKeyProvider? _keys;
 
     private CovenantAvailabilitySnapshot _current = new(
         Generation: 1,
@@ -92,10 +167,117 @@ internal sealed class FakeCovenantAvailability : ICovenantAvailability
         CanonicalDiagnosticCode: null,
         AcceleratorDiagnosticCode: null);
 
-    public CovenantAvailabilitySnapshot Current => Volatile.Read(ref _current);
+    public CovenantAvailabilitySnapshot Current => _runtime?.Current.Availability ?? Volatile.Read(ref _current);
+
+    internal void Bind(
+        CovenantRuntimeGenerationProvider runtime,
+        CovenantEnvelopeMasterKeyProvider? keys = null)
+    {
+
+        _runtime = runtime;
+
+        _keys = keys;
+
+    }
+
+    internal void PublishCommittedDataset(Guid datasetGeneration)
+    {
+
+        CovenantRuntimeGenerationProvider runtime = _runtime
+            ?? throw new InvalidOperationException("The availability fixture is not runtime-bound.");
+
+        CovenantEnvelopeMasterKeyProvider keys = _keys
+            ?? throw new InvalidOperationException("The availability fixture has no live key preparer.");
+
+        CovenantRuntimeGenerationState expected = runtime.Current;
+
+        CovenantAuthoritySnapshot authority = expected.ActiveAuthority
+            ?? throw new InvalidOperationException("The availability fixture has no active authority.");
+
+        CovenantAvailabilitySnapshot current = expected.Availability;
+
+        CovenantCommittedCapabilityTransition capability = new(
+            current.Generation,
+            checked(current.Generation + 1),
+            current.FeatureEnabled,
+            current.Canonical,
+            current.CanonicalSchemaVersion,
+            current.CanonicalInstalledFingerprint,
+            current.Accelerator,
+            current.AcceleratorSchemaVersion,
+            current.AcceleratorInstalledFingerprint,
+            datasetGeneration,
+            CanonicalSequence: 0,
+            CoreCampaignDeletionSequence: 0,
+            CanonicalAppliedCampaignDeletionSequence: 0,
+            CanonicalAppliedSessionDeletionSequence: 0,
+            AppliedDatasetGeneration: null,
+            AppliedSequence: null,
+            AppliedCampaignDeletionSequence: null,
+            current.AcceleratorEpoch,
+            CovenantFtsSynchronizationState.Dirty,
+            RebuildRequired: true,
+            CleanupAppliedCampaignSequence: 0,
+            CleanupAppliedSessionSequence: 0,
+            CleanupFullSweepRequired: true,
+            current.CanonicalDiagnosticCode,
+            current.AcceleratorDiagnosticCode);
+
+        CovenantCommittedAuthorityTransition transition = new(
+            authority.InstallationIdentity,
+            authority.AuthorityEpoch,
+            authority.MasterKeyVersion,
+            checked(expected.CanonicalEnvelopeEpoch!.Value + 1),
+            authority.RecoveryEnvelopeEpoch,
+            authority.HostToolsState,
+            authority.TransitionId,
+            capability);
+
+        CovenantAvailability availability = new(runtime);
+
+        Result<CovenantAvailabilitySnapshot> built = availability.BuildCommittedTransition(
+            current,
+            capability,
+            CovenantHealthTransition.Reset);
+
+        Result<CovenantPreparedEnvelopeKeyGeneration> prepared = keys.PrepareRekey(transition);
+
+        if (built.IsFailure || prepared.IsFailure)
+        {
+
+            throw new InvalidOperationException(
+                built.IsFailure ? built.Error.Message : prepared.Error.Message);
+
+        }
+
+        using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
+
+        Result published = runtime.PublishCommitted(
+            expected,
+            owned,
+            transition,
+            built.Value);
+
+        if (published.IsFailure)
+        {
+
+            throw new InvalidOperationException(published.Error.Message);
+
+        }
+
+    }
 
     internal void Mutate(Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> change)
     {
+
+        if (_runtime is { } runtime)
+        {
+
+            _ = runtime.PublishAvailability(change);
+
+            return;
+
+        }
 
         CovenantAvailabilitySnapshot current = Volatile.Read(ref _current);
 
@@ -108,7 +290,10 @@ internal sealed class FakeCovenantAvailability : ICovenantAvailability
 internal sealed class FakeCovenantAuthorityProvider : ICovenantAuthoritySnapshotProvider
 {
 
+    private CovenantRuntimeGenerationProvider? _runtime;
+
     private CovenantAuthoritySnapshot? _current = new(
+        RuntimeAuthorityGeneration: 1,
         InstallationIdentity: "6F1C0B2E-9A44-4E1D-8B7A-2C5D3F6A8E90",
         AuthorityEpoch: 1,
         MasterKeyVersion: 1,
@@ -116,14 +301,49 @@ internal sealed class FakeCovenantAuthorityProvider : ICovenantAuthoritySnapshot
         HostToolsState: CovenantHostToolsState.Clean,
         TransitionId: null);
 
-    public CovenantAuthoritySnapshot? Current => Volatile.Read(ref _current);
+    public CovenantAuthoritySnapshot? Current => _runtime is { } runtime
+        ? runtime.Current.ActiveAuthority
+        : Volatile.Read(ref _current);
 
-    internal void Advance() =>
+    internal void Bind(CovenantRuntimeGenerationProvider runtime) => _runtime = runtime;
+
+    internal void Advance()
+    {
+
+        if (_runtime is { } runtime)
+        {
+
+            _ = runtime.RetireAuthorityGeneration(
+                runtime.Current.RuntimeAuthorityGeneration,
+                CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair));
+
+            return;
+
+        }
+
         Volatile.Write(
             ref _current,
-            Current! with { AuthorityEpoch = Current!.AuthorityEpoch + 1 });
+            Current! with { AuthorityEpoch = Current.AuthorityEpoch + 1 });
 
-    internal void Clear() => Volatile.Write(ref _current, null);
+    }
+
+    internal void Clear()
+    {
+
+        if (_runtime is { } runtime)
+        {
+
+            _ = runtime.RetireAuthorityGeneration(
+                runtime.Current.RuntimeAuthorityGeneration,
+                CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair));
+
+            return;
+
+        }
+
+        Volatile.Write(ref _current, null);
+
+    }
 
 }
 

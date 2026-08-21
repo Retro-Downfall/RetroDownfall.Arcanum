@@ -46,18 +46,6 @@ internal interface ICovenantErasureTransition
         CovenantExclusiveOperation operation,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Reads back the candidate dataset generation a previous pass already committed.
-    /// </summary>
-    /// <remarks>
-    /// Neither durable reset checkpoint has a field for it — <c>DataRetentionMutationCheckpointV3</c>
-    /// and <c>DataRetentionFactoryResetCheckpointV1</c> were both frozen fixed-width by #118 — so a
-    /// resumed run asks the database rather than a checkpoint. That is the better source anyway: the
-    /// dataset row is the commit authority for its own identity, and a checkpoint field would be a
-    /// second copy that could only ever disagree in the case that matters.
-    /// </remarks>
-    Task<Result<Guid>> ReadCandidateDatasetGenerationAsync(CancellationToken cancellationToken);
-
     /// <summary>Clears every pool and drains direct handles through the central connection owner.</summary>
     Task<Result> CloseHandlesAsync(CancellationToken cancellationToken);
 
@@ -91,7 +79,7 @@ internal interface ICovenantErasureTransition
     /// Reopens read-only on the unpublished candidate state, on a handle that cannot create WAL or
     /// SHM, verifies both tiers, and closes that handle.
     /// </summary>
-    Task<Result> VerifyReopenAsync(CancellationToken cancellationToken);
+    Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(CancellationToken cancellationToken);
 
     /// <summary>
     /// Publishes the committed dataset, master, authority, and capability snapshot while the caller's
@@ -104,23 +92,158 @@ internal interface ICovenantErasureTransition
     /// </remarks>
     Task<Result> PublishCommittedAsync(
         ICovenantExclusiveOperationLease lease,
-        Guid candidateDatasetGeneration,
+        CovenantVerifiedCandidateState candidate,
         CancellationToken cancellationToken);
 
 }
 
-/// <summary>
-/// Everything one erasure is responsible for removing, plus the one disclosure fact it must report.
-/// </summary>
-/// <remarks>
-/// The disclosure flag travels with the work rather than being recomputed later, because it describes
-/// the same inventory the pages were derived from. Reading it separately afterwards would let a
-/// completed erasure report a disclosure posture belonging to a family that no longer exists.
-/// </remarks>
-internal sealed record CovenantErasureWork(
-    IReadOnlyList<CovenantProtectedArtifactErasurePage> DatabasePages,
-    IReadOnlyList<CovenantManagedFileErasureRequest> ManagedFiles,
-    bool ExternalDisclosuresNotRevocable);
+/// <summary>The checked fold of nonrevocable disclosure buckets preserved across local erasure.</summary>
+internal sealed record CovenantDisclosureExposure
+{
+
+    internal CovenantDisclosureExposure(
+        long possibleAttempts,
+        CovenantDisclosureCountKind countKind)
+    {
+
+        if (possibleAttempts < 0)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(possibleAttempts));
+
+        }
+
+        if (countKind is not CovenantDisclosureCountKind.Exact
+            and not CovenantDisclosureCountKind.LowerBound)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(countKind));
+
+        }
+
+        PossibleAttempts = possibleAttempts;
+
+        CountKind = countKind;
+
+    }
+
+    internal long PossibleAttempts { get; }
+
+    internal CovenantDisclosureCountKind CountKind { get; }
+
+}
+
+/// <summary>Effect-free facts retained from the complete pre-canonical inventory pass.</summary>
+internal sealed record CovenantErasureInventorySummary
+{
+
+    internal CovenantErasureInventorySummary(
+        long databaseArtifactCount,
+        long managedFileArtifactCount,
+        CovenantDisclosureExposure exposure)
+    {
+
+        ArgumentNullException.ThrowIfNull(exposure);
+
+        if (databaseArtifactCount < 0 || managedFileArtifactCount < 0)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(databaseArtifactCount));
+
+        }
+
+        DatabaseArtifactCount = databaseArtifactCount;
+
+        ManagedFileArtifactCount = managedFileArtifactCount;
+
+        Exposure = exposure;
+
+    }
+
+    internal long DatabaseArtifactCount { get; }
+
+    internal long ManagedFileArtifactCount { get; }
+
+    internal CovenantDisclosureExposure Exposure { get; }
+
+}
+
+/// <summary>One raw-label keyset step and at most one database-kernel page.</summary>
+internal sealed record CovenantDatabaseErasureBatch
+{
+
+    internal CovenantDatabaseErasureBatch(
+        Guid? nextCursor,
+        bool isComplete,
+        CovenantProtectedArtifactErasurePage? page)
+    {
+
+        if (nextCursor == Guid.Empty || (!isComplete && nextCursor is null))
+        {
+
+            throw new ArgumentException("An incomplete database erasure batch requires a nonempty cursor.");
+
+        }
+
+        NextCursor = nextCursor;
+
+        IsComplete = isComplete;
+
+        Page = page;
+
+    }
+
+    internal Guid? NextCursor { get; }
+
+    internal bool IsComplete { get; }
+
+    internal CovenantProtectedArtifactErasurePage? Page { get; }
+
+}
+
+/// <summary>One raw-label keyset step and at most 256 managed-file kernel requests.</summary>
+internal sealed record CovenantManagedFileErasureBatch
+{
+
+    private readonly CovenantManagedFileErasureRequest[] _requests;
+
+    internal CovenantManagedFileErasureBatch(
+        Guid? nextCursor,
+        bool isComplete,
+        IReadOnlyList<CovenantManagedFileErasureRequest> requests)
+    {
+
+        ArgumentNullException.ThrowIfNull(requests);
+
+        if (nextCursor == Guid.Empty || (!isComplete && nextCursor is null))
+        {
+
+            throw new ArgumentException("An incomplete managed erasure batch requires a nonempty cursor.");
+
+        }
+
+        if (requests.Count > CovenantProtectedArtifactErasurePage.MaxItems)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(requests));
+
+        }
+
+        NextCursor = nextCursor;
+
+        IsComplete = isComplete;
+
+        _requests = [.. requests];
+
+    }
+
+    internal Guid? NextCursor { get; }
+
+    internal bool IsComplete { get; }
+
+    internal IReadOnlyList<CovenantManagedFileErasureRequest> Requests => _requests;
+
+}
 
 /// <summary>
 /// Supplies the bounded, comprehensive protected state one erasure must remove.
@@ -128,10 +251,24 @@ internal sealed record CovenantErasureWork(
 internal interface ICovenantErasureInventorySource
 {
 
-    Task<Result<CovenantErasureWork>> EnumerateAsync(
-        Guid operationId,
+    Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
         CovenantExclusiveOperation operation,
         Guid datasetGeneration,
+        CancellationToken cancellationToken);
+
+    Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken);
+
+    Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
+        Guid datasetGeneration,
+        Guid? afterLabelId,
+        CancellationToken cancellationToken);
+
+    Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
+        Guid operationId,
+        Guid? afterLabelId,
+        CancellationToken cancellationToken);
+
+    Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
         CancellationToken cancellationToken);
 
 }
@@ -272,7 +409,14 @@ internal sealed record CovenantErasureCompletion(
     CovenantExclusiveLeaseDisposition Disposition,
     bool CanonicalResetApplied,
     bool LocalSecureErasureComplete,
-    bool ExternalDisclosuresNotRevocable);
+    CovenantDisclosureExposure Exposure,
+    string? BlockingErrorCode)
+{
+
+    /// <summary>The legacy projection, derived only from irreversible disclosure evidence.</summary>
+    internal bool ExternalDisclosuresNotRevocable => Exposure.PossibleAttempts > 0;
+
+}
 
 /// <summary>
 /// The single coordinator for Covenant reset and healthy-catalog factory erasure.
@@ -305,6 +449,7 @@ internal sealed class CovenantErasureCoordinator(
     ICovenantErasureInventorySource inventory,
     ICovenantErasureTransition transition,
     ICovenantDisclosureWriterLifecycle disclosureWriter,
+    TimeProvider timeProvider,
     ILogger<CovenantErasureCoordinator> logger)
 {
 
@@ -318,6 +463,23 @@ internal sealed class CovenantErasureCoordinator(
     /// rather than quietly proceeding.
     /// </remarks>
     internal static readonly TimeSpan DispositionBound = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long the post-proof checkpoint, publication, and warm-writer restart may take.
+    /// </summary>
+    internal static readonly TimeSpan PublicationAndWriterBound = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long an unchanged-generation writer restoration may take before rollback is refused.
+    /// </summary>
+    internal static readonly TimeSpan WriterRestorationBound = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long the durable ledger gets to record an uncertain disposition independently.
+    /// </summary>
+    internal static readonly TimeSpan FailureRecordingBound = TimeSpan.FromSeconds(30);
+
+    private static readonly TimeSpan FailureRecordingRetryDelay = TimeSpan.FromMilliseconds(10);
 
     private const string ResetSummary = "Erasing the Covenant family.";
 
@@ -343,6 +505,9 @@ internal sealed class CovenantErasureCoordinator(
     private readonly ICovenantDisclosureWriterLifecycle _disclosureWriter =
         disclosureWriter ?? throw new ArgumentNullException(nameof(disclosureWriter));
 
+    private readonly TimeProvider _timeProvider =
+        timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+
     private readonly ILogger<CovenantErasureCoordinator> _logger =
         logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -357,7 +522,6 @@ internal sealed class CovenantErasureCoordinator(
     internal async Task<Result<CovenantErasureCompletion>> RunAsync(
         LongRunningOperation operation,
         CovenantErasureCheckpointState checkpoint,
-        Guid datasetGeneration,
         string ownerId,
         CancellationToken cancellationToken)
     {
@@ -384,7 +548,7 @@ internal sealed class CovenantErasureCoordinator(
         // and never reopened. Using the wrong verb is not a style choice: acquiring an already-closed
         // scope is refused, and resuming a scope nobody closed has nothing to adopt.
         Result<CovenantExclusiveLease> acquired = checkpoint.Phase == CovenantResetPhaseMachine.First
-            ? await _gate.AcquireExclusiveAsync(owner, cancellationToken).ConfigureAwait(false)
+            ? await _gate.ResumeOrAcquireExclusiveAsync(owner, cancellationToken).ConfigureAwait(false)
             : await _gate.ResumeExclusiveAsync(owner, cancellationToken).ConfigureAwait(false);
 
         if (acquired.IsFailure)
@@ -395,6 +559,18 @@ internal sealed class CovenantErasureCoordinator(
         }
 
         await using CovenantExclusiveLease lease = acquired.Value;
+
+        Guid? datasetGeneration = lease.Snapshot.DatasetGeneration;
+
+        if (datasetGeneration is null || datasetGeneration == Guid.Empty)
+        {
+
+            return Result<CovenantErasureCompletion>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.IntegrityFailure,
+                    "The exclusive Covenant lease did not capture a dataset generation."));
+
+        }
 
         Result<CovenantArtifactErasureAuthority> authority = CovenantArtifactErasureAuthority.ForExclusive(
             lease,
@@ -410,7 +586,7 @@ internal sealed class CovenantErasureCoordinator(
         return await RunUnderLeaseAsync(
             operation,
             checkpoint,
-            datasetGeneration,
+            datasetGeneration.Value,
             ownerId,
             lease,
             authority.Value,
@@ -432,6 +608,10 @@ internal sealed class CovenantErasureCoordinator(
 
         ErasureProgress progress = new(state.Phase);
 
+        CovenantVerifiedCandidateState candidate;
+
+        bool resumedAtCanonical = checkpoint.Phase == CovenantResetPhase.CanonicalApplied;
+
         try
         {
 
@@ -444,22 +624,72 @@ internal sealed class CovenantErasureCoordinator(
             if (quiesced.IsFailure)
             {
 
-                return await AbortBeforeErasureAsync(lease, progress, quiesced.Error).ConfigureAwait(false);
+                return await AbortBeforeErasureAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    progress,
+                    quiesced.Error).ConfigureAwait(false);
 
             }
 
-            Result<CovenantErasureWork> work = await _inventory
-                .EnumerateAsync(operation.Id, state.Operation, datasetGeneration, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (work.IsFailure)
+            if (state.Phase == CovenantResetPhase.InventoryPrepared)
             {
 
-                return await AbortBeforeErasureAsync(lease, progress, work.Error).ConfigureAwait(false);
+                Result<CovenantErasureInventorySummary> inventory = await _inventory
+                    .PreflightBeforeCanonicalAsync(state.Operation, datasetGeneration, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (inventory.IsFailure)
+                {
+
+                    return await AbortBeforeErasureAsync(
+                        operation,
+                        state,
+                        ownerId,
+                        lease,
+                        progress,
+                        inventory.Error).ConfigureAwait(false);
+
+                }
+
+                progress.Exposure = inventory.Value.Exposure;
 
             }
+            else
+            {
 
-            progress.ExternalDisclosuresNotRevocable = work.Value.ExternalDisclosuresNotRevocable;
+                Result<CovenantDisclosureExposure> exposure = await _inventory
+                    .ReadDisclosureExposureAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (exposure.IsFailure)
+                {
+
+                    throw new CovenantErasureStepFailedException(exposure.Error);
+
+                }
+
+                progress.Exposure = exposure.Value;
+
+                if (resumedAtCanonical)
+                {
+
+                    Result managedPreflight = await _inventory
+                        .PreflightRemainingManagedAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (managedPreflight.IsFailure)
+                    {
+
+                        throw new CovenantErasureStepFailedException(managedPreflight.Error);
+
+                    }
+
+                }
+
+            }
 
             state = await AdvanceAsync(
                 operation,
@@ -470,7 +700,7 @@ internal sealed class CovenantErasureCoordinator(
                 {
 
                     Result erased = await EraseDatabaseArtifactsAsync(
-                        work.Value,
+                        datasetGeneration,
                         authority,
                         progress,
                         token).ConfigureAwait(false);
@@ -478,17 +708,17 @@ internal sealed class CovenantErasureCoordinator(
                     if (erased.IsFailure)
                     {
 
-                        return Result<Guid?>.Failure(erased.Error);
+                        return Result.Failure(erased.Error);
 
                     }
+
+                    progress.EffectAttempted = true;
 
                     Result<Guid> applied = await _transition
                         .ApplyCanonicalErasureAsync(state.Operation, token)
                         .ConfigureAwait(false);
 
-                    return applied.IsFailure
-                        ? Result<Guid?>.Failure(applied.Error)
-                        : Result<Guid?>.Success(applied.Value);
+                    return applied.IsFailure ? Result.Failure(applied.Error) : Result.Success();
 
                 },
                 progress,
@@ -499,7 +729,11 @@ internal sealed class CovenantErasureCoordinator(
                 state,
                 ownerId,
                 CovenantResetPhase.ManagedArtifactsProcessed,
-                (_, token) => EraseManagedFilesAsync(work.Value, authority, progress, token),
+                (_, token) => EraseManagedFilesAsync(
+                    operation.Id,
+                    authority,
+                    progress,
+                    token),
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
@@ -557,14 +791,17 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
-            state = await AdvanceAsync(
-                operation,
-                state,
-                ownerId,
-                CovenantResetPhase.ReopenedVerified,
-                (_, token) => _transition.VerifyReopenAsync(token),
-                progress,
-                cancellationToken).ConfigureAwait(false);
+            Result<CovenantVerifiedCandidateState> verified =
+                await _transition.VerifyReopenAsync(cancellationToken).ConfigureAwait(false);
+
+            if (verified.IsFailure)
+            {
+
+                throw new CovenantErasureStepFailedException(verified.Error);
+
+            }
+
+            candidate = verified.Value;
 
         }
         catch (CovenantErasureStepFailedException failed)
@@ -577,7 +814,150 @@ internal sealed class CovenantErasureCoordinator(
                 operation.Id,
                 failed.Error.Code);
 
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, progress)
+            return progress.EffectAttempted || progress.DurablyMutated
+                ? await CloseAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    CovenantExclusiveLeaseDisposition.KeepClosed,
+                    progress,
+                    failed.Error.Code)
+                    .ConfigureAwait(false)
+                : await AbortBeforeErasureAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    progress,
+                    failed.Error).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            Error interrupted = MaintenanceFailure();
+
+            return progress.EffectAttempted || progress.DurablyMutated
+                ? await CloseAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    CovenantExclusiveLeaseDisposition.KeepClosed,
+                    progress,
+                    interrupted.Code)
+                    .ConfigureAwait(false)
+                : await AbortBeforeErasureAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    progress,
+                    interrupted).ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            Error interrupted = MaintenanceFailure();
+
+            return progress.EffectAttempted || progress.DurablyMutated
+                ? await CloseAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    CovenantExclusiveLeaseDisposition.KeepClosed,
+                    progress,
+                    interrupted.Code)
+                    .ConfigureAwait(false)
+                : await AbortBeforeErasureAsync(
+                    operation,
+                    state,
+                    ownerId,
+                    lease,
+                    progress,
+                    interrupted).ConfigureAwait(false);
+
+        }
+
+        // The caller no longer owns cancellation after the immutable proof succeeds. The checkpoint,
+        // publication, and writer restart share one bounded lifecycle token because all three must
+        // finish before the separately bounded disposition decides whether admission reopens.
+        using CancellationTokenSource publicationAndWriter =
+            new(PublicationAndWriterBound, _timeProvider);
+
+        try
+        {
+
+            // ReopenedVerified records that a proof succeeded, not the proof object itself. A fresh
+            // pass checkpoints only after obtaining the value it will publish. A resumed pass has no
+            // value to recover from its checkpoint, so it repeats the immutable verification without
+            // rewriting a phase that was already durable.
+            if (state.Phase < CovenantResetPhase.ReopenedVerified)
+            {
+
+                Result ordered = CovenantResetPhaseMachine.RequireAdvance(
+                    state.Phase,
+                    CovenantResetPhase.ReopenedVerified);
+
+                if (ordered.IsFailure)
+                {
+
+                    throw new CovenantErasureStepFailedException(ordered.Error);
+
+                }
+
+                CovenantErasureCheckpointState advanced = state with
+                {
+
+                    Phase = CovenantResetPhase.ReopenedVerified,
+
+                };
+
+                await CheckpointAsync(operation, advanced, ownerId, publicationAndWriter.Token)
+                    .ConfigureAwait(false);
+
+                state = advanced;
+
+            }
+
+        }
+        catch (CovenantErasureStepFailedException failed)
+        {
+
+            _logger.LogWarning(
+                "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
+                + "with {ErrorCode}; admission stays closed.",
+                state.Phase,
+                operation.Id,
+                failed.Error.Code);
+
+            return await CloseAsync(
+                operation,
+                state,
+                ownerId,
+                lease,
+                CovenantExclusiveLeaseDisposition.KeepClosed,
+                progress,
+                failed.Error.Code)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            Error interrupted = MaintenanceFailure();
+
+            return await CloseAsync(
+                operation,
+                state,
+                ownerId,
+                lease,
+                CovenantExclusiveLeaseDisposition.KeepClosed,
+                progress,
+                interrupted.Code)
                 .ConfigureAwait(false);
 
         }
@@ -587,22 +967,12 @@ internal sealed class CovenantErasureCoordinator(
         // separately rather than folded into one outcome.
         progress.LocalSecureErasureComplete = true;
 
-        Result<Guid> candidate = await ResolveCandidateGenerationAsync(progress, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (candidate.IsFailure)
-        {
-
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, progress)
-                .ConfigureAwait(false);
-
-        }
-
         // Publication happens while the gate is still held. Reopening first would leave a window in
         // which new work could be authorized under keys this erasure just invalidated.
-        Result published = await _transition
-            .PublishCommittedAsync(lease, candidate.Value, cancellationToken)
-            .ConfigureAwait(false);
+
+        Result published = await RunLifecycleAsync(
+            token => _transition.PublishCommittedAsync(lease, candidate, token),
+            publicationAndWriter.Token).ConfigureAwait(false);
 
         if (published.IsFailure)
         {
@@ -612,7 +982,14 @@ internal sealed class CovenantErasureCoordinator(
                 + "old contexts stay unusable and admission stays closed.",
                 operation.Id);
 
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, progress)
+            return await CloseAsync(
+                operation,
+                state,
+                ownerId,
+                lease,
+                CovenantExclusiveLeaseDisposition.KeepClosed,
+                progress,
+                published.Error.Code)
                 .ConfigureAwait(false);
 
         }
@@ -620,12 +997,21 @@ internal sealed class CovenantErasureCoordinator(
         // The warm writer may only come back against the authority that was just published. A restart
         // failure lands here, before the one disposition, so it selects KeepClosed rather than
         // reversing an erasure the storage proof already earned.
-        Result writer = await _disclosureWriter.ReopenAsync(cancellationToken).ConfigureAwait(false);
+        Result writer = await RunLifecycleAsync(
+            token => _disclosureWriter.ReopenAsync(token).AsTask(),
+            publicationAndWriter.Token).ConfigureAwait(false);
 
         if (writer.IsFailure)
         {
 
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, progress)
+            return await CloseAsync(
+                operation,
+                state,
+                ownerId,
+                lease,
+                CovenantExclusiveLeaseDisposition.KeepClosed,
+                progress,
+                writer.Error.Code)
                 .ConfigureAwait(false);
 
         }
@@ -637,7 +1023,14 @@ internal sealed class CovenantErasureCoordinator(
                 DurablyMutated: progress.DurablyMutated,
                 HealthPublished: true));
 
-        return await CloseAsync(lease, disposition, progress).ConfigureAwait(false);
+        return await CloseAsync(
+            operation,
+            state,
+            ownerId,
+            lease,
+            disposition,
+            progress,
+            blockingErrorCode: null).ConfigureAwait(false);
 
     }
 
@@ -652,6 +1045,9 @@ internal sealed class CovenantErasureCoordinator(
     /// decision is made by the shared evidence function rather than picked by hand here.
     /// </remarks>
     private async Task<Result<CovenantErasureCompletion>> AbortBeforeErasureAsync(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        string ownerId,
         CovenantExclusiveLease lease,
         ErasureProgress progress,
         Error error)
@@ -661,171 +1057,207 @@ internal sealed class CovenantErasureCoordinator(
             "A Covenant erasure aborted before any artifact was touched with {ErrorCode}; admission reopens.",
             error.Code);
 
-        CovenantExclusiveLeaseDisposition disposition = CovenantExclusiveDisposition.Select(
-            new CovenantExclusiveDispositionEvidence(
-                StorageVerified: true,
-                AuthorityVerified: true,
-                DurablyMutated: progress.DurablyMutated,
-                HealthPublished: false));
+        using CancellationTokenSource restoration = new(WriterRestorationBound, _timeProvider);
 
-        return await CloseAsync(lease, disposition, progress).ConfigureAwait(false);
+        Result restored;
 
-    }
-
-    /// <summary>
-    /// Resolves the generation this erasure's new dataset carries, without ever inventing one.
-    /// </summary>
-    /// <remarks>
-    /// A first pass already holds the value its own canonical erasure returned. A resumed pass does
-    /// not, because neither frozen checkpoint shape has a field for it, so it reads the committed
-    /// dataset row back. One source per pass: two would let a resume publish a generation that
-    /// disagreed with the one on disk.
-    /// </remarks>
-    private async Task<Result<Guid>> ResolveCandidateGenerationAsync(
-        ErasureProgress progress,
-        CancellationToken cancellationToken)
-    {
-
-        if (progress.CandidateDatasetGeneration is { } known)
+        try
         {
 
-            return Result<Guid>.Success(known);
+            restored = await _disclosureWriter
+                .ReopenAsync(restoration.Token)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            restored = Result.Failure(MaintenanceFailure());
 
         }
 
-        Result<Guid> read = await _transition
-            .ReadCandidateDatasetGenerationAsync(cancellationToken)
+        CovenantExclusiveLeaseDisposition disposition = restored.IsSuccess
+            ? CovenantExclusiveDisposition.Select(
+                new CovenantExclusiveDispositionEvidence(
+                    StorageVerified: true,
+                    AuthorityVerified: true,
+                    DurablyMutated: progress.DurablyMutated,
+                    HealthPublished: false))
+            : CovenantExclusiveLeaseDisposition.KeepClosed;
+
+        return await CloseAsync(
+            operation,
+            checkpoint,
+            ownerId,
+            lease,
+            disposition,
+            progress,
+            restored.IsSuccess ? error.Code : ErrorCodes.Covenant.MaintenanceFailed)
             .ConfigureAwait(false);
-
-        if (read.IsSuccess && read.Value == Guid.Empty)
-        {
-
-            // Durable state disagreeing with itself: a checkpoint past the canonical phase without the
-            // dataset that phase creates. There is nothing safe to publish and no safe guess.
-            return Result<Guid>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "This Covenant erasure recorded its canonical phase without a candidate dataset."));
-
-        }
-
-        return read;
 
     }
 
     private async Task<Result> EraseDatabaseArtifactsAsync(
-        CovenantErasureWork work,
+        Guid datasetGeneration,
         CovenantArtifactErasureAuthority authority,
         ErasureProgress progress,
         CancellationToken cancellationToken)
     {
 
-        foreach (CovenantProtectedArtifactErasurePage page in work.DatabasePages)
+        Guid? cursor = null;
+
+        while (true)
         {
 
-            Result<CovenantArtifactErasureProgress> erased = await _artifacts
-                .ErasePageAsync(page, authority, cancellationToken)
+            Result<CovenantDatabaseErasureBatch> batch = await _inventory
+                .ReadNextDatabaseBatchAsync(datasetGeneration, cursor, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (erased.IsFailure)
+            if (batch.IsFailure)
             {
 
-                return Result.Failure(erased.Error);
+                return Result.Failure(batch.Error);
 
             }
 
-            if (erased.Value.ErasedCount > 0)
-            {
-
-                progress.DurablyMutated = true;
-
-            }
-
-            if (erased.Value.IsBlocked)
+            if (!batch.Value.IsComplete && batch.Value.NextCursor == cursor)
             {
 
                 return Result.Failure(
                     new Error(
-                        ErrorCodes.Covenant.ManualArtifactErasureRequired,
-                        "A protected artifact could not be erased, so the canonical erasure did not run."));
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "A bounded Covenant database inventory page did not advance its cursor."));
 
             }
 
-        }
+            if (batch.Value.Page is { } page)
+            {
 
-        return Result.Success();
+                progress.EffectAttempted = true;
+
+                Result<CovenantArtifactErasureProgress> erased = await _artifacts
+                    .ErasePageAsync(page, authority, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (erased.IsFailure)
+                {
+
+                    return Result.Failure(erased.Error);
+
+                }
+
+                if (erased.Value.ErasedCount > 0)
+                {
+
+                    progress.DurablyMutated = true;
+
+                }
+
+                if (erased.Value.IsBlocked)
+                {
+
+                    return Result.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                            "A protected artifact could not be erased, so the canonical erasure did not run."));
+
+                }
+
+            }
+
+            if (batch.Value.IsComplete)
+            {
+
+                return Result.Success();
+
+            }
+
+            cursor = batch.Value.NextCursor;
+
+        }
 
     }
 
     private async Task<Result> EraseManagedFilesAsync(
-        CovenantErasureWork work,
+        Guid operationId,
         CovenantArtifactErasureAuthority authority,
         ErasureProgress progress,
         CancellationToken cancellationToken)
     {
 
-        foreach (CovenantManagedFileErasureRequest file in work.ManagedFiles)
+        Guid? cursor = null;
+
+        while (true)
         {
 
-            Result<CovenantArtifactErasureProgress> erased = await _managedFiles
-                .EraseAsync(file, authority, cancellationToken)
+            Result<CovenantManagedFileErasureBatch> batch = await _inventory
+                .ReadNextManagedFileBatchAsync(operationId, cursor, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (erased.IsFailure)
+            if (batch.IsFailure)
             {
 
-                return Result.Failure(erased.Error);
+                return Result.Failure(batch.Error);
 
             }
 
-            if (erased.Value.ErasedCount > 0)
-            {
-
-                progress.DurablyMutated = true;
-
-            }
-
-            if (erased.Value.IsBlocked)
+            if (!batch.Value.IsComplete && batch.Value.NextCursor == cursor)
             {
 
                 return Result.Failure(
                     new Error(
-                        ErrorCodes.Covenant.ManualArtifactErasureRequired,
-                        "A managed workspace file could not be erased, so local erasure is incomplete."));
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "A bounded Covenant managed inventory page did not advance its cursor."));
 
             }
 
-        }
-
-        return Result.Success();
-
-    }
-
-    private Task<CovenantErasureCheckpointState> AdvanceAsync(
-        LongRunningOperation operation,
-        CovenantErasureCheckpointState checkpoint,
-        string ownerId,
-        CovenantResetPhase phase,
-        Func<CovenantErasureCheckpointState, CancellationToken, Task<Result>> step,
-        ErasureProgress progress,
-        CancellationToken cancellationToken) =>
-        AdvanceAsync(
-            operation,
-            checkpoint,
-            ownerId,
-            phase,
-            async (current, token) =>
+            foreach (CovenantManagedFileErasureRequest file in batch.Value.Requests)
             {
 
-                Result performed = await step(current, token).ConfigureAwait(false);
+                progress.EffectAttempted = true;
 
-                return performed.IsFailure
-                    ? Result<Guid?>.Failure(performed.Error)
-                    : Result<Guid?>.Success(null);
+                Result<CovenantArtifactErasureProgress> erased = await _managedFiles
+                    .EraseAsync(file, authority, cancellationToken)
+                    .ConfigureAwait(false);
 
-            },
-            progress,
-            cancellationToken);
+                if (erased.IsFailure)
+                {
+
+                    return Result.Failure(erased.Error);
+
+                }
+
+                if (erased.Value.ErasedCount > 0)
+                {
+
+                    progress.DurablyMutated = true;
+
+                }
+
+                if (erased.Value.IsBlocked)
+                {
+
+                    return Result.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                            "A managed workspace file could not be erased, so local erasure is incomplete."));
+
+                }
+
+            }
+
+            if (batch.Value.IsComplete)
+            {
+
+                return Result.Success();
+
+            }
+
+            cursor = batch.Value.NextCursor;
+
+        }
+
+    }
 
     /// <summary>
     /// Performs one phase's step exactly once and records it, or returns the checkpoint untouched.
@@ -842,7 +1274,7 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureCheckpointState checkpoint,
         string ownerId,
         CovenantResetPhase phase,
-        Func<CovenantErasureCheckpointState, CancellationToken, Task<Result<Guid?>>> step,
+        Func<CovenantErasureCheckpointState, CancellationToken, Task<Result>> step,
         ErasureProgress progress,
         CancellationToken cancellationToken)
     {
@@ -863,7 +1295,7 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        Result<Guid?> performed = await step(checkpoint, cancellationToken).ConfigureAwait(false);
+        Result performed = await step(checkpoint, cancellationToken).ConfigureAwait(false);
 
         if (performed.IsFailure)
         {
@@ -872,10 +1304,8 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        if (performed.Value is { } generation)
+        if (phase == CovenantResetPhase.CanonicalApplied)
         {
-
-            progress.CandidateDatasetGeneration = generation;
 
             progress.CanonicalResetApplied = true;
 
@@ -1004,25 +1434,65 @@ internal sealed class CovenantErasureCoordinator(
     /// <c>LifecycleConflict</c> — hiding the reason the reset could not reopen.
     /// </remarks>
     private async Task<Result<CovenantErasureCompletion>> CloseAsync(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        string ownerId,
         CovenantExclusiveLease lease,
         CovenantExclusiveLeaseDisposition disposition,
-        ErasureProgress progress)
+        ErasureProgress progress,
+        string? blockingErrorCode)
     {
 
-        using CancellationTokenSource lifecycle = new(DispositionBound);
+        using CancellationTokenSource lifecycle = new(DispositionBound, _timeProvider);
 
-        Result closed = await lease.CompleteAsync(disposition, lifecycle.Token).ConfigureAwait(false);
+        Result closed;
+
+        try
+        {
+
+            closed = await lease.CompleteAsync(disposition, lifecycle.Token).ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            closed = Result.Failure(MaintenanceFailure());
+
+        }
+
 
         if (closed.IsFailure)
         {
 
-            _logger.LogError(
-                "A Covenant erasure could not record its {Disposition} disposition ({ErrorCode}); admission "
-                + "stays closed and the operation stays adoptable.",
-                disposition,
-                closed.Error.Code);
+            Error normalized = MaintenanceFailure();
 
-            return Result<CovenantErasureCompletion>.Failure(closed.Error);
+            bool recoveryProven = await RecordLifecycleFailureAsync(
+                operation,
+                checkpoint,
+                ownerId).ConfigureAwait(false);
+
+            if (recoveryProven)
+            {
+
+                _logger.LogError(
+                    "A Covenant erasure could not record its {Disposition} disposition ({ErrorCode}); admission "
+                    + "stays closed and the operation stays adoptable.",
+                    disposition,
+                    normalized.Code);
+
+            }
+            else
+            {
+
+                _logger.LogCritical(
+                    "A Covenant erasure could not record its {Disposition} disposition ({ErrorCode}); admission "
+                    + "stays closed and durable recovery could not be proven.",
+                    disposition,
+                    normalized.Code);
+
+            }
+
+            return Result<CovenantErasureCompletion>.Failure(normalized);
 
         }
 
@@ -1031,9 +1501,211 @@ internal sealed class CovenantErasureCoordinator(
                 disposition,
                 progress.CanonicalResetApplied,
                 progress.LocalSecureErasureComplete,
-                progress.ExternalDisclosuresNotRevocable));
+                progress.Exposure,
+                blockingErrorCode));
 
     }
+
+    private async Task<bool> RecordLifecycleFailureAsync(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        string ownerId)
+    {
+
+        using CancellationTokenSource recording = new(FailureRecordingBound, _timeProvider);
+
+        try
+        {
+
+            while (!recording.IsCancellationRequested)
+            {
+
+                LongRunningOperation? current = await _store
+                    .GetAsync(operation.Id, recording.Token)
+                    .ConfigureAwait(false);
+
+                if (current is null)
+                {
+
+                    await Task.Delay(
+                        FailureRecordingRetryDelay,
+                        _timeProvider,
+                        recording.Token).ConfigureAwait(false);
+
+                    continue;
+
+                }
+
+                if (IsRecoverableAttention(current, checkpoint))
+                {
+
+                    return true;
+
+                }
+
+                if (!HasExactCheckpoint(current, checkpoint))
+                {
+
+                    await Task.Delay(
+                        FailureRecordingRetryDelay,
+                        _timeProvider,
+                        recording.Token).ConfigureAwait(false);
+
+                    continue;
+
+                }
+
+                string? transitionOwner;
+
+                if (IsActiveCheckpoint(current, checkpoint, ownerId))
+                {
+
+                    transitionOwner = ownerId;
+
+                }
+                else if (current.State == LongRunningOperationState.ReconciliationRequired)
+                {
+
+                    transitionOwner = null;
+
+                }
+                else
+                {
+
+                    await Task.Delay(
+                        FailureRecordingRetryDelay,
+                        _timeProvider,
+                        recording.Token).ConfigureAwait(false);
+
+                    continue;
+
+                }
+
+                _ = await _store.TryTransitionAsync(
+                    current.Id,
+                    current.Revision,
+                    transitionOwner,
+                    LongRunningOperationState.ReconciliationRequired,
+                    _timeProvider.GetUtcNow(),
+                    ErrorCodes.Covenant.MaintenanceFailed,
+                    recording.Token).ConfigureAwait(false);
+
+                // A successful compare-exchange is not the proof: re-read so the same validation
+                // covers our write and an indistinguishable competing winner.
+
+            }
+
+        }
+        catch (OperationCanceledException) when (recording.IsCancellationRequested)
+        {
+
+            return false;
+
+        }
+        catch (Exception)
+        {
+
+            return false;
+
+        }
+
+        return false;
+
+    }
+
+    private static bool IsRecoverableAttention(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint) =>
+        operation.State == LongRunningOperationState.ReconciliationRequired
+        && operation.TerminalErrorCode is ErrorCodes.Covenant.MaintenanceFailed
+            or ErrorCodes.Data.ReconciliationFailed
+        && HasExactCheckpoint(operation, checkpoint);
+
+    private static bool IsActiveCheckpoint(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        string ownerId)
+    {
+
+        if (operation.State is not LongRunningOperationState.Running
+            and not LongRunningOperationState.Waiting
+            and not LongRunningOperationState.Cancelling
+            || !string.Equals(operation.LeaseOwner, ownerId, StringComparison.Ordinal))
+        {
+
+            return false;
+
+        }
+
+        return HasExactCheckpoint(operation, checkpoint);
+
+    }
+
+    private static bool HasExactCheckpoint(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint)
+    {
+
+        if (operation.Id != checkpoint.OperationId
+            || !string.Equals(
+                operation.CheckpointReference,
+                CovenantResetCheckpointInitiator.CheckpointReference(operation.Kind, operation.Id),
+                StringComparison.Ordinal)
+            || operation.CheckpointPayload is not { Length: > 0 } payload)
+        {
+
+            return false;
+
+        }
+
+        Result<CovenantErasureCheckpointState> durable = operation.Kind switch
+        {
+
+            LongRunningOperationKinds.DataRetentionMutation
+                when operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+                    && operation.CheckpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion =>
+                CovenantErasureCheckpointState.FromMutationCheckpoint(
+                    operation.Id,
+                    payload,
+                    out _),
+
+            LongRunningOperationKinds.DataRetentionFactoryReset
+                when operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.RestartIdempotently
+                    && operation.CheckpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion =>
+                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(operation.Id, payload),
+
+            _ => Result<CovenantErasureCheckpointState>.Failure(MaintenanceFailure()),
+
+        };
+
+        return durable.IsSuccess && durable.Value == checkpoint;
+
+    }
+
+    private static async Task<Result> RunLifecycleAsync(
+        Func<CancellationToken, Task<Result>> action,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            return await action(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            return Result.Failure(MaintenanceFailure());
+
+        }
+
+    }
+
+    private static Error MaintenanceFailure() =>
+        new(
+            ErrorCodes.Covenant.MaintenanceFailed,
+            "The Covenant erasure lifecycle could not be completed safely.");
 
     /// <summary>
     /// The mutable facts one run accumulates, kept out of the durable checkpoint on purpose.
@@ -1052,15 +1724,17 @@ internal sealed class CovenantErasureCoordinator(
 
         internal bool LocalSecureErasureComplete { get; set; }
 
-        internal bool ExternalDisclosuresNotRevocable { get; set; }
+        /// <summary>Whether control has crossed from inventory into any protected effect.</summary>
+        internal bool EffectAttempted { get; set; }
+
+        internal CovenantDisclosureExposure Exposure { get; set; } =
+            new(0, CovenantDisclosureCountKind.Exact);
 
         /// <summary>
         /// Whether anything irreversible has happened yet, which is the only fact that separates a
         /// reopening abort from one that must keep admission closed.
         /// </summary>
         internal bool DurablyMutated { get; set; } = resumedFrom > CovenantResetPhaseMachine.First;
-
-        internal Guid? CandidateDatasetGeneration { get; set; }
 
     }
 

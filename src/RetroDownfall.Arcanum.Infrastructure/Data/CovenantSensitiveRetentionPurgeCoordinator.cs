@@ -1,5 +1,3 @@
-using System.Globalization;
-
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -41,6 +39,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     IArtifactSensitivityLedger labels,
     ICovenantConnectionSource connections,
+    CovenantManagedFileErasureRequestReader managedFileRequests,
     ICovenantOperationGate gate,
     IOperatorAuthorityContextIssuer issuer,
     ICovenantAvailability availability,
@@ -373,7 +372,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         CancellationToken cancellationToken)
     {
 
-        Result<ManagedFileSourceIdentity?> source = await ReadManagedSourceAsync(
+        Result<CovenantManagedFileErasureIdentity?> source = await ReadManagedSourceAsync(
             file,
             cancellationToken).ConfigureAwait(false);
 
@@ -397,20 +396,14 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
         return await managedFiles
             .EraseAsync(
-                new CovenantManagedFileErasureRequest(
-                    identity.ExistingWorkItemId ?? Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    identity.SourceWriteOperationId,
-                    file.Target.ArtifactId,
-                    file.Label.LabelId,
-                    identity.ObservedSourceRevision),
+                identity.ToRequest(Guid.NewGuid()),
                 authority,
                 cancellationToken)
             .ConfigureAwait(false);
 
     }
 
-    private async Task<Result<ManagedFileSourceIdentity?>> ReadManagedSourceAsync(
+    private async Task<Result<CovenantManagedFileErasureIdentity?>> ReadManagedSourceAsync(
         LabeledTarget file,
         CancellationToken cancellationToken)
     {
@@ -419,52 +412,9 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        await using SqliteCommand command = connection.CreateCommand();
-
-        // Phase 7 is AdoptedAndLabeled: the only phase at which a producer both owns a real file and
-        // has handed its label to the erasure side. Any other phase is the write intent's own recovery
-        // to finish, not this purge's to pre-empt.
-        command.CommandText = """
-            SELECT i.WriteOperationId,
-                   i.Revision,
-                   (SELECT w.WorkItemId
-                    FROM local_erasure_work_items w
-                    WHERE w.SourceWriteOperationId = i.WriteOperationId
-                      AND w.StateCode IN (1, 2)
-                    LIMIT 1)
-            FROM managed_file_write_intents i
-            WHERE i.ArtifactId = $artifactId
-              AND i.SensitivityLabelId = $labelId
-              AND i.PhaseCode = 7
-            LIMIT 1;
-            """;
-
-        // Uppercase, and not by accident. Every Covenant identity column stores the uppercase "D" form
-        // and SQLite's default TEXT collation is BINARY, so a lowercase bind matches nothing — which
-        // here would report every managed file as having no adopted producer and quietly turn each one
-        // into a manual blocker instead of erasing it.
-        _ = command.Parameters.AddWithValue("$artifactId", Format(file.Target.ArtifactId));
-
-        _ = command.Parameters.AddWithValue("$labelId", Format(file.Label.LabelId));
-
-        await using SqliteDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
+        return await managedFileRequests
+            .TryReadWithinAsync(connection, transaction: null, file.Label, cancellationToken)
             .ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-
-            return Result<ManagedFileSourceIdentity?>.Success(null);
-
-        }
-
-        return Result<ManagedFileSourceIdentity?>.Success(
-            new ManagedFileSourceIdentity(
-                Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
-                checked((ulong)reader.GetInt64(1)),
-                reader.IsDBNull(2)
-                    ? null
-                    : Guid.Parse(reader.GetString(2), CultureInfo.InvariantCulture)));
 
     }
 
@@ -499,15 +449,8 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
                 CovenantErasureBlocker.None))],
             CovenantArtifactErasureProgress.Empty);
 
-    private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
     private sealed record LabeledTarget(
         CovenantSensitivePurgeTarget Target,
         ArtifactSensitivityLabel Label);
-
-    private sealed record ManagedFileSourceIdentity(
-        Guid SourceWriteOperationId,
-        ulong ObservedSourceRevision,
-        Guid? ExistingWorkItemId);
 
 }

@@ -730,6 +730,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             Guid.NewGuid(),
+            1,
             CovenantLeaseKind.ProtectedTransfer,
             CovenantLeaseCoverage.Scoped,
             scope,
@@ -745,6 +746,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             false);
 
         public CancellationToken Revocation => CancellationToken.None;
+
+        public Result ExecuteWhileHeld(Func<Result> callback) => callback();
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result.Success());

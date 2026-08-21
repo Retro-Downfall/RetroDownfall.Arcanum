@@ -1,8 +1,15 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Operations;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -53,8 +60,16 @@ public sealed class CovenantResetCheckpointInitiatorTests
             CovenantDisclosureCountKind.Exact);
 
     private static CovenantResetCheckpointInitiator Initiator(
-        FakeLongRunningOperationStore store) =>
-        new(store, new CovenantErasureEffectDigestCalculator(), Clock);
+        FakeLongRunningOperationStore store,
+        ICovenantErasureEffectDigestCalculator? digests = null,
+        CovenantHealthyCatalogErasureGuard? catalog = null,
+        ICovenantOperationGate? gate = null) =>
+        new(
+            store,
+            digests ?? new CovenantErasureEffectDigestCalculator(),
+            catalog ?? UnusedCatalogGuard(),
+            gate ?? new RecordingCovenantOperationGate(),
+            Clock);
 
     private static async Task<(FakeLongRunningOperationStore Store, LongRunningOperation Operation)>
         RunningMutationAsync()
@@ -65,6 +80,26 @@ public sealed class CovenantResetCheckpointInitiatorTests
         LongRunningOperation operation = store.Seed(
             LongRunningOperationKinds.DataRetentionMutation,
             LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
+
+        _ = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "owner-118",
+            Clock.GetUtcNow(),
+            Clock.GetUtcNow().AddMinutes(2));
+
+        return (store, (await store.GetAsync(operation.Id))!);
+
+    }
+
+    private static async Task<(FakeLongRunningOperationStore Store, LongRunningOperation Operation)>
+        RunningFactoryAsync()
+    {
+
+        FakeLongRunningOperationStore store = new(Clock);
+
+        LongRunningOperation operation = store.Seed(
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         _ = await store.TryAcquireLeaseAsync(
             operation.Id,
@@ -326,21 +361,19 @@ public sealed class CovenantResetCheckpointInitiatorTests
     public async Task A_healthy_catalog_factory_erasure_commits_its_own_v1_checkpoint()
     {
 
-        FakeLongRunningOperationStore store = new(Clock);
+        await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
 
-        LongRunningOperation seeded = store.Seed(
-            LongRunningOperationKinds.DataRetentionFactoryReset,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        (FakeLongRunningOperationStore store, LongRunningOperation operation) =
+            await RunningFactoryAsync();
 
-        _ = await store.TryAcquireLeaseAsync(
-            seeded.Id,
-            "owner-118",
-            Clock.GetUtcNow(),
-            Clock.GetUtcNow().AddMinutes(2));
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
-        Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(store)
+        Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(
+                store,
+                catalog: CatalogGuard(database),
+                gate: gate)
             .PrepareFactoryErasureInventoryAsync(
-                (await store.GetAsync(seeded.Id))!,
+                operation,
                 "owner-118",
                 Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure),
                 requestedOperationId: null,
@@ -348,7 +381,7 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         Assert.True(admitted.IsSuccess);
 
-        LongRunningOperation stored = (await store.GetAsync(seeded.Id))!;
+        LongRunningOperation stored = (await store.GetAsync(operation.Id))!;
 
         Assert.Equal(DataRetentionFactoryResetCheckpointV1.CurrentVersion, stored.CheckpointVersion);
 
@@ -362,6 +395,136 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(
             CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
             admitted.Value.Owner.Operation);
+
+    }
+
+    [Fact]
+    public async Task Damaged_factory_catalog_refuses_before_digest_checkpoint_or_admission()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
+
+        await database.ExecuteAsync("DROP TRIGGER covenant_entries_guard_delete;", CancellationToken.None);
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation) =
+            await RunningFactoryAsync();
+
+        CountingDigestCalculator digests = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Result<CovenantResetCheckpointInitiator.GateAdmission> refused = await Initiator(
+                store,
+                digests,
+                CatalogGuard(database),
+                gate)
+            .PrepareFactoryErasureInventoryAsync(
+                operation,
+                "owner-118",
+                Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure),
+                requestedOperationId: null,
+                CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, refused.Error.Code);
+
+        Assert.Equal(0, digests.ComputeCount);
+
+        Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
+
+        Result<CovenantExclusiveLease> acquired = await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.BackupRestore),
+            CancellationToken.None);
+
+        Assert.True(acquired.IsSuccess);
+
+        await using CovenantExclusiveLease lease = acquired.Value;
+
+        Assert.True((await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+    }
+
+    [Fact]
+    public async Task Exclusive_replacement_cannot_win_between_catalog_proof_and_checkpoint_commit()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation) =
+            await RunningFactoryAsync();
+
+        using BlockingDigestCalculator digests = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Task<Result<CovenantResetCheckpointInitiator.GateAdmission>> preparing = Task.Run(
+            async () => await Initiator(store, digests, CatalogGuard(database), gate)
+                .PrepareFactoryErasureInventoryAsync(
+                    operation,
+                    "owner-118",
+                    Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure),
+                    requestedOperationId: null,
+                    CancellationToken.None));
+
+        await digests.Entered;
+
+        Task<Result<CovenantExclusiveLease>> replacement = gate.AcquireExclusiveAsync(
+                CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
+                CancellationToken.None)
+            .AsTask();
+
+        Assert.False(replacement.IsCompleted);
+
+        Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
+
+        digests.Release();
+
+        Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await preparing;
+
+        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
+
+        Assert.Equal(
+            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+            (await store.GetAsync(operation.Id))!.CheckpointVersion);
+
+        Result<CovenantExclusiveLease> replaced = await replacement;
+
+        Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Message : null);
+
+        await using CovenantExclusiveLease lease = replaced.Value;
+
+        Assert.True((await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+    }
+
+    [Fact]
+    public async Task Covenant_memory_reset_does_not_acquire_the_factory_catalog_read_lease()
+    {
+
+        (FakeLongRunningOperationStore store, LongRunningOperation operation) =
+            await RunningMutationAsync();
+
+        RecordingCovenantOperationGate gate = new();
+
+        Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(
+                store,
+                gate: gate)
+            .PrepareCovenantResetInventoryAsync(
+                operation,
+                "owner-118",
+                Effect(),
+                requestedOperationId: null,
+                MemoryResetScope.Covenant,
+                CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess);
+
+        Assert.Empty(gate.Acquisitions);
 
     }
 
@@ -455,6 +618,126 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(afterFirst.CheckpointVersion, afterSecond.CheckpointVersion);
 
         Assert.Equal(afterFirst.CheckpointPayload, afterSecond.CheckpointPayload);
+
+    }
+
+    private static async Task<CovenantSchemaScratchDatabase> HealthyCatalogAsync()
+    {
+
+        CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        try
+        {
+
+            await database.InstallHealthyCovenantCatalogAsync(
+                withAccelerator: true,
+                CancellationToken.None);
+
+            return database;
+
+        }
+        catch
+        {
+
+            await database.DisposeAsync();
+
+            throw;
+
+        }
+
+    }
+
+    private static CovenantHealthyCatalogErasureGuard CatalogGuard(
+        CovenantSchemaScratchDatabase database) =>
+        new(
+            database.MaintenanceConnections(),
+            CovenantSqliteConnectionInitializer.Instance,
+            new CovenantConnectionDrain(),
+            new GrimoireSchemaManifestInspector(
+                GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
+
+    private static CovenantHealthyCatalogErasureGuard UnusedCatalogGuard() =>
+        new(
+            new UnreachableMaintenanceConnectionFactory(),
+            CovenantSqliteConnectionInitializer.Instance,
+            new CovenantConnectionDrain(),
+            new GrimoireSchemaManifestInspector(
+                GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
+
+    private sealed class CountingDigestCalculator : ICovenantErasureEffectDigestCalculator
+    {
+
+        private readonly CovenantErasureEffectDigestCalculator _inner = new();
+
+        internal int ComputeCount { get; private set; }
+
+        public Result<CovenantDigest> Compute(CovenantErasureEffectDigestInput input)
+        {
+
+            ComputeCount++;
+
+            return _inner.Compute(input);
+
+        }
+
+    }
+
+    private sealed class BlockingDigestCalculator : ICovenantErasureEffectDigestCalculator, IDisposable
+    {
+
+        private readonly TaskCompletionSource<bool> _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly ManualResetEventSlim _release = new(initialState: false);
+
+        private readonly CovenantErasureEffectDigestCalculator _inner = new();
+
+        internal Task Entered => _entered.Task;
+
+        internal void Release() => _release.Set();
+
+        public Result<CovenantDigest> Compute(CovenantErasureEffectDigestInput input)
+        {
+
+            _ = _entered.TrySetResult(true);
+
+            _release.Wait();
+
+            return _inner.Compute(input);
+
+        }
+
+        public void Dispose() => _release.Dispose();
+
+    }
+
+    private sealed class UnreachableMaintenanceConnectionFactory : ICovenantMaintenanceConnectionFactory
+    {
+
+        public string DatabasePath => throw new NotSupportedException();
+
+        public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException(
+                "Covenant memory-reset preparation must not inspect the factory catalog.");
+
+        public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SqliteConnection> OpenSideFileAsync(
+            string path,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task AttachSideFileAsync(
+            SqliteConnection connection,
+            string alias,
+            string path,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
 
     }
 

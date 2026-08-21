@@ -589,6 +589,7 @@ public sealed class CovenantPlaintextExportTests
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             RegistrationId: Guid.Parse("60718293-A4B5-4C6D-8E7F-8091A2B3C4D5"),
+            RuntimeAuthorityGeneration: 1,
             Kind: scope is null ? CovenantLeaseKind.InstallationRead : CovenantLeaseKind.Read,
             Coverage: scope is null ? CovenantLeaseCoverage.Installation : CovenantLeaseCoverage.Scoped,
             Scope: scope,

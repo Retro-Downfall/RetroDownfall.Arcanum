@@ -318,6 +318,7 @@ public readonly record struct CovenantExclusiveRecoveryOwner
 /// </remarks>
 public sealed record CovenantOperationLeaseSnapshot(
     Guid RegistrationId,
+    long RuntimeAuthorityGeneration,
     CovenantLeaseKind Kind,
     CovenantLeaseCoverage Coverage,
     CovenantOperationScope? Scope,
@@ -330,7 +331,14 @@ public sealed record CovenantOperationLeaseSnapshot(
     ulong? AcceleratorEpoch,
     long? AppliedCampaignDeletionSequence,
     CovenantExclusiveRecoveryOwner? RecoveryOwner,
-    bool CleanupOnlyHistoricalCampaign);
+    bool CleanupOnlyHistoricalCampaign)
+{
+
+    public long RuntimeAuthorityGeneration { get; init; } = CovenantValidation.RequirePositive(
+        RuntimeAuthorityGeneration,
+        nameof(RuntimeAuthorityGeneration));
+
+}
 
 /// <summary>
 /// One live registration inside the operation gate, as the Core lease types see it.
@@ -358,6 +366,8 @@ public interface ICovenantLeaseRegistration
 /// </summary>
 public interface ICovenantExclusiveLeaseRegistration : ICovenantLeaseRegistration
 {
+
+    Result ExecuteWhileHeld(Func<Result> callback);
 
     ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
@@ -391,6 +401,8 @@ public interface ICovenantSnapshotReadLease : ICovenantOperationLease
 /// </summary>
 public interface ICovenantExclusiveOperationLease : ICovenantOperationLease
 {
+
+    Result ExecuteWhileHeld(Func<Result> callback);
 
     ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
@@ -506,6 +518,35 @@ public abstract class CovenantExclusiveOperationLease
     private protected CovenantExclusiveOperationLease(ICovenantExclusiveLeaseRegistration registration)
         : base(registration) =>
         _exclusive = registration;
+
+    public Result ExecuteWhileHeld(Func<Result> callback)
+    {
+
+        ArgumentNullException.ThrowIfNull(callback);
+
+        if (IsDisposed)
+        {
+
+            return Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.StaleSnapshot,
+                    "This Covenant lease has already been released."));
+
+        }
+
+        if (Volatile.Read(ref _dispositionClaimed) != 0)
+        {
+
+            return Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.LifecycleConflict,
+                    "This exclusive Covenant lease has already used its one disposition."));
+
+        }
+
+        return _exclusive.ExecuteWhileHeld(callback);
+
+    }
 
     public ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,

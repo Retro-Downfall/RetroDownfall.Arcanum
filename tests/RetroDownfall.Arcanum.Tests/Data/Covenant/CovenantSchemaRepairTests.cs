@@ -116,13 +116,122 @@ public sealed class CovenantSchemaRepairTests
 
         using MaintenanceLockScope heldLock = fixture.AcquireLock();
 
-        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await fixture
-            .Recovery(new StubSchemaRepairExecutor())
-            .RecoverBeforeReadinessAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+        StubSchemaRepairExecutor executor = new();
+
+        CovenantSchemaRepairStartupRecovery recovery = fixture.Recovery(executor);
+
+        Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await recovery
+            .PrepareBeforeEffectsAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+
+        Assert.True(prepared.IsSuccess);
+
+        Assert.Equal(0, executor.InspectCalls);
+
+        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await recovery
+            .RecoverPreparedAsync(
+                heldLock.Lock,
+                heldLock.Directory,
+                fixture.Connection,
+                prepared.Value,
+                Token);
 
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(CovenantSchemaRepairStartupRecoveryOutcome.NoActiveJournal, recovered.Value);
+
+    }
+
+    [Fact]
+    public async Task Owner_conflict_is_refused_in_the_effect_free_prepass()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        _ = await fixture.CommitAsync();
+
+        fixture.Gate.AdoptDurableRecoveryOwner(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            scope: null,
+            cleanupOnlyHistoricalCampaign: false);
+
+        using MaintenanceLockScope heldLock = fixture.AcquireLock();
+
+        StubSchemaRepairExecutor executor = new();
+
+        Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await fixture
+            .Recovery(executor)
+            .PrepareBeforeEffectsAsync(
+                heldLock.Lock,
+                heldLock.Directory,
+                fixture.Connection,
+                Token);
+
+        Assert.True(prepared.IsFailure);
+
+        Assert.Equal(0, executor.InspectCalls);
+
+        Assert.Equal(0, executor.RepairCalls);
+
+    }
+
+    [Fact]
+    public async Task Malformed_journal_values_fail_content_free_before_any_effect()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        await using (SqliteCommand command = fixture.Connection.CreateCommand())
+        {
+
+            command.CommandText =
+                """
+                PRAGMA ignore_check_constraints = ON;
+                INSERT INTO covenant_schema_repair_intents (
+                    OperationId, EffectDigest, InspectedCatalogDigest, RepairActionCode, TargetTierCode,
+                    CapturedDatasetGeneration, AuthorityEpoch, PhaseCode, Revision, LastDurableErrorCode,
+                    CreatedAtUtc, UpdatedAtUtc)
+                VALUES ('private malformed identifier', X'01', zeroblob(32), 99, 'tier', NULL,
+                    -1, 'phase', -1, NULL, 'now', 'now');
+                """;
+
+            _ = await command.ExecuteNonQueryAsync();
+
+        }
+
+        using MaintenanceLockScope heldLock = fixture.AcquireLock();
+
+        StubSchemaRepairExecutor executor = new();
+
+        Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await fixture
+            .Recovery(executor)
+            .PrepareBeforeEffectsAsync(
+                heldLock.Lock,
+                heldLock.Directory,
+                fixture.Connection,
+                Token);
+
+        Assert.True(prepared.IsFailure);
+
+        Assert.DoesNotContain("private malformed identifier", prepared.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, executor.InspectCalls);
+
+    }
+
+    [Fact]
+    public async Task Journal_read_preserves_caller_cancellation()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CovenantSchemaRepairJournal.TryReadActiveAsync(
+                fixture.Connection,
+                cancelled.Token));
 
     }
 

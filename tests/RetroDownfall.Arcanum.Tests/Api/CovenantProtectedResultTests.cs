@@ -279,6 +279,7 @@ public sealed class CovenantProtectedResultTests
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             Guid.NewGuid(),
+            RuntimeAuthorityGeneration: 1,
             CovenantLeaseKind.InstallationRead,
             CovenantLeaseCoverage.Installation,
             Scope: null,

@@ -920,6 +920,7 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             Guid.NewGuid(),
+            1,
             CovenantLeaseKind.Exclusive,
             CovenantLeaseCoverage.Installation,
             null,
@@ -935,6 +936,8 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             false);
 
         public CancellationToken Revocation => CancellationToken.None;
+
+        public Result ExecuteWhileHeld(Func<Result> callback) => callback();
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result.Success());

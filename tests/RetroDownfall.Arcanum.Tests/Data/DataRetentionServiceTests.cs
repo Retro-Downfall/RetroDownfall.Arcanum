@@ -3424,7 +3424,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         IDataRetentionPolicyStore? policyStore = null,
         TimeProvider? timeProvider = null,
         ILongRunningOperationStore? operationStore = null,
-        ILogger<DataRetentionService>? logger = null)
+        ILogger<DataRetentionService>? logger = null,
+        CovenantErasureCoordinator? erasureCoordinator = null)
     {
 
         ILongRunningOperationStore operations = operationStore
@@ -3439,7 +3440,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             _attachmentsRoot,
             _filesRoot,
             _logsRoot,
-            policyStore);
+            policyStore,
+            covenantErasureCoordinator: erasureCoordinator);
 
     }
 

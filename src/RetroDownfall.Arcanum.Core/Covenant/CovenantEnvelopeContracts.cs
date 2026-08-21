@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Core.Covenant;
 
@@ -162,6 +163,266 @@ public static class CovenantEnvelopeLimits
 /// would let a reader observe a new dataset generation beside the old envelope epoch, which is exactly
 /// the pairing that would let a token minted before a reset authenticate after it.
 /// </remarks>
+public sealed record CovenantCommittedCapabilityTransition
+{
+
+    public CovenantCommittedCapabilityTransition(
+        long ExpectedGeneration,
+        long Generation,
+        bool FeatureEnabled,
+        CovenantCapabilityState Canonical,
+        int? CanonicalSchemaVersion,
+        string? CanonicalInstalledFingerprint,
+        CovenantCapabilityState Accelerator,
+        int? AcceleratorSchemaVersion,
+        string? AcceleratorInstalledFingerprint,
+        Guid DatasetGeneration,
+        long CanonicalSequence,
+        long CoreCampaignDeletionSequence,
+        long CanonicalAppliedCampaignDeletionSequence,
+        long CanonicalAppliedSessionDeletionSequence,
+        Guid? AppliedDatasetGeneration,
+        long? AppliedSequence,
+        long? AppliedCampaignDeletionSequence,
+        ulong AcceleratorEpoch,
+        CovenantFtsSynchronizationState FtsSynchronization,
+        bool RebuildRequired,
+        long CleanupAppliedCampaignSequence,
+        long CleanupAppliedSessionSequence,
+        bool CleanupFullSweepRequired,
+        string? CanonicalDiagnosticCode,
+        string? AcceleratorDiagnosticCode)
+    {
+
+        this.ExpectedGeneration =
+            CovenantValidation.RequirePositive(ExpectedGeneration, nameof(ExpectedGeneration));
+
+        this.Generation = RequireNextGeneration(this.ExpectedGeneration, Generation);
+
+        this.FeatureEnabled = FeatureEnabled;
+
+        this.Canonical = ValidateTier(
+            Canonical,
+            CanonicalSchemaVersion,
+            CanonicalInstalledFingerprint,
+            CanonicalDiagnosticCode,
+            nameof(Canonical));
+
+        this.CanonicalSchemaVersion = CanonicalSchemaVersion;
+
+        this.CanonicalInstalledFingerprint = CanonicalInstalledFingerprint;
+
+        this.Accelerator = ValidateTier(
+            Accelerator,
+            AcceleratorSchemaVersion,
+            AcceleratorInstalledFingerprint,
+            AcceleratorDiagnosticCode,
+            nameof(Accelerator));
+
+        this.AcceleratorSchemaVersion = AcceleratorSchemaVersion;
+
+        this.AcceleratorInstalledFingerprint = AcceleratorInstalledFingerprint;
+
+        this.DatasetGeneration =
+            CovenantValidation.RequireNonEmpty(DatasetGeneration, nameof(DatasetGeneration));
+
+        this.CanonicalSequence = RequireNonNegative(CanonicalSequence, nameof(CanonicalSequence));
+
+        this.CoreCampaignDeletionSequence = RequireNonNegative(
+            CoreCampaignDeletionSequence,
+            nameof(CoreCampaignDeletionSequence));
+
+        this.CanonicalAppliedCampaignDeletionSequence = RequireNonNegative(
+            CanonicalAppliedCampaignDeletionSequence,
+            nameof(CanonicalAppliedCampaignDeletionSequence));
+
+        this.CanonicalAppliedSessionDeletionSequence = RequireNonNegative(
+            CanonicalAppliedSessionDeletionSequence,
+            nameof(CanonicalAppliedSessionDeletionSequence));
+
+        this.AppliedDatasetGeneration = ValidateAppliedTuple(
+            AppliedDatasetGeneration,
+            AppliedSequence,
+            AppliedCampaignDeletionSequence);
+
+        this.AppliedSequence = AppliedSequence;
+
+        this.AppliedCampaignDeletionSequence = AppliedCampaignDeletionSequence;
+
+        this.AcceleratorEpoch = AcceleratorEpoch;
+
+        this.FtsSynchronization = Enum.IsDefined(FtsSynchronization)
+            ? FtsSynchronization
+            : throw new ArgumentOutOfRangeException(nameof(FtsSynchronization));
+
+        this.RebuildRequired = RebuildRequired;
+
+        this.CleanupAppliedCampaignSequence = RequireNonNegative(
+            CleanupAppliedCampaignSequence,
+            nameof(CleanupAppliedCampaignSequence));
+
+        this.CleanupAppliedSessionSequence = RequireNonNegative(
+            CleanupAppliedSessionSequence,
+            nameof(CleanupAppliedSessionSequence));
+
+        this.CleanupFullSweepRequired = CleanupFullSweepRequired;
+
+        this.CanonicalDiagnosticCode = CanonicalDiagnosticCode;
+
+        this.AcceleratorDiagnosticCode = AcceleratorDiagnosticCode;
+
+    }
+
+    public long ExpectedGeneration { get; }
+
+    public long Generation { get; }
+
+    public bool FeatureEnabled { get; }
+
+    public CovenantCapabilityState Canonical { get; }
+
+    public int? CanonicalSchemaVersion { get; }
+
+    public string? CanonicalInstalledFingerprint { get; }
+
+    public CovenantCapabilityState Accelerator { get; }
+
+    public int? AcceleratorSchemaVersion { get; }
+
+    public string? AcceleratorInstalledFingerprint { get; }
+
+    public Guid DatasetGeneration { get; }
+
+    public long CanonicalSequence { get; }
+
+    public long CoreCampaignDeletionSequence { get; }
+
+    public long CanonicalAppliedCampaignDeletionSequence { get; }
+
+    public long CanonicalAppliedSessionDeletionSequence { get; }
+
+    public Guid? AppliedDatasetGeneration { get; }
+
+    public long? AppliedSequence { get; }
+
+    public long? AppliedCampaignDeletionSequence { get; }
+
+    public ulong AcceleratorEpoch { get; }
+
+    public CovenantFtsSynchronizationState FtsSynchronization { get; }
+
+    public bool RebuildRequired { get; }
+
+    public long CleanupAppliedCampaignSequence { get; }
+
+    public long CleanupAppliedSessionSequence { get; }
+
+    public bool CleanupFullSweepRequired { get; }
+
+    public string? CanonicalDiagnosticCode { get; }
+
+    public string? AcceleratorDiagnosticCode { get; }
+
+    private static long RequireNextGeneration(long expectedGeneration, long generation)
+    {
+
+        CovenantValidation.RequirePositive(generation, nameof(Generation));
+
+        if (expectedGeneration == long.MaxValue || generation != expectedGeneration + 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(Generation),
+                "A committed capability transition advances exactly one generation.");
+        }
+
+        return generation;
+
+    }
+
+    private static long RequireNonNegative(long value, string parameterName) =>
+        value >= 0 ? value : throw new ArgumentOutOfRangeException(parameterName);
+
+    private static Guid? ValidateAppliedTuple(
+        Guid? datasetGeneration,
+        long? sequence,
+        long? campaignDeletionSequence)
+    {
+
+        bool complete = datasetGeneration is not null
+            && sequence is not null
+            && campaignDeletionSequence is not null;
+
+        if (!complete
+            && (datasetGeneration is not null
+                || sequence is not null
+                || campaignDeletionSequence is not null))
+        {
+            throw new ArgumentException(
+                "The applied accelerator position is present as one complete tuple.",
+                nameof(AppliedDatasetGeneration));
+        }
+
+        if (datasetGeneration == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "An empty applied dataset generation is invalid.",
+                nameof(AppliedDatasetGeneration));
+        }
+
+        if (sequence < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(AppliedSequence));
+        }
+
+        if (campaignDeletionSequence < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(AppliedCampaignDeletionSequence));
+        }
+
+        return datasetGeneration;
+
+    }
+
+    private static CovenantCapabilityState ValidateTier(
+        CovenantCapabilityState state,
+        int? schemaVersion,
+        string? installedFingerprint,
+        string? diagnosticCode,
+        string parameterName)
+    {
+
+        if (!Enum.IsDefined(state))
+        {
+            throw new ArgumentOutOfRangeException(parameterName);
+        }
+
+        if (state == CovenantCapabilityState.Healthy)
+        {
+            if (schemaVersion is null or <= 0
+                || string.IsNullOrWhiteSpace(installedFingerprint)
+                || diagnosticCode is not null)
+            {
+                throw new ArgumentException(
+                    "A healthy capability tier requires installed schema metadata and no diagnostic code.",
+                    parameterName);
+            }
+        }
+        else if (schemaVersion is not null || string.IsNullOrWhiteSpace(diagnosticCode))
+        {
+            throw new ArgumentException(
+                "An unhealthy capability tier carries no schema version and requires a diagnostic code.",
+                parameterName);
+        }
+
+        return state;
+
+    }
+
+}
+
+/// <summary>
+/// The exact nonsecret facts one committed authority transition establishes.
+/// </summary>
 public sealed record CovenantCommittedAuthorityTransition
 {
 
@@ -171,9 +432,9 @@ public sealed record CovenantCommittedAuthorityTransition
         uint masterKeyVersion,
         long canonicalEnvelopeEpoch,
         long recoveryEnvelopeEpoch,
-        long capabilityGeneration,
-        Guid? datasetGeneration,
-        bool covenantEnabled)
+        CovenantHostToolsState hostToolsState,
+        string? transitionId,
+        CovenantCommittedCapabilityTransition capability)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(installationIdentity);
@@ -186,13 +447,18 @@ public sealed record CovenantCommittedAuthorityTransition
 
         CovenantValidation.RequirePositive(recoveryEnvelopeEpoch, nameof(recoveryEnvelopeEpoch));
 
-        CovenantValidation.RequirePositive(capabilityGeneration, nameof(capabilityGeneration));
+        if (!Enum.IsDefined(hostToolsState))
+        {
+            throw new ArgumentOutOfRangeException(nameof(hostToolsState));
+        }
 
-        if (datasetGeneration == Guid.Empty)
+        if ((hostToolsState == CovenantHostToolsState.Clean && transitionId is not null)
+            || (hostToolsState != CovenantHostToolsState.Clean
+                && string.IsNullOrWhiteSpace(transitionId)))
         {
             throw new ArgumentException(
-                "An empty dataset generation is indistinguishable from an absent one.",
-                nameof(datasetGeneration));
+                "The transition identity must agree with the host-tools state.",
+                nameof(transitionId));
         }
 
         InstallationIdentity = installationIdentity;
@@ -205,11 +471,11 @@ public sealed record CovenantCommittedAuthorityTransition
 
         RecoveryEnvelopeEpoch = recoveryEnvelopeEpoch;
 
-        CapabilityGeneration = capabilityGeneration;
+        HostToolsState = hostToolsState;
 
-        DatasetGeneration = datasetGeneration;
+        TransitionId = transitionId;
 
-        CovenantEnabled = covenantEnabled;
+        Capability = capability ?? throw new ArgumentNullException(nameof(capability));
 
     }
 
@@ -223,11 +489,11 @@ public sealed record CovenantCommittedAuthorityTransition
 
     public long RecoveryEnvelopeEpoch { get; }
 
-    public long CapabilityGeneration { get; }
+    public CovenantHostToolsState HostToolsState { get; }
 
-    public Guid? DatasetGeneration { get; }
+    public string? TransitionId { get; }
 
-    public bool CovenantEnabled { get; }
+    public CovenantCommittedCapabilityTransition Capability { get; }
 
 }
 

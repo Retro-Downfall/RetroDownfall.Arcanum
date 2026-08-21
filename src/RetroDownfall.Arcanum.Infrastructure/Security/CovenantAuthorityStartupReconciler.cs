@@ -35,7 +35,7 @@ internal static class CovenantAuthorityStartupReconciler
 
     internal static async Task ReconcileAsync(
         SqliteConnection installConnection,
-        CovenantAuthoritySnapshotProvider authorityProvider,
+        CovenantRuntimeGenerationProvider runtime,
         CovenantEnvelopeMasterKeyProvider keyProvider,
         CovenantAvailabilitySnapshot availability,
         IHostProcessToolsRuntimePolicy hostToolsPolicy,
@@ -45,7 +45,7 @@ internal static class CovenantAuthorityStartupReconciler
 
         ArgumentNullException.ThrowIfNull(installConnection);
 
-        ArgumentNullException.ThrowIfNull(authorityProvider);
+        ArgumentNullException.ThrowIfNull(runtime);
 
         ArgumentNullException.ThrowIfNull(keyProvider);
 
@@ -64,6 +64,8 @@ internal static class CovenantAuthorityStartupReconciler
 
         }
 
+        CovenantRuntimeGenerationState expected = runtime.Current;
+
         try
         {
 
@@ -80,8 +82,6 @@ internal static class CovenantAuthorityStartupReconciler
                 return;
 
             }
-
-            authorityProvider.Publish(snapshot);
 
             CovenantEnvelopeStateRow? envelope = availability.Canonical is CovenantCapabilityState.Healthy
                 ? await CovenantEnvelopeStateStore.ReadAsync(installConnection, transaction: null, cancellationToken)
@@ -101,25 +101,37 @@ internal static class CovenantAuthorityStartupReconciler
 
             }
 
-            CovenantCommittedAuthorityTransition transition = new(
-                snapshot.InstallationIdentity,
-                snapshot.AuthorityEpoch,
-                snapshot.MasterKeyVersion,
-                envelope?.EnvelopeKeyEpoch ?? 1,
-                snapshot.RecoveryEnvelopeEpoch,
-                Math.Max(availability.Generation, 1),
-                envelope?.DatasetGeneration,
-                availability.FeatureEnabled);
-
             byte[] material = Encoding.UTF8.GetBytes(masterApiKey);
 
-            Result initialized = keyProvider.Initialize(material, transition);
+            Result<CovenantPreparedEnvelopeKeyGeneration> prepared = keyProvider.PrepareInitial(
+                material,
+                new CovenantEnvelopeBootstrapKeyInput(
+                    snapshot.InstallationIdentity,
+                    snapshot.MasterKeyVersion,
+                    envelope?.EnvelopeKeyEpoch ?? 1,
+                    snapshot.RecoveryEnvelopeEpoch,
+                    envelope?.DatasetGeneration));
+
+            if (!prepared.IsSuccess)
+            {
+
+                Log.Warning(
+                    "Covenant envelope key derivation failed with {ErrorCode}; opaque Covenant tokens stay unavailable.",
+                    prepared.Error.Code);
+
+                return;
+
+            }
+
+            using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
+
+            Result initialized = runtime.Initialize(expected, owned, snapshot, availability);
 
             if (!initialized.IsSuccess)
             {
 
                 Log.Warning(
-                    "Covenant envelope key derivation failed with {ErrorCode}; opaque Covenant tokens stay unavailable.",
+                    "Covenant runtime authority initialization failed with {ErrorCode}; authority and opaque tokens stay unavailable.",
                     initialized.Error.Code);
 
             }
@@ -161,6 +173,7 @@ internal static class CovenantAuthorityStartupReconciler
         }
 
         return new CovenantAuthoritySnapshot(
+            RuntimeAuthorityGeneration: 1,
             reader.GetString(0),
             reader.GetInt64(1),
             checked((uint)reader.GetInt64(2)),

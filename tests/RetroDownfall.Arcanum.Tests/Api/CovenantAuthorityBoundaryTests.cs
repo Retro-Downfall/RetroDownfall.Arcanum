@@ -270,6 +270,7 @@ public sealed class CovenantAuthorityBoundaryTests
         {
 
             public CovenantAuthoritySnapshot? Current { get; } = new(
+                RuntimeAuthorityGeneration: 1,
                 InstallationIdentity: "boundary-test",
                 AuthorityEpoch: 4,
                 MasterKeyVersion: 1,

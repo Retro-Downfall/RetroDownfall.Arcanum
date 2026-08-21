@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -73,6 +74,116 @@ public sealed class CovenantContextProviderTests
         Assert.Throws<ArgumentOutOfRangeException>(
             static () => CovenantTurnContext.Absent(CovenantTurnAbsence.None));
 
+    [Fact]
+    public async Task A_turn_epoch_from_an_older_runtime_generation_is_refused_before_store_access()
+    {
+
+        RecordingLeaseRegistration registration = new(runtimeAuthorityGeneration: 2);
+
+        RecordingStore store = new();
+
+        CovenantContextProvider provider = new(
+            new StubAvailability(Availability()),
+            new UnreachableGate(registration),
+            store,
+            new CovenantLinker());
+
+        Result<CovenantTurnContext> result = await provider.BeginTurnAsync(
+            InvocationContexts.AttendedSession(),
+            TurnId,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+
+        Assert.Equal(0, store.Reads);
+
+        Assert.Equal(1, registration.Releases);
+
+    }
+
+    [Fact]
+    public async Task A_matching_turn_epoch_retains_the_real_lease_until_the_turn_context_is_disposed()
+    {
+
+        FakeCovenantAvailability availability = new();
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
+            availability,
+            authority);
+
+        CovenantAuthoritySnapshot currentAuthority = authority.Current!;
+
+        CovenantReadAuthorityEpoch epoch = CovenantReadAuthorityEpoch.CreateForTests(
+            Guid.Parse(currentAuthority.InstallationIdentity),
+            currentAuthority.RuntimeAuthorityGeneration,
+            currentAuthority.AuthorityEpoch);
+
+        ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(
+            ArcanumExecutionSurface.SessionBackedOperatorTurn,
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignOne),
+            InvocationAttendance.Attended,
+            CovenantContextPolicy.Default,
+            ToolPolicy.AllTools,
+            epoch).Value;
+
+        CovenantContextProvider provider = new(
+            availability,
+            gate,
+            new SuccessfulStore(),
+            new CovenantLinker());
+
+        Result<CovenantTurnContext> begun = await provider.BeginTurnAsync(
+            invocation,
+            TurnId,
+            CancellationToken.None);
+
+        Assert.True(begun.IsSuccess);
+
+        CovenantTurnContext context = begun.Value;
+
+        Assert.True(context.HasPlan);
+
+        Assert.Equal(1, gate.LiveRegistrationCount);
+
+        Task<Result<CovenantExclusiveLease>> closing = gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            CancellationToken.None).AsTask();
+
+        try
+        {
+
+            Assert.False(closing.IsCompleted);
+
+            Assert.True((await context.RevalidateAsync(CancellationToken.None)).IsFailure);
+
+            Assert.Equal(1, gate.LiveRegistrationCount);
+
+        }
+        finally
+        {
+
+            await context.DisposeAsync();
+
+        }
+
+        Result<CovenantExclusiveLease> closed = await closing;
+
+        Assert.True(closed.IsSuccess);
+
+        Assert.Equal(0, gate.LiveRegistrationCount);
+
+        await using CovenantExclusiveLease lease = closed.Value;
+
+        Assert.True((await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+    }
+
     private static Task<CovenantTurnContext> Begin(
         CovenantContextProvider provider,
         ArcanumInvocationContext invocation) =>
@@ -131,7 +242,7 @@ public sealed class CovenantContextProviderTests
 
     }
 
-    private sealed class UnreachableGate : ICovenantOperationGate
+    private sealed class UnreachableGate(ICovenantLeaseRegistration? turn = null) : ICovenantOperationGate
     {
 
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(CancellationToken cancellationToken) =>
@@ -144,7 +255,9 @@ public sealed class CovenantContextProviderTests
             throw new UnreachableException();
 
         public ValueTask<Result<CovenantTurnLease>> AcquireTurnAsync(CanonicalCampaignContext campaign, CancellationToken cancellationToken) =>
-            throw new UnreachableException();
+            turn is null
+                ? throw new UnreachableException()
+                : ValueTask.FromResult(Result<CovenantTurnLease>.Success(new CovenantTurnLease(turn)));
 
         public ValueTask<Result<CovenantMcpLease>> AcquireMcpAsync(CovenantOperationScope scope, CancellationToken cancellationToken) =>
             throw new UnreachableException();
@@ -164,6 +277,9 @@ public sealed class CovenantContextProviderTests
         public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) =>
             throw new UnreachableException();
 
+        public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) =>
+            throw new UnreachableException();
+
         public ValueTask<Result<CovenantCampaignExclusiveLease>> ResumeCampaignExclusiveAsync(Guid campaignId, CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) =>
             throw new UnreachableException();
 
@@ -172,6 +288,103 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) =>
             throw new UnreachableException();
+
+    }
+
+    private sealed class RecordingLeaseRegistration(long runtimeAuthorityGeneration) : ICovenantLeaseRegistration
+    {
+
+        public int Releases { get; private set; }
+
+        public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
+            RegistrationId: Guid.Parse("11111111-2222-4333-8444-555555555555"),
+            runtimeAuthorityGeneration,
+            CovenantLeaseKind.Turn,
+            CovenantLeaseCoverage.Scoped,
+            CovenantOperationScope.Global,
+            CovenantTask6Fixture.DatasetGeneration,
+            CapabilityGeneration: 1,
+            AuthorityEpoch: 11,
+            CanonicalSequence: 0,
+            CampaignAvailabilityGeneration: 1,
+            CampaignPathRevision: null,
+            AcceleratorEpoch: null,
+            AppliedCampaignDeletionSequence: null,
+            RecoveryOwner: null,
+            CleanupOnlyHistoricalCampaign: false);
+
+        public CancellationToken Revocation => CancellationToken.None;
+
+        public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result.Success());
+
+        public ValueTask ReleaseAsync()
+        {
+
+            Releases++;
+
+            return ValueTask.CompletedTask;
+
+        }
+
+    }
+
+    private sealed class RecordingStore : ICovenantStore
+    {
+
+        public int Reads { get; private set; }
+
+        public ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
+            CanonicalCampaignContext campaign,
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken)
+        {
+
+            Reads++;
+
+            throw new UnreachableException();
+
+        }
+
+        public ValueTask<Result<CovenantLaneHeadProbe>> ProbeLaneHeadAsync(CanonicalCampaignContext campaign, CovenantLane lane, string normalizedKey, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantListPage>> ReadListPageAsync(CovenantListQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantDetail>> ReadDetailAsync(CovenantDetailQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantVersionPage>> ReadVersionPageAsync(CovenantVersionQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantSourcePage>> ReadSourcePageAsync(CovenantSourceQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+    }
+
+    private sealed class SuccessfulStore : ICovenantStore
+    {
+
+        public ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
+            CanonicalCampaignContext campaign,
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CovenantTurnSnapshot>.Success(
+                new CovenantTurnSnapshot(
+                    new CovenantGenerationId(CovenantOperationGateFixture.DatasetGeneration),
+                    CovenantOperationGateFixture.CampaignOne,
+                    canonicalSearchSequence: 12,
+                    [])));
+
+        public ValueTask<Result<CovenantLaneHeadProbe>> ProbeLaneHeadAsync(CanonicalCampaignContext campaign, CovenantLane lane, string normalizedKey, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantListPage>> ReadListPageAsync(CovenantListQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantDetail>> ReadDetailAsync(CovenantDetailQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantVersionPage>> ReadVersionPageAsync(CovenantVersionQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantSourcePage>> ReadSourcePageAsync(CovenantSourceQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
     }
 

@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
-/// The core disclosure journal writer (§10.13).
+/// Commits one disclosure acknowledgement through a caller-owned open connection.
 /// </summary>
 /// <remarks>
 /// One immediate transaction per acknowledgement, because the subject's ordinal allocation, its
@@ -15,17 +15,34 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// ordinal outside the transaction that inserts the row is how two parallel provider attempts end up
 /// claiming the same one, and the chain digest then commits to a sequence that never happened.
 /// </remarks>
-internal sealed class CovenantDisclosureJournal(
-    ICovenantConnectionSource connections,
-    Guid bootId) : ICovenantDisclosureJournal
+internal interface ICovenantDisclosureTransactionWriter
+{
+
+    ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
+        SqliteConnection connection,
+        CovenantDisclosureDraft draft,
+        CovenantDisclosureEffectCategory category,
+        ProviderCallSensitivity sensitivity,
+        CancellationToken cancellationToken);
+
+}
+
+/// <summary>
+/// The existing immediate SQL transaction behind the process-wide disclosure writer (§10.13).
+/// </summary>
+internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
+    : ICovenantDisclosureTransactionWriter
 {
 
     public async ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
+        SqliteConnection connection,
         CovenantDisclosureDraft draft,
         CovenantDisclosureEffectCategory category,
         ProviderCallSensitivity sensitivity,
         CancellationToken cancellationToken)
     {
+
+        ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(draft);
 
@@ -46,10 +63,6 @@ internal sealed class CovenantDisclosureJournal(
                 "The supplied sensitivity does not match the disclosure draft's frozen digest.");
 
         }
-
-        SqliteConnection connection = await connections
-            .GetOpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
 
         return await SqliteBusyRetry.ExecuteAsync(
             () => AcknowledgeWithinTransactionAsync(

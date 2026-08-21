@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
@@ -127,11 +128,17 @@ internal sealed class CovenantVerifiedExport(string stagingPath)
 /// <summary>The candidate dataset identity and envelope master this erasure created.</summary>
 internal sealed record CovenantCandidateDatasetState(
     Guid DatasetGeneration,
+    long CanonicalSearchSequence,
+    long CoreCampaignDeletionSequence,
+    Guid? AppliedDatasetGeneration,
+    long? AppliedSearchSequence,
+    long AppliedCampaignDeletionSequence,
+    long AppliedSessionDeletionSequence,
+    ulong AcceleratorEpoch,
+    CovenantFtsRebuildState RebuildState,
     long EnvelopeMasterKeyVersion,
     byte[] EnvelopeMasterKeyFingerprint,
-    long EnvelopeKeyEpoch,
-    long AppliedCampaignDeletionSequence,
-    long AppliedSessionDeletionSequence);
+    long EnvelopeKeyEpoch);
 
 /// <summary>The installation authority the candidate dataset has to agree with.</summary>
 internal sealed record CovenantCandidateAuthorityState(
@@ -139,7 +146,9 @@ internal sealed record CovenantCandidateAuthorityState(
     long AuthorityEpoch,
     long CurrentMasterKeyVersion,
     byte[] CurrentMasterKeyFingerprint,
-    long RecoveryEnvelopeEpoch);
+    long RecoveryEnvelopeEpoch,
+    CovenantHostToolsState HostToolsState,
+    string? TransitionId);
 
 /// <summary>The Covenant family's own row in the shared per-capability cleanup cursor.</summary>
 internal sealed record CovenantCandidateCapabilityState(
@@ -855,14 +864,19 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             return Result.Success();
 
         }
-        catch (Exception failed) when (failed is SqliteException or InvalidOperationException)
+        catch (Exception failed) when (
+            failed is SqliteException
+                or InvalidOperationException
+                or InvalidCastException
+                or OverflowException
+                or ArgumentException)
         {
 
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
-                $"The empty Covenant accelerator did not pass rank-1 integrity: {failed.Message}");
+                "The empty Covenant accelerator did not pass rank-1 integrity.");
 
         }
 
@@ -884,13 +898,13 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                 .ConfigureAwait(false);
 
         }
-        catch (SqliteException failed)
+        catch (SqliteException)
         {
 
             return Result<CovenantVerifiedCandidateState>.Failure(
                 new Error(
                     ErrorCodes.Covenant.ErasureIncomplete,
-                    $"A Covenant erasure could not reopen its candidate database read-only: {failed.Message}"));
+                    "A Covenant erasure could not reopen its candidate database read-only."));
 
         }
 
@@ -918,13 +932,17 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                     : verified;
 
             }
-            catch (Exception failed) when (failed is SqliteException or InvalidOperationException)
+            catch (Exception failed) when (
+                failed is SqliteException
+                    or InvalidOperationException
+                    or InvalidCastException
+                    or OverflowException
+                    or FormatException
+                    or ArgumentException)
             {
 
                 return Result<CovenantVerifiedCandidateState>.Failure(
-                    new Error(
-                        ErrorCodes.Covenant.IntegrityFailure,
-                        $"A Covenant erasure could not verify its candidate database: {failed.Message}"));
+                    MalformedCandidate());
 
             }
 
@@ -937,53 +955,55 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CancellationToken cancellationToken)
     {
 
-        Result<CovenantCandidateDatasetState> dataset =
-            await ReadDatasetAsync(connection, cancellationToken).ConfigureAwait(false);
+        Result<CovenantVerifiedCandidateState> candidate =
+            await ReadCandidateAsync(connection, cancellationToken).ConfigureAwait(false);
 
-        if (dataset.IsFailure)
+        if (candidate.IsFailure)
         {
 
-            return Result<CovenantVerifiedCandidateState>.Failure(dataset.Error);
+            return candidate;
 
         }
 
-        Result<CovenantCandidateAuthorityState> authority =
-            await ReadAuthorityAsync(connection, cancellationToken).ConfigureAwait(false);
+        CovenantCandidateDatasetState dataset = candidate.Value.Dataset;
 
-        if (authority.IsFailure)
-        {
+        CovenantCandidateAuthorityState authority = candidate.Value.Authority;
 
-            return Result<CovenantVerifiedCandidateState>.Failure(authority.Error);
-
-        }
-
-        Result<CovenantCandidateCapabilityState> capability =
-            await ReadCapabilityAsync(connection, cancellationToken).ConfigureAwait(false);
-
-        if (capability.IsFailure)
-        {
-
-            return Result<CovenantVerifiedCandidateState>.Failure(capability.Error);
-
-        }
+        CovenantCandidateCapabilityState capability = candidate.Value.Capability;
 
         // The candidate's envelope master may lag the installation authority and may not lead it.
         // Lagging is ordinary: the canonical singleton is reconciled to a rotated master by the next
         // mutation that needs one, and an erased family has no next mutation. Leading is not
         // reachable by any writer, so a candidate that leads names a master key the authority row
         // cannot resolve, and publishing it would authorize envelopes nothing can open.
-        if (dataset.Value.EnvelopeMasterKeyVersion > authority.Value.CurrentMasterKeyVersion)
+        if (dataset.EnvelopeMasterKeyVersion > authority.CurrentMasterKeyVersion)
         {
 
             return Mismatch("its envelope master version is ahead of the installation authority");
 
         }
 
+        if (dataset.EnvelopeMasterKeyVersion == authority.CurrentMasterKeyVersion
+            && !dataset.EnvelopeMasterKeyFingerprint.AsSpan()
+                .SequenceEqual(authority.CurrentMasterKeyFingerprint))
+        {
+
+            return Mismatch("its current envelope master fingerprint disagrees with the authority");
+
+        }
+
+        if (dataset.AppliedCampaignDeletionSequence > dataset.CoreCampaignDeletionSequence)
+        {
+
+            return Mismatch("its Campaign deletion position is ahead of the core journal");
+
+        }
+
         // Both cleanup cursors move to the same journal position. A reset that moved only one leaves
         // the two disagreeing about the same journal, and the next sweep replays deletions against a
         // dataset with no rows to delete.
-        if (dataset.Value.AppliedCampaignDeletionSequence != capability.Value.AppliedCampaignSequence
-            || dataset.Value.AppliedSessionDeletionSequence != capability.Value.AppliedSessionSequence)
+        if (dataset.AppliedCampaignDeletionSequence != capability.AppliedCampaignSequence
+            || dataset.AppliedSessionDeletionSequence != capability.AppliedSessionSequence)
         {
 
             return Mismatch("its two owner-deletion cursors disagree");
@@ -994,8 +1014,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         return empty.IsFailure
             ? Result<CovenantVerifiedCandidateState>.Failure(empty.Error)
-            : Result<CovenantVerifiedCandidateState>.Success(
-                new CovenantVerifiedCandidateState(dataset.Value, authority.Value, capability.Value));
+            : candidate;
 
     }
 
@@ -1044,7 +1063,15 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     }
 
-    private static async Task<Result<CovenantCandidateDatasetState>> ReadDatasetAsync(
+    /// <summary>
+    /// Reads every fact that can reach the committed runtime publication in one SQLite statement.
+    /// </summary>
+    /// <remarks>
+    /// The scalar journal maximum intentionally belongs to this statement too. Reading it before or
+    /// after the three singleton rows would let a concurrent core deletion make the candidate look
+    /// caught up to a journal position that was never observed beside its applied cursor.
+    /// </remarks>
+    private static async Task<Result<CovenantVerifiedCandidateState>> ReadCandidateAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -1052,15 +1079,47 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
-            SELECT DatasetGeneration,
-                   EnvelopeMasterKeyVersion,
-                   EnvelopeMasterKeyFingerprint,
-                   EnvelopeKeyEpoch,
-                   AppliedCampaignDeletionSequence,
-                   AppliedSessionDeletionSequence
-            FROM covenant_state
-            WHERE StateKey = 1;
+            SELECT state.DatasetGeneration,
+                   state.CanonicalSearchSequence,
+                   (
+                       SELECT COALESCE(MAX(events.Sequence), 0)
+                       FROM owner_deletion_events AS events
+                       WHERE events.OwnerKindCode = $campaignOwnerKind
+                   ),
+                   state.AppliedDatasetGeneration,
+                   state.AppliedSearchSequence,
+                   state.AppliedCampaignDeletionSequence,
+                   state.AppliedSessionDeletionSequence,
+                   state.AcceleratorEpoch,
+                   state.RebuildStateCode,
+                   state.EnvelopeMasterKeyVersion,
+                   state.EnvelopeMasterKeyFingerprint,
+                   state.EnvelopeKeyEpoch,
+                   authority.InstallationIdentity,
+                   authority.AuthorityEpoch,
+                   authority.CurrentMasterKeyVersion,
+                   authority.CurrentMasterKeyFingerprint,
+                   authority.RecoveryEnvelopeEpoch,
+                   authority.HostToolsStateCode,
+                   authority.TransitionId,
+                   capability.AppliedCampaignSequence,
+                   capability.AppliedSessionSequence,
+                   capability.FullSweepRequired,
+                   state.RebuildTargetSequence,
+                   state.RebuildCursor,
+                   authority.TaintTimeMasterVersion,
+                   authority.TaintFingerprint
+            FROM covenant_state AS state
+            CROSS JOIN covenant_authority_state AS authority
+            INNER JOIN capability_cleanup_state AS capability
+                ON capability.CapabilityFamilyCode = $family
+            WHERE state.StateKey = 1
+              AND authority.StateKey = 1;
             """;
+
+        _ = command.Parameters.AddWithValue("$campaignOwnerKind", 1L);
+
+        _ = command.Parameters.AddWithValue("$family", CovenantFamilyCode);
 
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -1068,37 +1127,212 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
 
-            return Result<CovenantCandidateDatasetState>.Failure(
+            return Result<CovenantVerifiedCandidateState>.Failure(
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
-                    "The reopened Covenant candidate carries no canonical singleton."));
+                    "The reopened Covenant candidate is missing required publication state."));
 
         }
 
-        byte[] generation = (byte[])reader.GetValue(0);
+        object appliedDatasetValue = reader.GetValue(3);
 
-        byte[] fingerprint = (byte[])reader.GetValue(2);
+        object appliedSearchValue = reader.GetValue(4);
 
-        if (generation.Length != 16 || generation.AsSpan().SequenceEqual(new byte[16]))
+        object transitionValue = reader.GetValue(18);
+
+        object rebuildTargetValue = reader.GetValue(22);
+
+        object rebuildCursorValue = reader.GetValue(23);
+
+        object taintTimeMasterVersionValue = reader.GetValue(24);
+
+        object taintFingerprintValue = reader.GetValue(25);
+
+        if (reader.GetValue(0) is not byte[] generation
+            || generation.Length != 16
+            || new Guid(generation) == Guid.Empty
+            || !TryReadLong(reader, 1, out long canonicalSearchSequence)
+            || canonicalSearchSequence < 0
+            || !TryReadLong(reader, 2, out long coreCampaignDeletionSequence)
+            || coreCampaignDeletionSequence < 0
+            || (appliedDatasetValue is not DBNull && appliedDatasetValue is not byte[])
+            || (appliedSearchValue is not DBNull && appliedSearchValue is not long)
+            || (appliedDatasetValue is DBNull) != (appliedSearchValue is DBNull)
+            || !TryReadLong(reader, 5, out long appliedCampaignDeletionSequence)
+            || appliedCampaignDeletionSequence < 0
+            || !TryReadLong(reader, 6, out long appliedSessionDeletionSequence)
+            || appliedSessionDeletionSequence < 0
+            || !TryReadLong(reader, 7, out long acceleratorEpoch)
+            || acceleratorEpoch <= 0
+            || !TryReadLong(reader, 8, out long rebuildStateCode)
+            || !IsRebuildStateCode(rebuildStateCode)
+            || !TryReadLong(reader, 9, out long envelopeMasterKeyVersion)
+            || envelopeMasterKeyVersion <= 0
+            || envelopeMasterKeyVersion > uint.MaxValue
+            || reader.GetValue(10) is not byte[] fingerprint
+            || fingerprint.Length != 32
+            || !TryReadLong(reader, 11, out long envelopeKeyEpoch)
+            || envelopeKeyEpoch <= 0
+            || reader.GetValue(12) is not string installationIdentity
+            || string.IsNullOrWhiteSpace(installationIdentity)
+            || installationIdentity.Length > 128
+            || !TryReadLong(reader, 13, out long authorityEpoch)
+            || authorityEpoch <= 0
+            || !TryReadLong(reader, 14, out long currentMasterKeyVersion)
+            || currentMasterKeyVersion <= 0
+            || currentMasterKeyVersion > uint.MaxValue
+            || reader.GetValue(15) is not byte[] authorityFingerprint
+            || authorityFingerprint.Length != 32
+            || !TryReadLong(reader, 16, out long recoveryEnvelopeEpoch)
+            || recoveryEnvelopeEpoch <= 0
+            || !TryReadLong(reader, 17, out long hostToolsStateCode)
+            || !IsHostToolsStateCode(hostToolsStateCode)
+            || (transitionValue is not DBNull && transitionValue is not string)
+            || !TryReadLong(reader, 19, out long cleanupCampaignSequence)
+            || cleanupCampaignSequence < 0
+            || !TryReadLong(reader, 20, out long cleanupSessionSequence)
+            || cleanupSessionSequence < 0
+            || !TryReadLong(reader, 21, out long fullSweepRequired)
+            || fullSweepRequired is not 0 and not 1
+            || (rebuildTargetValue is not DBNull && rebuildTargetValue is not long)
+            || (rebuildCursorValue is not DBNull && rebuildCursorValue is not long)
+            || (taintTimeMasterVersionValue is not DBNull
+                && taintTimeMasterVersionValue is not long)
+            || (taintFingerprintValue is not DBNull && taintFingerprintValue is not byte[]))
         {
 
-            return Result<CovenantCandidateDatasetState>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "The reopened Covenant candidate carries no dataset generation."));
+            return Result<CovenantVerifiedCandidateState>.Failure(MalformedCandidate());
 
         }
 
-        return Result<CovenantCandidateDatasetState>.Success(
-            new CovenantCandidateDatasetState(
-                new Guid(generation),
-                Convert.ToInt64(reader.GetValue(1), CultureInfo.InvariantCulture),
-                fingerprint,
-                Convert.ToInt64(reader.GetValue(3), CultureInfo.InvariantCulture),
-                Convert.ToInt64(reader.GetValue(4), CultureInfo.InvariantCulture),
-                Convert.ToInt64(reader.GetValue(5), CultureInfo.InvariantCulture)));
+        byte[]? appliedGenerationBytes = appliedDatasetValue as byte[];
+
+        Guid datasetGeneration = new(generation);
+
+        Guid? appliedDatasetGeneration = appliedGenerationBytes is null
+            ? null
+            : new Guid(appliedGenerationBytes);
+
+        long? appliedSearchSequence = appliedSearchValue is DBNull
+            ? null
+            : (long)appliedSearchValue;
+
+        string? transitionId = transitionValue is DBNull ? null : (string)transitionValue;
+
+        CovenantHostToolsState hostToolsState = (CovenantHostToolsState)hostToolsStateCode;
+
+        CovenantFtsRebuildState rebuildState = (CovenantFtsRebuildState)rebuildStateCode;
+
+        long? rebuildTargetSequence = rebuildTargetValue is DBNull
+            ? null
+            : (long)rebuildTargetValue;
+
+        long? rebuildCursor = rebuildCursorValue is DBNull
+            ? null
+            : (long)rebuildCursorValue;
+
+        long? taintTimeMasterVersion = taintTimeMasterVersionValue is DBNull
+            ? null
+            : (long)taintTimeMasterVersionValue;
+
+        byte[]? taintFingerprint = taintFingerprintValue as byte[];
+
+        if (appliedGenerationBytes is { Length: not 16 }
+            || appliedDatasetGeneration == Guid.Empty
+            || appliedSearchSequence < 0
+            || (appliedDatasetGeneration == datasetGeneration
+                && appliedSearchSequence is { } sameDatasetAppliedSearchSequence
+                && sameDatasetAppliedSearchSequence > canonicalSearchSequence)
+            || rebuildTargetSequence is < 0
+            || rebuildCursor is < 0
+            || (rebuildState == CovenantFtsRebuildState.Rebuilding
+                ? rebuildTargetSequence is null
+                : rebuildTargetSequence is not null || rebuildCursor is not null)
+            || !IsHostToolsTuple(
+                hostToolsState,
+                taintTimeMasterVersion,
+                taintFingerprint,
+                transitionId))
+        {
+
+            return Result<CovenantVerifiedCandidateState>.Failure(MalformedCandidate());
+
+        }
+
+        CovenantCandidateDatasetState dataset = new(
+            datasetGeneration,
+            canonicalSearchSequence,
+            coreCampaignDeletionSequence,
+            appliedDatasetGeneration,
+            appliedSearchSequence,
+            appliedCampaignDeletionSequence,
+            appliedSessionDeletionSequence,
+            checked((ulong)acceleratorEpoch),
+            rebuildState,
+            envelopeMasterKeyVersion,
+            [.. fingerprint],
+            envelopeKeyEpoch);
+
+        CovenantCandidateAuthorityState authority = new(
+            installationIdentity,
+            authorityEpoch,
+            currentMasterKeyVersion,
+            [.. authorityFingerprint],
+            recoveryEnvelopeEpoch,
+            hostToolsState,
+            transitionId);
+
+        CovenantCandidateCapabilityState capability = new(
+            cleanupCampaignSequence,
+            cleanupSessionSequence,
+            fullSweepRequired == 1);
+
+        return Result<CovenantVerifiedCandidateState>.Success(
+            new CovenantVerifiedCandidateState(dataset, authority, capability));
 
     }
+
+    private static bool TryReadLong(SqliteDataReader reader, int ordinal, out long value)
+    {
+
+        if (reader.GetValue(ordinal) is long stored)
+        {
+
+            value = stored;
+
+            return true;
+
+        }
+
+        value = default;
+
+        return false;
+
+    }
+
+    private static bool IsRebuildStateCode(long value) =>
+        value is >= byte.MinValue and <= byte.MaxValue
+        && Enum.IsDefined((CovenantFtsRebuildState)(byte)value);
+
+    private static bool IsHostToolsStateCode(long value) =>
+        value is >= byte.MinValue and <= byte.MaxValue
+        && Enum.IsDefined((CovenantHostToolsState)(byte)value);
+
+    private static bool IsTransitionIdentity(string? value) =>
+        Guid.TryParseExact(value, "D", out Guid parsed) && parsed != Guid.Empty;
+
+    private static bool IsHostToolsTuple(
+        CovenantHostToolsState state,
+        long? taintTimeMasterVersion,
+        byte[]? taintFingerprint,
+        string? transitionId) =>
+        state == CovenantHostToolsState.Clean
+            ? taintTimeMasterVersion is null
+                && taintFingerprint is null
+                && transitionId is null
+            : taintTimeMasterVersion is > 0 and <= uint.MaxValue
+                && taintFingerprint is { Length: 32 }
+                && IsTransitionIdentity(transitionId);
 
     private static async Task<Result<CovenantCandidateAuthorityState>> ReadAuthorityAsync(
         SqliteConnection connection,
@@ -1112,7 +1346,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                    AuthorityEpoch,
                    CurrentMasterKeyVersion,
                    CurrentMasterKeyFingerprint,
-                   RecoveryEnvelopeEpoch
+                   RecoveryEnvelopeEpoch,
+                   HostToolsStateCode,
+                   TransitionId,
+                   TaintTimeMasterVersion,
+                   TaintFingerprint
             FROM covenant_authority_state
             WHERE StateKey = 1;
             """;
@@ -1130,49 +1368,66 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         }
 
-        return Result<CovenantCandidateAuthorityState>.Success(
-            new CovenantCandidateAuthorityState(
-                reader.GetString(0),
-                Convert.ToInt64(reader.GetValue(1), CultureInfo.InvariantCulture),
-                Convert.ToInt64(reader.GetValue(2), CultureInfo.InvariantCulture),
-                (byte[])reader.GetValue(3),
-                Convert.ToInt64(reader.GetValue(4), CultureInfo.InvariantCulture)));
+        object transitionValue = reader.GetValue(6);
 
-    }
+        object taintTimeMasterVersionValue = reader.GetValue(7);
 
-    private static async Task<Result<CovenantCandidateCapabilityState>> ReadCapabilityAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
+        object taintFingerprintValue = reader.GetValue(8);
 
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = """
-            SELECT AppliedCampaignSequence, AppliedSessionSequence, FullSweepRequired
-            FROM capability_cleanup_state
-            WHERE CapabilityFamilyCode = $family;
-            """;
-
-        _ = command.Parameters.AddWithValue("$family", CovenantFamilyCode);
-
-        await using SqliteDataReader reader =
-            await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        if (reader.GetValue(0) is not string installationIdentity
+            || string.IsNullOrWhiteSpace(installationIdentity)
+            || installationIdentity.Length > 128
+            || !TryReadLong(reader, 1, out long authorityEpoch)
+            || authorityEpoch <= 0
+            || !TryReadLong(reader, 2, out long currentMasterKeyVersion)
+            || currentMasterKeyVersion <= 0
+            || currentMasterKeyVersion > uint.MaxValue
+            || reader.GetValue(3) is not byte[] fingerprint
+            || fingerprint.Length != 32
+            || !TryReadLong(reader, 4, out long recoveryEnvelopeEpoch)
+            || recoveryEnvelopeEpoch <= 0
+            || !TryReadLong(reader, 5, out long hostToolsStateCode)
+            || !IsHostToolsStateCode(hostToolsStateCode)
+            || (transitionValue is not DBNull && transitionValue is not string)
+            || (taintTimeMasterVersionValue is not DBNull
+                && taintTimeMasterVersionValue is not long)
+            || (taintFingerprintValue is not DBNull && taintFingerprintValue is not byte[]))
         {
 
-            return Result<CovenantCandidateCapabilityState>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "The reopened Covenant candidate carries no capability cleanup cursor."));
+            return Result<CovenantCandidateAuthorityState>.Failure(MalformedCandidate());
 
         }
 
-        return Result<CovenantCandidateCapabilityState>.Success(
-            new CovenantCandidateCapabilityState(
-                Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture),
-                Convert.ToInt64(reader.GetValue(1), CultureInfo.InvariantCulture),
-                Convert.ToInt64(reader.GetValue(2), CultureInfo.InvariantCulture) == 1));
+        CovenantHostToolsState hostToolsState = (CovenantHostToolsState)hostToolsStateCode;
+
+        string? transitionId = transitionValue is DBNull ? null : (string)transitionValue;
+
+        long? taintTimeMasterVersion = taintTimeMasterVersionValue is DBNull
+            ? null
+            : (long)taintTimeMasterVersionValue;
+
+        byte[]? taintFingerprint = taintFingerprintValue as byte[];
+
+        if (!IsHostToolsTuple(
+            hostToolsState,
+            taintTimeMasterVersion,
+            taintFingerprint,
+            transitionId))
+        {
+
+            return Result<CovenantCandidateAuthorityState>.Failure(MalformedCandidate());
+
+        }
+
+        return Result<CovenantCandidateAuthorityState>.Success(
+            new CovenantCandidateAuthorityState(
+                installationIdentity,
+                authorityEpoch,
+                currentMasterKeyVersion,
+                [.. fingerprint],
+                recoveryEnvelopeEpoch,
+                hostToolsState,
+                transitionId));
 
     }
 
@@ -1309,6 +1564,11 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 $"The reopened Covenant candidate cannot be published because {detail}."));
+
+    private static Error MalformedCandidate() =>
+        new(
+            ErrorCodes.Covenant.IntegrityFailure,
+            "The reopened Covenant candidate carries malformed publication state.");
 
     private static Result<CovenantVerifiedExport> Unverified(string detail) =>
         Result<CovenantVerifiedExport>.Failure(Unverifiable(detail));

@@ -123,6 +123,34 @@ public sealed class OperatorAuthorityContextIssuerTests
     }
 
     [Fact]
+    public void Runtime_authority_generation_revokes_contexts_and_read_epochs_when_durable_counters_do_not_move()
+    {
+
+        StubAuthority authority = new(Clean());
+
+        OperatorAuthorityContextIssuer issuer = new(authority);
+
+        OperatorAuthorityContext context = issuer.Issue(CovenantAuthorityRequirement.CovenantManage).Value;
+
+        CovenantReadAuthorityEpoch epoch = issuer.IssueReadEpoch().Value;
+
+        Assert.Equal(1, context.RuntimeAuthorityGeneration);
+
+        Assert.Equal(1, epoch.RuntimeAuthorityGeneration);
+
+        authority.Current = Clean() with { RuntimeAuthorityGeneration = 2 };
+
+        Result contextResult = issuer.Revalidate(context);
+
+        Assert.False(contextResult.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, contextResult.Error.Code);
+
+        Assert.False(epoch.Matches(authority.Current));
+
+    }
+
+    [Fact]
     public void IssueReadEpoch_carries_the_clean_generation_and_tracks_it()
     {
 
@@ -146,6 +174,7 @@ public sealed class OperatorAuthorityContextIssuerTests
 
     private static CovenantAuthoritySnapshot Snapshot(CovenantHostToolsState state) =>
         new(
+            RuntimeAuthorityGeneration: 1,
             Installation.ToString().ToUpperInvariant(),
             AuthorityEpoch: 11,
             MasterKeyVersion: 4,

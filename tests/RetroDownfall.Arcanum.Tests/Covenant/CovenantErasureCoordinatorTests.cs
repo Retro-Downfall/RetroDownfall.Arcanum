@@ -6,9 +6,12 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
@@ -73,11 +76,17 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, completion.Value.Disposition);
 
+        Assert.Null(completion.Value.BlockingErrorCode);
+
         // The database half commits before a single managed file is touched. The managed-file kernel
         // persists its durable work item before its first external effect, and that work item is a
         // database row: a file deleted before the transaction that authorized it would be a deletion
         // no surviving row can explain.
         Assert.Equal(CleanRunSteps, harness.Steps);
+
+        Assert.Equal(
+            CovenantOperationGateFixture.DatasetGeneration,
+            harness.Inventory.ObservedDatasetGeneration);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
 
@@ -109,6 +118,34 @@ public sealed class CovenantErasureCoordinatorTests
     }
 
     [Fact]
+    public async Task Caller_cancellation_after_storage_proof_cannot_cancel_checkpoint_publication_or_reopen()
+    {
+
+        CoordinatorHarness harness = new();
+
+        using CancellationTokenSource caller = new();
+
+        harness.Operations.HonorCancellation = true;
+
+        harness.Transition.OnVerified = caller.Cancel;
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared,
+            caller.Token);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, completion.Value.Disposition);
+
+        Assert.False(harness.Operations.LastCheckpointToken.IsCancellationRequested);
+
+        Assert.False(harness.Transition.PublicationToken.IsCancellationRequested);
+
+        Assert.False(harness.DisclosureWriter.ReopenToken.IsCancellationRequested);
+
+    }
+
+    [Fact]
     public async Task A_database_kernel_blocker_keeps_admission_closed_and_never_applies_the_canonical_erasure()
     {
 
@@ -121,6 +158,8 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(completion.IsSuccess);
 
         Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, completion.Value.BlockingErrorCode);
 
         Assert.DoesNotContain("apply-canonical", harness.Steps);
 
@@ -167,7 +206,6 @@ public sealed class CovenantErasureCoordinatorTests
     [InlineData(CovenantResetPhase.DatabaseCompacted, "compact")]
     [InlineData(CovenantResetPhase.AcceleratorInitialized, "initialize-accelerator")]
     [InlineData(CovenantResetPhase.SidecarsVerified, "verify-sidecar-absence")]
-    [InlineData(CovenantResetPhase.ReopenedVerified, "verify-reopen")]
     public async Task A_resumed_run_never_repeats_a_step_its_checkpoint_already_records(
         CovenantResetPhase resumeFrom,
         string skippedStep)
@@ -233,7 +271,9 @@ public sealed class CovenantErasureCoordinatorTests
 
         _ = await fresh.RunAsync(CovenantResetPhase.InventoryPrepared);
 
-        Assert.Equal(1, fresh.Gate.AcquireCount);
+        Assert.Equal(0, fresh.Gate.AcquireCount);
+
+        Assert.Equal(1, fresh.Gate.ResumeOrAcquireCount);
 
         Assert.Equal(0, fresh.Gate.ResumeCount);
 
@@ -250,44 +290,59 @@ public sealed class CovenantErasureCoordinatorTests
         // verb for a checkpoint past its first phase.
         Assert.Equal(0, resumed.Gate.AcquireCount);
 
+        Assert.Equal(0, resumed.Gate.ResumeOrAcquireCount);
+
         Assert.Equal(1, resumed.Gate.ResumeCount);
 
     }
 
     [Fact]
-    public async Task A_resumed_run_reads_the_candidate_generation_from_storage_rather_than_the_checkpoint()
+    public async Task Resume_from_ReopenedVerified_reverifies_immutably_and_publishes_that_exact_candidate()
     {
 
         CoordinatorHarness harness = new();
 
         await harness.CloseAndAdoptAsync();
 
-        Result<CovenantErasureCompletion> completion = await harness.RunAsync(CovenantResetPhase.HandlesClosed);
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.ReopenedVerified);
 
         Assert.True(completion.IsSuccess);
 
-        // Neither durable reset checkpoint has a field for the generation the canonical erasure
-        // created — both shapes were frozen by #118 — so a resumed run asks the database, which is the
-        // commit authority for the dataset row it wrote.
-        Assert.Equal(1, harness.Transition.CandidateGenerationReads);
+        Assert.Equal(1, harness.Transition.VerifyReopenCalls);
 
-        Assert.Equal(CandidateGeneration, harness.Transition.PublishedGeneration);
+        Assert.Same(harness.Transition.VerifiedCandidate, harness.Transition.PublishedCandidate);
+
+        Assert.Equal(0, harness.Operations.CheckpointCalls);
 
     }
 
     [Fact]
-    public async Task A_first_pass_publishes_the_generation_its_own_canonical_erasure_returned()
+    public async Task A_fresh_pass_checkpoints_one_live_verified_candidate_and_publishes_that_exact_object()
     {
 
         CoordinatorHarness harness = new();
 
         _ = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
 
+        Assert.Equal(1, harness.Transition.VerifyReopenCalls);
+
+        Assert.Same(harness.Transition.VerifiedCandidate, harness.Transition.PublishedCandidate);
+
         Assert.Equal(CandidateGeneration, harness.Transition.PublishedGeneration);
 
-        // A first pass already holds the generation it just created. Reading it back would be a second
-        // source for one fact, and the two could disagree only in the case that matters.
-        Assert.Equal(0, harness.Transition.CandidateGenerationReads);
+    }
+
+    [Fact]
+    public void The_transition_seam_has_no_ordinary_candidate_generation_read()
+    {
+
+        Assert.DoesNotContain(
+            typeof(ICovenantErasureTransition).GetMethods(),
+            static method => string.Equals(
+                method.Name,
+                "ReadCandidateDatasetGenerationAsync",
+                StringComparison.Ordinal));
 
     }
 
@@ -337,14 +392,18 @@ public sealed class CovenantErasureCoordinatorTests
 
     }
 
-    [Fact]
-    public async Task A_failed_one_shot_commit_and_reopen_reports_the_lifecycle_failure_and_leaves_admission_shut()
+    [Theory]
+    [InlineData(DispositionFailureMode.ReturnedFailure)]
+    [InlineData(DispositionFailureMode.Cancelled)]
+    [InlineData(DispositionFailureMode.Thrown)]
+    public async Task A_failed_one_shot_commit_records_recoverability_without_a_fallback_disposition(
+        DispositionFailureMode failureMode)
     {
 
         // The real gate refuses to hand a second live registration to a scope that already has one,
         // so a disposition can only fail underneath the lease rather than beside it. The registration
         // is faked and the lease is not: the one-shot claim under test is the real one.
-        CoordinatorHarness harness = new(dispositionFails: true);
+        CoordinatorHarness harness = new(dispositionFailure: failureMode);
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
 
@@ -357,9 +416,197 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.Equal(1, harness.Gate.DispositionAttempts);
 
+        Assert.Equal(0, harness.Gate.KeepClosedAttempts);
+
+        Assert.Equal(1, harness.Gate.DisposalCount);
+
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, harness.Gate.LastDisposition);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
+
+        LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, durable.State);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, durable.TerminalErrorCode);
+
+    }
+
+    public enum DispositionFailureMode
+    {
+
+        None,
+
+        ReturnedFailure,
+
+        Cancelled,
+
+        Thrown,
+
+    }
+
+    public enum LifecycleFailureRaceMode
+    {
+
+        TransientMissing,
+
+        WrongAttentionCode,
+
+        ChangedCheckpoint,
+
+        NonActiveCheckpoint,
+
+        ValidWinner,
+
+    }
+
+    [Theory]
+    [InlineData(LifecycleFailureRaceMode.TransientMissing)]
+    [InlineData(LifecycleFailureRaceMode.WrongAttentionCode)]
+    [InlineData(LifecycleFailureRaceMode.ChangedCheckpoint)]
+    [InlineData(LifecycleFailureRaceMode.NonActiveCheckpoint)]
+    [InlineData(LifecycleFailureRaceMode.ValidWinner)]
+    public async Task A_failed_disposition_retries_until_a_fresh_read_proves_recoverability(
+        LifecycleFailureRaceMode raceMode)
+    {
+
+        CoordinatorHarness harness = new(dispositionFailure: DispositionFailureMode.ReturnedFailure);
+
+        int reads = 0;
+
+        int invalidTransitions = 0;
+
+        bool nonActiveReadOutstanding = false;
+
+        harness.Gate.OnDispositionAttempt = () =>
+        {
+
+            if (raceMode == LifecycleFailureRaceMode.WrongAttentionCode)
+            {
+
+                LongRunningOperation current = Assert.Single(
+                    harness.Store.Operations,
+                    static operation => operation.Id == OperationId);
+
+                harness.Store.Add(
+                    current with
+                    {
+                        State = LongRunningOperationState.ReconciliationRequired,
+                        LeaseOwner = null,
+                        LeaseExpiresAt = null,
+                        TerminalErrorCode = "Covenant.UnrecognizedAttention",
+                        Revision = current.Revision + 1,
+                    });
+
+            }
+
+            harness.Store.GetOverride = current =>
+            {
+
+                int read = Interlocked.Increment(ref reads);
+
+                if (raceMode == LifecycleFailureRaceMode.TransientMissing && read == 1)
+                {
+
+                    return null;
+
+                }
+
+                if (raceMode == LifecycleFailureRaceMode.ChangedCheckpoint && read == 1)
+                {
+
+                    return current! with { CheckpointPayload = [0] };
+
+                }
+
+                if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint && read == 1)
+                {
+
+                    nonActiveReadOutstanding = true;
+
+                    return current! with
+                    {
+                        State = LongRunningOperationState.Completed,
+                        CompletedAt = DateTimeOffset.UtcNow,
+                        LeaseOwner = null,
+                        LeaseExpiresAt = null,
+                    };
+
+                }
+
+                nonActiveReadOutstanding = false;
+
+                return current;
+
+            };
+
+            if (raceMode == LifecycleFailureRaceMode.ValidWinner)
+            {
+
+                harness.Store.TryTransitionOverride = current =>
+                {
+
+                    Assert.NotNull(current);
+
+                    harness.Store.Add(
+                        current with
+                        {
+                            State = LongRunningOperationState.ReconciliationRequired,
+                            LeaseOwner = null,
+                            LeaseExpiresAt = null,
+                            TerminalErrorCode = ErrorCodes.Covenant.MaintenanceFailed,
+                            Revision = current.Revision + 1,
+                        });
+
+                    return false;
+
+                };
+
+            }
+
+            else if (raceMode == LifecycleFailureRaceMode.NonActiveCheckpoint)
+            {
+
+                harness.Store.TryTransitionOverride = current =>
+                {
+
+                    _ = current;
+
+                    if (!nonActiveReadOutstanding)
+                    {
+
+                        return null;
+
+                    }
+
+                    _ = Interlocked.Increment(ref invalidTransitions);
+
+                    return false;
+
+                };
+
+            }
+
+        };
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsFailure);
+
+        Assert.Equal(1, harness.Gate.DispositionAttempts);
+
+        Assert.Equal(0, harness.Gate.KeepClosedAttempts);
+
+        Assert.Equal(0, invalidTransitions);
+
+        Assert.True(reads >= 2);
+
+        LongRunningOperation durable = (await harness.Store.GetAsync(OperationId))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, durable.State);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, durable.TerminalErrorCode);
 
     }
 
@@ -380,11 +627,41 @@ public sealed class CovenantErasureCoordinatorTests
         // the gate closed instead.
         Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
 
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, completion.Value.BlockingErrorCode);
+
         Assert.Equal(0, harness.Artifacts.Calls);
 
         Assert.Equal(0, harness.ManagedFiles.Calls);
 
         Assert.False(completion.Value.CanonicalResetApplied);
+
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+        Assert.True(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_quiesce_throw_or_cancellation_restores_the_old_writer_before_rollback(
+        bool cancellation)
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.DisclosureWriter.QuiesceException = cancellation
+            ? new OperationCanceledException()
+            : new InvalidOperationException("private writer detail");
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
+
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
 
@@ -406,7 +683,152 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.Equal(0, harness.Artifacts.Calls);
 
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
         Assert.True(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    [Fact]
+    public async Task A_factory_catalog_refusal_restores_the_old_writer_before_rollback()
+    {
+
+        CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+
+        harness.Inventory.Fails = true;
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
+
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_pre_effect_throw_or_cancellation_restores_the_old_writer_before_rollback(
+        bool cancellation)
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Inventory.Exception = cancellation
+            ? new OperationCanceledException()
+            : new InvalidOperationException("private inventory detail");
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
+
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task A_database_replay_read_failure_before_the_first_kernel_restores_then_rolls_back(
+        int failureKind)
+    {
+
+        CoordinatorHarness harness = new();
+
+        if (failureKind == 0)
+        {
+
+            harness.Inventory.DatabaseBatchFails = true;
+
+        }
+        else
+        {
+
+            harness.Inventory.DatabaseBatchException = failureKind == 1
+                ? new InvalidOperationException("private page detail")
+                : new OperationCanceledException();
+
+        }
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
+
+        Assert.Equal(0, harness.Artifacts.Calls);
+
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Malformed_nonempty_managed_evidence_in_real_inventory_restores_then_rolls_back_before_any_kernel(
+        bool corruptDurableLocation)
+    {
+
+        await using CovenantErasureInventorySourceTests.InventoryFixture fixture =
+            await CovenantErasureInventorySourceTests.InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SeedInterleavedLabelsAsync(2, includeExistingWorkItem: false);
+
+        await fixture.CorruptManagedProducerEvidenceAsync(corruptDurableLocation);
+
+        CoordinatorHarness harness = new(
+            inventory: fixture.CreateSource(),
+            datasetGeneration: await fixture.ReadDatasetGenerationAsync());
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, completion.Value.BlockingErrorCode);
+
+        Assert.Equal(0, harness.Artifacts.Calls);
+
+        Assert.Equal(0, harness.ManagedFiles.Calls);
+
+        Assert.DoesNotContain("apply-canonical", harness.Steps);
+
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+    }
+
+    [Fact]
+    public async Task A_failed_old_writer_restoration_selects_one_keep_closed_disposition()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Inventory.Fails = true;
+
+        harness.DisclosureWriter.ReopenFails = true;
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.Equal(1, harness.Gate.DispositionAttempts);
+
+        Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
 
     }
 
@@ -442,6 +864,25 @@ public sealed class CovenantErasureCoordinatorTests
             await reader.DisposeAsync();
 
         }
+
+    }
+
+    [Fact]
+    public async Task An_empty_lease_dataset_is_refused_before_inventory()
+    {
+
+        CoordinatorHarness harness = new(emptyLeaseDataset: true);
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, completion.Error.Code);
+
+        Assert.Null(harness.Inventory.ObservedDatasetGeneration);
+
+        Assert.Empty(harness.Steps);
 
     }
 
@@ -515,6 +956,73 @@ public sealed class CovenantErasureCoordinatorTests
         // two. A completed erasure with no receipt-backed disclosure reports false while both local
         // facts are true.
         Assert.False(finished.Value.ExternalDisclosuresNotRevocable);
+
+    }
+
+    [Theory]
+    [InlineData(CovenantResetPhase.InventoryPrepared, 1, 0, 1, 1, 0)]
+    [InlineData(CovenantResetPhase.CanonicalApplied, 0, 1, 0, 1, 1)]
+    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed, 0, 0, 0, 0, 1)]
+    public async Task Each_phase_runs_only_its_required_physical_inventory_passes(
+        CovenantResetPhase resumeFrom,
+        int firstPreflightCalls,
+        int remainingManagedPreflightCalls,
+        int databaseBatchCalls,
+        int managedBatchCalls,
+        int exposureCalls)
+    {
+
+        CoordinatorHarness harness = new();
+
+        if (resumeFrom != CovenantResetPhase.InventoryPrepared)
+        {
+
+            await harness.CloseAndAdoptAsync();
+
+        }
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(resumeFrom);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(firstPreflightCalls, harness.Inventory.FirstPreflightCalls);
+
+        Assert.Equal(remainingManagedPreflightCalls, harness.Inventory.RemainingManagedPreflightCalls);
+
+        Assert.Equal(databaseBatchCalls, harness.Inventory.DatabaseBatchCalls);
+
+        Assert.Equal(managedBatchCalls, harness.Inventory.ManagedBatchCalls);
+
+        Assert.Equal(exposureCalls, harness.Inventory.ExposureCalls);
+
+    }
+
+    [Fact]
+    public async Task Resumed_completion_rereads_and_preserves_the_exact_disclosure_exposure()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Inventory.Exposure = new CovenantDisclosureExposure(
+            7,
+            CovenantDisclosureCountKind.LowerBound);
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.HandlesClosed);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(7, completion.Value.Exposure.PossibleAttempts);
+
+        Assert.Equal(CovenantDisclosureCountKind.LowerBound, completion.Value.Exposure.CountKind);
+
+        Assert.True(completion.Value.ExternalDisclosuresNotRevocable);
+
+        Assert.Equal(1, harness.Inventory.ExposureCalls);
+
+        Assert.Equal(0, harness.Inventory.RemainingManagedPreflightCalls);
 
     }
 
@@ -596,6 +1104,8 @@ public sealed class CovenantErasureCoordinatorTests
 
         private readonly CovenantExclusiveOperation _operation;
 
+        private readonly ICovenantErasureInventorySource _inventory;
+
         internal RecordingGate Gate { get; }
 
         /// <summary>
@@ -614,17 +1124,45 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal StubInventorySource Inventory { get; }
 
+        internal FakeLongRunningOperationStore Store { get; } = new(TimeProvider.System);
+
+        internal RecordingOperationCoordinator Operations { get; }
+
         internal CoordinatorHarness(
             CovenantExclusiveOperation operation = CovenantExclusiveOperation.CovenantReset,
             TimeSpan? drainTimeout = null,
-            bool dispositionFails = false)
+            DispositionFailureMode dispositionFailure = DispositionFailureMode.None,
+            bool emptyLeaseDataset = false,
+            ICovenantErasureInventorySource? inventory = null,
+            Guid? datasetGeneration = null)
         {
 
             _operation = operation;
 
+            Operations = new RecordingOperationCoordinator(Store);
+
+            FakeCovenantAvailability? availability = null;
+
+            if (datasetGeneration is { } generation)
+            {
+
+                availability = new FakeCovenantAvailability();
+
+                availability.Mutate(
+                    current => current with
+                    {
+                        DatasetGeneration = generation,
+                        AppliedDatasetGeneration = generation,
+                    });
+
+            }
+
             Gate = new RecordingGate(
-                CovenantOperationGateFixture.CreateGate(drainTimeout: drainTimeout),
-                dispositionFails);
+                CovenantOperationGateFixture.CreateGate(
+                    availability: availability,
+                    drainTimeout: drainTimeout),
+                dispositionFailure,
+                emptyLeaseDataset);
 
             Artifacts = new RecordingErasureKernel(Steps);
 
@@ -635,6 +1173,8 @@ public sealed class CovenantErasureCoordinatorTests
             DisclosureWriter = new RecordingDisclosureWriterLifecycle(Steps);
 
             Inventory = new StubInventorySource();
+
+            _inventory = inventory ?? Inventory;
 
         }
 
@@ -682,29 +1222,29 @@ public sealed class CovenantErasureCoordinatorTests
             Guid? checkpointOperationId = null)
         {
 
-            FakeLongRunningOperationStore store = new(TimeProvider.System);
+            LongRunningOperation operation = Operation(phase);
 
-            RecordingOperationCoordinator operations = new();
+            Store.Add(operation);
 
             CovenantErasureCoordinator coordinator = new(
-                operations,
-                store,
+                Operations,
+                Store,
                 Gate,
                 Artifacts,
                 ManagedFiles,
-                Inventory,
+                _inventory,
                 Transition,
                 DisclosureWriter,
+                TimeProvider.System,
                 NullLogger<CovenantErasureCoordinator>.Instance);
 
             return await coordinator.RunAsync(
-                Operation(),
+                operation,
                 new CovenantErasureCheckpointState(
                     checkpointOperationId ?? OperationId,
                     _operation,
                     CovenantOperationGateFixture.Digest(7),
                     phase),
-                CovenantOperationGateFixture.DatasetGeneration,
                 "owner",
                 cancellationToken ?? Token);
 
@@ -713,12 +1253,51 @@ public sealed class CovenantErasureCoordinatorTests
         private CovenantExclusiveRecoveryOwner Owner =>
             new(OperationId, _operation, CovenantOperationGateFixture.Digest(7));
 
-        private static LongRunningOperation Operation() =>
-            new(
+        private LongRunningOperation Operation(CovenantResetPhase phase)
+        {
+
+            CovenantErasureCheckpointState checkpoint = new(
                 OperationId,
-                LongRunningOperationKinds.DataRetentionMutation,
+                _operation,
+                CovenantOperationGateFixture.Digest(7),
+                phase);
+
+            (int version, byte[] payload, string kind, LongRunningOperationRecoveryPolicy policy) =
+                _operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
+                    ? (
+                        DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                        CovenantRecoveryCheckpointCodec.Encode(
+                            new DataRetentionFactoryResetCheckpointV1(
+                                DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+                                checkpoint.OperationId,
+                                CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
+                                    checkpoint.EffectDigest),
+                                checkpoint.Operation,
+                                checkpoint.Phase)),
+                        LongRunningOperationKinds.DataRetentionFactoryReset,
+                        LongRunningOperationRecoveryPolicy.RestartIdempotently)
+                    : (
+                        DataRetentionMutationCheckpointV3.CurrentVersion,
+                        CovenantRecoveryCheckpointCodec.Encode(
+                            new DataRetentionMutationCheckpointV3(
+                                DataRetentionMutationCheckpointV3.CurrentVersion,
+                                "reset-memory",
+                                ((int)MemoryResetScope.Covenant).ToString(
+                                    System.Globalization.CultureInfo.InvariantCulture),
+                                new CovenantResetEffectArmV1(
+                                    checkpoint.OperationId,
+                                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
+                                        checkpoint.EffectDigest),
+                                    checkpoint.Operation,
+                                    checkpoint.Phase))),
+                        LongRunningOperationKinds.DataRetentionMutation,
+                        LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
+
+            return new(
+                OperationId,
+                kind,
                 LongRunningOperationState.Running,
-                LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
+                policy,
                 null,
                 null,
                 null,
@@ -733,12 +1312,14 @@ public sealed class CovenantErasureCoordinatorTests
                 "owner",
                 null,
                 1,
-                1,
-                null,
-                null,
+                version,
+                payload,
+                CovenantResetCheckpointInitiator.CheckpointReference(kind, OperationId),
                 "Erasing the Covenant.",
                 null,
                 1);
+
+        }
 
     }
 
@@ -749,10 +1330,19 @@ public sealed class CovenantErasureCoordinatorTests
     /// A wrapper rather than a fake, because acquire-versus-resume, lease draining, and the one-shot
     /// disposition are properties of the real gate that a stub would simply assert into existence.
     /// </remarks>
-    private sealed class RecordingGate(CovenantOperationGate inner, bool dispositionFails) : ICovenantOperationGate
+    private sealed class RecordingGate(
+        CovenantOperationGate inner,
+        DispositionFailureMode dispositionFailure,
+        bool emptyLeaseDataset) : ICovenantOperationGate
     {
 
         private int _dispositionAttempts;
+
+        private int _disposalCount;
+
+        private readonly DispositionFailureMode _dispositionFailure = dispositionFailure;
+
+        private readonly bool _emptyLeaseDataset = emptyLeaseDataset;
 
         internal CovenantOperationGate Inner { get; } = inner;
 
@@ -760,9 +1350,17 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal int ResumeCount { get; private set; }
 
+        internal int ResumeOrAcquireCount { get; private set; }
+
         internal int DispositionAttempts => Volatile.Read(ref _dispositionAttempts);
 
+        internal int DisposalCount => Volatile.Read(ref _disposalCount);
+
+        internal int KeepClosedAttempts { get; private set; }
+
         internal CovenantExclusiveLeaseDisposition? LastDisposition { get; private set; }
+
+        internal Action? OnDispositionAttempt { get; set; }
 
         public async ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
             CovenantExclusiveRecoveryOwner owner,
@@ -772,6 +1370,17 @@ public sealed class CovenantErasureCoordinatorTests
             AcquireCount++;
 
             return Observe(await Inner.AcquireExclusiveAsync(owner, cancellationToken));
+
+        }
+
+        public async ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken)
+        {
+
+            ResumeOrAcquireCount++;
+
+            return Observe(await Inner.ResumeOrAcquireExclusiveAsync(owner, cancellationToken));
 
         }
 
@@ -803,7 +1412,16 @@ public sealed class CovenantErasureCoordinatorTests
 
             LastDisposition = disposition;
 
-            return dispositionFails
+            OnDispositionAttempt?.Invoke();
+
+            if (disposition == CovenantExclusiveLeaseDisposition.KeepClosed)
+            {
+
+                KeepClosedAttempts++;
+
+            }
+
+            return _dispositionFailure == DispositionFailureMode.ReturnedFailure
                 ? Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.MaintenanceFailed,
@@ -816,19 +1434,48 @@ public sealed class CovenantErasureCoordinatorTests
             : ICovenantExclusiveLeaseRegistration
         {
 
-            public CovenantOperationLeaseSnapshot Snapshot => real.Snapshot;
+            public CovenantOperationLeaseSnapshot Snapshot => gate._emptyLeaseDataset
+                ? real.Snapshot with { DatasetGeneration = Guid.Empty }
+                : real.Snapshot;
 
             public CancellationToken Revocation => real.Revocation;
+
+            public Result ExecuteWhileHeld(Func<Result> callback) => real.ExecuteWhileHeld(callback);
 
             public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
                 real.RevalidateAsync(cancellationToken);
 
-            public ValueTask ReleaseAsync() => real.DisposeAsync();
+            public async ValueTask ReleaseAsync()
+            {
+
+                _ = Interlocked.Increment(ref gate._disposalCount);
+
+                await real.DisposeAsync();
+
+            }
 
             public async ValueTask<Result> CompleteAsync(
                 CovenantExclusiveLeaseDisposition disposition,
                 CancellationToken cancellationToken)
             {
+
+                if (gate._dispositionFailure == DispositionFailureMode.Cancelled)
+                {
+
+                    _ = gate.Record(disposition);
+
+                    throw new OperationCanceledException(cancellationToken);
+
+                }
+
+                if (gate._dispositionFailure == DispositionFailureMode.Thrown)
+                {
+
+                    _ = gate.Record(disposition);
+
+                    throw new InvalidOperationException("private gate detail");
+
+                }
 
                 Result recorded = gate.Record(disposition);
 
@@ -901,9 +1548,17 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal Action<string>? OnStep { get; set; }
 
-        internal int CandidateGenerationReads { get; private set; }
+        internal Action? OnVerified { get; set; }
+
+        internal int VerifyReopenCalls { get; private set; }
 
         internal Guid? PublishedGeneration { get; private set; }
+
+        internal CovenantVerifiedCandidateState VerifiedCandidate { get; } = CreateCandidate();
+
+        internal CovenantVerifiedCandidateState? PublishedCandidate { get; private set; }
+
+        internal CancellationToken PublicationToken { get; private set; }
 
         public async Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
@@ -915,15 +1570,6 @@ public sealed class CovenantErasureCoordinatorTests
             return stepped.IsFailure
                 ? Result<Guid>.Failure(stepped.Error)
                 : Result<Guid>.Success(CandidateGeneration);
-
-        }
-
-        public Task<Result<Guid>> ReadCandidateDatasetGenerationAsync(CancellationToken cancellationToken)
-        {
-
-            CandidateGenerationReads++;
-
-            return Task.FromResult(Result<Guid>.Success(CandidateGeneration));
 
         }
 
@@ -939,15 +1585,33 @@ public sealed class CovenantErasureCoordinatorTests
         public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
             Step("verify-sidecar-absence");
 
-        public Task<Result> VerifyReopenAsync(CancellationToken cancellationToken) => Step("verify-reopen");
-
-        public Task<Result> PublishCommittedAsync(
-            ICovenantExclusiveOperationLease lease,
-            Guid candidateDatasetGeneration,
+        public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
             CancellationToken cancellationToken)
         {
 
-            PublishedGeneration = candidateDatasetGeneration;
+            VerifyReopenCalls++;
+
+            Result stepped = await Step("verify-reopen").ConfigureAwait(false);
+
+            OnVerified?.Invoke();
+
+            return stepped.IsFailure
+                ? Result<CovenantVerifiedCandidateState>.Failure(stepped.Error)
+                : Result<CovenantVerifiedCandidateState>.Success(VerifiedCandidate);
+
+        }
+
+        public Task<Result> PublishCommittedAsync(
+            ICovenantExclusiveOperationLease lease,
+            CovenantVerifiedCandidateState candidate,
+            CancellationToken cancellationToken)
+        {
+
+            PublishedCandidate = candidate;
+
+            PublishedGeneration = candidate.Dataset.DatasetGeneration;
+
+            PublicationToken = cancellationToken;
 
             return Step("publish");
 
@@ -967,6 +1631,34 @@ public sealed class CovenantErasureCoordinatorTests
 
         }
 
+        private static CovenantVerifiedCandidateState CreateCandidate() =>
+            new(
+                new CovenantCandidateDatasetState(
+                    CandidateGeneration,
+                    CanonicalSearchSequence: 0,
+                    CoreCampaignDeletionSequence: 0,
+                    AppliedDatasetGeneration: null,
+                    AppliedSearchSequence: null,
+                    AppliedCampaignDeletionSequence: 0,
+                    AppliedSessionDeletionSequence: 0,
+                    AcceleratorEpoch: 1,
+                    CovenantFtsRebuildState.FullRebuildRequired,
+                    EnvelopeMasterKeyVersion: 1,
+                    new byte[32],
+                    EnvelopeKeyEpoch: 1),
+                new CovenantCandidateAuthorityState(
+                    InstallationIdentity: "coordinator-test",
+                    AuthorityEpoch: 1,
+                    CurrentMasterKeyVersion: 1,
+                    new byte[32],
+                    RecoveryEnvelopeEpoch: 1,
+                    CovenantHostToolsState.Clean,
+                    TransitionId: null),
+                new CovenantCandidateCapabilityState(
+                    AppliedCampaignSequence: 0,
+                    AppliedSessionSequence: 0,
+                    FullSweepRequired: false));
+
     }
 
     private sealed class RecordingDisclosureWriterLifecycle(List<string> steps) : ICovenantDisclosureWriterLifecycle
@@ -974,12 +1666,23 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal bool QuiesceFails { get; set; }
 
+        internal Exception? QuiesceException { get; set; }
+
         internal bool ReopenFails { get; set; }
+
+        internal CancellationToken ReopenToken { get; private set; }
 
         public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken)
         {
 
             steps.Add("quiesce-writer");
+
+            if (QuiesceException is { } exception)
+            {
+
+                throw exception;
+
+            }
 
             return ValueTask.FromResult(
                 QuiesceFails
@@ -993,6 +1696,8 @@ public sealed class CovenantErasureCoordinatorTests
         {
 
             steps.Add("reopen-writer");
+
+            ReopenToken = cancellationToken;
 
             return ValueTask.FromResult(
                 ReopenFails
@@ -1067,41 +1772,159 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal bool Fails { get; set; }
 
+        internal Exception? Exception { get; set; }
+
+        internal bool DatabaseBatchFails { get; set; }
+
+        internal Exception? DatabaseBatchException { get; set; }
+
         internal bool ExternalDisclosuresNotRevocable { get; set; } = true;
 
-        public Task<Result<CovenantErasureWork>> EnumerateAsync(
-            Guid operationId,
+        internal CovenantDisclosureExposure Exposure { get; set; } =
+            new(1, CovenantDisclosureCountKind.Exact);
+
+        internal int FirstPreflightCalls { get; private set; }
+
+        internal int RemainingManagedPreflightCalls { get; private set; }
+
+        internal int DatabaseBatchCalls { get; private set; }
+
+        internal int ManagedBatchCalls { get; private set; }
+
+        internal int ExposureCalls { get; private set; }
+
+        internal Guid? ObservedDatasetGeneration { get; private set; }
+
+        public Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation operation,
             Guid datasetGeneration,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(
+            CancellationToken cancellationToken)
+        {
+
+            FirstPreflightCalls++;
+
+            ObservedDatasetGeneration = datasetGeneration;
+
+            if (Exception is { } exception)
+            {
+
+                throw exception;
+
+            }
+
+            return Task.FromResult(
                 Fails
-                    ? Result<CovenantErasureWork>.Failure(
+                    ? Result<CovenantErasureInventorySummary>.Failure(
                         new Error(
                             ErrorCodes.Covenant.IntegrityFailure,
                             "The erasure inventory could not be enumerated."))
-                    : Result<CovenantErasureWork>.Success(
-                        new CovenantErasureWork(
-                            [
-                                new CovenantProtectedArtifactErasurePage(
-                                    CovenantOperationGateFixture.DatasetGeneration,
-                                    [CovenantErasureAuthorityFixture.Item(Guid.NewGuid(), Guid.NewGuid())]),
-                            ],
-                            [
-                                new CovenantManagedFileErasureRequest(
-                                    Guid.NewGuid(),
-                                    operationId,
-                                    Guid.NewGuid(),
-                                    Guid.NewGuid(),
-                                    Guid.NewGuid(),
-                                    1),
-                            ],
-                            ExternalDisclosuresNotRevocable)));
+                    : Result<CovenantErasureInventorySummary>.Success(
+                        new CovenantErasureInventorySummary(
+                            1,
+                            1,
+                            CurrentExposure())));
+
+        }
+
+        public Task<Result> PreflightRemainingManagedAsync(CancellationToken cancellationToken)
+        {
+
+            RemainingManagedPreflightCalls++;
+
+            return Task.FromResult(Result.Success());
+
+        }
+
+        public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
+            Guid datasetGeneration,
+            Guid? afterLabelId,
+            CancellationToken cancellationToken)
+        {
+
+            DatabaseBatchCalls++;
+
+            if (DatabaseBatchException is { } exception)
+            {
+
+                throw exception;
+
+            }
+
+            if (DatabaseBatchFails)
+            {
+
+                return Task.FromResult(
+                    Result<CovenantDatabaseErasureBatch>.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.IntegrityFailure,
+                            "The bounded database inventory page could not be read.")));
+
+            }
+
+            return Task.FromResult(
+                Result<CovenantDatabaseErasureBatch>.Success(
+                    new CovenantDatabaseErasureBatch(
+                        Guid.NewGuid(),
+                        true,
+                        new CovenantProtectedArtifactErasurePage(
+                            datasetGeneration,
+                            [CovenantErasureAuthorityFixture.Item(Guid.NewGuid(), Guid.NewGuid())]))));
+
+        }
+
+        public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
+            Guid operationId,
+            Guid? afterLabelId,
+            CancellationToken cancellationToken)
+        {
+
+            ManagedBatchCalls++;
+
+            return Task.FromResult(
+                Result<CovenantManagedFileErasureBatch>.Success(
+                    new CovenantManagedFileErasureBatch(
+                        Guid.NewGuid(),
+                        true,
+                        [
+                            new CovenantManagedFileErasureRequest(
+                                Guid.NewGuid(),
+                                operationId,
+                                Guid.NewGuid(),
+                                Guid.NewGuid(),
+                                Guid.NewGuid(),
+                                1),
+                        ])));
+
+        }
+
+        public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
+            CancellationToken cancellationToken)
+        {
+
+            ExposureCalls++;
+
+            return Task.FromResult(Result<CovenantDisclosureExposure>.Success(CurrentExposure()));
+
+        }
+
+        private CovenantDisclosureExposure CurrentExposure() =>
+            ExternalDisclosuresNotRevocable
+                ? Exposure
+                : new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact);
 
     }
 
-    private sealed class RecordingOperationCoordinator : ILongRunningOperationCoordinator
+    private sealed class RecordingOperationCoordinator(FakeLongRunningOperationStore store)
+        : ILongRunningOperationCoordinator
     {
+
+        private readonly FakeLongRunningOperationStore _store = store;
+
+        internal int CheckpointCalls { get; private set; }
+
+        internal bool HonorCancellation { get; set; }
+
+        internal CancellationToken LastCheckpointToken { get; private set; }
 
         public Task<LongRunningOperationLeaseResult> StartAsync(
             LongRunningOperationCreateRequest request,
@@ -1132,7 +1955,32 @@ public sealed class CovenantErasureCoordinatorTests
             byte[]? checkpointPayload,
             string? checkpointReference,
             string publicSummary,
-            CancellationToken cancellationToken = default) => Task.FromResult(true);
+            CancellationToken cancellationToken = default)
+        {
+
+            CheckpointCalls++;
+
+            LastCheckpointToken = cancellationToken;
+
+            if (HonorCancellation)
+            {
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+            }
+
+            return _store.SaveCheckpointAsync(
+                operationId,
+                ownerId,
+                expectedCheckpointVersion,
+                checkpointVersion,
+                checkpointPayload,
+                checkpointReference,
+                publicSummary,
+                TimeProvider.System.GetUtcNow(),
+                cancellationToken);
+
+        }
 
         public Task<bool> CompleteAsync(
             Guid operationId,

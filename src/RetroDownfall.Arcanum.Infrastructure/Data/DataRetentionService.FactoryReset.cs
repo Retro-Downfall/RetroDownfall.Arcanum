@@ -557,7 +557,9 @@ internal sealed partial class DataRetentionService
         if (operation.CheckpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion)
         {
 
-            return RecoverCovenantFactoryErasure(operation);
+            return await RecoverCovenantFactoryErasureAsync(
+                operation,
+                cancellationToken).ConfigureAwait(false);
 
         }
 
@@ -648,8 +650,9 @@ internal sealed partial class DataRetentionService
     /// an interrupted erasure may already have replaced — while every reader that erasure closed
     /// admission against is still waiting (§10.20.3).
     /// </remarks>
-    private LongRunningOperationRecoveryResult RecoverCovenantFactoryErasure(
-        LongRunningOperation operation)
+    private async Task<LongRunningOperationRecoveryResult> RecoverCovenantFactoryErasureAsync(
+        LongRunningOperation operation,
+        CancellationToken cancellationToken)
     {
 
         if (operation.CheckpointPayload is null)
@@ -676,14 +679,30 @@ internal sealed partial class DataRetentionService
 
         }
 
+        if (string.IsNullOrWhiteSpace(operation.LeaseOwner)
+            || _covenantErasureCoordinator is null)
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.MaintenanceFailed);
+
+        }
+
         logger.LogWarning(
             "A healthy-catalog Covenant factory erasure was interrupted at phase {ResetPhase} for "
-            + "durable operation {OperationId}; admission stays closed until it is resumed.",
+            + "durable operation {OperationId}; recovery is resuming the recorded owner.",
             state.Value.Phase,
             operation.Id);
 
-        return LongRunningOperationRecoveryResult.RequiresAttention(
-            ErrorCodes.Covenant.ManualRecoveryRequired);
+        Result<CovenantErasureCompletion> recovered = await _covenantErasureCoordinator
+            .RunAsync(
+                operation,
+                state.Value,
+                operation.LeaseOwner,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return MapCovenantErasureRecovery(recovered);
 
     }
 
