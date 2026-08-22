@@ -45,7 +45,7 @@ public sealed class HostProcessToolsDatabaseMarkerEvidence
         string installationIdentity,
         CovenantHostToolsState state,
         Guid? transitionId,
-        uint? taintMasterKeyVersion,
+        ulong? taintMasterKeyVersion,
         CovenantDigest? taintFingerprint)
     {
 
@@ -118,7 +118,7 @@ public sealed class HostProcessToolsDatabaseMarkerEvidence
 
     public Guid? TransitionId { get; }
 
-    public uint? TaintMasterKeyVersion { get; }
+    public ulong? TaintMasterKeyVersion { get; }
 
     public CovenantDigest? TaintFingerprint { get; }
 
@@ -163,7 +163,7 @@ public sealed class HostProcessToolsOsMarkerEvidence
     public HostProcessToolsOsMarkerEvidence(
         string installationIdentity,
         Guid transitionId,
-        uint taintMasterKeyVersion,
+        ulong taintMasterKeyVersion,
         CovenantDigest taintFingerprint,
         CovenantDigest markerBytesDigest,
         CovenantDigest durableIdentityDigest)
@@ -206,7 +206,7 @@ public sealed class HostProcessToolsOsMarkerEvidence
 
     public Guid TransitionId { get; }
 
-    public uint TaintMasterKeyVersion { get; }
+    public ulong TaintMasterKeyVersion { get; }
 
     public CovenantDigest TaintFingerprint { get; }
 
@@ -328,13 +328,13 @@ public sealed class HostProcessToolsMarkerPairJoiner : IHostProcessToolsMarkerPa
             ? 0
             : 1;
 
-        Span<byte> databaseVersion = stackalloc byte[4];
+        Span<byte> databaseVersion = stackalloc byte[8];
 
-        Span<byte> markerVersion = stackalloc byte[4];
+        Span<byte> markerVersion = stackalloc byte[8];
 
-        BinaryPrimitives.WriteUInt32BigEndian(databaseVersion, database.TaintMasterKeyVersion!.Value);
+        BinaryPrimitives.WriteUInt64BigEndian(databaseVersion, database.TaintMasterKeyVersion!.Value);
 
-        BinaryPrimitives.WriteUInt32BigEndian(markerVersion, osMarker.TaintMasterKeyVersion);
+        BinaryPrimitives.WriteUInt64BigEndian(markerVersion, osMarker.TaintMasterKeyVersion);
 
         difference |= CryptographicOperations.FixedTimeEquals(databaseVersion, markerVersion) ? 0 : 1;
 
@@ -360,7 +360,7 @@ public sealed class HostProcessToolsMarkerPairJoiner : IHostProcessToolsMarkerPa
 public readonly record struct HostProcessToolsMarkerFields(
     string InstallationIdentity,
     Guid TransitionId,
-    uint TaintMasterKeyVersion,
+    ulong TaintMasterKeyVersion,
     CovenantDigest TaintFingerprint);
 
 /// <summary>
@@ -378,14 +378,18 @@ public readonly record struct HostProcessToolsMarkerFields(
 public static class HostProcessToolsMarkerPayload
 {
 
-    /// <summary>The one format version this build writes and accepts.</summary>
-    public const byte Version = 1;
+    private const byte LegacyVersion = 1;
+
+    private const int LegacyLength = 1 + 1 + InstallationIdentityFieldBytes + 16 + 4 + 32;
+
+    /// <summary>The format version this build writes.</summary>
+    public const byte Version = 2;
 
     /// <summary>Widest installation identity the authority row permits.</summary>
     public const int InstallationIdentityFieldBytes = 128;
 
     /// <summary>Version byte, identity length, identity field, transition, key version, fingerprint.</summary>
-    public const int Length = 1 + 1 + InstallationIdentityFieldBytes + 16 + 4 + 32;
+    public const int Length = 1 + 1 + InstallationIdentityFieldBytes + 16 + 8 + 32;
 
     internal static readonly byte[] DatabaseDomainLabel =
         Encoding.UTF8.GetBytes("Arcanum.HostProcessTools.DatabaseMarker.v1\0");
@@ -400,7 +404,7 @@ public static class HostProcessToolsMarkerPayload
     public static byte[] Encode(
         string installationIdentity,
         Guid transitionId,
-        uint taintMasterKeyVersion,
+        ulong taintMasterKeyVersion,
         CovenantDigest? taintFingerprint)
     {
 
@@ -418,14 +422,14 @@ public static class HostProcessToolsMarkerPayload
 
         _ = transitionId.TryWriteBytes(payload.AsSpan(2 + InstallationIdentityFieldBytes), bigEndian: true, out _);
 
-        BinaryPrimitives.WriteUInt32BigEndian(
+        BinaryPrimitives.WriteUInt64BigEndian(
             payload.AsSpan(2 + InstallationIdentityFieldBytes + 16),
             taintMasterKeyVersion);
 
         if (taintFingerprint is { IsValid: true } fingerprint)
         {
 
-            fingerprint.Bytes.CopyTo(payload.AsSpan(2 + InstallationIdentityFieldBytes + 16 + 4));
+            fingerprint.Bytes.CopyTo(payload.AsSpan(2 + InstallationIdentityFieldBytes + 16 + 8));
 
         }
 
@@ -433,13 +437,22 @@ public static class HostProcessToolsMarkerPayload
 
     }
 
-    /// <summary>Decodes an exact-length, exact-version payload, or refuses it.</summary>
+    /// <summary>Decodes an exact-length supported payload, or refuses it.</summary>
     public static bool TryDecode(ReadOnlySpan<byte> payload, out HostProcessToolsMarkerFields fields)
     {
 
         fields = default;
 
-        if (payload.Length != Length || payload[0] != Version)
+        int versionBytes = payload.Length switch
+        {
+            LegacyLength when payload[0] == LegacyVersion => 4,
+
+            Length when payload[0] == Version => 8,
+
+            _ => 0,
+        };
+
+        if (versionBytes == 0)
         {
             return false;
         }
@@ -486,15 +499,20 @@ public static class HostProcessToolsMarkerPayload
             return false;
         }
 
-        uint version = BinaryPrimitives.ReadUInt32BigEndian(
-            payload.Slice(2 + InstallationIdentityFieldBytes + 16, 4));
+        ReadOnlySpan<byte> versionField = payload.Slice(
+            2 + InstallationIdentityFieldBytes + 16,
+            versionBytes);
+
+        ulong version = versionBytes == 4
+            ? BinaryPrimitives.ReadUInt32BigEndian(versionField)
+            : BinaryPrimitives.ReadUInt64BigEndian(versionField);
 
         if (version == 0)
         {
             return false;
         }
 
-        ReadOnlySpan<byte> fingerprint = payload[(2 + InstallationIdentityFieldBytes + 16 + 4)..];
+        ReadOnlySpan<byte> fingerprint = payload[(2 + InstallationIdentityFieldBytes + 16 + versionBytes)..];
 
         if (!fingerprint.ContainsAnyExcept((byte)0))
         {

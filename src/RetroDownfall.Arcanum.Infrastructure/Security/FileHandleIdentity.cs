@@ -384,6 +384,107 @@ internal static partial class FileHandleIdentityInterop
 
     }
 
+    internal static bool TryGetUnixHandleAccessMetadata(
+        SafeFileHandle handle,
+        out UnixFileMode mode,
+        out uint ownerUserId)
+    {
+
+        mode = default;
+
+        ownerUserId = default;
+
+        if ((!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            || !BitConverter.IsLittleEndian
+            || handle is null
+            || handle.IsInvalid)
+        {
+
+            return false;
+
+        }
+
+        int fd = handle.DangerousGetHandle().ToInt32();
+
+        if (fd < 0)
+        {
+
+            return false;
+
+        }
+
+        unsafe
+        {
+
+            Span<byte> buffer = stackalloc byte[StatBufferSize];
+
+            fixed (byte* bufferPtr = buffer)
+            {
+
+                if (fstat(fd, bufferPtr) != 0)
+                {
+
+                    return false;
+
+                }
+
+                uint rawMode;
+
+                if (OperatingSystem.IsMacOS())
+                {
+
+                    if (buffer.Length < MacOsAccessMetadataMinimumSize)
+                    {
+
+                        return false;
+
+                    }
+
+                    rawMode = BinaryPrimitives.ReadUInt16LittleEndian(buffer[4..]);
+
+                    ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[16..]);
+
+                }
+                else
+                {
+
+                    switch (RuntimeInformation.ProcessArchitecture)
+                    {
+                        case Architecture.X64
+                            when buffer.Length >= LinuxX64AccessMetadataMinimumSize:
+
+                            rawMode = BinaryPrimitives.ReadUInt32LittleEndian(buffer[24..]);
+
+                            ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[28..]);
+
+                            break;
+
+                        case Architecture.Arm64
+                            when buffer.Length >= LinuxArm64AccessMetadataMinimumSize:
+
+                            rawMode = BinaryPrimitives.ReadUInt32LittleEndian(buffer[16..]);
+
+                            ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[24..]);
+
+                            break;
+
+                        default:
+
+                            return false;
+                    }
+
+                }
+
+                mode = (UnixFileMode)(rawMode & UnixPermissionBits);
+
+                return true;
+
+            }
+
+        }
+
+    }
+
     internal static bool TryOpenDirectoryMetadata(
         string path,
         out SafeFileHandle handle,
@@ -843,9 +944,17 @@ internal static partial class FileHandleIdentityInterop
 
     private const int MacOsStatMinimumSize = 16;
 
+    private const int MacOsAccessMetadataMinimumSize = 20;
+
     private const int LinuxX64StatMinimumSize = 28;
 
+    private const int LinuxX64AccessMetadataMinimumSize = 32;
+
     private const int LinuxArm64StatMinimumSize = 24;
+
+    private const int LinuxArm64AccessMetadataMinimumSize = 28;
+
+    private const uint UnixPermissionBits = 0x0FFF;
 
     private const uint FileReadAttributes = 0x0080;
 

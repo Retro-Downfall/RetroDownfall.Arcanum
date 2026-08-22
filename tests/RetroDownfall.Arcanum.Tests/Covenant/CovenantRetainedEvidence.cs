@@ -87,7 +87,7 @@ internal static class CovenantRetainedEvidence
 
     private static readonly Guid TransitionId = new("CCCCCCCC-DDDD-4EEE-8FFF-111111111111");
 
-    private const uint TaintMasterKeyVersion = 4;
+    private const ulong TaintMasterKeyVersion = 4;
 
     /// <summary>
     /// Seeds one of each retained artifact, in the representation production actually writes.
@@ -298,12 +298,14 @@ internal static class CovenantRetainedEvidence
                 StateKey, InstallationIdentity, AuthorityEpoch, CurrentMasterKeyVersion,
                 CurrentMasterKeyFingerprint, RecoveryEnvelopeEpoch, HostToolsStateCode,
                 TaintTimeMasterVersion, TaintFingerprint, TransitionId, UpdatedAtUtc)
-            VALUES (1, $identity, 3, 4, $fingerprint, 2, 3, 4, $taintFingerprint, $transition, $updated);
+            VALUES (1, $identity, 3, 4, $fingerprint, 2, 3, $taintVersion, $taintFingerprint, $transition, $updated);
             """;
 
         _ = command.Parameters.AddWithValue("$identity", InstallationIdentity);
 
         _ = command.Parameters.AddWithValue("$fingerprint", Digest(0x10).Bytes);
+
+        _ = command.Parameters.AddWithValue("$taintVersion", Convert.FromHexString("0000000000000004"));
 
         _ = command.Parameters.AddWithValue("$taintFingerprint", Digest(0x40).Bytes);
 

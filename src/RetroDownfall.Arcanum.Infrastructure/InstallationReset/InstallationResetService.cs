@@ -1,6 +1,6 @@
-using System.Collections.Concurrent;
+using System.Buffers.Binary;
 
-using System.Globalization;
+using System.Collections.Concurrent;
 
 using System.Security.Cryptography;
 
@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -18,6 +20,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal interface IInstallationResetLockedService
 {
+
+    Task<Result<InstallationResetResult>> ApplyFullUnderMaintenanceLockAsync(
+        FullInstallationResetRequest request,
+        ArcanumMaintenanceLock heldInstallationLock,
+        CancellationToken cancellationToken = default);
 
     Task<Result<InstallationResetResult>> ApplyUnderMaintenanceLockAsync(
         InstallationResetApplyRequest request,
@@ -197,7 +204,9 @@ internal sealed class InstallationResetService(
     IInstallationResetStateRoots? stateRoots = null,
     IInstallationResetPreDataMutation? preDataMutation = null,
     InstallationResetControlPaths? controlPaths = null,
-    IInstallationResetDatabaseIdentityReader? identityReader = null)
+    IInstallationResetDatabaseIdentityReader? identityReader = null,
+    IInstallationResetHostProcessToolsPairReader? pairReader = null,
+    IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null)
     : IInstallationResetService,
       IInstallationResetOnlineDataHandoff,
       IInstallationResetLockedService
@@ -210,6 +219,9 @@ internal sealed class InstallationResetService(
 
     private readonly IInstallationResetPreDataMutation _preDataMutation =
         preDataMutation ?? NoopInstallationResetPreDataMutation.Instance;
+
+    private readonly IInstallationResetHostProcessToolsPairReader _pairReader =
+        pairReader ?? throw new ArgumentNullException(nameof(pairReader));
 
     private readonly ConcurrentDictionary<string, DataRetentionPlan> _localDataPlans =
         new(StringComparer.Ordinal);
@@ -292,6 +304,19 @@ internal sealed class InstallationResetService(
                 ? []
                 : credentialService.Probe();
 
+        bool externalRemediationRequired = false;
+
+        if (request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+        {
+
+            Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
+                .ReadAsync(cancellationToken).ConfigureAwait(false);
+
+            externalRemediationRequired = pair.IsFailure
+                || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean;
+
+        }
+
         string[] accounts =
             [.. credentials.Select(static item => item.Account).Order(StringComparer.Ordinal)];
 
@@ -367,6 +392,14 @@ internal sealed class InstallationResetService(
                     ErrorCodes.Data.CredentialInventoryUnavailable,
                     "An accepted credential could not be inspected.",
                     credential.Account)),
+            .. externalRemediationRequired
+                ? new InstallationResetIssueSummary[]
+                {
+                    new(
+                        ErrorCodes.Data.ExternalRemediationRequired,
+                        "The host-process-tools marker pair requires external remediation."),
+                }
+                : [],
         ];
 
         InstallationResetTargetDescriptor[] targets =
@@ -597,12 +630,243 @@ internal sealed class InstallationResetService(
 
     }
 
+    public Task<Result<InstallationResetResult>> ApplyFullAsync(
+        FullInstallationResetRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        Result validation = ValidateFullRequest(request);
+
+        if (validation.IsFailure)
+        {
+
+            return Task.FromResult(Result<InstallationResetResult>.Failure(
+                validation.Error));
+
+        }
+
+        return Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
+            ErrorCodes.Data.ControlPathUnavailable,
+            "Full installation reset requires the exact held maintenance lock.")));
+
+    }
+
     public Task<Result<InstallationResetResult>> ApplyAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
             ErrorCodes.Data.ControlPathUnavailable,
             "Installation reset apply requires the exact held maintenance lock.")));
+
+    public async Task<Result<InstallationResetResult>> ApplyFullUnderMaintenanceLockAsync(
+        FullInstallationResetRequest request,
+        ArcanumMaintenanceLock heldInstallationLock,
+        CancellationToken cancellationToken = default)
+    {
+
+        Result requestValidation = ValidateFullRequest(request);
+
+        if (requestValidation.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(requestValidation.Error);
+
+        }
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
+
+        IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
+            identityReader
+            ?? activeStore as IInstallationResetDatabaseIdentityReader;
+
+        if (effectiveIdentityReader is null || remediationVerifier is null)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The authenticated full-reset control path is unavailable."));
+
+        }
+
+        Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
+            .ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        if (pair.IsFailure
+            || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.TaintedMatched
+            || pair.Value.MatchedPair is null)
+        {
+
+            return ExternalRemediationRequired<InstallationResetResult>();
+
+        }
+
+        Result<Guid> installation = await effectiveIdentityReader
+            .ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        if (installation.IsFailure || installation.Value == Guid.Empty)
+        {
+
+            return ExternalRemediationInvalid<InstallationResetResult>();
+
+        }
+
+        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
+            .RecoverAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(recovered.Error);
+
+        }
+
+        InstallationResetActivePublication? publication = recovered.Value.Publication;
+
+        InstallationResetActiveRecord? existing = publication?.Payload.ToRecord();
+
+        if (recovered.Value.Outcome is not (
+                InstallationResetActiveRecoveryOutcome.NoActiveRecord
+                or InstallationResetActiveRecoveryOutcome.AuthenticatedV2)
+            || recovered.Value.Outcome is InstallationResetActiveRecoveryOutcome.NoActiveRecord
+                && existing is not null
+            || recovered.Value.Outcome is InstallationResetActiveRecoveryOutcome.AuthenticatedV2
+                && existing is null)
+        {
+
+            return ExternalRemediationInvalid<InstallationResetResult>();
+
+        }
+
+        if (existing is not null)
+        {
+
+            Result<HostProcessToolsMatchedPair> retryPair =
+                await ReadCurrentTaintedMatchedPairAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (retryPair.IsFailure)
+            {
+
+                return Result<InstallationResetResult>.Failure(retryPair.Error);
+
+            }
+
+            if (!SameFullRequest(existing, request)
+                || existing.FullInstallationResetRemediationClaim is not
+                    { Version: 1 } acceptedClaim
+                || !remediationVerifier.MatchesAuthenticatedClaim(
+                    request.ExternalRemediation,
+                    installation.Value,
+                    retryPair.Value,
+                    acceptedClaim.OperationId,
+                    acceptedClaim.InstallationId,
+                    acceptedClaim.AttestationDigest,
+                    acceptedClaim.NonceDigest,
+                    acceptedClaim.IssuerDigest))
+            {
+
+                return ExternalRemediationInvalid<InstallationResetResult>();
+
+            }
+
+            return FullAdmissionAccepted(existing);
+
+        }
+
+        Result<InstallationResetPlan> planned = await ReplanFullAsync(
+            request.Apply,
+            cancellationToken).ConfigureAwait(false);
+
+        if (planned.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(planned.Error);
+
+        }
+
+        InstallationResetPlan plan = planned.Value;
+
+        if (!plan.CredentialInventoryAvailable)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.CredentialInventoryUnavailable,
+                "The accepted credential inventory is unavailable."));
+
+        }
+
+        if (plan.Blockers.Any(static blocker =>
+                blocker.Code != ErrorCodes.Data.ExternalRemediationRequired))
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.Blocked,
+                "The accepted full installation reset has an unresolved blocker."));
+
+        }
+
+        Result<HostProcessToolsMatchedPair> admissionPair =
+            await ReadCurrentTaintedMatchedPairAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+        if (admissionPair.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(admissionPair.Error);
+
+        }
+
+        Result<FullInstallationResetRemediationAuthorization> verified =
+            remediationVerifier.Verify(
+                request.ExternalRemediation,
+                installation.Value,
+                admissionPair.Value);
+
+        if (verified.IsFailure
+            || verified.Value.OperationId != request.OperationId
+            || verified.Value.InstallationId != installation.Value)
+        {
+
+            return ExternalRemediationInvalid<InstallationResetResult>();
+
+        }
+
+        FullInstallationResetRemediationClaimV1 claim = Claim(verified.Value);
+
+        InstallationResetActiveRecord active = new(
+            InstallationResetActiveStore.CurrentVersion,
+            request.OperationId,
+            plan.PlanId,
+            InstallationResetScope.All,
+            plan.Workspace,
+            plan.AcceptedBinding,
+            InstallationResetPhase.Prepared,
+            PointOfNoReturn: false,
+            RowsDeleted: 0,
+            FilesDeleted: 0,
+            EstimatedBytesDeleted: 0,
+            CredentialResults: [],
+            LastErrorCode: ErrorCodes.Data.RecoveryRequired,
+            FullInstallationResetRemediationClaim: claim);
+
+        AuthenticatedActiveWriter writer = new(
+            activeStore,
+            heldInstallationLock,
+            activeStore.GuardedRoot,
+            installation.Value,
+            publication);
+
+        Result published = await writer.WriteAsync(active, cancellationToken)
+            .ConfigureAwait(false);
+
+        return published.IsFailure
+            ? Result<InstallationResetResult>.Failure(published.Error)
+            : FullAdmissionAccepted(active);
+
+    }
 
     public async Task<Result<InstallationResetResult>> ApplyUnderMaintenanceLockAsync(
         InstallationResetApplyRequest request,
@@ -615,6 +879,17 @@ internal sealed class InstallationResetService(
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
+
+        Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
+            .ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        if (pair.IsFailure
+            || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean)
+        {
+
+            return ExternalRemediationRequired<InstallationResetResult>();
+
+        }
 
         IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
             identityReader
@@ -679,6 +954,13 @@ internal sealed class InstallationResetService(
             publication = migrated.Value;
 
             recoveredRecord = publication.Payload.ToRecord();
+
+        }
+
+        if (recoveredRecord?.FullInstallationResetRemediationClaim is not null)
+        {
+
+            return ExternalRemediationRequired<InstallationResetResult>();
 
         }
 
@@ -1196,6 +1478,128 @@ internal sealed class InstallationResetService(
 
     }
 
+    private async Task<Result<InstallationResetPlan>> ReplanFullAsync(
+        InstallationResetApplyRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        Result<InstallationResetPlan> local = await PlanAsync(
+            request.Request,
+            cancellationToken).ConfigureAwait(false);
+
+        if (local.IsFailure)
+        {
+
+            return local;
+
+        }
+
+        if (string.Equals(
+            request.ExpectedPlanId,
+            local.Value.PlanId,
+            StringComparison.Ordinal))
+        {
+
+            return local;
+
+        }
+
+        if (!_onlineDataPlans.TryGetValue(
+                request.ExpectedPlanId,
+                out DataRetentionPlan? online))
+        {
+
+            return PlanChanged<InstallationResetPlan>();
+
+        }
+
+        Result<InstallationResetPlan> rebound = BindOnlineDataPlan(
+            request.Request,
+            local.Value,
+            online);
+
+        return rebound.IsSuccess
+            && string.Equals(
+                request.ExpectedPlanId,
+                rebound.Value.PlanId,
+                StringComparison.Ordinal)
+            ? rebound
+            : PlanChanged<InstallationResetPlan>();
+
+    }
+
+    private static Result ValidateFullRequest(
+        FullInstallationResetRequest? request)
+    {
+
+        if (request is null
+            || request.ExternalRemediation is null
+            || request.OperationId == Guid.Empty
+            || request.OperationId != request.ExternalRemediation.OperationId)
+        {
+
+            return ExternalRemediationInvalid();
+
+        }
+
+        if (request.Apply is null
+            || request.Apply.Request is null
+            || request.Apply.Request.Scope is not InstallationResetScope.All
+            || string.IsNullOrWhiteSpace(request.Apply.ExpectedPlanId))
+        {
+
+            return ExternalRemediationInvalid();
+
+        }
+
+        return Result.Success();
+
+    }
+
+    private static FullInstallationResetRemediationClaimV1 Claim(
+        FullInstallationResetRemediationAuthorization authorization) =>
+        new(
+            Version: 1,
+            authorization.OperationId,
+            authorization.InstallationId,
+            authorization.AttestationDigest,
+            authorization.NonceDigest,
+            authorization.IssuerDigest,
+            authorization.AcceptedAtUtc);
+
+    private static bool SameFullRequest(
+        InstallationResetActiveRecord active,
+        FullInstallationResetRequest request) =>
+        active.OperationId == request.OperationId
+        && active.Scope is InstallationResetScope.All
+        && active.Phase is InstallationResetPhase.Prepared
+        && !active.PointOfNoReturn
+        && active.RowsDeleted == 0
+        && active.FilesDeleted == 0
+        && active.EstimatedBytesDeleted == 0
+        && active.CredentialResults.Length == 0
+        && active.DataHandoff is null
+        && active.OnlineDataCompletion is null
+        && active.LastErrorCode == ErrorCodes.Data.RecoveryRequired
+        && string.Equals(
+            active.PlanId,
+            request.Apply.ExpectedPlanId,
+            StringComparison.Ordinal);
+
+    private static Result<InstallationResetResult> FullAdmissionAccepted(
+        InstallationResetActiveRecord active) =>
+        Result<InstallationResetResult>.Success(BuildResult(
+            active with { LastErrorCode = ErrorCodes.Data.RecoveryRequired },
+            active.AcceptedBinding.PreservedBackups,
+            new InstallationResetVerification(
+                false,
+                [
+                    new InstallationResetIssueSummary(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "The externally authorized full installation reset requires recovery."),
+                ]),
+            resumeRequired: true));
+
     private async Task<Result> ValidateResumeAsync(
         InstallationResetActiveRecord active,
         InstallationResetApplyRequest request,
@@ -1602,6 +2006,36 @@ internal sealed class InstallationResetService(
             ErrorCodes.Data.ResetInProgress,
             "A different installation reset owns the active operation."));
 
+    private async Task<Result<HostProcessToolsMatchedPair>>
+        ReadCurrentTaintedMatchedPairAsync(
+            CancellationToken cancellationToken)
+    {
+
+        Result<HostProcessToolsMarkerPairJoinResult> pair = await _pairReader
+            .ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        return pair.IsSuccess
+            && pair.Value.Disposition
+                is HostProcessToolsMarkerPairDisposition.TaintedMatched
+            && pair.Value.MatchedPair is { } matched
+                ? Result<HostProcessToolsMatchedPair>.Success(matched)
+                : ExternalRemediationRequired<HostProcessToolsMatchedPair>();
+
+    }
+
+    private static Result ExternalRemediationInvalid() =>
+        Result.Failure(new Error(
+            ErrorCodes.Data.ExternalRemediationInvalid,
+            "The external remediation attestation could not be verified."));
+
+    private static Result<T> ExternalRemediationInvalid<T>() =>
+        Result<T>.Failure(ExternalRemediationInvalid().Error);
+
+    private static Result<T> ExternalRemediationRequired<T>() =>
+        Result<T>.Failure(new Error(
+            ErrorCodes.Data.ExternalRemediationRequired,
+            "The host-process-tools marker pair requires external remediation."));
+
     private static Result<T> PlanChanged<T>() =>
         Result<T>.Failure(new Error(
             ErrorCodes.Data.PlanChanged,
@@ -1718,46 +2152,297 @@ internal sealed class InstallationResetService(
 
     private static string ComputeBindingId(
         InstallationResetPlanRequest request,
-        InstallationResetAcceptedBinding binding) =>
-        Hash(string.Join(
-            '|',
-            request.Scope,
-            string.Join(',', binding.SelectedRoots),
-            string.Join(',', binding.ExcludedRoots),
-            string.Join(',', binding.PreservedBackups.Select(
-                static backup => $"{backup.CanonicalPath}:{backup.Identity.Value}:{backup.Identity.Length}:{backup.Identity.HardLinkCount}")),
-            string.Join(',', binding.CredentialAccounts),
-            string.Join(',', binding.DataPlanIds)));
+        InstallationResetAcceptedBinding binding)
+    {
+
+        using IncrementalHash hash = BeginCanonicalHash(
+            "Arcanum.InstallationReset.AcceptedBinding.v2");
+
+        AppendByte(hash, checked((byte)request.Scope));
+
+        AppendStrings(hash, binding.SelectedRoots);
+
+        AppendStrings(hash, binding.ExcludedRoots);
+
+        AppendUInt32(hash, checked((uint)binding.PreservedBackups.Length));
+
+        foreach (InstallationResetPreservedBackup backup in binding.PreservedBackups)
+        {
+
+            AppendString(hash, backup.CanonicalPath);
+
+            AppendString(hash, backup.Identity.Value);
+
+            AppendInt64(hash, backup.Identity.Length);
+
+            AppendUInt64(hash, backup.Identity.HardLinkCount);
+
+        }
+
+        AppendStrings(hash, binding.CredentialAccounts);
+
+        AppendStrings(hash, binding.DataPlanIds);
+
+        return CompleteCanonicalHash(hash);
+
+    }
 
     private static string ComputePlanId(
         InstallationResetPlanRequest request,
         InstallationResetAcceptedBinding binding,
         DataRetentionPlan? data,
         InstallationResetCredentialSummary[] credentials,
-        InstallationResetTargetDescriptor[] fileTargets) =>
-        Hash(string.Join(
-            '|',
-            request.Scope,
-            binding.BindingId,
-            data?.PlanId ?? "unavailable",
-            data?.Rows.ToString(CultureInfo.InvariantCulture) ?? "unavailable",
-            data?.Files.ToString(CultureInfo.InvariantCulture) ?? "unavailable",
-            string.Join(',', credentials.Select(static item => $"{item.Account}:{item.Status}")),
-            string.Join(',', fileTargets
-                .OrderBy(static target => target.ResourceId, StringComparer.Ordinal)
-                .ThenBy(static target => target.CanonicalPath, StringComparer.Ordinal)
-                .Select(static target => string.Join(
-                    ':',
-                    target.ResourceId,
-                    target.CanonicalPath,
-                    target.Identity?.Value,
-                    target.Identity?.Length.ToString(CultureInfo.InvariantCulture),
-                    target.Identity?.HardLinkCount.ToString(CultureInfo.InvariantCulture),
-                    target.Files.ToString(CultureInfo.InvariantCulture),
-                    target.EstimatedBytes.ToString(CultureInfo.InvariantCulture))))));
+        InstallationResetTargetDescriptor[] fileTargets)
+    {
 
-    private static string Hash(string value) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+        using IncrementalHash hash = BeginCanonicalHash(
+            "Arcanum.InstallationReset.Plan.v2");
+
+        AppendByte(hash, checked((byte)request.Scope));
+
+        AppendString(hash, binding.BindingId);
+
+        AppendByte(hash, data is null ? (byte)0 : (byte)1);
+
+        if (data is not null)
+        {
+
+            AppendString(hash, data.PlanId);
+
+            AppendInt64(hash, data.Rows);
+
+            AppendInt64(hash, data.Files);
+
+            AppendInt64(hash, data.EstimatedBytes);
+
+            AppendInt64(hash, data.DerivedRecords);
+
+            AppendByte(hash, data.RequiresConfirmation ? (byte)1 : (byte)0);
+
+        }
+
+        AppendUInt32(hash, checked((uint)credentials.Length));
+
+        foreach (InstallationResetCredentialSummary credential in credentials)
+        {
+
+            AppendString(hash, credential.Account);
+
+            AppendByte(hash, checked((byte)credential.Status));
+
+            AppendNullableString(hash, credential.ErrorCode);
+
+        }
+
+        InstallationResetTargetDescriptor[] orderedTargets =
+        [
+            .. fileTargets
+                .OrderBy(static target => target.ResourceId, StringComparer.Ordinal)
+                .ThenBy(static target => target.CanonicalPath, StringComparer.Ordinal),
+        ];
+
+        AppendUInt32(hash, checked((uint)orderedTargets.Length));
+
+        foreach (InstallationResetTargetDescriptor target in orderedTargets)
+        {
+
+            AppendString(hash, target.Category);
+
+            AppendByte(hash, checked((byte)target.Role));
+
+            AppendString(hash, target.ResourceId);
+
+            AppendNullableString(hash, target.CanonicalPath);
+
+            AppendNullableString(hash, target.DatabasePredicate);
+
+            AppendByte(hash, target.Identity is null ? (byte)0 : (byte)1);
+
+            if (target.Identity is { } identity)
+            {
+
+                AppendString(hash, identity.Value);
+
+                AppendInt64(hash, identity.Length);
+
+                AppendUInt64(hash, identity.HardLinkCount);
+
+            }
+
+            AppendNullableInt64(hash, target.Rows);
+
+            AppendInt64(hash, target.Files);
+
+            AppendInt64(hash, target.EstimatedBytes);
+
+        }
+
+        return CompleteCanonicalHash(hash);
+
+    }
+
+    private static IncrementalHash BeginCanonicalHash(string domain)
+    {
+
+        IncrementalHash hash = IncrementalHash.CreateHash(
+            HashAlgorithmName.SHA256);
+
+        byte[] domainBytes = Encoding.ASCII.GetBytes(domain);
+
+        try
+        {
+
+            hash.AppendData(domainBytes);
+
+            AppendByte(hash, 0);
+
+            return hash;
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(domainBytes);
+
+        }
+
+    }
+
+    private static void AppendStrings(IncrementalHash hash, string[] values)
+    {
+
+        AppendUInt32(hash, checked((uint)values.Length));
+
+        foreach (string value in values)
+        {
+
+            AppendString(hash, value);
+
+        }
+
+    }
+
+    private static void AppendNullableString(IncrementalHash hash, string? value)
+    {
+
+        AppendByte(hash, value is null ? (byte)0 : (byte)1);
+
+        if (value is not null)
+        {
+
+            AppendString(hash, value);
+
+        }
+
+    }
+
+    private static void AppendString(IncrementalHash hash, string value)
+    {
+
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+
+        try
+        {
+
+            AppendUInt32(hash, checked((uint)bytes.Length));
+
+            hash.AppendData(bytes);
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(bytes);
+
+        }
+
+    }
+
+    private static void AppendNullableInt64(IncrementalHash hash, long? value)
+    {
+
+        AppendByte(hash, value.HasValue ? (byte)1 : (byte)0);
+
+        if (value.HasValue)
+        {
+
+            AppendInt64(hash, value.Value);
+
+        }
+
+    }
+
+    private static void AppendByte(IncrementalHash hash, byte value)
+    {
+
+        Span<byte> bytes = stackalloc byte[1];
+
+        bytes[0] = value;
+
+        hash.AppendData(bytes);
+
+        CryptographicOperations.ZeroMemory(bytes);
+
+    }
+
+    private static void AppendUInt32(IncrementalHash hash, uint value)
+    {
+
+        Span<byte> bytes = stackalloc byte[sizeof(uint)];
+
+        BinaryPrimitives.WriteUInt32BigEndian(bytes, value);
+
+        hash.AppendData(bytes);
+
+        CryptographicOperations.ZeroMemory(bytes);
+
+    }
+
+    private static void AppendInt64(IncrementalHash hash, long value)
+    {
+
+        Span<byte> bytes = stackalloc byte[sizeof(long)];
+
+        BinaryPrimitives.WriteInt64BigEndian(bytes, value);
+
+        hash.AppendData(bytes);
+
+        CryptographicOperations.ZeroMemory(bytes);
+
+    }
+
+    private static void AppendUInt64(IncrementalHash hash, ulong value)
+    {
+
+        Span<byte> bytes = stackalloc byte[sizeof(ulong)];
+
+        BinaryPrimitives.WriteUInt64BigEndian(bytes, value);
+
+        hash.AppendData(bytes);
+
+        CryptographicOperations.ZeroMemory(bytes);
+
+    }
+
+    private static string CompleteCanonicalHash(IncrementalHash hash)
+    {
+
+        byte[] digest = hash.GetHashAndReset();
+
+        try
+        {
+
+            return Convert.ToHexStringLower(digest);
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(digest);
+
+        }
+
+    }
 
     private static StringComparer PathComparer { get; } =
         OperatingSystem.IsWindows()

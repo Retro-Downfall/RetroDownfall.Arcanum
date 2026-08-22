@@ -206,7 +206,15 @@ public sealed class CliCommandShapeTests
         CliSurfaceCommand command = AllCommands()["data factory-reset"];
 
         Assert.Equal(
-            ["--all", "--apply", "--dry-run", "--force", "--global", "--workspace"],
+            [
+                "--all",
+                "--apply",
+                "--dry-run",
+                "--external-remediation-attestation",
+                "--force",
+                "--global",
+                "--workspace",
+            ],
             command.Options
                 .Select(static option => option.Name)
                 .Order(StringComparer.Ordinal)

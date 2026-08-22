@@ -477,7 +477,9 @@ public sealed class BackupCovenantRestoreReconcilerTests : IAsyncLifetime
 
         bool tainted = state != CovenantHostToolsState.Clean;
 
-        _ = command.Parameters.AddWithValue("$taintVersion", tainted ? 1L : DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$taintVersion",
+            tainted ? Convert.FromHexString("0000000000000001") : (object)DBNull.Value);
 
         _ = command.Parameters.AddWithValue(
             "$taintFingerprint",

@@ -17,7 +17,18 @@ CREATE TABLE IF NOT EXISTS covenant_authority_state (
     -- The master version in force when the taint was recorded. It stays put across every later key
     -- rotation, because the question it answers is which credentials same-identity code could have
     -- recovered, and a rotation does not unask it.
-    TaintTimeMasterVersion INTEGER NULL CHECK (TaintTimeMasterVersion IS NULL OR TaintTimeMasterVersion > 0),
+    -- New writes use an exact UInt64BE BLOB so every positive unsigned value is representable.
+    -- Existing installations can still contain a positive INTEGER under the previous table CHECK;
+    -- compatibility readers accept that legacy shape, but a fresh table admits only the canonical
+    -- representation.
+    TaintTimeMasterVersion BLOB NULL CHECK (
+        TaintTimeMasterVersion IS NULL
+        OR (
+            typeof(TaintTimeMasterVersion) = 'blob'
+            AND length(TaintTimeMasterVersion) = 8
+            AND TaintTimeMasterVersion <> X'0000000000000000'
+        )
+    ),
     TaintFingerprint BLOB NULL CHECK (TaintFingerprint IS NULL OR length(TaintFingerprint) = 32),
     -- One random uppercase hyphenated identity per taint transition, so two separate escapes cannot
     -- be collapsed into one remediation record.

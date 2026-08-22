@@ -121,8 +121,24 @@ internal sealed class InstallationResetStartupRecovery(
         };
 
     private static ActiveInstallationReset ToActiveReset(
-        InstallationResetActiveRecord record) =>
-        new(
+        InstallationResetActiveRecord record)
+    {
+
+        bool requiresExternalRemediation =
+            record.FullInstallationResetRemediationClaim is not null;
+
+        InstallationResetHostHandoff? hostHandoff =
+            !requiresExternalRemediation
+            && record.DataHandoff is InstallationResetDataHandoff.HostFactoryErasure
+                ? new InstallationResetHostHandoff(
+                    record.OperationId,
+                    record.PlanId,
+                    record.Scope,
+                    record.Workspace,
+                    record.AcceptedBinding)
+                : null;
+
+        return new ActiveInstallationReset(
             record.Scope,
             record.Workspace?.WorkspaceRoot,
             record.PlanId,
@@ -130,12 +146,10 @@ internal sealed class InstallationResetStartupRecovery(
             record.Phase,
             record.DataHandoff,
             record.OnlineDataCompletion is not null,
-            new InstallationResetHostHandoff(
-                record.OperationId,
-                record.PlanId,
-                record.Scope,
-                record.Workspace,
-                record.AcceptedBinding));
+            hostHandoff,
+            requiresExternalRemediation);
+
+    }
 
     private static Result<InstallationResetStartupRecoveryState> EvidenceFailure() =>
         new Error(

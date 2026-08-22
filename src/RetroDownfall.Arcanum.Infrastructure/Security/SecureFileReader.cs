@@ -226,7 +226,8 @@ internal static partial class SecureFileReader
         string path,
         int maxBytes,
         CancellationToken cancellationToken,
-        FileHandleIdentity? expectedIdentity = null)
+        FileHandleIdentity? expectedIdentity = null,
+        bool requireOwnerControlled = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
@@ -253,7 +254,8 @@ internal static partial class SecureFileReader
             return await ReadBytesAsync(
                     openedStream,
                     maxBytes,
-                    cancellationToken)
+                    cancellationToken,
+                    requireOwnerControlled)
                 .ConfigureAwait(false);
         }
     }
@@ -261,7 +263,8 @@ internal static partial class SecureFileReader
     internal static async Task<SecureFileReadResult> ReadBytesAsync(
         FileStream stream,
         int maxBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireOwnerControlled = false)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
@@ -275,7 +278,12 @@ internal static partial class SecureFileReader
         if (!TryValidateRegularFileHandle(
                 stream.SafeFileHandle,
                 expectedIdentity: null,
-                out FileHandleMetadata openedMetadata))
+                out FileHandleMetadata openedMetadata)
+            || requireOwnerControlled
+                && !SecureFilePermissions.HasOwnerControlledFileHandlePosture(
+                    stream.SafeFileHandle,
+                    stream.Name,
+                    openedMetadata.Identity))
         {
             return Failure(SecureFileReadStatus.Rejected);
         }
@@ -340,7 +348,12 @@ internal static partial class SecureFileReader
             if (!TryValidateRegularFileHandle(
                     stream.SafeFileHandle,
                     openedMetadata.Identity,
-                    out FileHandleMetadata finalMetadata))
+                    out FileHandleMetadata finalMetadata)
+                || requireOwnerControlled
+                    && !SecureFilePermissions.HasOwnerControlledFileHandlePosture(
+                        stream.SafeFileHandle,
+                        stream.Name,
+                        finalMetadata.Identity))
             {
                 return Failure(SecureFileReadStatus.Rejected);
             }

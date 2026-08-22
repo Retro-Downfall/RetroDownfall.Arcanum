@@ -81,7 +81,7 @@ internal sealed class HostProcessToolsMarkerStore(IOsCredentialStore credentials
     public HostProcessToolsMarkerWriteStatus Write(
         string installationIdentity,
         Guid transitionId,
-        uint taintMasterKeyVersion,
+        ulong taintMasterKeyVersion,
         CovenantDigest taintFingerprint)
     {
 

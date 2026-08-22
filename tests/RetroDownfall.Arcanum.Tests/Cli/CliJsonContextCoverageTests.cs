@@ -1,8 +1,15 @@
 using System.Reflection;
 using System.Text.Json;
+
+using System.Text.Json.Serialization;
+
 using System.Text.Json.Serialization.Metadata;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+
+using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -13,6 +20,69 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </summary>
 public sealed class CliJsonContextCoverageTests
 {
+
+    [Fact]
+
+    public void Cli_output_context_does_not_inherit_attestation_input_limits()
+    {
+
+        Assert.Equal(0, CliJsonContext.Default.Options.MaxDepth);
+
+        Assert.Equal(
+            JsonUnmappedMemberHandling.Skip,
+            CliJsonContext.Default.Options.UnmappedMemberHandling);
+
+    }
+
+    [Fact]
+
+    public void Full_reset_attestation_is_source_generated_strict_and_preserves_ulong()
+    {
+
+        // Mutations caught: leaving the CLI-only input out of source generation, accepting an
+        // unknown field, or narrowing the signed taint version below the full UInt64 domain.
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            OperationId: Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"),
+            InstallationId: Guid.Parse("10213243-5465-7687-98a9-bacbdcedfe0f"),
+            HostToolsTransitionId: Guid.Parse("20314253-6475-8697-a8b9-cadbecfd0e1f"),
+            TaintMasterKeyVersion: ulong.MaxValue,
+            AuthorityFingerprint: Digest(0x10),
+            DatabaseMarkerDigest: Digest(0x20),
+            OsMarkerDigest: Digest(0x30),
+            RemediationActionDigest: Digest(0x40),
+            NonceBase64Url: "AAECAwQFBgcICQoLDA0ODw",
+            Issuer: "RetroDownfall.Remediation.v1",
+            IssuedAtUtc: new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero),
+            ExpiresAtUtc: new DateTimeOffset(2026, 8, 22, 13, 0, 0, TimeSpan.Zero),
+            SignatureBase64Url: new string('A', 86));
+
+        JsonTypeInfo typeInfo = Assert.IsAssignableFrom<JsonTypeInfo>(
+            CliJsonContext.Default.GetTypeInfo(attestation.GetType()));
+
+        string json = JsonSerializer.Serialize(attestation, typeInfo);
+
+        FullInstallationResetExternalRemediationAttestation roundTrip = Assert.IsType<
+            FullInstallationResetExternalRemediationAttestation>(
+                JsonSerializer.Deserialize(json, typeInfo));
+
+        Assert.Equal(ulong.MaxValue, roundTrip.TaintMasterKeyVersion);
+
+        string negative = json.Replace(
+            "\"taintMasterKeyVersion\":18446744073709551615",
+            "\"taintMasterKeyVersion\":-1",
+            StringComparison.Ordinal);
+
+        string overflow = json.Replace(
+            "\"taintMasterKeyVersion\":18446744073709551615",
+            "\"taintMasterKeyVersion\":18446744073709551616",
+            StringComparison.Ordinal);
+
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(negative, typeInfo));
+
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(overflow, typeInfo));
+
+    }
 
     /// <summary>
     /// Discovers the CLI's structured output types by convention rather than by an assumed
@@ -25,6 +95,9 @@ public sealed class CliJsonContextCoverageTests
                 candidate is { IsClass: true, IsAbstract: false, IsGenericTypeDefinition: false }
                 && candidate.Name.EndsWith("Payload", StringComparison.Ordinal))
             .OrderBy(static candidate => candidate.FullName, StringComparer.Ordinal)];
+
+    private static CovenantDigest Digest(byte value) =>
+        new(Enumerable.Repeat(value, 32).ToArray());
 
     public static TheoryData<Type> CliPayloadTypes
     {

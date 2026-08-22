@@ -439,6 +439,14 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<IInstallationResetDatabaseIdentityReader>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
+        services.TryAddScoped<
+            IInstallationResetHostProcessToolsDatabaseEvidenceReader>(provider =>
+            provider.GetRequiredService<InstallationResetExistingGrimoire>());
+
+        services.TryAddScoped<
+            IInstallationResetHostProcessToolsPairReader,
+            InstallationResetHostProcessToolsPairReader>();
+
         services.TryAddScoped<IInstallationResetCredentialService>(provider =>
             new InstallationResetCredentialCatalog(
                 provider.GetRequiredService<IOsCredentialStore>(),
@@ -451,6 +459,16 @@ public static class ServiceCollectionExtensions
             InstallationResetStateRoots.Default);
 
         services.TryAddScoped<IInstallationResetPreDataMutation, InstallationResetDaemonMutation>();
+
+        services.TryAddSingleton<
+            IFullInstallationResetRemediationTrustRootProvider,
+            FullInstallationResetRemediationTrustRootAdapter>();
+
+        services.TryAddSingleton<IFullInstallationResetRemediationAttestationVerifier>(provider =>
+            new FullInstallationResetRemediationAttestationVerifier(
+                provider.GetRequiredService<
+                    IFullInstallationResetRemediationTrustRootProvider>(),
+                provider.GetService<TimeProvider>() ?? TimeProvider.System));
 
         services.TryAddScoped(static _ =>
             new InstallationResetControlPaths(ArcanumPaths.GrimoireDirectory));

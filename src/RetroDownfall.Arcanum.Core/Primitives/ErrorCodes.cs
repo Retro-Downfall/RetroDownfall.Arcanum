@@ -566,6 +566,10 @@ public static class ErrorCodes
 
         public const string ControlPathUnavailable = "Data.ControlPathUnavailable";
 
+        public const string ExternalRemediationRequired = "Data.ExternalRemediationRequired";
+
+        public const string ExternalRemediationInvalid = "Data.ExternalRemediationInvalid";
+
     }
 
     /// <summary>Connection — client transport failures.</summary>

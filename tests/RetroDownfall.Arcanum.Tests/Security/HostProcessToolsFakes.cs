@@ -236,7 +236,7 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
     public HostProcessToolsMarkerWriteStatus Write(
         string installationIdentity,
         Guid transitionId,
-        uint taintMasterKeyVersion,
+        ulong taintMasterKeyVersion,
         CovenantDigest taintFingerprint)
     {
 

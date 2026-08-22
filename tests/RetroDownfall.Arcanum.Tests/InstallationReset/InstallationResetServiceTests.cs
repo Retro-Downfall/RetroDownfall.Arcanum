@@ -1,6 +1,10 @@
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -21,7 +25,7 @@ public sealed class InstallationResetServiceTests
 
         DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(localDataPlan),
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -122,7 +126,7 @@ public sealed class InstallationResetServiceTests
 
         DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(localDataPlan),
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -170,7 +174,7 @@ public sealed class InstallationResetServiceTests
 
         DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(localDataPlan),
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -208,7 +212,7 @@ public sealed class InstallationResetServiceTests
 
         FakeDataService data = new(CreateDataPlan("workspace-data"));
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -248,7 +252,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             credentials,
             active,
@@ -276,7 +280,7 @@ public sealed class InstallationResetServiceTests
     public async Task Unavailable_credential_inventory_is_reported_as_a_dry_run_blocker()
     {
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             new FakeCredentialInventory(
             [
@@ -322,7 +326,7 @@ public sealed class InstallationResetServiceTests
 
         FakeDataService data = new(CreateDataPlan("workspace-data"));
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -368,7 +372,7 @@ public sealed class InstallationResetServiceTests
 
         FakeOfflineCleanup cleanup = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("workspace-data")),
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -431,7 +435,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             new FakeCredentialInventory([]),
             active,
@@ -481,7 +485,7 @@ public sealed class InstallationResetServiceTests
 
         FakeOfflineCleanup cleanup = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("workspace-data")),
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -540,7 +544,7 @@ public sealed class InstallationResetServiceTests
                     EstimatedBytes: 5)),
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             new FakeActiveStore(),
@@ -588,7 +592,7 @@ public sealed class InstallationResetServiceTests
 
         cleanup.Inventory = InventoryWithIdentity("first-identity");
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(
                 CreateDataPlan("global-data"),
                 CreateDataPlan("global-data")),
@@ -620,6 +624,70 @@ public sealed class InstallationResetServiceTests
     }
 
     [Fact]
+    public async Task Binding_and_plan_ids_distinguish_delimiter_ambiguous_exclusion_sets()
+    {
+
+        InstallationResetPlan first = await PlanWithInventoryAsync(
+            new InstallationResetFileSystemInventory(
+                Targets: [],
+                PreservedBackups: [],
+                Exclusions:
+                [
+                    new InstallationResetExclusion("campaign", "/a", "excluded"),
+                    new InstallationResetExclusion("campaign", "/b,/c", "excluded"),
+                ],
+                Files: 0,
+                EstimatedBytes: 0));
+
+        InstallationResetPlan second = await PlanWithInventoryAsync(
+            new InstallationResetFileSystemInventory(
+                Targets: [],
+                PreservedBackups: [],
+                Exclusions:
+                [
+                    new InstallationResetExclusion("campaign", "/a,/b", "excluded"),
+                    new InstallationResetExclusion("campaign", "/c", "excluded"),
+                ],
+                Files: 0,
+                EstimatedBytes: 0));
+
+        Assert.NotEqual(
+            first.AcceptedBinding.ExcludedRoots,
+            second.AcceptedBinding.ExcludedRoots);
+
+        Assert.NotEqual(
+            first.AcceptedBinding.BindingId,
+            second.AcceptedBinding.BindingId);
+
+        Assert.NotEqual(first.PlanId, second.PlanId);
+
+    }
+
+    [Fact]
+    public async Task Plan_ids_distinguish_delimiter_ambiguous_target_fields()
+    {
+
+        InstallationResetPlan first = await PlanWithInventoryAsync(
+            InventoryWithTarget(
+                resourceId: "file:one",
+                canonicalPath: "/state/two"));
+
+        InstallationResetPlan second = await PlanWithInventoryAsync(
+            InventoryWithTarget(
+                resourceId: "file",
+                canonicalPath: "one:/state/two"));
+
+        Assert.Equal(
+            first.AcceptedBinding.BindingId,
+            second.AcceptedBinding.BindingId);
+
+        Assert.NotEqual(first.Targets, second.Targets);
+
+        Assert.NotEqual(first.PlanId, second.PlanId);
+
+    }
+
+    [Fact]
     public async Task Apply_replans_before_active_publication_and_binds_the_expected_plan()
     {
 
@@ -631,7 +699,7 @@ public sealed class InstallationResetServiceTests
 
         FakeOfflineCleanup cleanup = new();
 
-        InstallationResetService service = new(data, credentials, active, cleanup);
+        InstallationResetService service = CreateService(data, credentials, active, cleanup);
 
         InstallationResetPlanRequest request = new(
             InstallationResetScope.Global,
@@ -679,7 +747,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -726,7 +794,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -780,7 +848,7 @@ public sealed class InstallationResetServiceTests
                 new Error(ErrorCodes.Data.FileLocked, "locked")),
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -827,7 +895,7 @@ public sealed class InstallationResetServiceTests
                 "daemon uninstall failed")),
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -873,7 +941,7 @@ public sealed class InstallationResetServiceTests
             Exception = new OperationCanceledException(),
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             new FakeCredentialInventory([]),
             active,
@@ -917,7 +985,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -966,7 +1034,7 @@ public sealed class InstallationResetServiceTests
 
         FakeOfflineCleanup cleanup = new();
 
-        InstallationResetService service = new(data, credentials, active, cleanup);
+        InstallationResetService service = CreateService(data, credentials, active, cleanup);
 
         InstallationResetPlanRequest request = new(
             InstallationResetScope.Global,
@@ -1019,7 +1087,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1067,7 +1135,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1116,7 +1184,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1168,7 +1236,7 @@ public sealed class InstallationResetServiceTests
 
         FakeOfflineCleanup cleanup = new();
 
-        InstallationResetService service = new(data, credentials, active, cleanup);
+        InstallationResetService service = CreateService(data, credentials, active, cleanup);
 
         InstallationResetPlanRequest request = new(
             InstallationResetScope.Global,
@@ -1252,7 +1320,7 @@ public sealed class InstallationResetServiceTests
                         ]))),
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1308,7 +1376,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             credentials,
             active,
@@ -1361,7 +1429,7 @@ public sealed class InstallationResetServiceTests
                 "retirement failed")),
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1417,7 +1485,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1469,7 +1537,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1516,7 +1584,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             new FakeCredentialInventory([]),
             active,
@@ -1566,7 +1634,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             new FakeCredentialInventory([]),
             active,
@@ -1628,7 +1696,7 @@ public sealed class InstallationResetServiceTests
             },
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             new FakeCredentialInventory([]),
             active,
@@ -1686,7 +1754,7 @@ public sealed class InstallationResetServiceTests
                     Verification: new InstallationResetVerification(true, []))),
         };
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             credentials,
             new FakeActiveStore(),
@@ -1741,7 +1809,7 @@ public sealed class InstallationResetServiceTests
 
         FakeActiveStore active = new();
 
-        InstallationResetService service = new(
+        InstallationResetService service = CreateService(
             data,
             credentials,
             active,
@@ -1803,6 +1871,936 @@ public sealed class InstallationResetServiceTests
     }
 
 
+    [Theory]
+    [InlineData(HostProcessToolsMarkerPairDisposition.PendingBlocked)]
+    [InlineData(HostProcessToolsMarkerPairDisposition.TaintedMatched)]
+    [InlineData(HostProcessToolsMarkerPairDisposition.MismatchBlocked)]
+    public async Task Global_plan_adds_one_content_free_external_remediation_blocker_for_dangerous_pair(
+        HostProcessToolsMarkerPairDisposition disposition)
+    {
+
+        const string secret = "taint-evidence-that-must-not-escape";
+
+        FakePairReader pairReader = new(JoinResult(disposition));
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: pairReader);
+
+        Result<InstallationResetPlan> result = await service.PlanAsync(
+            new InstallationResetPlanRequest(
+                InstallationResetScope.Global,
+                "/invocation/" + secret),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        InstallationResetIssueSummary blocker = Assert.Single(
+            result.Value.Blockers,
+            static candidate =>
+                candidate.Code == ErrorCodes.Data.ExternalRemediationRequired);
+
+        Assert.Null(blocker.ResourceId);
+
+        Assert.DoesNotContain(secret, blocker.Message, StringComparison.Ordinal);
+
+        Assert.Equal(1, pairReader.ReadCount);
+
+    }
+
+    [Fact]
+    public async Task Workspace_plan_does_not_read_host_process_tools_pair()
+    {
+
+        DataRetentionWorkspaceBinding workspace = new(
+            Guid.Parse("50505050-5050-5050-8050-505050505050"),
+            "/workspace");
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.MismatchBlocked))
+        {
+            Exception = new InvalidOperationException(
+                "Workspace planning must not inspect installation taint evidence."),
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("workspace-data")),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup(),
+            workspaceResolver: new FakeWorkspaceResolver(workspace),
+            stateRoots: new FixedStateRoots(["/workspace"]),
+            pairReader: pairReader);
+
+        Result<InstallationResetPlan> result = await service.PlanAsync(
+            new InstallationResetPlanRequest(
+                InstallationResetScope.Workspace,
+                "/workspace/child"),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, pairReader.ReadCount);
+
+    }
+
+    [Fact]
+    public async Task Ordinary_apply_rechecks_pair_and_refuses_dangerous_state_before_effects()
+    {
+
+        FakeDataService data = new(CreateDataPlan("global-data"));
+
+        FakeCredentialInventory credentials = new([]);
+
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup offline = new();
+
+        FakePreDataMutation preData = new();
+
+        FakePairReader pairReader = new(
+            JoinResult(HostProcessToolsMarkerPairDisposition.Clean),
+            JoinResult(HostProcessToolsMarkerPairDisposition.TaintedMatched));
+
+        InstallationResetService service = CreateService(
+            data,
+            credentials,
+            active,
+            offline,
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            preDataMutation: preData,
+            pairReader: pairReader);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(planRequest, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ExternalRemediationRequired, result.Error.Code);
+
+        Assert.Equal(2, pairReader.ReadCount);
+
+        Assert.Equal(0, active.IdentityReadCount);
+
+        Assert.Equal(0, active.RecoverCount);
+
+        Assert.Empty(active.Writes);
+
+        Assert.Empty(data.ApplyRequests);
+
+        Assert.False(preData.Executed);
+
+        Assert.False(offline.Executed);
+
+        Assert.Empty(credentials.DeleteRequests);
+
+    }
+
+    [Fact]
+    public void Service_construction_requires_a_host_process_tools_pair_reader()
+    {
+
+        ArgumentNullException exception = Assert.Throws<ArgumentNullException>(() =>
+            new InstallationResetService(
+                new FakeDataService(CreateDataPlan("global-data")),
+                new FakeCredentialInventory([]),
+                new FakeActiveStore(),
+                new FakeOfflineCleanup(),
+                pairReader: null));
+
+        Assert.Equal("pairReader", exception.ParamName);
+
+    }
+
+    [Fact]
+    public async Task Ordinary_locked_apply_rejects_an_authenticated_full_claim_before_effects()
+    {
+
+        FakeDataService data = new(CreateDataPlan("global-data"));
+
+        FakeCredentialInventory credentials = new([]);
+
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup offline = new();
+
+        FakePreDataMutation preData = new();
+
+        InstallationResetService service = CreateService(
+            data,
+            credentials,
+            active,
+            offline,
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            preDataMutation: preData,
+            pairReader: CleanPairReader());
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        InstallationResetActiveRecord claimed = CreateActive(
+            plan,
+            InstallationResetPhase.Prepared,
+            pointOfNoReturn: false);
+
+        active.Seed(claimed with
+        {
+            FullInstallationResetRemediationClaim = RemediationClaim(
+                claimed.OperationId),
+        });
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(planRequest, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(
+            ErrorCodes.Data.ExternalRemediationRequired,
+            result.Error.Code);
+
+        Assert.Empty(active.Writes);
+
+        Assert.Empty(data.ApplyRequests);
+
+        Assert.False(preData.Executed);
+
+        Assert.False(offline.Executed);
+
+        Assert.Empty(credentials.DeleteRequests);
+
+    }
+
+    [Fact]
+    public async Task Full_apply_rejects_request_operation_mismatch_before_any_dependency()
+    {
+
+        Guid signedOperationId = Guid.Parse("12121212-1212-4121-8121-121212121212");
+
+        FakeActiveStore active = new();
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.TaintedMatched))
+        {
+            Exception = new InvalidOperationException("Pair I/O must not run."),
+        };
+
+        FakeRemediationVerifier verifier = new(
+            Authorization(signedOperationId))
+        {
+            Exception = new InvalidOperationException("Verification must not run."),
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        FullInstallationResetRequest request = FullRequest(
+            signedOperationId,
+            expectedPlanId: "confirmed-plan") with
+        {
+            OperationId = Guid.Parse("34343434-3434-4343-8343-343434343434"),
+        };
+
+        Result<InstallationResetResult> result = await service.ApplyFullAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, result.Error.Code);
+
+        Assert.Equal(0, pairReader.ReadCount);
+
+        Assert.Equal(0, verifier.VerifyCount);
+
+        Assert.Equal(0, active.IdentityReadCount);
+
+        Assert.Equal(0, active.RecoverCount);
+
+    }
+
+    [Fact]
+    public async Task Full_apply_with_matching_operation_requires_the_exact_locked_control_path()
+    {
+
+        Guid operationId = Guid.Parse("35353535-3535-4353-8353-353535353535");
+
+        FakeActiveStore active = new();
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.TaintedMatched))
+        {
+            Exception = new InvalidOperationException("Pair I/O must not run."),
+        };
+
+        FakeRemediationVerifier verifier = new(Authorization(operationId))
+        {
+            Exception = new InvalidOperationException("Verification must not run."),
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        Result<InstallationResetResult> result = await service.ApplyFullAsync(
+            FullRequest(operationId, expectedPlanId: "confirmed-plan"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, result.Error.Code);
+
+        Assert.Equal(0, pairReader.ReadCount);
+
+        Assert.Equal(0, verifier.VerifyCount);
+
+        Assert.Equal(0, verifier.MatchCount);
+
+        Assert.Equal(0, active.IdentityReadCount);
+
+        Assert.Equal(0, active.RecoverCount);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_requires_the_exact_held_installation_lock()
+    {
+
+        Guid operationId = Guid.Parse("45454545-4545-4545-8545-454545454545");
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.TaintedMatched));
+
+        FakeRemediationVerifier verifier = new(Authorization(operationId));
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            new FakeOfflineCleanup(),
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        string unrelatedRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-reset-unrelated-{Guid.NewGuid():N}");
+
+        RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions
+            .CreateOwnerOnlyDirectoryAtPath(unrelatedRoot);
+
+        ArcanumMaintenanceLockAcquisitionResult acquired =
+            ArcanumMaintenanceLock.AcquireDetailed(unrelatedRoot);
+
+        using ArcanumMaintenanceLock unrelatedLock = acquired.BorrowAcquiredLock();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ApplyFullUnderMaintenanceLockAsync(
+                FullRequest(operationId, "confirmed-plan"),
+                unrelatedLock,
+                CancellationToken.None));
+
+        Assert.Equal(0, pairReader.ReadCount);
+
+        Assert.Equal(0, verifier.VerifyCount);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_rejects_non_all_scope_before_lock_or_dependency_access()
+    {
+
+        Guid operationId = Guid.Parse("46464646-4646-4464-8464-464646464646");
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.TaintedMatched))
+        {
+            Exception = new InvalidOperationException("Pair I/O must not run."),
+        };
+
+        FakeRemediationVerifier verifier = new(Authorization(operationId))
+        {
+            Exception = new InvalidOperationException("Verification must not run."),
+        };
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        FullInstallationResetRequest invalid = FullRequest(
+            operationId,
+            expectedPlanId: "confirmed-plan") with
+        {
+            Apply = new InstallationResetApplyRequest(
+                new InstallationResetPlanRequest(
+                    InstallationResetScope.Global,
+                    "/invocation"),
+                "confirmed-plan"),
+        };
+
+        string unrelatedRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-reset-unrelated-{Guid.NewGuid():N}");
+
+        RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions
+            .CreateOwnerOnlyDirectoryAtPath(unrelatedRoot);
+
+        ArcanumMaintenanceLockAcquisitionResult acquired =
+            ArcanumMaintenanceLock.AcquireDetailed(unrelatedRoot);
+
+        using ArcanumMaintenanceLock unrelatedLock = acquired.BorrowAcquiredLock();
+
+        Result<InstallationResetResult> result =
+            await service.ApplyFullUnderMaintenanceLockAsync(
+                invalid,
+                unrelatedLock,
+                CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, result.Error.Code);
+
+        Assert.Equal(0, pairReader.ReadCount);
+
+        Assert.Equal(0, verifier.VerifyCount);
+
+        Assert.Equal(0, verifier.MatchCount);
+
+        Assert.Equal(0, active.IdentityReadCount);
+
+        Assert.Equal(0, active.RecoverCount);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_publishes_authenticated_claim_and_runs_no_reset_effects()
+    {
+
+        Guid operationId = Guid.Parse("56565656-5656-4565-8565-565656565656");
+
+        FakeDataService data = new(CreateDataPlan("global-data"));
+
+        FakeCredentialInventory credentials = new([]);
+
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup offline = new();
+
+        FakePreDataMutation preData = new();
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.TaintedMatched));
+
+        FullInstallationResetRemediationAuthorization authorization =
+            Authorization(operationId);
+
+        FakeRemediationVerifier verifier = new(authorization);
+
+        InstallationResetService service = CreateService(
+            data,
+            credentials,
+            active,
+            offline,
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            preDataMutation: preData,
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        FullInstallationResetRequest request = FullRequest(
+            operationId,
+            plan.PlanId,
+            planRequest);
+
+        Result<InstallationResetResult> result = await ApplyFullUnderTestLockAsync(
+            service,
+            request,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(operationId, result.Value.OperationId);
+
+        Assert.Equal(InstallationResetPhase.Prepared, result.Value.Phase);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.False(result.Value.Verification.Succeeded);
+
+        Assert.Equal(
+            ErrorCodes.Data.RecoveryRequired,
+            Assert.Single(result.Value.Verification.RemainingIssues).Code);
+
+        InstallationResetActiveRecord published = Assert.Single(active.Writes);
+
+        Assert.Equal(operationId, published.OperationId);
+
+        Assert.Equal(InstallationResetScope.All, published.Scope);
+
+        Assert.Equal(InstallationResetPhase.Prepared, published.Phase);
+
+        FullInstallationResetRemediationClaimV1 claim = Assert.IsType<
+            FullInstallationResetRemediationClaimV1>(
+                published.FullInstallationResetRemediationClaim);
+
+        Assert.Equal((byte)1, claim.Version);
+
+        Assert.Equal(authorization.OperationId, claim.OperationId);
+
+        Assert.Equal(authorization.InstallationId, claim.InstallationId);
+
+        Assert.Equal(authorization.AttestationDigest, claim.AttestationDigest);
+
+        Assert.Equal(authorization.NonceDigest, claim.NonceDigest);
+
+        Assert.Equal(authorization.IssuerDigest, claim.IssuerDigest);
+
+        Assert.Equal(authorization.AcceptedAtUtc, claim.AcceptedAtUtc);
+
+        Assert.Empty(data.ApplyRequests);
+
+        Assert.False(preData.Executed);
+
+        Assert.False(offline.Executed);
+
+        Assert.Empty(credentials.DeleteRequests);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_rejects_a_pair_that_changes_during_replanning()
+    {
+
+        Guid operationId = Guid.Parse("59595959-5959-4595-8595-595959595959");
+
+        FakeActiveStore active = new();
+
+        FakePairReader pairReader = new(
+            JoinResult(HostProcessToolsMarkerPairDisposition.TaintedMatched),
+            JoinResult(HostProcessToolsMarkerPairDisposition.TaintedMatched),
+            JoinResult(HostProcessToolsMarkerPairDisposition.MismatchBlocked));
+
+        FakeRemediationVerifier verifier = new(Authorization(operationId));
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyFullUnderTestLockAsync(
+            service,
+            FullRequest(operationId, plan.PlanId, planRequest),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(
+            ErrorCodes.Data.ExternalRemediationRequired,
+            result.Error.Code);
+
+        Assert.Equal(0, verifier.VerifyCount);
+
+        Assert.Equal(0, verifier.MatchCount);
+
+        Assert.Empty(active.Writes);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_requires_and_preserves_the_confirmed_online_rebound_plan()
+    {
+
+        Guid operationId = Guid.Parse("62626262-6262-4626-8626-626262626262");
+
+        DataRetentionPlan localData = CreateDataPlan("local-data");
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(localData),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: new FakePairReader(JoinResult(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched)),
+            remediationVerifier: new FakeRemediationVerifier(
+                Authorization(operationId)));
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan localPlan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        DataRetentionPlan onlineData = localData with
+        {
+            PlanId = "online-covenant-plan",
+            GeneratedAt = localData.GeneratedAt.AddMinutes(1),
+        };
+
+        InstallationResetPlan rebound = service.BindOnlineDataPlan(
+            planRequest,
+            localPlan,
+            onlineData).Value;
+
+        Result<InstallationResetResult> result = await ApplyFullUnderTestLockAsync(
+            service,
+            FullRequest(operationId, rebound.PlanId, planRequest),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        InstallationResetActiveRecord published = Assert.Single(active.Writes);
+
+        Assert.Equal(rebound.PlanId, published.PlanId);
+
+        Assert.Equal(
+            [onlineData.PlanId],
+            published.AcceptedBinding.DataPlanIds);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_accepts_exact_admitted_claim_without_reverification()
+    {
+
+        Guid operationId = Guid.Parse("67676767-6767-4676-8676-676767676767");
+
+        FakeActiveStore active = new();
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.TaintedMatched));
+
+        FakeRemediationVerifier verifier = new(Authorization(operationId));
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        FullInstallationResetRequest request = FullRequest(
+            operationId,
+            plan.PlanId,
+            planRequest);
+
+        Result<InstallationResetResult> first = await ApplyFullUnderTestLockAsync(
+            service,
+            request,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        FakeDataService retryData = new(CreateDataPlan("must-not-replan"));
+
+        FakeRemediationVerifier retryVerifier = new(Authorization(operationId))
+        {
+            Exception = new InvalidOperationException(
+                "An admitted exact claim must not be reverified after expiry."),
+
+        };
+
+        InstallationResetService restarted = new(
+            retryData,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            pairReader: new FakePairReader(JoinResult(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched)),
+            remediationVerifier: retryVerifier);
+
+        Result<InstallationResetResult> retry = await ApplyFullUnderTestLockAsync(
+            restarted,
+            request,
+            CancellationToken.None);
+
+        Assert.True(retry.IsSuccess, retry.Error.Message);
+
+        Assert.Equal(first.Value.OperationId, retry.Value.OperationId);
+
+        Assert.Equal(1, verifier.VerifyCount);
+
+        Assert.Equal(0, retryVerifier.VerifyCount);
+
+        Assert.Equal(1, retryVerifier.MatchCount);
+
+        Assert.Empty(retryData.PlanRequests);
+
+        Assert.Single(active.Writes);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_rejects_an_advanced_record_as_an_admission_retry()
+    {
+
+        Guid operationId = Guid.Parse("71717171-7171-4717-8171-717171717171");
+
+        FakeActiveStore active = new();
+
+        FakeRemediationVerifier verifier = new(Authorization(operationId));
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: new FakePairReader(JoinResult(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched)),
+            remediationVerifier: verifier);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        FullInstallationResetRequest request = FullRequest(
+            operationId,
+            plan.PlanId,
+            planRequest);
+
+        Result<InstallationResetResult> admitted = await ApplyFullUnderTestLockAsync(
+            service,
+            request,
+            CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess, admitted.Error.Message);
+
+        active.Seed(active.Record! with
+        {
+            Phase = InstallationResetPhase.DataResetComplete,
+            PointOfNoReturn = true,
+            RowsDeleted = 1,
+        });
+
+        Result<InstallationResetResult> retry = await ApplyFullUnderTestLockAsync(
+            service,
+            request,
+            CancellationToken.None);
+
+        Assert.True(retry.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, retry.Error.Code);
+
+        Assert.Equal(1, verifier.VerifyCount);
+
+        Assert.Equal(0, verifier.MatchCount);
+
+        Assert.Single(active.Writes);
+
+    }
+
+    [Fact]
+    public async Task Full_locked_apply_rejects_a_different_claim_for_an_active_operation()
+    {
+
+        Guid operationId = Guid.Parse("78787878-7878-4787-8787-787878787878");
+
+        FakeActiveStore active = new();
+
+        FakePairReader pairReader = new(JoinResult(
+            HostProcessToolsMarkerPairDisposition.TaintedMatched));
+
+        FullInstallationResetRemediationAuthorization authorization =
+            Authorization(operationId);
+
+        FakeRemediationVerifier verifier = new(authorization);
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: pairReader,
+            remediationVerifier: verifier);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        FullInstallationResetRequest request = FullRequest(
+            operationId,
+            plan.PlanId,
+            planRequest);
+
+        Result<InstallationResetResult> first = await ApplyFullUnderTestLockAsync(
+            service,
+            request,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        verifier.Authorization = Authorization(
+            operationId,
+            nonceDigest: Digest(99));
+
+        verifier.ClaimMatches = false;
+
+        FullInstallationResetRequest changed = request with
+        {
+            ExternalRemediation = request.ExternalRemediation with
+            {
+                NonceBase64Url = "ERITFBUWFxgZGhscHR4fIA",
+            },
+        };
+
+        Result<InstallationResetResult> second = await ApplyFullUnderTestLockAsync(
+            service,
+            changed,
+            CancellationToken.None);
+
+        Assert.True(second.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, second.Error.Code);
+
+        Assert.Equal(1, verifier.VerifyCount);
+
+        Assert.Equal(1, verifier.MatchCount);
+
+        Assert.Single(active.Writes);
+
+        Guid differentOperationId = Guid.Parse(
+            "89898989-8989-4898-8989-898989898989");
+
+        FullInstallationResetRequest crossOperation = request with
+        {
+            OperationId = differentOperationId,
+            ExternalRemediation = request.ExternalRemediation with
+            {
+                OperationId = differentOperationId,
+            },
+        };
+
+        Result<InstallationResetResult> crossOperationResult =
+            await ApplyFullUnderTestLockAsync(
+                service,
+                crossOperation,
+                CancellationToken.None);
+
+        Assert.True(crossOperationResult.IsFailure);
+
+        Assert.Equal(
+            ErrorCodes.Data.ExternalRemediationInvalid,
+            crossOperationResult.Error.Code);
+
+        Assert.Equal(1, verifier.MatchCount);
+
+        Assert.Single(active.Writes);
+
+    }
+
+
+    private static InstallationResetService CreateService(
+        IInstallationResetDataService dataService,
+        IInstallationResetCredentialService credentialService,
+        IInstallationResetActiveStore activeStore,
+        IInstallationResetOfflineCleanup offlineCleanup,
+        TimeProvider? timeProvider = null,
+        IInstallationResetWorkspaceResolver? workspaceResolver = null,
+        IInstallationResetStateRoots? stateRoots = null,
+        IInstallationResetPreDataMutation? preDataMutation = null,
+        InstallationResetControlPaths? controlPaths = null,
+        IInstallationResetDatabaseIdentityReader? identityReader = null,
+        IInstallationResetHostProcessToolsPairReader? pairReader = null,
+        IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null) =>
+        new(
+            dataService,
+            credentialService,
+            activeStore,
+            offlineCleanup,
+            timeProvider,
+            workspaceResolver,
+            stateRoots,
+            preDataMutation,
+            controlPaths,
+            identityReader,
+            pairReader ?? CleanPairReader(),
+            remediationVerifier);
+
     private static async Task<Result<InstallationResetResult>>
         ApplyUnderTestLockAsync(
             InstallationResetService service,
@@ -1820,6 +2818,264 @@ public sealed class InstallationResetServiceTests
             request,
             heldInstallationLock,
             cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task<InstallationResetPlan> PlanWithInventoryAsync(
+        InstallationResetFileSystemInventory inventory)
+    {
+
+        FakeOfflineCleanup cleanup = new()
+        {
+            Inventory = Result<InstallationResetFileSystemInventory>.Success(inventory),
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            new FakeActiveStore(),
+            cleanup,
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: CleanPairReader());
+
+        Result<InstallationResetPlan> planned = await service.PlanAsync(
+            new InstallationResetPlanRequest(
+                InstallationResetScope.Global,
+                "/invocation"),
+            CancellationToken.None);
+
+        Assert.True(planned.IsSuccess, planned.Error.Message);
+
+        return planned.Value;
+
+    }
+
+    private static async Task<Result<InstallationResetResult>>
+        ApplyFullUnderTestLockAsync(
+            InstallationResetService service,
+            FullInstallationResetRequest request,
+            CancellationToken cancellationToken = default)
+    {
+
+        ArcanumMaintenanceLockAcquisitionResult acquired =
+            ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
+
+        using ArcanumMaintenanceLock heldInstallationLock =
+            acquired.BorrowAcquiredLock();
+
+        return await service.ApplyFullUnderMaintenanceLockAsync(
+            request,
+            heldInstallationLock,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static FullInstallationResetRequest FullRequest(
+        Guid operationId,
+        string expectedPlanId,
+        InstallationResetPlanRequest? planRequest = null)
+    {
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            operationId,
+            Guid.Parse("40404040-4040-4040-8040-404040404040"),
+            pair.Database.TransitionId!.Value,
+            pair.Database.TaintMasterKeyVersion!.Value,
+            pair.Database.TaintFingerprint!.Value,
+            pair.Database.DatabaseMarkerDigest,
+            pair.OsMarker.MarkerBytesDigest,
+            Digest(4),
+            "AQIDBAUGBwgJCgsMDQ4PEA",
+            "RetroDownfall.Remediation.v1",
+            new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 8, 22, 13, 0, 0, TimeSpan.Zero),
+            "signature");
+
+        return new FullInstallationResetRequest(
+            operationId,
+            new InstallationResetApplyRequest(
+                planRequest ?? new InstallationResetPlanRequest(
+                    InstallationResetScope.All,
+                    "/invocation"),
+                expectedPlanId),
+            attestation);
+
+    }
+
+    private static FullInstallationResetRemediationAuthorization Authorization(
+        Guid operationId,
+        CovenantDigest? nonceDigest = null) =>
+        new(
+            operationId,
+            Guid.Parse("40404040-4040-4040-8040-404040404040"),
+            Digest(7),
+            nonceDigest ?? Digest(8),
+            Digest(9),
+            new DateTimeOffset(2026, 8, 22, 12, 1, 0, TimeSpan.Zero));
+
+    private static FullInstallationResetRemediationClaimV1 RemediationClaim(
+        Guid operationId) =>
+        new(
+            Version: 1,
+            operationId,
+            InstallationId: Guid.Parse("40404040-4040-4040-8040-404040404040"),
+            AttestationDigest: Digest(7),
+            NonceDigest: Digest(8),
+            IssuerDigest: Digest(9),
+            AcceptedAtUtc: new DateTimeOffset(
+                2026,
+                8,
+                22,
+                12,
+                1,
+                0,
+                TimeSpan.Zero));
+
+    private static HostProcessToolsMarkerPairJoinResult JoinResult(
+        HostProcessToolsMarkerPairDisposition disposition) =>
+        new(
+            disposition,
+            disposition is HostProcessToolsMarkerPairDisposition.TaintedMatched
+                ? MatchedPair()
+                : null);
+
+    private static FakePairReader CleanPairReader() =>
+        new(JoinResult(HostProcessToolsMarkerPairDisposition.Clean));
+
+    private static HostProcessToolsMatchedPair MatchedPair()
+    {
+
+        const string installationIdentity = "installation-identity";
+
+        Guid transitionId = Guid.Parse("91919191-9191-4191-8191-919191919191");
+
+        CovenantDigest fingerprint = Digest(1);
+
+        HostProcessToolsDatabaseMarkerEvidence database = new(
+            installationIdentity,
+            Core.Security.CovenantHostToolsState.HostToolsTainted,
+            transitionId,
+            taintMasterKeyVersion: ulong.MaxValue,
+            fingerprint);
+
+        HostProcessToolsOsMarkerEvidence osMarker = new(
+            installationIdentity,
+            transitionId,
+            taintMasterKeyVersion: ulong.MaxValue,
+            fingerprint,
+            markerBytesDigest: Digest(2),
+            durableIdentityDigest: Digest(3));
+
+        return new HostProcessToolsMatchedPair(database, osMarker);
+
+    }
+
+    private static CovenantDigest Digest(byte value) =>
+        new([.. Enumerable.Repeat(value, 32)]);
+
+    private static FakeWorkspaceResolver FullWorkspaceResolver() =>
+        new(new DataRetentionWorkspaceBinding(
+            Guid.Parse("80808080-8080-4080-8080-808080808080"),
+            "/invocation"));
+
+    private sealed class FakePairReader(
+        params HostProcessToolsMarkerPairJoinResult[] results)
+        : IInstallationResetHostProcessToolsPairReader
+    {
+
+        private int _index;
+
+        public int ReadCount { get; private set; }
+
+        public Exception? Exception { get; set; }
+
+        public Task<Result<HostProcessToolsMarkerPairJoinResult>> ReadAsync(
+            CancellationToken cancellationToken = default)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            ReadCount++;
+
+            if (Exception is { } exception)
+            {
+
+                throw exception;
+
+            }
+
+            HostProcessToolsMarkerPairJoinResult result =
+                results[Math.Min(_index, results.Length - 1)];
+
+            _index++;
+
+            return Task.FromResult(
+                Result<HostProcessToolsMarkerPairJoinResult>.Success(result));
+
+        }
+
+    }
+
+    private sealed class FakeRemediationVerifier(
+        FullInstallationResetRemediationAuthorization authorization)
+        : IFullInstallationResetRemediationAttestationVerifier
+    {
+
+        public FullInstallationResetRemediationAuthorization Authorization { get; set; } =
+            authorization;
+
+        public Exception? Exception { get; set; }
+
+        public int VerifyCount { get; private set; }
+
+        public int MatchCount { get; private set; }
+
+        public bool ClaimMatches { get; set; } = true;
+
+        public Result<FullInstallationResetRemediationAuthorization> Verify(
+            FullInstallationResetExternalRemediationAttestation attestation,
+            Guid currentInstallationId,
+            HostProcessToolsMatchedPair matchedPair)
+        {
+
+            VerifyCount++;
+
+            if (Exception is { } exception)
+            {
+
+                throw exception;
+
+            }
+
+            return Result<FullInstallationResetRemediationAuthorization>.Success(
+                Authorization);
+
+        }
+
+        public bool MatchesAuthenticatedClaim(
+            FullInstallationResetExternalRemediationAttestation attestation,
+            Guid currentInstallationId,
+            HostProcessToolsMatchedPair matchedPair,
+            Guid acceptedOperationId,
+            Guid acceptedInstallationId,
+            CovenantDigest acceptedAttestationDigest,
+            CovenantDigest acceptedNonceDigest,
+            CovenantDigest acceptedIssuerDigest)
+        {
+
+            MatchCount++;
+
+            return ClaimMatches
+                && acceptedOperationId == Authorization.OperationId
+                && acceptedInstallationId == Authorization.InstallationId
+                && acceptedAttestationDigest == Authorization.AttestationDigest
+                && acceptedNonceDigest == Authorization.NonceDigest
+                && acceptedIssuerDigest == Authorization.IssuerDigest;
+
+        }
 
     }
 
@@ -1936,6 +3192,28 @@ public sealed class InstallationResetServiceTests
                 Exclusions: [],
                 Files: 1,
                 EstimatedBytes: 5));
+
+    private static InstallationResetFileSystemInventory InventoryWithTarget(
+        string resourceId,
+        string canonicalPath) =>
+        new(
+            Targets:
+            [
+                new InstallationResetTargetDescriptor(
+                    "installation-file",
+                    InstallationResetTargetRole.FileSystem,
+                    resourceId,
+                    canonicalPath,
+                    DatabasePredicate: null,
+                    Identity: null,
+                    Rows: null,
+                    Files: 0,
+                    EstimatedBytes: 0),
+            ],
+            PreservedBackups: [],
+            Exclusions: [],
+            Files: 0,
+            EstimatedBytes: 0);
 
     private sealed class FakeDataService(params DataRetentionPlan[] plans)
         : IInstallationResetDataService
@@ -2071,6 +3349,10 @@ public sealed class InstallationResetServiceTests
 
         public bool Retired { get; private set; }
 
+        public int IdentityReadCount { get; private set; }
+
+        public int RecoverCount { get; private set; }
+
         public InstallationResetActiveRecord? Record { get; private set; }
 
         public List<InstallationResetActiveRecord> Writes { get; } = [];
@@ -2087,6 +3369,8 @@ public sealed class InstallationResetServiceTests
         {
 
             heldInstallationLock.AssertHeldFor(GuardedRoot);
+
+            RecoverCount++;
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -2168,6 +3452,8 @@ public sealed class InstallationResetServiceTests
         {
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            IdentityReadCount++;
 
             return Task.FromResult(Result<Guid>.Success(
                 Guid.Parse("40404040-4040-4040-8040-404040404040")));

@@ -26,7 +26,11 @@ public sealed class CovenantRestoreStateJoinerTests : IAsyncLifetime
         _database = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         await _database.InstallCoreObjectsAsync(
-            ["external_disclosure_state", "external_disclosure_state_guard_delete"],
+            [
+                "covenant_authority_state",
+                "external_disclosure_state",
+                "external_disclosure_state_guard_delete",
+            ],
             CancellationToken.None);
 
     }
@@ -97,6 +101,37 @@ public sealed class CovenantRestoreStateJoinerTests : IAsyncLifetime
             null!,
             Row(CovenantHostToolsState.Clean, epoch: 1),
             "9F1C0B2E-9A44-4E1D-8B7A-2C5D3F6A8E90").IsFailure);
+
+    }
+
+    [Fact]
+    public async Task The_restore_reader_preserves_a_full_width_taint_version()
+    {
+
+        await using SqliteCommand seed = _database.Connection.CreateCommand();
+
+        seed.CommandText = """
+            INSERT INTO covenant_authority_state (
+                StateKey, InstallationIdentity, AuthorityEpoch, CurrentMasterKeyVersion,
+                CurrentMasterKeyFingerprint, RecoveryEnvelopeEpoch, HostToolsStateCode,
+                TaintTimeMasterVersion, TaintFingerprint, TransitionId, UpdatedAtUtc)
+            VALUES (
+                1, '1F1C0B2E-9A44-4E1D-8B7A-2C5D3F6A8E90', 1, 1, zeroblob(32), 1, 3,
+                X'FFFFFFFFFFFFFFFF', zeroblob(32),
+                '11111111-2222-4333-8444-555555555555',
+                '2026-08-22T00:00:00.0000000+00:00');
+            """;
+
+        Assert.Equal(1, await seed.ExecuteNonQueryAsync(CancellationToken.None));
+
+        CovenantAuthorityStateRow? read = await CovenantAuthorityStateJoiner.ReadAsync(
+            _database.Connection,
+            transaction: null,
+            CancellationToken.None);
+
+        Assert.NotNull(read);
+
+        Assert.Equal(ulong.MaxValue, Assert.IsType<ulong>(read.TaintTimeMasterVersion));
 
     }
 

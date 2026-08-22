@@ -36,6 +36,175 @@ public sealed class InstallationFactoryResetCommandTests
 {
 
     [Fact]
+
+    public void Full_apply_reads_the_attestation_before_startup_and_preserves_the_signed_operation()
+    {
+
+        Guid operationId = Guid.Parse("61616161-6161-4161-8161-616161616161");
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.All) with
+        {
+            Blockers =
+            [
+                new InstallationResetIssueSummary(
+                    ErrorCodes.Data.ExternalRemediationRequired,
+                    "External remediation is required."),
+            ],
+        };
+
+        FullInstallationResetExternalRemediationAttestation attestation =
+            CreateAttestation(operationId);
+
+        List<string> events = [];
+
+        RecordingAttestationReader reader = new(attestation, events);
+
+        RecordingStartupProbe startup = new(activeReset: null, events);
+
+        RecordingApplyBoundary boundary = new(CreateSuccessfulService(plan));
+
+        CliTestResult result = RunCommand(
+            CreateSuccessfulService(plan),
+            [
+                "--yes",
+                "data",
+                "factory-reset",
+                "--all",
+                "--apply",
+                "--force",
+                "--external-remediation-attestation",
+                "/must-not-be-disclosed/remediation.json",
+            ],
+            applyBoundary: boundary,
+            startupProbe: startup,
+            attestationReader: reader);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal(1, reader.ReadCount);
+
+        Assert.Equal(1, startup.ReadCount);
+
+        Assert.Equal(["attestation", "startup"], events);
+
+        FullInstallationResetRequest request = Assert.Single(boundary.FullRequests);
+
+        Assert.Equal(operationId, request.OperationId);
+
+        Assert.Equal(operationId, request.ExternalRemediation.OperationId);
+
+        Assert.Equal(plan.PlanId, request.Apply.ExpectedPlanId);
+
+        Assert.DoesNotContain("must-not-be-disclosed", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("must-not-be-disclosed", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(attestation.NonceBase64Url, result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(attestation.SignatureBase64Url, result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+
+    public void Full_resume_rejects_a_different_active_operation_before_the_boundary()
+    {
+
+        Guid signedOperationId = Guid.Parse("64646464-6464-4464-8464-646464646464");
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
+
+        RecordingApplyBoundary boundary = new(CreateSuccessfulService(plan));
+
+        RecordingAttestationReader reader = new(CreateAttestation(signedOperationId));
+
+        CliTestResult result = RunCommand(
+            CreateSuccessfulService(plan),
+            [
+                "--yes",
+                "data",
+                "factory-reset",
+                "--all",
+                "--apply",
+                "--force",
+                "--external-remediation-attestation",
+                "/must-not-be-disclosed/remediation.json",
+            ],
+            applyBoundary: boundary,
+            activeReset: new ActiveInstallationReset(
+                InstallationResetScope.All,
+                WorkspaceRoot: null,
+                plan.PlanId,
+                OperationId: Guid.Parse("65656565-6565-4565-8565-656565656565"),
+                RequiresExternalRemediationAttestation: true),
+            attestationReader: reader);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Empty(boundary.FullRequests);
+
+        Assert.DoesNotContain("must-not-be-disclosed", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("must-not-be-disclosed", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Authenticated_full_claim_without_an_attestation_never_enters_ordinary_resume()
+    {
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
+
+        FakeInstallationResetService service = new(
+            Result<InstallationResetPlan>.Failure(new Error(
+                "Test.PlanMustNotRun",
+                "An authenticated full claim must not replan.")),
+            Result<InstallationResetResult>.Success(CreateResult(
+                plan,
+                InstallationResetPhase.Completed,
+                verificationSucceeded: true,
+                resumeRequired: false)));
+
+        RecordingApplyBoundary boundary = new(service);
+
+        CliTestResult result = RunCommand(
+            service,
+            [
+                "--yes",
+                "data",
+                "factory-reset",
+                "--all",
+                "--apply",
+                "--force",
+            ],
+            applyBoundary: boundary,
+            activeReset: new ActiveInstallationReset(
+                InstallationResetScope.All,
+                WorkspaceRoot: null,
+                plan.PlanId,
+                OperationId: Guid.Parse(
+                    "66666666-6666-4666-8666-666666666666"),
+                RequiresExternalRemediationAttestation: true));
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Empty(boundary.Requests);
+
+        Assert.Empty(boundary.FreshCalls);
+
+        Assert.Empty(boundary.FullRequests);
+
+        Assert.Empty(service.PlanRequests);
+
+        Assert.Empty(service.ApplyRequests);
+
+        Assert.DoesNotContain("66666666", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("66666666", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task Online_validator_accepts_the_authenticated_Covenant_plan_with_a_different_id()
     {
 
@@ -1139,7 +1308,9 @@ public sealed class InstallationFactoryResetCommandTests
         ActiveInstallationReset? activeReset = null,
         IInstallationResetOnlinePlanValidator? onlinePlanValidator = null,
         IInstallationResetOnlineDataHandoff? onlineDataHandoff = null,
-        IInstallationResetConfirmationPrompt? confirmationPrompt = null)
+        IInstallationResetConfirmationPrompt? confirmationPrompt = null,
+        IInstallationStartupProbe? startupProbe = null,
+        IFullInstallationResetAttestationFileReader? attestationReader = null)
     {
 
         ServiceCollection services = new();
@@ -1179,7 +1350,17 @@ public sealed class InstallationFactoryResetCommandTests
         services.RemoveAll<IInstallationStartupProbe>();
 
         services.AddSingleton<IInstallationStartupProbe>(
-            new FakeStartupProbe(activeReset));
+            startupProbe ?? new FakeStartupProbe(activeReset));
+
+        if (attestationReader is not null)
+        {
+
+            services.RemoveAll<IFullInstallationResetAttestationFileReader>();
+
+            services.AddSingleton<IFullInstallationResetAttestationFileReader>(
+                attestationReader);
+
+        }
 
         services.RemoveAll<ICliEnvironment>();
 
@@ -1310,6 +1491,19 @@ public sealed class InstallationFactoryResetCommandTests
         public List<InstallationResetApplyRequest> Requests { get; } = [];
 
         public List<FreshApplyCall> FreshCalls { get; } = [];
+
+        public List<FullInstallationResetRequest> FullRequests { get; } = [];
+
+        public Task<Result<InstallationResetResult>> ApplyFullAsync(
+            FullInstallationResetRequest request,
+            CancellationToken cancellationToken)
+        {
+
+            FullRequests.Add(request);
+
+            return service.ApplyAsync(request.Apply, cancellationToken);
+
+        }
 
         public Task<Result<InstallationResetResult>> ApplyAsync(
             InstallationResetApplyRequest request,
@@ -1553,6 +1747,13 @@ public sealed class InstallationFactoryResetCommandTests
 
         }
 
+        public Task<Result<InstallationResetResult>> ApplyFullAsync(
+            FullInstallationResetRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The test service does not own the full-reset lock boundary.")));
+
     }
 
     private sealed class FakeCliEnvironment(bool interactive) : ICliEnvironment
@@ -1578,5 +1779,76 @@ public sealed class InstallationFactoryResetCommandTests
             Result<bool>.Success(false);
 
     }
+
+    private sealed class RecordingStartupProbe(
+        ActiveInstallationReset? activeReset,
+        List<string>? events = null) : IInstallationStartupProbe
+    {
+
+        public int ReadCount { get; private set; }
+
+        public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
+            CancellationToken cancellationToken = default)
+        {
+
+            ReadCount++;
+
+            events?.Add("startup");
+
+            return Task.FromResult(
+                Result<ActiveInstallationReset?>.Success(activeReset));
+
+        }
+
+        public Result<bool> IsFreshInstallation() =>
+            Result<bool>.Success(false);
+
+    }
+
+    private sealed class RecordingAttestationReader(
+        FullInstallationResetExternalRemediationAttestation attestation,
+        List<string>? events = null)
+        : IFullInstallationResetAttestationFileReader
+    {
+
+        public int ReadCount { get; private set; }
+
+        public Task<Result<FullInstallationResetExternalRemediationAttestation>> ReadAsync(
+            string path,
+            CancellationToken cancellationToken)
+        {
+
+            ReadCount++;
+
+            events?.Add("attestation");
+
+            return Task.FromResult(
+                Result<FullInstallationResetExternalRemediationAttestation>.Success(
+                    attestation));
+
+        }
+
+    }
+
+    private static FullInstallationResetExternalRemediationAttestation CreateAttestation(
+        Guid operationId) =>
+        new(
+            Version: 1,
+            operationId,
+            InstallationId: Guid.Parse("62626262-6262-4262-8262-626262626262"),
+            HostToolsTransitionId: Guid.Parse("63636363-6363-4363-8363-636363636363"),
+            TaintMasterKeyVersion: ulong.MaxValue,
+            AuthorityFingerprint: Digest(0x10),
+            DatabaseMarkerDigest: Digest(0x20),
+            OsMarkerDigest: Digest(0x30),
+            RemediationActionDigest: Digest(0x40),
+            NonceBase64Url: "AAECAwQFBgcICQoLDA0ODw",
+            Issuer: "RetroDownfall.Remediation.v1",
+            IssuedAtUtc: new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero),
+            ExpiresAtUtc: new DateTimeOffset(2026, 8, 22, 13, 0, 0, TimeSpan.Zero),
+            SignatureBase64Url: new string('A', 86));
+
+    private static CovenantDigest Digest(byte value) =>
+        new(Enumerable.Repeat(value, 32).ToArray());
 
 }
