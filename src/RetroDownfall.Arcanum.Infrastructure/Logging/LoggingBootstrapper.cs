@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -31,13 +32,10 @@ public static class LoggingBootstrapper
     public static IServiceCollection AddArcanumSerilog(this IServiceCollection services)
     {
 
-        string logDirectory = ResolveLogDirectory();
-
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(logDirectory);
-
-        string logFilePath = Path.Combine(logDirectory, "arcanum-api-.json");
-
         InstallBootstrapStaticLogger();
+
+        services.TryAddSingleton(
+            static serviceProvider => HostLockSerilogFileSink.Create(serviceProvider));
 
         services.AddSerilog(
             (serviceProvider, loggerConfiguration) =>
@@ -54,19 +52,11 @@ public static class LoggingBootstrapper
                     // pipeline-wide floor that catches the next client which forgets to.
                     .MinimumLevel.Override("System.Net.Http", LogEventLevel.Warning)
                     .Enrich.FromLogContext()
-                    .WriteTo.Sink(new DeferredRingBufferSink(serviceProvider));
-
-                if (IsTesting(serviceProvider))
-                {
-
-                    return;
-
-                }
+                    .WriteTo.Sink(new DeferredRingBufferSink(serviceProvider))
+                    .WriteTo.Sink(
+                        serviceProvider.GetRequiredService<HostLockSerilogFileSink>());
 
                 IConfiguration? configuration = serviceProvider.GetService<IConfiguration>();
-
-                int retained = ArcanumSettingClamps.RetainedLogFileCount(
-                    ArcanumRuntimeDefaults.RetainedLogFileCount);
 
                 bool enableEnterpriseTelemetry = false;
 
@@ -85,13 +75,6 @@ public static class LoggingBootstrapper
                     cfg = cfg.WriteTo.Console(new CompactJsonFormatter());
 
                 }
-
-                _ = cfg.WriteTo.File(
-                    new CompactJsonFormatter(),
-                    logFilePath,
-                    rollingInterval: RollingInterval.Day,
-                    retainedFileCountLimit: retained,
-                    hooks: new SecureSerilogFileHooks());
 
             });
 
@@ -118,17 +101,16 @@ public static class LoggingBootstrapper
     }
 
     /// <summary>
-    /// Gives Serilog's static <see cref="Log.Logger"/> a real destination for the pre-host window.
+    /// Gives Serilog's static <see cref="Log.Logger"/> a real stderr destination for the pre-host window.
     /// </summary>
     /// <remarks>
     /// <c>AddSerilog</c> assigns <see cref="Log.Logger"/> itself, but only when the DI logging graph
     /// is first materialized — during host <c>Build()</c>. Diagnostics emitted before that reach
-    /// Serilog's silent default and vanish: <c>ArcanumMasterKeyBootstrapper</c> runs against its own
-    /// throwaway container ahead of <c>Build()</c> and reports a corrupt credential store, a
-    /// Grimoire/key mismatch that will abort startup, and a newly generated master key. This installs
-    /// a bootstrap logger for exactly that window; <c>AddSerilog</c> replaces it at <c>Build()</c>.
-    /// It writes to standard error only — the rolling JSON file must keep a single writer because
-    /// Serilog's file sink is not multi-writer safe.
+    /// Serilog's silent default and vanish. This installs a bootstrap logger for exactly that window;
+    /// <c>AddSerilog</c> replaces it at <c>Build()</c>. It writes to standard error only. The rolling
+    /// JSON sink stays inert through registration, build, and every pre-lock event, then the database
+    /// hosted service activates it after restore topology converges under the attached installation
+    /// lock.
     /// </remarks>
     private static void InstallBootstrapStaticLogger()
     {
@@ -149,7 +131,7 @@ public static class LoggingBootstrapper
 
     }
 
-    private static bool IsTesting(IServiceProvider serviceProvider)
+    internal static bool IsTesting(IServiceProvider serviceProvider)
     {
 
         if (string.Equals(

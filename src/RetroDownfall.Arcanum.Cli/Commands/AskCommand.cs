@@ -1,4 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -9,8 +8,8 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
-using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -20,8 +19,6 @@ public sealed class AskCommand(
     ArcanumApiClient apiClient,
     IThemePalette palette,
     CliSessionManager session,
-    IGrimoireCliInitialization grimoireBootstrapper,
-    IServiceScopeFactory scopeFactory,
     ICliEnvironment cliEnvironment,
     IOptions<ArcanumSettings> arcanumSettings,
     IArcanumServeLauncher serveLauncher,
@@ -220,25 +217,22 @@ public sealed class AskCommand(
 
         try
         {
-            try
-            {
-                await grimoireBootstrapper.EnsureInitializedAsync(linked.Token).ConfigureAwait(false);
-            }
-            catch (MissingMasterApiKeyException ex)
-            {
-
-                stderrConsole.MarkupLine(
-                    palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(ex.Message)));
-
-                return 1;
-
-            }
-
             _ = await serveLauncher.EnsureRunningAsync(linked.Token).ConfigureAwait(false);
 
             if (@new)
             {
-                session.ClearSession();
+
+                if (!(await session
+                        .ClearSessionAsync(
+                            cancellationToken: linked.Token)
+                        .ConfigureAwait(false))
+                    .IsCompleted)
+                {
+
+                    return 1;
+
+                }
+
             }
 
             string invocationDirectory = Environment.CurrentDirectory;
@@ -318,14 +312,23 @@ public sealed class AskCommand(
                 .PerceivePatternAsync(cwd, linked.Token)
                 .ConfigureAwait(false);
 
-            ChronosyncReport chronosyncDelta;
+            Result<ChronosyncReport> synchronized = await apiClient
+                .SynchronizePatternAsync(snapshot, linked.Token)
+                .ConfigureAwait(false);
 
-            await using (AsyncServiceScope chronosyncScope = scopeFactory.CreateAsyncScope())
+            if (synchronized.IsFailure)
             {
-                IChronosyncEngine chronosync = chronosyncScope.ServiceProvider.GetRequiredService<IChronosyncEngine>();
 
-                chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot, linked.Token).ConfigureAwait(false);
+                stderrConsole.MarkupLine(
+                    palette.ErrorLabelMarkup(
+                        Markup.Escape("Error:"),
+                        Markup.Escape(synchronized.Error.Message)));
+
+                return 1;
+
             }
+
+            ChronosyncReport chronosyncDelta = synchronized.Value;
 
             bool effectiveUnattended = OperatorFacingUnattendedMode.Resolve(
                 unattended,
@@ -450,7 +453,19 @@ public sealed class AskCommand(
 
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                         {
-                            session.SaveSessionId(boundId);
+
+                            _ = await session
+                                .SaveSessionIdAsync(
+                                    boundId,
+                                    (id, token) => SessionMutationRevalidator
+                                        .RevalidateAsync(
+                                            apiClient,
+                                            id,
+                                            expected: null,
+                                            cancellationToken: token),
+                                    cancellationToken: linked.Token)
+                                .ConfigureAwait(false);
+
                         }
 
                         break;

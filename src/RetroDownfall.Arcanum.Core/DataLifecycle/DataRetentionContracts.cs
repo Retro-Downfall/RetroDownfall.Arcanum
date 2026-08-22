@@ -167,7 +167,9 @@ public sealed record MemoryResetRequest(
 public sealed record FactoryResetRequest(
     [property: JsonRequired] string Confirmation,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? RequestedOperationId = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? RequestedOperationId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    InstallationResetHostHandoff? InstallationResetHandoff = null);
 
 /// <summary>
 /// The content-free installation inventory of the Covenant family.

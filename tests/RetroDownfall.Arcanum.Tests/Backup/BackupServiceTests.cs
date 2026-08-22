@@ -91,7 +91,9 @@ public sealed class BackupServiceTests : IDisposable
             "metadata passphrase".AsMemory(),
             CancellationToken.None);
 
-        Assert.True(verified.IsValid);
+        Assert.True(
+            verified.IsValid,
+            string.Join(", ", verified.Issues.Select(static issue => issue.Code)));
 
         IReadOnlyList<BackupListItem> listed = await service.ListAsync(
             _root,
@@ -749,10 +751,16 @@ public sealed class BackupServiceTests : IDisposable
     /// on exFAT gets reported as malformed.
     /// </summary>
     [Fact]
-    public async Task Verification_scratch_stays_on_the_installations_volume_not_the_archives()
+    public async Task Verification_scratch_uses_an_owner_only_per_run_os_temp_outside_the_installation()
     {
 
-        BackupStatePaths paths = Paths();
+        string installationRoot = Path.Combine(_root, "installation");
+
+        BackupStatePaths paths = new(
+            installationRoot,
+            installationRoot,
+            Path.Combine(installationRoot, "audit.jsonl"),
+            Path.Combine(installationRoot, "guardrails.jsonl"));
 
         string removable = Path.Combine(_root, "removable");
 
@@ -774,6 +782,15 @@ public sealed class BackupServiceTests : IDisposable
                 CancellationToken.None);
 
         Assert.Equal(BackupCreateStatus.Complete, created.Status);
+
+        byte[] archiveBytes = await File.ReadAllBytesAsync(archive);
+
+        if (Directory.Exists(paths.GrimoireDirectory))
+        {
+
+            Directory.Delete(paths.GrimoireDirectory, recursive: true);
+
+        }
 
         List<string> temporaries = [];
 
@@ -801,16 +818,36 @@ public sealed class BackupServiceTests : IDisposable
             "scratch passphrase".AsMemory(),
             CancellationToken.None);
 
-        Assert.True(verified.IsValid);
+        Assert.True(
+            verified.IsValid,
+            string.Join(", ", verified.Issues.Select(static issue => issue.Code)));
 
         Assert.Equal(2, temporaries.Count);
 
-        Assert.All(
-            temporaries,
-            temporary => Assert.StartsWith(
-                paths.BackupsDirectory + Path.DirectorySeparatorChar,
-                temporary,
-                StringComparison.Ordinal));
+        string scratchRoot = Assert.Single(
+            temporaries
+                .Select(static temporary =>
+                    Path.GetDirectoryName(temporary)
+                    ?? throw new InvalidOperationException(
+                        "Verification temporary has no parent directory."))
+                .Distinct(StringComparer.Ordinal));
+
+        Assert.StartsWith(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()))
+            + Path.DirectorySeparatorChar,
+            scratchRoot,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            Path.GetFullPath(paths.GrimoireDirectory),
+            scratchRoot,
+            StringComparison.Ordinal);
+
+        Assert.False(Directory.Exists(scratchRoot));
+
+        Assert.False(Directory.Exists(paths.GrimoireDirectory));
+
+        Assert.Equal(archiveBytes, await File.ReadAllBytesAsync(archive));
 
         Assert.Equal(
             [archive],
@@ -903,6 +940,8 @@ public sealed class BackupServiceTests : IDisposable
         string path,
         string grimoireSecret)
     {
+
+        RetroDownfall.Arcanum.Infrastructure.Data.SqliteNativeRuntime.Instance.Initialize();
 
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(
             GrimoireKeyDerivation.KdfVersion2);

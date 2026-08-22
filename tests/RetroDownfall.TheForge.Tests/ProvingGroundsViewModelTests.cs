@@ -402,7 +402,8 @@ public sealed class ProvingGroundsViewModelTests
             whispers ?? new FakeWhispersService(),
             confirmation ?? new NullConfirmationDialogService(),
             new InMemoryTrialSuiteStore(),
-            new NullArtifactFileDialogService());
+            new NullArtifactFileDialogService(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     }
 

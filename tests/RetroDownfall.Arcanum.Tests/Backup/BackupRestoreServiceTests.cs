@@ -10,13 +10,21 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -219,6 +227,59 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
+
+    }
+
+    [Fact]
+    public async Task Replacement_restore_publishes_the_client_blocker_before_its_first_mutation_and_retires_it_last()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("client-coordinated.arcbackup");
+
+        ClientMutationBlockerStore blocker = new(_installation);
+
+        InstallationMaintenanceCoordination coordination = new(
+            _installation,
+            blocker,
+            new ClearResetEvidenceProbe(),
+            new BackupRestoreClientMutationEvidenceProbe(
+                _installation,
+                new InMemoryOsCredentialStore()));
+
+        BackupRestoreServiceOptions options = new()
+        {
+            BeforeFirstRestoreMutationForTests = () =>
+            {
+
+                Assert.True(File.Exists(blocker.BlockerPath));
+
+                Assert.Equal(
+                    ArcanumClientMutationLockAcquisitionDisposition.Contended,
+                    ArcanumClientMutationLock.AcquireDetailed(_installation).Disposition);
+
+            },
+        };
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore(),
+                options,
+                coordination: coordination)
+            .RestoreAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    Confirmed: true,
+                    CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        Assert.Null((await blocker.InspectAsync()).Value);
+
+        using ArcanumClientMutationLock released = Assert.IsType<ArcanumClientMutationLock>(
+            ArcanumClientMutationLock.AcquireDetailed(_installation).Lock);
 
     }
 
@@ -1178,6 +1239,57 @@ public sealed class BackupRestoreServiceTests : IDisposable
             result.Issues,
             static issue => issue.Code == "backup.restore_maintenance_unavailable");
 
+        BackupVerifyIssue issue = Assert.Single(
+            result.Issues,
+            static candidate => candidate.Code == "backup.restore_maintenance_unavailable");
+
+        Assert.Contains("another process", issue.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("installation reset", issue.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task Unsafe_maintenance_lock_topology_is_reported_truthfully_without_staging_or_mutation()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unsafe-lock.arcbackup");
+
+        string lockPath = ArcanumMaintenanceLock.LockPathFor(_installation);
+
+        string sentinel = Path.Combine(_root, "unsafe-lock-sentinel.txt");
+
+        byte[] original = "unsafe-lock-target"u8.ToArray();
+
+        File.WriteAllBytes(sentinel, original);
+
+        File.CreateSymbolicLink(lockPath, sentinel);
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        BackupVerifyIssue issue = Assert.Single(
+            result.Issues,
+            static candidate => candidate.Code == "backup.restore_maintenance_unavailable");
+
+        Assert.DoesNotContain("another process", issue.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("safely", issue.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(original, File.ReadAllBytes(sentinel));
+
+        Assert.Empty(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
     }
 
     [Fact]
@@ -1610,7 +1722,8 @@ public sealed class BackupRestoreServiceTests : IDisposable
     private BackupRestoreService Restore(
         ISecretStore secretStore,
         BackupRestoreServiceOptions? options = null,
-        IBackupService? safetyBackups = null) =>
+        IBackupService? safetyBackups = null,
+        InstallationMaintenanceCoordination? coordination = null) =>
         new(
             Paths(),
             Codec(),
@@ -1618,7 +1731,8 @@ public sealed class BackupRestoreServiceTests : IDisposable
             safetyBackups is null ? null : () => safetyBackups,
             TimeProvider.System,
             GrimoireSchemaTestInstaller.Create(),
-            options ?? new BackupRestoreServiceOptions());
+            options ?? new BackupRestoreServiceOptions(),
+            coordination);
 
     private BackupStatePaths Paths() => new(
         _installation,
@@ -2063,6 +2177,23 @@ public sealed class BackupRestoreServiceTests : IDisposable
             FileEncryptionSecret = encryptionSecret;
 
             return Task.CompletedTask;
+
+        }
+
+    }
+
+    private sealed class ClearResetEvidenceProbe :
+        IClientMutationResetEvidenceProbe
+    {
+
+        public Task<Result<ActiveInstallationReset?>> InspectAsync(
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Task.FromResult(
+                Result<ActiveInstallationReset?>.Success(null));
 
         }
 

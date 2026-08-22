@@ -151,7 +151,8 @@ public sealed class OpenAiCompatApiClientConfigurationTests
                 BaseUrl = baseUrl,
             }),
             new StaticApiKeyProvider(apiKey),
-            NullLogger<OpenAiCompatApiClient>.Instance);
+            NullLogger<OpenAiCompatApiClient>.Instance,
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     private sealed class StaticApiKeyProvider(string apiKey) : ITheForgeApiKeyProvider
     {

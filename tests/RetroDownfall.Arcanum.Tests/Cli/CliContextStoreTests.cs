@@ -29,7 +29,7 @@ public sealed class CliContextStoreTests : IDisposable
             Model: "gpt-test",
             SessionId: Guid.Parse("22222222-2222-2222-2222-222222222222"));
 
-        store.Save(expected);
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(expected);
 
         CliContextDocument actual = store.Load();
 
@@ -49,9 +49,11 @@ public sealed class CliContextStoreTests : IDisposable
 
         CliContextStore store = new(ContextPath);
 
-        store.Save(CliContextDocument.Empty with { Model = "first" });
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty with { Model = "first" });
 
-        store.Save(CliContextDocument.Empty with { Model = "second" });
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty with { Model = "second" });
 
         Assert.Equal("second", store.Load().Model);
 

@@ -103,7 +103,8 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         IWhispersService whispers,
         IConfirmationDialogService confirmationDialog,
         ITrialSuiteStore suiteStore,
-        IArtifactFileDialogService fileDialog)
+        IArtifactFileDialogService fileDialog,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         _dataSource = dataSource;
@@ -117,6 +118,8 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         _suiteStore = suiteStore;
 
         _fileDialog = fileDialog;
+
+        _mutationRunner = mutationRunner;
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 

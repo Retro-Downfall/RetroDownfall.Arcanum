@@ -206,8 +206,6 @@ public sealed class RunCommandTests
 
         RecordingConsole console = new();
 
-        NoopGrimoireInitialization grimoire = new();
-
         NoopServeLauncher serve = new();
 
         RunCommand command = new(
@@ -215,7 +213,6 @@ public sealed class RunCommandTests
             stager,
             resolver,
             execution,
-            grimoire,
             serve,
             SessionManager(),
             console,
@@ -257,8 +254,6 @@ public sealed class RunCommandTests
         Assert.Contains(
             console.Diagnostics,
             value => value.Contains("active context warning", StringComparison.Ordinal));
-
-        Assert.Equal(1, grimoire.CallCount);
 
         Assert.Equal(1, serve.CallCount);
 
@@ -390,7 +385,6 @@ public sealed class RunCommandTests
             input.Result,
             SuccessStage([]),
             input: input,
-            grimoire: grimoire,
             serve: serve,
             console: console);
 
@@ -427,7 +421,6 @@ public sealed class RunCommandTests
             input.Result,
             SuccessStage([]),
             input: input,
-            grimoire: grimoire,
             startupProbe: new FakeStartupProbe(
                 new ActiveInstallationReset(
                     InstallationResetScope.Global,
@@ -468,7 +461,6 @@ public sealed class RunCommandTests
             SuccessStage([]),
             input: input,
             execution: execution,
-            grimoire: grimoire,
             startupProbe: new FakeStartupProbe(active: null, fresh: true),
             setup: setup,
             environment: new FakeCliEnvironment(interactive: true));
@@ -515,7 +507,6 @@ public sealed class RunCommandTests
             input.Result,
             SuccessStage([]),
             input: input,
-            grimoire: grimoire,
             console: console,
             startupProbe: new FakeStartupProbe(active: null, fresh: true),
             setup: setup,
@@ -574,7 +565,6 @@ public sealed class RunCommandTests
             input.Result,
             SuccessStage([]),
             input: input,
-            grimoire: grimoire,
             serve: serve,
             console: console);
 
@@ -1232,11 +1222,6 @@ public sealed class RunCommandTests
 
         services.AddSingleton<IEyeOfTheWorld>(new FakeEye());
 
-        services.RemoveAll<IChronosyncEngine>();
-
-        services.AddSingleton<IChronosyncEngine>(
-            new NoopChronosyncEngine());
-
         services.RemoveAll<IGrimoireCliInitialization>();
 
         services.AddSingleton<IGrimoireCliInitialization>(
@@ -1708,7 +1693,6 @@ public sealed class RunCommandTests
         FakeRunInputReader? input = null,
         FakeRunExecutionDispatcher? execution = null,
         FakeContextResolver? resolver = null,
-        NoopGrimoireInitialization? grimoire = null,
         NoopServeLauncher? serve = null,
         RecordingConsole? console = null,
         Guid? lastSessionId = null,
@@ -1724,7 +1708,6 @@ public sealed class RunCommandTests
                     EffectiveContext(null, null, null, null),
                     [])),
             execution ?? new FakeRunExecutionDispatcher(),
-            grimoire ?? new NoopGrimoireInitialization(),
             serve ?? new NoopServeLauncher(),
             SessionManager(lastSessionId, contextFilePath),
             console ?? new RecordingConsole(),
@@ -1973,20 +1956,30 @@ public sealed class RunCommandTests
 
     }
 
-    private sealed class NoopGrimoireInitialization : IGrimoireCliInitialization
+    private sealed class NoopGrimoireInitialization :
+        IGrimoireCliInitialization,
+        IServiceProvider
     {
 
         public int CallCount { get; private set; }
 
-        public Task EnsureInitializedAsync(
+        public Task<T> RunExclusiveAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
             CancellationToken cancellationToken)
         {
 
             CallCount++;
 
-            return Task.CompletedTask;
+            return operation(this, cancellationToken);
 
         }
+
+        public Task<T> RunExclusiveWithBootstrapAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) =>
+            RunExclusiveAsync(operation, cancellationToken);
+
+        public object? GetService(Type serviceType) => null;
 
     }
 
@@ -2202,6 +2195,28 @@ public sealed class RunCommandTests
                     .ReadAsStringAsync(cancellationToken)
                     .ConfigureAwait(false);
 
+            if (string.Equals(
+                    RequestPath,
+                    "/api/perception/chronosync",
+                    StringComparison.Ordinal))
+            {
+
+                byte[] response = JsonSerializer.SerializeToUtf8Bytes(
+                    new ApiResponse<ChronosyncReport>(
+                        new ChronosyncReport(null, [], [], false),
+                        true,
+                        null),
+                    ArcanumJsonContext.Default.ApiResponseChronosyncReport);
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+
+                    Content = new ByteArrayContent(response),
+
+                };
+
+            }
+
             string ndjson = string.Join(
                 '\n',
                 new[]
@@ -2344,21 +2359,6 @@ public sealed class RunCommandTests
                     DomainType.Unknown,
                     directoryPath,
                     []));
-
-    }
-
-    private sealed class NoopChronosyncEngine : IChronosyncEngine
-    {
-
-        public Task<ChronosyncReport> AnalyzeAndSyncAsync(
-            PatternSnapshot currentSnapshot,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
-                new ChronosyncReport(
-                    null,
-                    [],
-                    [],
-                    false));
 
     }
 

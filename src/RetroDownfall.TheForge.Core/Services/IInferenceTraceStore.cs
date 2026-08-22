@@ -12,4 +12,8 @@ public interface IInferenceTraceStore
 
     Task SaveAsync(InferenceTraceStoreDocument document, CancellationToken cancellationToken = default);
 
+    Task<InferenceTraceStoreDocument> UpdateAsync(
+        Func<InferenceTraceStoreDocument, CancellationToken, Task<InferenceTraceStoreDocument>> update,
+        CancellationToken cancellationToken = default);
+
 }

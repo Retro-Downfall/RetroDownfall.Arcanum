@@ -38,6 +38,7 @@ public static class GrimoireDatabaseBootstrapper
             passphraseSource,
             scopeFactory,
             heldInstallationLock: null,
+            expectedInstallationId: null,
             cancellationToken);
 
     /// <summary>
@@ -55,6 +56,7 @@ public static class GrimoireDatabaseBootstrapper
         IGrimoireDbPassphraseSource passphraseSource,
         IServiceScopeFactory scopeFactory,
         ArcanumMaintenanceLock? heldInstallationLock,
+        Guid? expectedInstallationId,
         CancellationToken cancellationToken) =>
         EnsureInitializedAsync(
             secretStore,
@@ -63,6 +65,7 @@ public static class GrimoireDatabaseBootstrapper
             ArcanumPaths.GrimoireDatabaseFile,
             ArcanumPaths.GrimoireDirectory,
             heldInstallationLock,
+            expectedInstallationId,
             cancellationToken);
 
     /// <summary>
@@ -145,6 +148,27 @@ public static class GrimoireDatabaseBootstrapper
             dbPath,
             grimoireDirectory,
             heldInstallationLock: null,
+            expectedInstallationId: null,
+            cancellationToken);
+
+    internal static Task EnsureInitializedAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        Guid? expectedInstallationId,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            heldInstallationLock,
+            expectedInstallationId,
+            postRestoreTopology: null,
             cancellationToken);
 
     internal static async Task EnsureInitializedAsync(
@@ -154,6 +178,8 @@ public static class GrimoireDatabaseBootstrapper
         string dbPath,
         string grimoireDirectory,
         ArcanumMaintenanceLock? heldInstallationLock,
+        Guid? expectedInstallationId,
+        Func<CancellationToken, Task>? postRestoreTopology,
         CancellationToken cancellationToken)
     {
         SqliteNativeRuntime.Instance.Initialize();
@@ -166,6 +192,13 @@ public static class GrimoireDatabaseBootstrapper
             heldInstallationLock,
             grimoireDirectory,
             cancellationToken).ConfigureAwait(false);
+
+        if (postRestoreTopology is not null)
+        {
+
+            await postRestoreTopology(cancellationToken).ConfigureAwait(false);
+
+        }
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(grimoireDirectory);
 
@@ -224,10 +257,11 @@ public static class GrimoireDatabaseBootstrapper
 
         await SqliteConnectionPragmas.ApplyAsync(installConnection, cancellationToken).ConfigureAwait(false);
 
-        await ClassifyHostProcessToolsAsync(
-            installConnection,
-            scopeFactory,
-            cancellationToken).ConfigureAwait(false);
+        DeferredHostProcessToolsDecision? hostProcessToolsDecision =
+            await ClassifyHostProcessToolsAsync(
+                installConnection,
+                scopeFactory,
+                cancellationToken).ConfigureAwait(false);
 
         await InstallSchemaAsync(
             installConnection,
@@ -235,6 +269,8 @@ public static class GrimoireDatabaseBootstrapper
             heldInstallationLock,
             grimoireDirectory,
             apiKey,
+            expectedInstallationId,
+            hostProcessToolsDecision,
             cancellationToken).ConfigureAwait(false);
 
         // After host-tools classification and core convergence, and before every database-dependent
@@ -442,6 +478,8 @@ public static class GrimoireDatabaseBootstrapper
         try
         {
 
+            bool reconciliationRequired = false;
+
             foreach (BackupRestoreRecoveryReport report in
                      BackupRestoreRecovery.Resolve(grimoireDirectory))
             {
@@ -452,33 +490,62 @@ public static class GrimoireDatabaseBootstrapper
                     report.Phase,
                     report.Detail);
 
+                reconciliationRequired |= report.Outcome
+                    is BackupRestoreRecoveryOutcome.ReconciliationRequired;
+
             }
+
+            if (reconciliationRequired)
+            {
+
+                Log.Fatal(
+                    "Legacy interrupted-restore evidence could not be converged safely. "
+                    + "Arcanum will not create or open the installation root until it is reconciled.");
+
+                throw new GrimoireDatabaseUnavailableException(
+                    "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
+
+            }
+
+        }
+        catch (GrimoireDatabaseUnavailableException)
+        {
+
+            throw;
 
         }
         catch (Exception ex)
         {
 
-            Log.Warning(ex, "Interrupted-restore recovery could not run; continuing startup.");
+            Log.Fatal(
+                ex,
+                "Legacy interrupted-restore recovery could not classify the installation topology. "
+                + "Arcanum will not continue startup.");
+
+            throw new GrimoireDatabaseUnavailableException(
+                "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.",
+                ex);
 
         }
 
     }
 
     /// <summary>
-    /// Runs the host-process-tools startup gate before any schema, pool, or key material exists.
+    /// Classifies the host-process-tools startup state before any schema, pool, or key material exists.
     /// </summary>
     /// <remarks>
     /// First, and on the install connection rather than a pool, because its whole purpose is to
-    /// decide whether this process may ever hold decrypted Covenant bytes. A blocked disposition
-    /// aborts startup with the offline command instead of degrading, since every alternative leaves
-    /// the process running beside an escape hatch whose evidence it could not confirm (§10.12).
+    /// decide whether this process may ever hold decrypted Covenant bytes. Classification publishes
+    /// only into a provisional policy. The exact decision is held until schema convergence proves the
+    /// expected installation identity, so no pre-verification exit can mutate the process singleton.
+    /// A hard blocked disposition aborts startup with the offline command (§10.12).
     ///
     /// <para>The gate is optional to resolve for the same reason the authority provider below is: a
     /// narrow container that only installs schema is a legitimate caller. When it is absent, the
     /// runtime policy stays unpublished, which every Covenant consumer already reads as "not
     /// permitted".</para>
     /// </remarks>
-    private static async Task ClassifyHostProcessToolsAsync(
+    private static async Task<DeferredHostProcessToolsDecision?> ClassifyHostProcessToolsAsync(
         SqliteConnection installConnection,
         IServiceScopeFactory scopeFactory,
         CancellationToken cancellationToken)
@@ -498,16 +565,18 @@ public static class GrimoireDatabaseBootstrapper
         if (markers is null || policy is null || environment is null)
         {
 
-            return;
+            return null;
 
         }
+
+        HostProcessToolsRuntimePolicy provisionalPolicy = new();
 
         HostProcessToolsStartupGate gate = new(
             markers,
             new HostProcessToolsAuthorityStore(installConnection),
             environment,
             new HostProcessToolsMarkerPairJoiner(),
-            policy);
+            provisionalPolicy);
 
         Result<HostProcessToolsStartupDecision> decision = await gate
             .ClassifyAndPublishAsync(cancellationToken)
@@ -516,20 +585,27 @@ public static class GrimoireDatabaseBootstrapper
         if (decision.IsSuccess)
         {
 
-            return;
+            return new DeferredHostProcessToolsDecision(policy, decision.Value);
 
         }
+
+        HostProcessToolsStartupDecision blocked = new(
+            provisionalPolicy.Disposition
+                ?? HostProcessToolsMarkerPairDisposition.MismatchBlocked,
+            provisionalPolicy.CovenantPermitted,
+            provisionalPolicy.HostProcessToolsPermitted,
+            provisionalPolicy.Blocker);
 
         // One blocked case is not a hard stop yet. `EscapeHatchWithoutTransition` means the durable
         // state is provably clean and this host merely started with the opt-in armed — the exact
         // situation the offline enable command exists to resolve, and that command ships with the
         // operator surfaces in issue #89. Hard-failing today would leave a Development host with no
-        // way to start and no way to complete the transition, so it degrades: Covenant stays
-        // unpermitted for the life of the process, which is already the published policy, and the
-        // host runs without it. Every other blocked disposition means the durable evidence
+        // way to start and no way to complete the transition, so it degrades: the closed decision is
+        // held unpublished until installation identity verification, then becomes the process policy.
+        // Every other blocked disposition means the durable evidence
         // disagrees with itself, which cannot happen without a transition having been attempted,
         // and those still stop startup (§10.15).
-        if (policy.Blocker is HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition)
+        if (blocked.Blocker is HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition)
         {
 
             Log.Warning(
@@ -538,7 +614,7 @@ public static class GrimoireDatabaseBootstrapper
                 + "once that command ships.",
                 HostProcessToolsStartupGate.OfflineCommand);
 
-            return;
+            return new DeferredHostProcessToolsDecision(policy, blocked);
 
         }
 
@@ -569,6 +645,8 @@ public static class GrimoireDatabaseBootstrapper
         ArcanumMaintenanceLock? heldInstallationLock,
         string grimoireDirectory,
         string masterApiKey,
+        Guid? expectedInstallationId,
+        DeferredHostProcessToolsDecision? hostProcessToolsDecision,
         CancellationToken cancellationToken)
     {
 
@@ -596,6 +674,29 @@ public static class GrimoireDatabaseBootstrapper
             dimensions,
             context,
             cancellationToken).ConfigureAwait(false);
+
+        await VerifyExpectedInstallationIdentityAsync(
+            installConnection,
+            expectedInstallationId,
+            cancellationToken).ConfigureAwait(false);
+
+        // The provisional pre-schema classification belongs to this process only after the
+        // authenticated active envelope and the converged database authority prove they name the
+        // same installation. Keep this immediately before Covenant publication/reconciliation.
+        if (hostProcessToolsDecision is not null)
+        {
+
+            Result publication = hostProcessToolsDecision.ProcessPolicy.Publish(
+                hostProcessToolsDecision.Decision);
+
+            if (publication.IsFailure)
+            {
+
+                throw new GrimoireDatabaseUnavailableException(publication.Error.Message);
+
+            }
+
+        }
 
         CovenantAvailability covenantAvailability = scope.ServiceProvider
             .GetRequiredService<CovenantAvailability>();
@@ -650,6 +751,118 @@ public static class GrimoireDatabaseBootstrapper
         }
 
         availability?.SetAvailable(false);
+
+    }
+
+    private sealed record DeferredHostProcessToolsDecision(
+        HostProcessToolsRuntimePolicy ProcessPolicy,
+        HostProcessToolsStartupDecision Decision);
+
+    /// <summary>
+    /// Requires the converged database authority singleton to name the installation authenticated by
+    /// the active V2 envelope before any Covenant or readiness publication is allowed.
+    /// </summary>
+    internal static async Task VerifyExpectedInstallationIdentityAsync(
+        SqliteConnection installConnection,
+        Guid? expectedInstallationId,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(installConnection);
+
+        if (expectedInstallationId is null)
+        {
+
+            return;
+
+        }
+
+        if (expectedInstallationId == Guid.Empty)
+        {
+
+            throw InstallationIdentityUnavailable();
+
+        }
+
+        long? stateKey = null;
+
+        string? storedIdentity = null;
+
+        int rowCount = 0;
+
+        try
+        {
+
+            await using SqliteCommand command = installConnection.CreateCommand();
+
+            command.CommandText =
+                "SELECT StateKey, InstallationIdentity FROM covenant_authority_state ORDER BY StateKey LIMIT 2;";
+
+            await using SqliteDataReader reader = await command
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                rowCount++;
+
+                if (rowCount == 1)
+                {
+
+                    stateKey = reader.IsDBNull(0) ? null : reader.GetInt64(0);
+
+                    storedIdentity = reader.IsDBNull(1) ? null : reader.GetString(1);
+
+                }
+
+            }
+
+        }
+        catch (Exception exception) when (
+            exception is SqliteException
+                or InvalidCastException
+                or InvalidOperationException
+                or OverflowException)
+        {
+
+            throw InstallationIdentityUnavailable(exception);
+
+        }
+
+        Guid parsed = Guid.Empty;
+
+        bool canonical = storedIdentity is not null
+            && Guid.TryParseExact(storedIdentity, "D", out parsed)
+            && parsed != Guid.Empty
+            && string.Equals(
+                parsed.ToString("D").ToUpperInvariant(),
+                storedIdentity,
+                StringComparison.Ordinal);
+
+        if (rowCount != 1
+            || stateKey != 1
+            || !canonical
+            || parsed != expectedInstallationId.Value)
+        {
+
+            throw InstallationIdentityUnavailable();
+
+        }
+
+    }
+
+    private static GrimoireDatabaseUnavailableException InstallationIdentityUnavailable(
+        Exception? innerException = null)
+    {
+
+        const string message =
+            "The authenticated installation-reset identity does not match the Grimoire authority row. "
+                + "See logs for recovery steps.";
+
+        return innerException is null
+            ? new GrimoireDatabaseUnavailableException(message)
+            : new GrimoireDatabaseUnavailableException(message, innerException);
 
     }
 

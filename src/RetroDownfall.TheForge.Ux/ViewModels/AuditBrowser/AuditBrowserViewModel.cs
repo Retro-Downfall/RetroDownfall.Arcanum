@@ -5,6 +5,7 @@ using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
@@ -52,6 +53,8 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
     private readonly IClipboardService _clipboard;
 
     private readonly IWhispersService _whispers;
+
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
 
     private bool _loaded;
 
@@ -111,7 +114,8 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
         FoundryFloorViewModel foundryFloor,
         IArtifactFileDialogService fileDialog,
         IClipboardService clipboard,
-        IWhispersService whispers)
+        IWhispersService whispers,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         _dataSource = dataSource;
@@ -125,6 +129,8 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
         _clipboard = clipboard;
 
         _whispers = whispers;
+
+        _mutationRunner = mutationRunner;
 
         Title = "Audit Browser";
 
@@ -374,13 +380,26 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
         try
         {
 
-            InferenceAuditRecord[] payload = [.. InferenceRecords];
+            int exportedCount = 0;
 
-            string json = JsonSerializer.Serialize(payload, TheForgeJsonContext.Default.InferenceAuditRecordArray);
+            await WriteExportAsync(
+                    path,
+                    () =>
+                    {
 
-            await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(true);
+                        InferenceAuditRecord[] payload = [.. InferenceRecords];
 
-            StatusText = $"Exported {payload.Length} inference record(s) to JSON.";
+                        exportedCount = payload.Length;
+
+                        return JsonSerializer.Serialize(
+                            payload,
+                            TheForgeJsonContext.Default.InferenceAuditRecordArray);
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+            StatusText = $"Exported {exportedCount} inference record(s) to JSON.";
 
             _whispers.Show(WhisperSeverity.Success, "Inference audit exported.");
 
@@ -415,44 +434,57 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
         try
         {
 
-            StringBuilder csv = new();
+            int exportedCount = 0;
 
-            csv.AppendLine("timestamp,sessionId,requestType,model,provider,promptTokens,completionTokens,totalTokens,latencyMs,toolCalls,finishReason,spellName,campaignId");
+            await WriteExportAsync(
+                    path,
+                    () =>
+                    {
 
-            foreach (InferenceAuditRecord r in InferenceRecords)
-            {
+                        StringBuilder csv = new();
 
-                csv.Append(EscapeCsv(r.Timestamp)).Append(',');
+                        csv.AppendLine("timestamp,sessionId,requestType,model,provider,promptTokens,completionTokens,totalTokens,latencyMs,toolCalls,finishReason,spellName,campaignId");
 
-                csv.Append(EscapeCsv(r.SessionId)).Append(',');
+                        foreach (InferenceAuditRecord r in InferenceRecords)
+                        {
 
-                csv.Append(EscapeCsv(r.RequestType)).Append(',');
+                            exportedCount++;
 
-                csv.Append(EscapeCsv(r.Model)).Append(',');
+                            csv.Append(EscapeCsv(r.Timestamp)).Append(',');
 
-                csv.Append(EscapeCsv(r.Provider)).Append(',');
+                            csv.Append(EscapeCsv(r.SessionId)).Append(',');
 
-                csv.Append(r.PromptTokens.ToString(CultureInfo.InvariantCulture)).Append(',');
+                            csv.Append(EscapeCsv(r.RequestType)).Append(',');
 
-                csv.Append(r.CompletionTokens.ToString(CultureInfo.InvariantCulture)).Append(',');
+                            csv.Append(EscapeCsv(r.Model)).Append(',');
 
-                csv.Append(r.TotalTokens.ToString(CultureInfo.InvariantCulture)).Append(',');
+                            csv.Append(EscapeCsv(r.Provider)).Append(',');
 
-                csv.Append(r.LatencyMs.ToString(CultureInfo.InvariantCulture)).Append(',');
+                            csv.Append(r.PromptTokens.ToString(CultureInfo.InvariantCulture)).Append(',');
 
-                csv.Append(r.ToolCalls.ToString(CultureInfo.InvariantCulture)).Append(',');
+                            csv.Append(r.CompletionTokens.ToString(CultureInfo.InvariantCulture)).Append(',');
 
-                csv.Append(EscapeCsv(r.FinishReason)).Append(',');
+                            csv.Append(r.TotalTokens.ToString(CultureInfo.InvariantCulture)).Append(',');
 
-                csv.Append(EscapeCsv(r.SpellName)).Append(',');
+                            csv.Append(r.LatencyMs.ToString(CultureInfo.InvariantCulture)).Append(',');
 
-                csv.AppendLine(EscapeCsv(r.CampaignId));
+                            csv.Append(r.ToolCalls.ToString(CultureInfo.InvariantCulture)).Append(',');
 
-            }
+                            csv.Append(EscapeCsv(r.FinishReason)).Append(',');
 
-            await File.WriteAllTextAsync(path, csv.ToString(), cancellationToken).ConfigureAwait(true);
+                            csv.Append(EscapeCsv(r.SpellName)).Append(',');
 
-            StatusText = $"Exported {InferenceRecords.Count} inference record(s) to CSV.";
+                            csv.AppendLine(EscapeCsv(r.CampaignId));
+
+                        }
+
+                        return csv.ToString();
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+            StatusText = $"Exported {exportedCount} inference record(s) to CSV.";
 
             _whispers.Show(WhisperSeverity.Success, "Inference audit exported.");
 
@@ -487,13 +519,26 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
         try
         {
 
-            GuardrailAuditRecord[] payload = [.. GuardrailRecords];
+            int exportedCount = 0;
 
-            string json = JsonSerializer.Serialize(payload, TheForgeJsonContext.Default.GuardrailAuditRecordArray);
+            await WriteExportAsync(
+                    path,
+                    () =>
+                    {
 
-            await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(true);
+                        GuardrailAuditRecord[] payload = [.. GuardrailRecords];
 
-            StatusText = $"Exported {payload.Length} guardrails record(s) to JSON.";
+                        exportedCount = payload.Length;
+
+                        return JsonSerializer.Serialize(
+                            payload,
+                            TheForgeJsonContext.Default.GuardrailAuditRecordArray);
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+            StatusText = $"Exported {exportedCount} guardrails record(s) to JSON.";
 
             _whispers.Show(WhisperSeverity.Success, "Guardrails audit exported.");
 
@@ -528,30 +573,43 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
         try
         {
 
-            StringBuilder csv = new();
+            int exportedCount = 0;
 
-            csv.AppendLine("timestamp,sessionId,stage,violationType,matchedTextRedacted,model");
+            await WriteExportAsync(
+                    path,
+                    () =>
+                    {
 
-            foreach (GuardrailAuditRecord r in GuardrailRecords)
-            {
+                        StringBuilder csv = new();
 
-                csv.Append(EscapeCsv(r.Timestamp)).Append(',');
+                        csv.AppendLine("timestamp,sessionId,stage,violationType,matchedTextRedacted,model");
 
-                csv.Append(EscapeCsv(r.SessionId)).Append(',');
+                        foreach (GuardrailAuditRecord r in GuardrailRecords)
+                        {
 
-                csv.Append(EscapeCsv(r.Stage)).Append(',');
+                            exportedCount++;
 
-                csv.Append(EscapeCsv(r.ViolationType)).Append(',');
+                            csv.Append(EscapeCsv(r.Timestamp)).Append(',');
 
-                csv.Append(EscapeCsv(r.MatchedTextRedacted)).Append(',');
+                            csv.Append(EscapeCsv(r.SessionId)).Append(',');
 
-                csv.AppendLine(EscapeCsv(r.Model));
+                            csv.Append(EscapeCsv(r.Stage)).Append(',');
 
-            }
+                            csv.Append(EscapeCsv(r.ViolationType)).Append(',');
 
-            await File.WriteAllTextAsync(path, csv.ToString(), cancellationToken).ConfigureAwait(true);
+                            csv.Append(EscapeCsv(r.MatchedTextRedacted)).Append(',');
 
-            StatusText = $"Exported {GuardrailRecords.Count} guardrails record(s) to CSV.";
+                            csv.AppendLine(EscapeCsv(r.Model));
+
+                        }
+
+                        return csv.ToString();
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+            StatusText = $"Exported {exportedCount} guardrails record(s) to CSV.";
 
             _whispers.Show(WhisperSeverity.Success, "Guardrails audit exported.");
 
@@ -567,6 +625,24 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
         }
 
     }
+
+    private Task WriteExportAsync(
+        string path,
+        string contents,
+        CancellationToken cancellationToken) =>
+        WriteExportAsync(path, () => contents, cancellationToken);
+
+    private Task WriteExportAsync(
+        string path,
+        Func<string> contentsFactory,
+        CancellationToken cancellationToken) =>
+        _mutationRunner.RunAsync(
+            path,
+            admittedCancellationToken => File.WriteAllTextAsync(
+                path,
+                contentsFactory(),
+                admittedCancellationToken),
+            cancellationToken);
 
     [RelayCommand]
     private async Task CopyDisabledPathsAsync(string? surface, CancellationToken cancellationToken)

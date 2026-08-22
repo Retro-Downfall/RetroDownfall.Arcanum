@@ -15,6 +15,17 @@ public sealed class ProviderApiKeyResolver(
     public async Task<string?> ResolveAsync(
         ProviderSettings provider,
         CancellationToken cancellationToken = default)
+        => await ResolveCoreAsync(provider, peek: false, cancellationToken).ConfigureAwait(false);
+
+    public async Task<string?> PeekAsync(
+        ProviderSettings provider,
+        CancellationToken cancellationToken = default)
+        => await ResolveCoreAsync(provider, peek: true, cancellationToken).ConfigureAwait(false);
+
+    private async Task<string?> ResolveCoreAsync(
+        ProviderSettings provider,
+        bool peek,
+        CancellationToken cancellationToken)
     {
 
         ArgumentNullException.ThrowIfNull(provider);
@@ -33,9 +44,13 @@ public sealed class ProviderApiKeyResolver(
 
         }
 
-        SecretStoreReadResult stored = await credentialStore
-            .GetApiKeyReadResultAsync(provider.Name, cancellationToken)
-            .ConfigureAwait(false);
+        SecretStoreReadResult stored = peek
+            ? await credentialStore
+                .PeekApiKeyReadResultAsync(provider.Name, cancellationToken)
+                .ConfigureAwait(false)
+            : await credentialStore
+                .GetApiKeyReadResultAsync(provider.Name, cancellationToken)
+                .ConfigureAwait(false);
 
         return stored.Status == SecretStoreReadStatus.Ok
             && !string.IsNullOrWhiteSpace(stored.Value)

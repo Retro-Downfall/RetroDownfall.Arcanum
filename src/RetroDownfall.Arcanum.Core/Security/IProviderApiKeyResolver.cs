@@ -15,6 +15,16 @@ public interface IProviderApiKeyResolver
         ProviderSettings provider,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Resolves the effective key without migrating, repairing, or persisting credential state.
+    /// The default preserves compatibility for resolvers whose ordinary resolution is already pure;
+    /// resolvers backed by a migration-capable store must override it.
+    /// </summary>
+    Task<string?> PeekAsync(
+        ProviderSettings provider,
+        CancellationToken cancellationToken = default) =>
+        ResolveAsync(provider, cancellationToken);
+
 }
 
 /// <summary>

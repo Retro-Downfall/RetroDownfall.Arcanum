@@ -36,40 +36,39 @@ public sealed class TheForgeApiKeyProviderTests
     }
 
     [Fact]
-    public async Task GetApiKeyAsync_MigratesLegacyForgeJsonApiKeyIntoOsStore()
+    public async Task ResolveAsync_keeps_a_legacy_json_key_session_only_without_os_or_settings_writes()
     {
 
-        InMemoryOsCredentialStore store = new();
+        RecordingOsCredentialStore store = new();
+
+        RecordingSettingsStore settingsStore = new();
 
         ApiKeyResolver resolver = new(
             store,
-            new NullSettingsStore(),
+            settingsStore,
             NullLogger<ApiKeyResolver>.Instance,
             shellOut: NoCliShellOut);
 
         TheForgeSettings settings = new() { ApiKey = "legacy-plaintext" };
 
-        TheForgeApiKeyProvider provider = new(
-            resolver,
-            new StaticOptions(settings),
-            NullLogger<TheForgeApiKeyProvider>.Instance);
+        ApiKeyResolution resolution = await resolver.ResolveAsync(
+            settings,
+            CancellationToken.None);
 
-        string? key = await provider.GetApiKeyAsync(CancellationToken.None);
+        Assert.Equal("legacy-plaintext", resolution.Key);
 
-        Assert.Equal("legacy-plaintext", key);
+        Assert.True(resolution.IsSessionOnly);
 
-        OsCredentialStoreResult stored = store.TryGet(
-            ArcanumCredentialIdentity.Service,
-            ArcanumCredentialIdentity.MasterApiKeyAccount);
+        Assert.Equal(0, store.SetCallCount);
 
-        Assert.Equal(OsCredentialStoreStatus.Ok, stored.Status);
+        Assert.Equal(0, store.DeleteCallCount);
 
-        Assert.Equal("legacy-plaintext", stored.Value);
+        Assert.Equal(0, settingsStore.SavePatchCallCount);
 
     }
 
     [Fact]
-    public async Task GetApiKeyAsync_PromptsAndPersistsWhenMissing()
+    public async Task GetApiKeyAsync_keeps_a_pasted_key_session_only_without_credential_mutation()
     {
 
         InMemoryOsCredentialStore store = new();
@@ -90,11 +89,13 @@ public sealed class TheForgeApiKeyProviderTests
 
         Assert.Equal("pasted-key", key);
 
+        Assert.True(provider.IsSessionOnlyKey);
+
         OsCredentialStoreResult stored = store.TryGet(
             ArcanumCredentialIdentity.Service,
             ArcanumCredentialIdentity.MasterApiKeyAccount);
 
-        Assert.Equal("pasted-key", stored.Value);
+        Assert.Equal(OsCredentialStoreStatus.NotFound, stored.Status);
 
     }
 
@@ -300,6 +301,72 @@ public sealed class TheForgeApiKeyProviderTests
     }
 
     [Fact]
+    public async Task ResolveAsync_keeps_a_plausible_shell_key_session_only_without_os_or_settings_writes()
+    {
+
+        RecordingOsCredentialStore store = new();
+
+        RecordingSettingsStore settingsStore = new();
+
+        ApiKeyResolver resolver = new(
+            store,
+            settingsStore,
+            NullLogger<ApiKeyResolver>.Instance,
+            _ => null,
+            _ => Task.FromResult<string?>("shell-recovered-key"));
+
+        ApiKeyResolution resolution = await resolver.ResolveAsync(
+            new TheForgeSettings(),
+            CancellationToken.None);
+
+        Assert.Equal("shell-recovered-key", resolution.Key);
+
+        Assert.True(resolution.IsSessionOnly);
+
+        Assert.Equal(0, store.SetCallCount);
+
+        Assert.Equal(0, store.DeleteCallCount);
+
+        Assert.Equal(0, settingsStore.SavePatchCallCount);
+
+    }
+
+    [Fact]
+    public async Task PersistPastedKeyAsync_keeps_the_key_session_only_without_credential_mutation()
+    {
+
+        RecordingOsCredentialStore store = new();
+
+        RecordingSettingsStore settingsStore = new();
+
+        ApiKeyResolver resolver = new(
+            store,
+            settingsStore,
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
+
+        TheForgeApiKeyProvider provider = new(
+            resolver,
+            new StaticOptions(new TheForgeSettings { ApiKey = "legacy-plaintext" }),
+            NullLogger<TheForgeApiKeyProvider>.Instance);
+
+        await provider.PersistPastedKeyAsync("process-only-key", CancellationToken.None);
+
+        Assert.Equal("process-only-key", await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.True(provider.IsSessionOnlyKey);
+
+        Assert.Equal(0, store.SetCallCount);
+
+        Assert.Equal(0, store.DeleteCallCount);
+
+        Assert.Equal(0, settingsStore.SavePatchCallCount);
+
+        Assert.Null(store.StoredValue);
+
+    }
+
+    [Fact]
     public void ResolveCliExecutablePath_ReturnsAnAbsolutePathFromPath()
     {
 
@@ -416,6 +483,46 @@ public sealed class TheForgeApiKeyProviderTests
 
     }
 
+    private sealed class RecordingOsCredentialStore : IOsCredentialStore
+    {
+
+        public bool IsAvailable => true;
+
+        public int SetCallCount { get; private set; }
+
+        public int DeleteCallCount { get; private set; }
+
+        public string? StoredValue { get; private set; }
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            StoredValue is null
+                ? OsCredentialStoreResult.NotFound()
+                : OsCredentialStoreResult.Ok(StoredValue);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+
+            SetCallCount++;
+
+            StoredValue = secret;
+
+            return OsCredentialStoreResult.Ok(secret);
+
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account)
+        {
+
+            DeleteCallCount++;
+
+            StoredValue = null;
+
+            return OsCredentialStoreResult.Ok(string.Empty);
+
+        }
+
+    }
+
     private static Task<string?> NoCliShellOut(CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
 
@@ -443,6 +550,37 @@ public sealed class TheForgeApiKeyProviderTests
 
         public Task SavePatchAsync(Func<TheForgeSettings, TheForgeSettings> patch, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+    }
+
+    private sealed class RecordingSettingsStore : ITheForgeSettingsStore
+    {
+
+        public string SettingsPath { get; } =
+            Path.Combine(Path.GetTempPath(), "forge-test-recording.json");
+
+        public int SavePatchCallCount { get; private set; }
+
+        public Task<TheForgeSettings> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new TheForgeSettings());
+
+        public Task SaveAsync(
+            TheForgeSettings settings,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("ApiKeyResolver uses patch writes only.");
+
+        public Task SavePatchAsync(
+            Func<TheForgeSettings, TheForgeSettings> patch,
+            CancellationToken cancellationToken = default)
+        {
+
+            SavePatchCallCount++;
+
+            _ = patch(new TheForgeSettings { ApiKey = "legacy-plaintext" });
+
+            return Task.CompletedTask;
+
+        }
 
     }
 

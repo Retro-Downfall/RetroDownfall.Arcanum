@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -13,7 +15,8 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 public sealed class CliSessionManager(
     IConsoleDispatcher console,
     ILogger<CliSessionManager>? logger = null,
-    ICliContextStore? contextStore = null)
+    ICliContextStore? contextStore = null,
+    IArcanumClientMutationBoundary? mutationBoundary = null)
 {
     private int _corruptionWarned;
 
@@ -67,101 +70,180 @@ public sealed class CliSessionManager(
         }
     }
 
-    public void SaveSessionId(Guid id, bool quiet = false)
+    public async Task<ArcanumClientMutationResult<CliContextDocument>>
+        SaveSessionIdAsync(
+            Guid id,
+            Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+            bool quiet = false,
+            CancellationToken cancellationToken = default)
     {
-        if (contextStore is not null)
-        {
-            try
-            {
-                CliContextDocument context = contextStore.Load();
 
-                contextStore.Save(context with { SessionId = id });
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                WarnSessionIo(ex, quiet);
-            }
+        ArgumentNullException.ThrowIfNull(revalidateAsync);
+
+        return await MutateContextAsync(
+                async (context, token) =>
+                {
+
+                    Result<bool> revalidated = await revalidateAsync(id, token)
+                        .ConfigureAwait(false);
+
+                    if (revalidated.IsFailure)
+                    {
+
+                        return Result<CliContextDocument>.Failure(
+                            revalidated.Error);
+
+                    }
+
+                    return revalidated.Value
+                        ? Result<CliContextDocument>.Success(
+                            context with { SessionId = id })
+                        : Result<CliContextDocument>.Failure(
+                            new Error(
+                                ErrorCodes.Session.NotFound,
+                                $"Session {id:D} is no longer available on the current host."));
+
+                },
+                quiet,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    public async Task<ArcanumClientMutationResult<CliContextDocument>>
+        ClearSessionAsync(
+            bool quiet = false,
+            CancellationToken cancellationToken = default)
+    {
+
+        return await MutateContextAsync(
+                (context, _) => Task.FromResult(
+                    Result<CliContextDocument>.Success(
+                        context with { SessionId = null })),
+                quiet,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private async Task<ArcanumClientMutationResult<CliContextDocument>>
+        MutateContextAsync(
+            Func<
+                CliContextDocument,
+                CancellationToken,
+                Task<Result<CliContextDocument>>> prepareAsync,
+            bool quiet,
+            CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(prepareAsync);
+
+        if (contextStore is null
+            || contextStore is not ICliContextExclusiveWriter contextWriter
+            || mutationBoundary is null)
+        {
+
+            ArcanumClientMutationResult<CliContextDocument> unavailable =
+                ArcanumClientMutationResult<CliContextDocument>.Unsafe(
+                    new Error(
+                        ErrorCodes.Data.ControlPathUnavailable,
+                        "The authoritative CLI session context is unavailable."));
+
+            WarnSessionMutation(unavailable.Error, quiet);
+
+            return unavailable;
+
         }
 
         try
         {
-            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
 
-            string finalPath = SessionFilePath;
+            ArcanumClientMutationResult<Result<CliContextDocument>> admitted =
+                await mutationBoundary
+                    .RunAsync(
+                        async token =>
+                        {
 
-            // Write to a sibling temp file and atomically replace to avoid partial-write
-            // corruption on crash/power-loss mid-write.
-            string tempPath = finalPath + ".tmp." + Guid.NewGuid().ToString("N");
+                            Result<CliContextDocument> prepared =
+                                await prepareAsync(contextStore.Load(), token)
+                                    .ConfigureAwait(false);
 
-            File.WriteAllText(tempPath, id.ToString("D"));
+                            if (prepared.IsSuccess)
+                            {
 
-            SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
+                                contextWriter.SaveUnderExclusive(
+                                    prepared.Value);
 
-            try
+                            }
+
+                            return prepared;
+
+                        },
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            ArcanumClientMutationResult<CliContextDocument> result =
+                Flatten(admitted);
+
+            if (!result.IsCompleted)
             {
-                File.Move(tempPath, finalPath, overwrite: true);
 
-                SecureFilePermissions.ApplyOwnerOnlyFile(finalPath);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Best-effort cleanup of the temp file if Move fails.
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
+                WarnSessionMutation(result.Error, quiet);
 
-                throw;
             }
+
+            return result;
+
         }
         catch (IOException ex)
         {
+
             WarnSessionIo(ex, quiet);
+
+            return UnsafeIoResult();
+
         }
         catch (UnauthorizedAccessException ex)
         {
+
             WarnSessionIo(ex, quiet);
+
+            return UnsafeIoResult();
+
         }
+
     }
 
-    public void ClearSession(bool quiet = false)
+    private static ArcanumClientMutationResult<CliContextDocument> Flatten(
+        ArcanumClientMutationResult<Result<CliContextDocument>> admitted)
     {
-        if (contextStore is not null)
-        {
-            try
-            {
-                CliContextDocument context = contextStore.Load();
 
-                contextStore.Save(context with { SessionId = null });
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                WarnSessionIo(ex, quiet);
-            }
+        if (!admitted.IsCompleted)
+        {
+
+            return admitted.Disposition
+                is ArcanumClientMutationDisposition.Blocked
+                    ? ArcanumClientMutationResult<CliContextDocument>.Blocked(
+                        admitted.Error)
+                    : ArcanumClientMutationResult<CliContextDocument>.Unsafe(
+                        admitted.Error);
+
         }
 
-        try
-        {
-            if (File.Exists(SessionFilePath))
-            {
-                File.Delete(SessionFilePath);
-            }
-        }
-        catch (IOException ex)
-        {
-            WarnSessionIo(ex, quiet);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            WarnSessionIo(ex, quiet);
-        }
+        return admitted.Value.IsSuccess
+            ? ArcanumClientMutationResult<CliContextDocument>.Completed(
+                admitted.Value.Value)
+            : ArcanumClientMutationResult<CliContextDocument>.Unsafe(
+                admitted.Value.Error);
+
     }
+
+    private static ArcanumClientMutationResult<CliContextDocument>
+        UnsafeIoResult() =>
+        ArcanumClientMutationResult<CliContextDocument>.Unsafe(
+            new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The authoritative CLI session context could not be changed safely."));
 
     private void WarnSessionIo(Exception ex, bool quiet)
     {
@@ -174,6 +256,24 @@ public sealed class CliSessionManager(
         }
 
         console.WriteDiagnostic("Warning: Could not save/load session state.");
+    }
+
+    private void WarnSessionMutation(Error error, bool quiet)
+    {
+
+        if (quiet)
+        {
+
+            logger?.LogDebug(
+                "CLI session mutation was refused with code {ErrorCode}.",
+                error.Code);
+
+            return;
+
+        }
+
+        console.WriteDiagnostic("Warning: " + error.Message);
+
     }
 
     private void WarnOnceSessionCorruption(bool quiet)
@@ -191,6 +291,67 @@ public sealed class CliSessionManager(
         }
 
         console.WriteDiagnostic(
-            "Warning: cli-session.txt does not contain a valid session id. The file will be replaced on the next /resume or new turn.");
+            "Warning: cli-session.txt does not contain a valid session id. Select or resume a session to establish authoritative CLI context.");
     }
+}
+
+internal static class SessionMutationRevalidator
+{
+
+    internal static async Task<Result<bool>> RevalidateAsync(
+        ArcanumApiClient apiClient,
+        Guid sessionId,
+        SessionDetailDto? expected,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(apiClient);
+
+        Result<SessionDetailDto> result = await apiClient
+            .GetSessionAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+
+            return Result<bool>.Failure(result.Error);
+
+        }
+
+        SessionDetailDto current = result.Value;
+
+        bool sameStableIdentity = current.Id == sessionId
+            && (expected is null
+                || current.CampaignId == expected.CampaignId
+                    && current.CreatedAt == expected.CreatedAt
+                    && current.ForkedFromSessionId
+                        == expected.ForkedFromSessionId);
+
+        if (!sameStableIdentity)
+        {
+
+            return Result<bool>.Failure(
+                new Error(
+                    ErrorCodes.Session.NotFound,
+                    $"Session {sessionId:D} changed identity before it could be persisted. Retry the operation."));
+
+        }
+
+        if (string.Equals(
+            current.Status,
+            "Archived",
+            StringComparison.OrdinalIgnoreCase))
+        {
+
+            return Result<bool>.Failure(
+                new Error(
+                    ErrorCodes.Session.Archived,
+                    $"Session {sessionId:D} is archived and cannot become the active CLI session."));
+
+        }
+
+        return Result<bool>.Success(true);
+
+    }
+
 }

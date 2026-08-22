@@ -4,7 +4,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -86,6 +89,51 @@ internal static class PerceptionEndpoints
                 return Results.Ok(ApiResponse<PatternSnapshot>.FromResult(ok, traceId));
             })
         .WithName("GetPerceptionLook");
+
+        apiGroup.MapPost(
+            "/perception/chronosync",
+            async (
+                PatternSnapshot snapshot,
+                IChronosyncEngine chronosync,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+            {
+
+                Result validation = PatternSnapshotValidator.Validate(snapshot);
+
+                if (validation.IsFailure)
+                {
+
+                    string invalidTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<ChronosyncReport> invalid =
+                        Result<ChronosyncReport>.Failure(validation.Error);
+
+                    return Results.Json(
+                        ApiResponse<ChronosyncReport>.FromResult(invalid, invalidTraceId),
+                        ArcanumJsonContext.Default.ApiResponseChronosyncReport,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(validation.Error.Code));
+
+                }
+
+                ChronosyncReport report = await chronosync
+                    .AnalyzeAndSyncAsync(snapshot, cancellationToken)
+                    .ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<ChronosyncReport> result =
+                    Result<ChronosyncReport>.Success(report);
+
+                return Results.Ok(
+                    ApiResponse<ChronosyncReport>.FromResult(result, traceId));
+
+            })
+        .WithName("PostPerceptionChronosync")
+        .AddEndpointFilter(
+            IdempotencyEndpointFilters.ForBoundArgument(
+                0,
+                ArcanumJsonContext.Default.PatternSnapshot));
 
         return apiGroup;
     }

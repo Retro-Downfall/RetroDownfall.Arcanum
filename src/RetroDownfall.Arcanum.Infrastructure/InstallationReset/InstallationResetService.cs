@@ -10,7 +10,34 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+
+internal interface IInstallationResetLockedService
+{
+
+    Task<Result<InstallationResetResult>> ApplyUnderMaintenanceLockAsync(
+        InstallationResetApplyRequest request,
+        ArcanumMaintenanceLock heldInstallationLock,
+        CancellationToken cancellationToken = default);
+
+}
+
+internal interface IInstallationResetActiveWriter
+{
+
+    Task<Result> WriteAsync(
+        InstallationResetActiveRecord record,
+        CancellationToken cancellationToken);
+
+    Task<Result> RetireAsync(
+        Guid operationId,
+        CancellationToken cancellationToken);
+
+}
 
 internal interface IInstallationResetCredentialService
 {
@@ -169,8 +196,11 @@ internal sealed class InstallationResetService(
     IInstallationResetWorkspaceResolver? workspaceResolver = null,
     IInstallationResetStateRoots? stateRoots = null,
     IInstallationResetPreDataMutation? preDataMutation = null,
-    InstallationResetControlPaths? controlPaths = null)
-    : IInstallationResetService, IInstallationResetOnlineDataHandoff
+    InstallationResetControlPaths? controlPaths = null,
+    IInstallationResetDatabaseIdentityReader? identityReader = null)
+    : IInstallationResetService,
+      IInstallationResetOnlineDataHandoff,
+      IInstallationResetLockedService
 {
 
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -186,6 +216,8 @@ internal sealed class InstallationResetService(
 
     private readonly ConcurrentDictionary<string, DataRetentionPlan> _onlineDataPlans =
         new(StringComparer.Ordinal);
+
+    internal string GuardedRoot => activeStore.GuardedRoot;
 
     public async Task<Result<InstallationResetPlan>> PlanAsync(
         InstallationResetPlanRequest request,
@@ -471,169 +503,72 @@ internal sealed class InstallationResetService(
 
     }
 
-    public async Task<Result<InstallationResetOnlineDataHandoff>> PrepareAsync(
+    public Result<InstallationResetHostHandoff> CreateHostHandoff(
         InstallationResetApplyRequest request,
-        InstallationResetPlan confirmedPlan,
-        CancellationToken cancellationToken = default)
+        InstallationResetPlan confirmedPlan)
     {
 
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(confirmedPlan);
 
-        if (request.Request.Scope is InstallationResetScope.Workspace
-            || confirmedPlan.Scope != request.Request.Scope
-            || !string.Equals(
+        bool valid = request.Request.Scope is InstallationResetScope.Global
+                or InstallationResetScope.All
+            && confirmedPlan.Scope == request.Request.Scope
+            && string.Equals(
                 request.ExpectedPlanId,
                 confirmedPlan.PlanId,
-                StringComparison.Ordinal))
-        {
+                StringComparison.Ordinal)
+            && confirmedPlan.CredentialInventoryAvailable
+            && confirmedPlan.Blockers.Length == 0
+            && confirmedPlan.AcceptedBinding.DataPlanIds is { Length: 1 }
+            && !string.IsNullOrWhiteSpace(
+                confirmedPlan.AcceptedBinding.DataPlanIds[0])
+            && _onlineDataPlans.ContainsKey(confirmedPlan.PlanId);
 
-            return PlanChanged<InstallationResetOnlineDataHandoff>();
-
-        }
-
-        Result<InstallationResetActiveRecord?> activeRead = await activeStore
-            .ReadAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (activeRead.IsFailure)
-        {
-
-            return Result<InstallationResetOnlineDataHandoff>.Failure(activeRead.Error);
-
-        }
-
-        if (activeRead.Value is { } existing)
-        {
-
-            Result validation = await ValidateResumeAsync(
-                existing,
-                request,
-                cancellationToken).ConfigureAwait(false);
-
-            if (validation.IsFailure)
-            {
-
-                return Result<InstallationResetOnlineDataHandoff>.Failure(validation.Error);
-
-            }
-
-            Result<InstallationResetOnlineDataHandoff> replay = ReadPreparedHandoff(
-                existing,
-                request);
-
-            return replay;
-
-        }
-
-        if (!_onlineDataPlans.TryGetValue(
+        return valid
+            ? new InstallationResetHostHandoff(
+                Guid.NewGuid(),
                 confirmedPlan.PlanId,
-                out DataRetentionPlan? onlinePlan))
-        {
-
-            return PlanChanged<InstallationResetOnlineDataHandoff>();
-
-        }
-
-        Result<InstallationResetPlan> replanned = await PlanAsync(
-            request.Request,
-            cancellationToken).ConfigureAwait(false);
-
-        if (replanned.IsFailure)
-        {
-
-            return Result<InstallationResetOnlineDataHandoff>.Failure(replanned.Error);
-
-        }
-
-        Result<InstallationResetPlan> rebound = BindOnlineDataPlan(
-            request.Request,
-            replanned.Value,
-            onlinePlan);
-
-        if (rebound.IsFailure
-            || !SameAcceptedInstallationPlan(rebound.Value, confirmedPlan))
-        {
-
-            return PlanChanged<InstallationResetOnlineDataHandoff>();
-
-        }
-
-        if (!confirmedPlan.CredentialInventoryAvailable)
-        {
-
-            return Result<InstallationResetOnlineDataHandoff>.Failure(new Error(
-                ErrorCodes.Data.CredentialInventoryUnavailable,
-                "The accepted credential inventory is unavailable."));
-
-        }
-
-        if (confirmedPlan.Blockers.Length > 0)
-        {
-
-            return Result<InstallationResetOnlineDataHandoff>.Failure(new Error(
-                ErrorCodes.Data.Blocked,
-                confirmedPlan.Blockers[0].Message));
-
-        }
-
-        Guid requestedOperationId = Guid.NewGuid();
-
-        InstallationResetActiveRecord prepared = new(
-            InstallationResetActiveStore.CurrentVersion,
-            requestedOperationId,
-            confirmedPlan.PlanId,
-            confirmedPlan.Scope,
-            confirmedPlan.Workspace,
-            confirmedPlan.AcceptedBinding,
-            InstallationResetPhase.Prepared,
-            PointOfNoReturn: false,
-            RowsDeleted: 0,
-            FilesDeleted: 0,
-            EstimatedBytesDeleted: 0,
-            CredentialResults: [],
-            LastErrorCode: null,
-            DataHandoff: InstallationResetDataHandoff.HostFactoryErasure);
-
-        Result published = await activeStore.WriteAsync(
-            prepared,
-            cancellationToken).ConfigureAwait(false);
-
-        if (published.IsFailure)
-        {
-
-            return Result<InstallationResetOnlineDataHandoff>.Failure(published.Error);
-
-        }
-
-        return Result<InstallationResetOnlineDataHandoff>.Success(
-            BuildOnlineDataHandoff(prepared));
+                confirmedPlan.Scope,
+                confirmedPlan.Workspace,
+                confirmedPlan.AcceptedBinding)
+            : PlanChanged<InstallationResetHostHandoff>();
 
     }
 
-    public async Task<Result<InstallationResetOnlineDataHandoff?>> ReadAsync(
+    public async Task<Result<InstallationResetHostHandoff?>> ReadAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken = default)
     {
 
         ArgumentNullException.ThrowIfNull(request);
 
-        Result<InstallationResetActiveRecord?> activeRead = await activeStore
-            .ReadAsync(cancellationToken)
+        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
+            .InspectAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (activeRead.IsFailure)
+        if (recovered.IsFailure)
         {
 
-            return Result<InstallationResetOnlineDataHandoff?>.Failure(activeRead.Error);
+            return Result<InstallationResetHostHandoff?>.Failure(recovered.Error);
 
         }
 
-        if (activeRead.Value is not { } active)
+        InstallationResetActiveRecord? active = recovered.Value.Outcome switch
+        {
+            InstallationResetActiveRecoveryOutcome.AuthenticatedV2
+                when recovered.Value.Publication is { } publication =>
+                publication.Payload.ToRecord(),
+            InstallationResetActiveRecoveryOutcome.LegacyV1 =>
+                recovered.Value.LegacyRecord,
+            _ => null,
+        };
+
+        if (active is null)
         {
 
-            return Result<InstallationResetOnlineDataHandoff?>.Success(null);
+            return Result<InstallationResetHostHandoff?>.Success(null);
 
         }
 
@@ -642,159 +577,123 @@ internal sealed class InstallationResetService(
             request,
             cancellationToken).ConfigureAwait(false);
 
-        if (validation.IsFailure)
+        if (validation.IsFailure || !IsPreparedOnlineDataHandoff(active))
         {
 
-            return Result<InstallationResetOnlineDataHandoff?>.Failure(validation.Error);
+            return validation.IsFailure
+                ? Result<InstallationResetHostHandoff?>.Failure(validation.Error)
+                : Result<InstallationResetHostHandoff?>.Failure(
+                    ResumeMismatch().Error);
 
         }
 
-        Result<InstallationResetOnlineDataHandoff> handoff = ReadPreparedHandoff(
-            active,
-            request);
-
-        return handoff.IsSuccess
-            ? Result<InstallationResetOnlineDataHandoff?>.Success(handoff.Value)
-            : Result<InstallationResetOnlineDataHandoff?>.Failure(handoff.Error);
+        return Result<InstallationResetHostHandoff?>.Success(
+            new InstallationResetHostHandoff(
+                active.OperationId,
+                active.PlanId,
+                active.Scope,
+                active.Workspace,
+                active.AcceptedBinding));
 
     }
 
-    public async Task<Result> RecordCompletedAsync(
-        InstallationResetOnlineDataHandoff handoff,
-        DataRetentionApplyResult result,
-        CancellationToken cancellationToken = default)
-    {
-
-        ArgumentNullException.ThrowIfNull(handoff);
-
-        ArgumentNullException.ThrowIfNull(result);
-
-        if (!IsTrustedOnlineDataCompletion(handoff, result))
-        {
-
-            return OnlineCompletionMismatch();
-
-        }
-
-        Result<InstallationResetActiveRecord?> activeRead = await activeStore
-            .ReadAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (activeRead.IsFailure)
-        {
-
-            return Result.Failure(activeRead.Error);
-
-        }
-
-        if (activeRead.Value is not { } active
-            || !MatchesPreparedHandoff(active, handoff))
-        {
-
-            return OnlineCompletionMismatch();
-
-        }
-
-        InstallationResetOnlineDataCompletion proof = new(
-            result.OperationId,
-            handoff.RequestedOperationId,
-            handoff.DataPlanId,
-            result.RowsDeleted,
-            result.FilesDeleted,
-            result.EstimatedBytesDeleted,
-            result.DerivedRecordsDeleted);
-
-        if (active.OnlineDataCompletion is { } existing)
-        {
-
-            return existing == proof
-                ? Result.Success()
-                : OnlineCompletionMismatch();
-
-        }
-
-        return await activeStore.WriteAsync(
-            active with
-            {
-                OnlineDataCompletion = proof,
-                LastErrorCode = null,
-            },
-            cancellationToken).ConfigureAwait(false);
-
-    }
-
-    public async Task<Result> RetirePreEffectAsync(
-        InstallationResetOnlineDataHandoff handoff,
-        CancellationToken cancellationToken = default)
-    {
-
-        ArgumentNullException.ThrowIfNull(handoff);
-
-        Result<InstallationResetActiveRecord?> activeRead = await activeStore
-            .ReadAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (activeRead.IsFailure)
-        {
-
-            return Result.Failure(activeRead.Error);
-
-        }
-
-        if (activeRead.Value is not { } active)
-        {
-
-            return Result.Success();
-
-        }
-
-        if (!MatchesPreparedHandoff(active, handoff))
-        {
-
-            return ResumeMismatch();
-
-        }
-
-        if (handoff.DataResetCompleted
-            || active.PointOfNoReturn
-            || active.OnlineDataCompletion is not null)
-        {
-
-            return Result.Failure(new Error(
-                ErrorCodes.Data.RecoveryRequired,
-                "The online data reset outcome must be recovered before retirement."));
-
-        }
-
-        return await activeStore.RetirePreEffectAsync(
-            handoff,
-            cancellationToken).ConfigureAwait(false);
-
-    }
-
-    public async Task<Result<InstallationResetResult>> ApplyAsync(
+    public Task<Result<InstallationResetResult>> ApplyAsync(
         InstallationResetApplyRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
+            ErrorCodes.Data.ControlPathUnavailable,
+            "Installation reset apply requires the exact held maintenance lock.")));
+
+    public async Task<Result<InstallationResetResult>> ApplyUnderMaintenanceLockAsync(
+        InstallationResetApplyRequest request,
+        ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
 
         ArgumentNullException.ThrowIfNull(request);
 
-        Result<InstallationResetActiveRecord?> activeRead = await activeStore
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
+
+        IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
+            identityReader
+            ?? activeStore as IInstallationResetDatabaseIdentityReader;
+
+        if (effectiveIdentityReader is null)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The authenticated installation-reset store is unavailable."));
+
+        }
+
+        Result<Guid> installation = await effectiveIdentityReader
             .ReadAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (activeRead.IsFailure)
+        if (installation.IsFailure)
         {
 
-            return Result<InstallationResetResult>.Failure(activeRead.Error);
+            return Result<InstallationResetResult>.Failure(installation.Error);
 
         }
+
+        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
+            .RecoverAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(recovered.Error);
+
+        }
+
+        InstallationResetActivePublication? publication = recovered.Value.Publication;
+
+        InstallationResetActiveRecord? recoveredRecord = publication?.Payload.ToRecord();
+
+        if (recovered.Value.Outcome is InstallationResetActiveRecoveryOutcome.LegacyV1
+            && recovered.Value.LegacyRecord is { } legacy
+            && recovered.Value.LegacyFileIdentity is { } legacyIdentity)
+        {
+
+            Result<InstallationResetActivePublication> migrated = await activeStore
+                .MigrateLegacyV1Async(
+                    heldInstallationLock,
+                    installation.Value,
+                    legacy,
+                    legacyIdentity,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (migrated.IsFailure)
+            {
+
+                return Result<InstallationResetResult>.Failure(migrated.Error);
+
+            }
+
+            publication = migrated.Value;
+
+            recoveredRecord = publication.Payload.ToRecord();
+
+        }
+
+        AuthenticatedActiveWriter writer = new(
+            activeStore,
+            heldInstallationLock,
+            activeStore.GuardedRoot,
+            installation.Value,
+            publication);
 
         InstallationResetActiveRecord active;
 
         InstallationResetPlan plan;
 
-        if (activeRead.Value is { } existing)
+        if (recoveredRecord is { } existing)
         {
 
             Result validation = await ValidateResumeAsync(
@@ -872,7 +771,7 @@ internal sealed class InstallationResetService(
                 CredentialResults: [],
                 LastErrorCode: null);
 
-            Result published = await activeStore.WriteAsync(active, cancellationToken)
+            Result published = await writer.WriteAsync(active, cancellationToken)
                 .ConfigureAwait(false);
 
             if (published.IsFailure)
@@ -889,7 +788,11 @@ internal sealed class InstallationResetService(
         try
         {
 
-            return await ContinueApplyAsync(progress, plan, cancellationToken)
+            return await ContinueApplyAsync(
+                writer,
+                progress,
+                plan,
+                cancellationToken)
                 .ConfigureAwait(false);
 
         }
@@ -905,7 +808,7 @@ internal sealed class InstallationResetService(
                 LastErrorCode = ErrorCodes.Data.RecoveryRequired,
             };
 
-            Result checkpoint = await activeStore.WriteAsync(
+            Result checkpoint = await writer.WriteAsync(
                 cancelled,
                 CancellationToken.None).ConfigureAwait(false);
 
@@ -922,6 +825,7 @@ internal sealed class InstallationResetService(
     }
 
     private async Task<Result<InstallationResetResult>> ContinueApplyAsync(
+        IInstallationResetActiveWriter writer,
         InstallationResetApplyProgress progress,
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
@@ -933,6 +837,7 @@ internal sealed class InstallationResetService(
         {
 
             return await ReturnCompletedAsync(
+                writer,
                 active,
                 plan,
                 cancellationToken)
@@ -972,7 +877,7 @@ internal sealed class InstallationResetService(
 
                 active = active with { LastErrorCode = preData.Error.Code };
 
-                Result preDataCheckpoint = await activeStore.WriteAsync(
+                Result preDataCheckpoint = await writer.WriteAsync(
                     active,
                     cancellationToken).ConfigureAwait(false);
 
@@ -989,7 +894,7 @@ internal sealed class InstallationResetService(
 
                 progress.Active = active;
 
-                Result pointOfNoReturnCheckpoint = await activeStore.WriteAsync(
+                Result pointOfNoReturnCheckpoint = await writer.WriteAsync(
                     active,
                     cancellationToken).ConfigureAwait(false);
 
@@ -1042,7 +947,7 @@ internal sealed class InstallationResetService(
                                 LastErrorCode = ErrorCodes.Data.RecoveryRequired,
                             };
 
-                            Result recoveryCheckpoint = await activeStore.WriteAsync(
+                            Result recoveryCheckpoint = await writer.WriteAsync(
                                 active,
                                 cancellationToken).ConfigureAwait(false);
 
@@ -1056,7 +961,7 @@ internal sealed class InstallationResetService(
 
                         }
 
-                        Result retired = await activeStore.RetireAsync(
+                        Result retired = await writer.RetireAsync(
                             active.OperationId,
                             cancellationToken).ConfigureAwait(false);
 
@@ -1096,7 +1001,7 @@ internal sealed class InstallationResetService(
 
             }
 
-            Result dataCheckpoint = await activeStore.WriteAsync(
+            Result dataCheckpoint = await writer.WriteAsync(
                 active,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1120,7 +1025,7 @@ internal sealed class InstallationResetService(
 
                 active = active with { LastErrorCode = cleaned.Error.Code };
 
-                Result failureCheckpoint = await activeStore.WriteAsync(
+                Result failureCheckpoint = await writer.WriteAsync(
                     active,
                     cancellationToken).ConfigureAwait(false);
 
@@ -1155,7 +1060,7 @@ internal sealed class InstallationResetService(
                     LastErrorCode = ErrorCodes.Data.ReconciliationFailed,
                 };
 
-                Result verificationCheckpoint = await activeStore.WriteAsync(
+                Result verificationCheckpoint = await writer.WriteAsync(
                     active,
                     cancellationToken).ConfigureAwait(false);
 
@@ -1182,7 +1087,7 @@ internal sealed class InstallationResetService(
 
             progress.Active = active;
 
-            Result cleanupCheckpoint = await activeStore.WriteAsync(
+            Result cleanupCheckpoint = await writer.WriteAsync(
                 active,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1227,7 +1132,7 @@ internal sealed class InstallationResetService(
             if (!credentialVerification.Succeeded)
             {
 
-                Result credentialCheckpoint = await activeStore.WriteAsync(
+                Result credentialCheckpoint = await writer.WriteAsync(
                     active,
                     cancellationToken).ConfigureAwait(false);
 
@@ -1245,7 +1150,7 @@ internal sealed class InstallationResetService(
 
             progress.Active = active;
 
-            Result verifiedCheckpoint = await activeStore.WriteAsync(
+            Result verifiedCheckpoint = await writer.WriteAsync(
                 active,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1269,7 +1174,7 @@ internal sealed class InstallationResetService(
 
             progress.Active = active;
 
-            Result completedCheckpoint = await activeStore.WriteAsync(
+            Result completedCheckpoint = await writer.WriteAsync(
                 active,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1283,6 +1188,7 @@ internal sealed class InstallationResetService(
         }
 
         return await ReturnCompletedAsync(
+            writer,
             active,
             plan,
             cancellationToken)
@@ -1363,6 +1269,7 @@ internal sealed class InstallationResetService(
     }
 
     private async Task<Result<InstallationResetResult>> ReturnCompletedAsync(
+        IInstallationResetActiveWriter writer,
         InstallationResetActiveRecord active,
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
@@ -1396,7 +1303,7 @@ internal sealed class InstallationResetService(
                 LastErrorCode = ErrorCodes.Data.ReconciliationFailed,
             };
 
-            Result verificationCheckpoint = await activeStore.WriteAsync(
+            Result verificationCheckpoint = await writer.WriteAsync(
                 active,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1444,7 +1351,7 @@ internal sealed class InstallationResetService(
             verification,
             resumeRequired: false);
 
-        Result retired = await activeStore.RetireAsync(
+        Result retired = await writer.RetireAsync(
             active.OperationId,
             cancellationToken).ConfigureAwait(false);
 
@@ -1705,40 +1612,6 @@ internal sealed class InstallationResetService(
             ErrorCodes.Data.ReconciliationFailed,
             "The authenticated host data reset completion proof did not reconcile."));
 
-    private static bool IsTrustedOnlineDataCompletion(
-        InstallationResetOnlineDataHandoff handoff,
-        DataRetentionApplyResult result) =>
-        handoff.RequestedOperationId != Guid.Empty
-        && !string.IsNullOrWhiteSpace(handoff.InstallationPlanId)
-        && !string.IsNullOrWhiteSpace(handoff.DataPlanId)
-        && result.OperationId != Guid.Empty
-        && result.OperationId != handoff.RequestedOperationId
-        && result.RequestedOperationId == handoff.RequestedOperationId
-        && string.Equals(result.PlanId, handoff.DataPlanId, StringComparison.Ordinal)
-        && result.Reconciled
-        && result.Blockers.Length == 0
-        && result.Conflicts.Length == 0
-        && result.RowsDeleted >= 0
-        && result.FilesDeleted >= 0
-        && result.EstimatedBytesDeleted >= 0
-        && result.DerivedRecordsDeleted >= 0;
-
-    private static bool MatchesPreparedHandoff(
-        InstallationResetActiveRecord active,
-        InstallationResetOnlineDataHandoff handoff) =>
-        active.Scope is InstallationResetScope.Global or InstallationResetScope.All
-        && active.Phase is InstallationResetPhase.Prepared
-        && active.DataHandoff is InstallationResetDataHandoff.HostFactoryErasure
-        && active.AcceptedBinding.DataPlanIds.Length == 1
-        && active.OperationId == handoff.RequestedOperationId
-        && string.Equals(
-            active.PlanId,
-            handoff.InstallationPlanId,
-            StringComparison.Ordinal)
-        && string.Equals(
-            active.AcceptedBinding.DataPlanIds[0],
-            handoff.DataPlanId,
-            StringComparison.Ordinal);
 
     private static bool TryGetOnlineDataCompletion(
         InstallationResetActiveRecord active,
@@ -1776,40 +1649,6 @@ internal sealed class InstallationResetService(
         && (active.OnlineDataCompletion is null
             || TryGetOnlineDataCompletion(active, out _));
 
-    private static Result<InstallationResetOnlineDataHandoff> ReadPreparedHandoff(
-        InstallationResetActiveRecord active,
-        InstallationResetApplyRequest request)
-    {
-
-        if (active.Scope is not (InstallationResetScope.Global or InstallationResetScope.All)
-            || active.Scope != request.Request.Scope
-            || active.Phase is not InstallationResetPhase.Prepared
-            || active.DataHandoff is not InstallationResetDataHandoff.HostFactoryErasure
-            || active.AcceptedBinding.DataPlanIds.Length != 1
-            || !string.Equals(
-                active.PlanId,
-                request.ExpectedPlanId,
-                StringComparison.Ordinal))
-        {
-
-            return Result<InstallationResetOnlineDataHandoff>.Failure(new Error(
-                ErrorCodes.Data.ResetInProgress,
-                "A different installation reset owns the active operation."));
-
-        }
-
-        return Result<InstallationResetOnlineDataHandoff>.Success(
-            BuildOnlineDataHandoff(active));
-
-    }
-
-    private static InstallationResetOnlineDataHandoff BuildOnlineDataHandoff(
-        InstallationResetActiveRecord active) =>
-        new(
-            active.OperationId,
-            active.PlanId,
-            active.AcceptedBinding.DataPlanIds[0],
-            active.OnlineDataCompletion is not null);
 
     private static bool SameAcceptedInstallationPlan(
         InstallationResetPlan current,
@@ -1924,6 +1763,74 @@ internal sealed class InstallationResetService(
         OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
+
+    private sealed class AuthenticatedActiveWriter(
+        IInstallationResetActiveStore store,
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedRoot,
+        Guid installationId,
+        InstallationResetActivePublication? publication)
+        : IInstallationResetActiveWriter
+    {
+
+        private InstallationResetActivePublication? _publication = publication;
+
+        public async Task<Result> WriteAsync(
+            InstallationResetActiveRecord record,
+            CancellationToken cancellationToken)
+        {
+
+            heldInstallationLock.AssertHeldFor(guardedRoot);
+
+            Result<InstallationResetActivePublication> written = _publication is null
+                ? await store.BeginAsync(
+                    heldInstallationLock,
+                    installationId,
+                    record,
+                    cancellationToken).ConfigureAwait(false)
+                : await store.AdvanceAsync(
+                    heldInstallationLock,
+                    _publication,
+                    record,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (written.IsSuccess)
+            {
+
+                _publication = written.Value;
+
+            }
+
+            return written.IsSuccess
+                ? Result.Success()
+                : Result.Failure(written.Error);
+
+        }
+
+        public async Task<Result> RetireAsync(
+            Guid operationId,
+            CancellationToken cancellationToken)
+        {
+
+            heldInstallationLock.AssertHeldFor(guardedRoot);
+
+            Result retired = await store.RetireAsync(
+                heldInstallationLock,
+                operationId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (retired.IsSuccess)
+            {
+
+                _publication = null;
+
+            }
+
+            return retired;
+
+        }
+
+    }
 
     private sealed class InstallationResetApplyProgress(
         InstallationResetActiveRecord active)

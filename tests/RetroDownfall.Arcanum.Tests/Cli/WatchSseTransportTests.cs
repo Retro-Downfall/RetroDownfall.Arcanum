@@ -937,6 +937,19 @@ public sealed class WatchSseTransportTests
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
             Task.FromResult(SecretStoreReadResult.Missing());
 
+        public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
+        {
+
+            Started.TrySetResult();
+
+            string? apiKey = await _release.Task.ConfigureAwait(false);
+
+            return apiKey is null
+                ? SecretStoreReadResult.Missing()
+                : SecretStoreReadResult.Ok(apiKey);
+
+        }
+
         public Task SaveApiKeyAsync(string key) => Task.CompletedTask;
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() =>

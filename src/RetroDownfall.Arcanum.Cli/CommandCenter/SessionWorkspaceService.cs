@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -10,7 +11,10 @@ internal interface ILastSessionStore
 {
     Guid? GetLastSessionId();
 
-    void SaveSessionId(Guid id);
+    Task<ArcanumClientMutationResult<CliContextDocument>> SaveSessionIdAsync(
+        Guid id,
+        Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>Adapts <see cref="CliSessionManager"/> for Command Center (quiet — no Spectre).</summary>
@@ -18,7 +22,16 @@ internal sealed class CliLastSessionStore(CliSessionManager sessionManager) : IL
 {
     public Guid? GetLastSessionId() => sessionManager.GetLastSessionId(quiet: true);
 
-    public void SaveSessionId(Guid id) => sessionManager.SaveSessionId(id, quiet: true);
+    public Task<ArcanumClientMutationResult<CliContextDocument>>
+        SaveSessionIdAsync(
+            Guid id,
+            Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+            CancellationToken cancellationToken) =>
+        sessionManager.SaveSessionIdAsync(
+            id,
+            revalidateAsync,
+            quiet: true,
+            cancellationToken);
 }
 
 internal enum SessionResumeOutcome
@@ -96,7 +109,7 @@ internal sealed class SessionWorkspaceService(
 
             state.LastError = null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogDebug(ex, "Session list refresh failed.");
             state.LastError = ex.Message;
@@ -291,20 +304,46 @@ internal sealed class SessionWorkspaceService(
 
             bool hadOlder = detail.EntryCount > descending.Length;
 
+            ArcanumClientMutationResult<CliContextDocument> persisted =
+                await lastSessionStore
+                    .SaveSessionIdAsync(
+                        detail.Id,
+                        (id, token) => SessionMutationRevalidator
+                            .RevalidateAsync(
+                                apiClient,
+                                id,
+                                detail,
+                                token),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (!persisted.IsCompleted)
+            {
+
+                string message = persisted.Error.Message;
+
+                state.LastError = message;
+
+                state.Log.Append(SessionLogEntryKind.Error, message);
+
+                return new SessionResumeResult(
+                    SessionResumeOutcome.Failed,
+                    message);
+
+            }
+
             // Commit only after successful load.
             state.ApplySessionMeta(
                 detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
 
             ApplyTranscriptPage(state, descending, offset: 0);
 
-            lastSessionStore.SaveSessionId(detail.Id);
-
             return new SessionResumeResult(
                 SessionResumeOutcome.Success,
                 WasEmpty: descending.Length == 0,
                 HadOlderMessages: hadOlder);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogDebug(ex, "Session resume failed for {SessionId}.", sessionId);
             state.LastError = ex.Message;
@@ -488,17 +527,42 @@ internal sealed class SessionWorkspaceService(
 
             EntryDto[] descending = entriesResult.Value ?? [];
 
+            ArcanumClientMutationResult<CliContextDocument> persisted =
+                await lastSessionStore
+                    .SaveSessionIdAsync(
+                        detail.Id,
+                        (id, token) => SessionMutationRevalidator
+                            .RevalidateAsync(
+                                apiClient,
+                                id,
+                                detail,
+                                token),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (!persisted.IsCompleted)
+            {
+
+                string message = persisted.Error.Message;
+
+                state.LastError = message;
+
+                return new SessionForkResult(
+                    SessionForkOutcome.Failed,
+                    ErrorMessage: message);
+
+            }
+
             state.ApplySessionMeta(
                 detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
 
             ApplyTranscriptPage(state, descending, offset: 0);
 
-            lastSessionStore.SaveSessionId(detail.Id);
             state.LastError = null;
             await RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
             return new SessionForkResult(SessionForkOutcome.Success, detail.Id);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogDebug(ex, "Session fork failed for {SessionId}.", sourceId);
             state.LastError = ex.Message;
@@ -569,15 +633,61 @@ internal sealed class SessionWorkspaceService(
         state.LastError = null;
     }
 
-    public void PersistBoundSession(CommandCenterState state, Guid sessionId)
+    public async Task<bool> PersistBoundSessionAsync(
+        CommandCenterState state,
+        Guid sessionId,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(state);
-        lastSessionStore.SaveSessionId(sessionId);
+
+        ArcanumClientMutationResult<CliContextDocument> persisted =
+            await lastSessionStore
+                .SaveSessionIdAsync(
+                    sessionId,
+                    (id, token) => SessionMutationRevalidator
+                        .RevalidateAsync(
+                            apiClient,
+                            id,
+                            expected: null,
+                            cancellationToken: token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        if (!persisted.IsCompleted)
+        {
+
+            string message = "Warning: " + persisted.Error.Message;
+
+            state.LastError = message;
+
+            state.Log.Append(SessionLogEntryKind.Error, message);
+
+            return false;
+
+        }
+
         state.SelectedSessionId = sessionId;
+
         if (state.SessionId != sessionId)
         {
             state.SessionId = sessionId;
         }
+
+        if (string.IsNullOrWhiteSpace(state.SessionTitle))
+        {
+
+            state.SessionTitle = "Untitled";
+
+        }
+
+        if (string.IsNullOrWhiteSpace(state.SessionStatus))
+        {
+
+            state.SessionStatus = "Active";
+
+        }
+
+        return true;
     }
 
     private static void ApplyTranscriptPage(

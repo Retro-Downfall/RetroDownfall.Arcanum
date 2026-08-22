@@ -118,6 +118,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Operation.StateConflict, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Operation.InvalidState, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Perception.InvalidPath, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Perception.InvalidSnapshot, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Perception.PathNotAllowed, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.Codex.PathNotContained, StatusCodes.Status400BadRequest)]
     // A spell write that failed is an infrastructure fault, exactly like Workspace.WriteFailed, and

@@ -367,6 +367,130 @@ internal static class BackupRestoreJournal
 
     }
 
+    /// <summary>
+    /// Validates the complete lexical identity and semantic shape legacy startup recovery consumes.
+    /// </summary>
+    internal static Result ValidateForRecovery(
+        string stagingRoot,
+        string guardedRoot,
+        BackupRestoreJournalRecord record)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
+
+        ArgumentNullException.ThrowIfNull(record);
+
+        Result<string> staging = ExactCanonicalPath(stagingRoot);
+
+        Result<string> guarded = ExactCanonicalPath(guardedRoot);
+
+        Result<string> live = ExactCanonicalPath(record.LiveRoot);
+
+        Result<string> staged = ExactCanonicalPath(record.StagedRoot);
+
+        Result<string> displaced = ExactCanonicalPath(record.DisplacedRoot);
+
+        Result<string> archive = ExactCanonicalPath(record.ArchivePath);
+
+        Result<string>? safety = record.SafetyBackupPath is null
+            ? null
+            : ExactCanonicalPath(record.SafetyBackupPath);
+
+        if (staging.IsFailure
+            || guarded.IsFailure
+            || live.IsFailure
+            || staged.IsFailure
+            || displaced.IsFailure
+            || archive.IsFailure
+            || safety is { IsFailure: true })
+        {
+
+            return InvalidLegacyJournal(
+                "The legacy restore journal contains a noncanonical path.");
+
+        }
+
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        if (record.Version != CurrentVersion
+            || record.OperationId == Guid.Empty
+            || !Enum.IsDefined(record.ConflictMode)
+            || !Enum.IsDefined(record.Phase)
+            || record.Phase < BackupRestorePhase.Stage
+            || record.StagingVolumeId == 0
+            || record.StagingFileId == 0
+            || !string.Equals(live.Value, guarded.Value, comparison)
+            || !string.Equals(
+                staged.Value,
+                Path.Combine(staging.Value, StagedDirectoryName),
+                comparison)
+            || !string.Equals(
+                displaced.Value,
+                Path.Combine(staging.Value, DisplacedDirectoryName),
+                comparison))
+        {
+
+            return InvalidLegacyJournal(
+                "The legacy restore journal has an invalid recovery identity or semantic shape.");
+
+        }
+
+        return Result.Success();
+
+    }
+
+    private static Result<string> ExactCanonicalPath(string path)
+    {
+
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
+        {
+
+            return Result<string>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "A legacy restore journal path is not fully qualified."));
+
+        }
+
+        try
+        {
+
+            string trimmed = Path.TrimEndingDirectorySeparator(path);
+
+            string canonical = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(path));
+
+            StringComparison comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+
+            return string.Equals(trimmed, canonical, comparison)
+                ? Result<string>.Success(canonical)
+                : Result<string>.Failure(new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    "A legacy restore journal path is not in exact canonical form."));
+
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+
+            return Result<string>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "A legacy restore journal path could not be resolved safely."));
+
+        }
+
+    }
+
+    private static Result InvalidLegacyJournal(string message) =>
+        Result.Failure(new Error(
+            ErrorCodes.Data.RecoveryRequired,
+            message));
+
     public static bool Exists(string stagingRoot) =>
         TryRead(stagingRoot) is not null;
 

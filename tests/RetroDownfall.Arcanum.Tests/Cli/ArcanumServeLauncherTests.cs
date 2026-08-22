@@ -729,15 +729,20 @@ public sealed class ArcanumServeLauncherTests
 
         public string? ApiKey { get; set; }
 
-        public Task<string?> GetApiKeyAsync() => Task.FromResult(ApiKey);
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("The launcher must use Peek.");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("The launcher must use Peek.");
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
             Task.FromResult(
                 string.IsNullOrWhiteSpace(ApiKey)
                     ? SecretStoreReadResult.Missing()
                     : SecretStoreReadResult.Ok(ApiKey!));
 
-        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+        public Task SaveApiKeyAsync(string apiKey) =>
+            throw new InvalidOperationException("The launcher must not persist credentials.");
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 

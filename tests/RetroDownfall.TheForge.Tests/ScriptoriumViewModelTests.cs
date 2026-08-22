@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Models;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
@@ -482,19 +483,77 @@ public class ScriptoriumViewModelTests
 
     }
 
+    [Fact]
+    public async Task ExportAsync_ClientMutationRefusal_DoesNotFetchServerExport()
+    {
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = NewPromptDetail(),
+        };
+
+        string path = Path.Combine(
+            RetroDownfall.Arcanum.Core.Storage.ArcanumPaths.GrimoireDirectory,
+            "prompt-export.json");
+
+        ScriptoriumViewModel viewModel = NewScriptorium(
+            dataSource,
+            fileDialog: new ControllableArtifactFileDialog(path),
+            mutationRunner: new RefusingTheForgeLocalMutationRunner());
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.ExportAsync(CancellationToken.None);
+
+        Assert.Equal(0, dataSource.ExportCallCount);
+
+        Assert.False(File.Exists(path));
+
+    }
+
     private static ScriptoriumViewModel NewScriptorium(
         FakePromptEditorDataSource dataSource,
         NavigationService? navigation = null,
-        IWhispersService? whispers = null) =>
+        IWhispersService? whispers = null,
+        IArtifactFileDialogService? fileDialog = null,
+        ITheForgeLocalMutationRunner? mutationRunner = null) =>
         new(
             dataSource.Prompt!.Id,
             dataSource,
             navigation ?? new NavigationService(),
             new FoundryFloorViewModel(new NullLogService()),
             new NullConfirmationDialogService(),
-            new NullArtifactFileDialogService(),
+            fileDialog ?? new NullArtifactFileDialogService(),
             new NullTextInputDialogService(),
-            whispers ?? new FakeWhispersService());
+            whispers ?? new FakeWhispersService(),
+            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance);
+
+    private sealed class ControllableArtifactFileDialog(string? path) : IArtifactFileDialogService
+    {
+
+        public Task<string?> PickSaveJsonPathAsync(
+            string suggestedFileName,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickSaveCsvPathAsync(
+            string suggestedFileName,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickSaveAnyPathAsync(
+            string suggestedFileName,
+            string? defaultExtension,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+    }
 
     private sealed class NullConfirmationDialogService : IConfirmationDialogService
     {
@@ -645,8 +704,16 @@ public class ScriptoriumViewModelTests
         public Task<PromptDetailDto?> CloneAsync(Guid id, ClonePromptRequest request, CancellationToken cancellationToken) =>
             Task.FromResult<PromptDetailDto?>(null);
 
-        public Task<PromptExportDto?> ExportAsync(Guid id, CancellationToken cancellationToken) =>
-            Task.FromResult<PromptExportDto?>(null);
+        public int ExportCallCount { get; private set; }
+
+        public Task<PromptExportDto?> ExportAsync(Guid id, CancellationToken cancellationToken)
+        {
+
+            ExportCallCount++;
+
+            return Task.FromResult<PromptExportDto?>(null);
+
+        }
 
         public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new DataSourceResult<PromptSummaryDto>(null, false, "test", "not used"));

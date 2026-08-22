@@ -36,10 +36,14 @@ public sealed class ContextCommands(
 
     }
 
-    public int Clear(CliContextScope scope)
+    public async Task<int> Clear(
+        CliContextScope scope,
+        CancellationToken cancellationToken)
     {
 
-        CliContextMutationResult result = context.Clear(scope);
+        CliContextMutationResult result = await context
+            .ClearAsync(scope, cancellationToken)
+            .ConfigureAwait(false);
 
         WriteMutation(result);
 

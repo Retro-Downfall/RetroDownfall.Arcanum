@@ -6,11 +6,17 @@ using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
 
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -568,8 +574,53 @@ public sealed class PresetCommandTests
 
     }
 
+    [Theory]
+    [InlineData("A running host owns the maintenance lock.")]
+    [InlineData("The maintenance lock topology is unsafe.")]
+    [InlineData("An installation factory reset is active.")]
+    public async Task Refused_exclusive_ownership_blocks_every_preset_persistence_interaction(
+        string refusal)
+    {
+
+        foreach (string[] arguments in new[]
+                 {
+
+                     new[] { "preset", "list" },
+
+                     new[] { "preset", "show", "general-assistant" },
+
+                     new[] { "preset", "diff", "general-assistant" },
+
+                     new[] { "preset", "apply", "general-assistant" },
+
+                     new[] { "preset", "reset" },
+
+                 })
+        {
+
+            FakeConfigurationPresetService presetService = new();
+
+            RecordingGrimoireCliInitialization initialization = new(refusal);
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                CreateServices(presetService, initialization),
+                arguments);
+
+            Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+            Assert.Equal(1, initialization.ExclusiveCalls);
+
+            Assert.Equal(0, initialization.BootstrapCalls);
+
+            Assert.Equal(0, presetService.PersistenceInteractionCount);
+
+        }
+
+    }
+
     private static ServiceCollection CreateServices(
-        FakeConfigurationPresetService? presetService = null)
+        FakeConfigurationPresetService? presetService = null,
+        IGrimoireCliInitialization? initialization = null)
     {
 
         ServiceCollection services = new();
@@ -577,6 +628,11 @@ public sealed class PresetCommandTests
         ConfigurationManager configuration = new();
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.RemoveAll<IGrimoireCliInitialization>();
+
+        services.AddSingleton<IGrimoireCliInitialization>(
+            initialization ?? new RecordingGrimoireCliInitialization());
 
         services.AddSingleton<IConfigurationPresetService>(
             presetService ?? new FakeConfigurationPresetService());
@@ -667,6 +723,8 @@ public sealed class PresetCommandTests
 
         public int ResetCalls { get; private set; }
 
+        public int PersistenceInteractionCount { get; private set; }
+
         public IReadOnlyList<ConfigurationPresetDefinition> List() => [_definition];
 
         public IReadOnlyList<ConfigurationPresetGlossaryEntry> Glossary() =>
@@ -707,6 +765,8 @@ public sealed class PresetCommandTests
 
             LastDiffName = idOrName;
 
+            PersistenceInteractionCount++;
+
             return Task.FromResult(DiffResult);
 
         }
@@ -718,6 +778,8 @@ public sealed class PresetCommandTests
 
             LastApplyName = idOrName;
 
+            PersistenceInteractionCount++;
+
             return Task.FromResult(ApplyResult);
 
         }
@@ -728,6 +790,8 @@ public sealed class PresetCommandTests
 
             ResetCalls++;
 
+            PersistenceInteractionCount++;
+
             return Task.FromResult(ResetResult);
 
         }
@@ -737,6 +801,8 @@ public sealed class PresetCommandTests
         {
 
             InspectCalls++;
+
+            PersistenceInteractionCount++;
 
             return Task.FromResult(InspectResult);
 

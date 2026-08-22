@@ -67,6 +67,22 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PerceivePatternAsync_EmitsTheCanonicalRootWithoutATrailingSeparator()
+    {
+
+        EyeOfTheWorldService service = new();
+
+        PatternSnapshot snapshot = await service.PerceivePatternAsync(
+            _workspace.Root + Path.DirectorySeparatorChar,
+            CancellationToken.None);
+
+        Assert.Equal(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(_workspace.Root)),
+            snapshot.RootPath);
+
+    }
+
+    [Fact]
     public async Task PerceivePatternAsync_detects_software_engineering_artifacts()
     {
 

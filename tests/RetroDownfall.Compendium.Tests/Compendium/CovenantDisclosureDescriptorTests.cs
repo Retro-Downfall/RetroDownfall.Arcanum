@@ -127,7 +127,8 @@ public sealed class CovenantDisclosureDescriptorTests
             store,
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
         GenericSettingsSectionView view = new()
         {
@@ -196,7 +197,8 @@ public sealed class CovenantDisclosureDescriptorTests
             store,
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
         GenericSettingsSectionView view = new()
         {

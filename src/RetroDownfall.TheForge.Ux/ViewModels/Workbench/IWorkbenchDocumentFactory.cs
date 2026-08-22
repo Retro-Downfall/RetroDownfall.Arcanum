@@ -63,6 +63,8 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 
     private readonly IWhispersService _whispers;
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     public WorkbenchDocumentFactory(
         ISpellEditorDataSource spellEditorDataSource,
         IPromptEditorDataSource promptEditorDataSource,
@@ -80,7 +82,8 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         IArtifactFileDialogService fileDialog,
         ITextInputDialogService textInputDialog,
         IClipboardService clipboard,
-        IWhispersService whispers)
+        IWhispersService whispers,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         _spellEditorDataSource = spellEditorDataSource;
@@ -117,6 +120,8 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 
         _whispers = whispers;
 
+        _mutationRunner = mutationRunner;
+
     }
 
     public ViewModelBase Create(DocumentKind kind, string id, string? workspace = null)
@@ -134,6 +139,7 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _fileDialog,
                 _textInputDialog,
                 _whispers,
+                _mutationRunner,
                 workspace);
 
             _ = editor.LoadCommand.ExecuteAsync(null);
@@ -153,7 +159,8 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _confirmationDialog,
                 _fileDialog,
                 _textInputDialog,
-                _whispers);
+                _whispers,
+                _mutationRunner);
 
             _ = scriptorium.LoadCommand.ExecuteAsync(null);
 
@@ -164,7 +171,14 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         if (kind == DocumentKind.Session && Guid.TryParse(id, out Guid sessionId))
         {
 
-            TomeViewModel tome = new(sessionId, _tomeDataSource, _navigation, _foundryFloor, _clipboard, _confirmationDialog);
+            TomeViewModel tome = new(
+                sessionId,
+                _tomeDataSource,
+                _navigation,
+                _foundryFloor,
+                _clipboard,
+                _confirmationDialog,
+                _mutationRunner);
 
             _ = tome.LoadCommand.ExecuteAsync(null);
 
@@ -229,7 +243,8 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _whispers,
                 _confirmationDialog,
                 _trialSuiteStore,
-                _fileDialog);
+                _fileDialog,
+                _mutationRunner);
 
             _ = provingGrounds.LoadPickersCommand.ExecuteAsync(null);
 
@@ -248,6 +263,7 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _confirmationDialog,
                 _fileDialog,
                 _navigation,
+                _mutationRunner,
                 _inferenceTraceStore);
 
             _ = comparison.LoadHistoryCommand.ExecuteAsync(null);

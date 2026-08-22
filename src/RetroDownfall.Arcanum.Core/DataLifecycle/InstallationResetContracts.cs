@@ -188,13 +188,16 @@ public sealed record ActiveInstallationReset(
     Guid OperationId = default,
     InstallationResetPhase Phase = InstallationResetPhase.Prepared,
     InstallationResetDataHandoff? DataHandoff = null,
-    bool OnlineDataCompletionDurable = false);
+    bool OnlineDataCompletionDurable = false,
+    InstallationResetHostHandoff? HostHandoff = null);
 
-public sealed record InstallationResetOnlineDataHandoff(
-    Guid RequestedOperationId,
-    string InstallationPlanId,
-    string DataPlanId,
-    bool DataResetCompleted);
+public sealed record InstallationResetHostHandoff(
+    [property: JsonRequired] Guid RequestedOperationId,
+    [property: JsonRequired] string InstallationPlanId,
+    [property: JsonRequired] InstallationResetScope Scope,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionWorkspaceBinding? Workspace,
+    [property: JsonRequired] InstallationResetAcceptedBinding AcceptedBinding);
 
 public interface IInstallationStartupProbe
 {
@@ -227,22 +230,12 @@ public interface IInstallationResetOnlineDataHandoff
         InstallationResetPlan localPlan,
         DataRetentionPlan onlinePlan);
 
-    Task<Result<InstallationResetOnlineDataHandoff>> PrepareAsync(
+    Result<InstallationResetHostHandoff> CreateHostHandoff(
         InstallationResetApplyRequest request,
-        InstallationResetPlan confirmedPlan,
-        CancellationToken cancellationToken = default);
+        InstallationResetPlan confirmedPlan);
 
-    Task<Result<InstallationResetOnlineDataHandoff?>> ReadAsync(
+    Task<Result<InstallationResetHostHandoff?>> ReadAsync(
         InstallationResetApplyRequest request,
-        CancellationToken cancellationToken = default);
-
-    Task<Result> RecordCompletedAsync(
-        InstallationResetOnlineDataHandoff handoff,
-        DataRetentionApplyResult result,
-        CancellationToken cancellationToken = default);
-
-    Task<Result> RetirePreEffectAsync(
-        InstallationResetOnlineDataHandoff handoff,
         CancellationToken cancellationToken = default);
 
 }

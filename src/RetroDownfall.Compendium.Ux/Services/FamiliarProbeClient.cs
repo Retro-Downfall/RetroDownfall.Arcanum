@@ -82,7 +82,13 @@ public sealed class FamiliarProbeClient(
 
             settings = await store.ReadAsync(cancellationToken).ConfigureAwait(false);
 
-            apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+            SecretStoreReadResult apiKeyRead = await secretStore
+                .PeekApiKeyReadResultAsync()
+                .ConfigureAwait(false);
+
+            apiKey = apiKeyRead.Status == SecretStoreReadStatus.Ok
+                ? apiKeyRead.Value
+                : null;
 
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)

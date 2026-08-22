@@ -12,4 +12,13 @@ public interface ITrialSuiteStore
 
     Task SaveAsync(TrialSuiteStoreDocument document, CancellationToken cancellationToken = default);
 
+    Task<TrialSuiteStoreDocument> UpdateAsync(
+        Func<TrialSuiteStoreDocument, CancellationToken, Task<TrialSuiteStoreDocument>> update,
+        CancellationToken cancellationToken = default);
+
+    Task<TrialSuiteStoreDocument> UpdatePreparedAsync<TPreparation>(
+        Func<TrialSuiteStoreDocument, CancellationToken, Task<TPreparation>> prepare,
+        Func<TrialSuiteStoreDocument, TPreparation, TrialSuiteStoreDocument> commit,
+        CancellationToken cancellationToken = default);
+
 }

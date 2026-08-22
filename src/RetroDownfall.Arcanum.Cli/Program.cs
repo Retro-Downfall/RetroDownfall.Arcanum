@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -66,17 +67,14 @@ internal static class Program
 
         string? command = InstallationFactoryResetArgvPreflight.FindRootCommand(args);
 
-        bool guardedCommand = string.Equals(command, "run", StringComparison.Ordinal)
-            || string.Equals(command, "serve", StringComparison.Ordinal);
-
-        bool resetResume = preflight.IsFactoryReset && preflight.Apply;
-
-        if (!guardedCommand && !resetResume)
+        if (string.Equals(command, "serve", StringComparison.Ordinal))
         {
 
             return await continuation().ConfigureAwait(false);
 
         }
+
+        bool resetResume = preflight.IsFactoryReset && preflight.Apply;
 
         startupProbe ??= InstallationStartupProbe.CreateDefault();
 
@@ -95,13 +93,8 @@ internal static class Program
 
         ActiveInstallationReset? active = activeRead.Value;
 
-        bool recoveryServe = active is not null
-            && string.Equals(command, "serve", StringComparison.Ordinal)
-            && InstallationResetHostStartupAdmission.AllowsRecoveryHost(active);
-
         if (active is null
-            || (resetResume && preflight.Scope == active.Scope)
-            || recoveryServe)
+            || (resetResume && preflight.Scope == active.Scope))
         {
 
             return await continuation().ConfigureAwait(false);
@@ -119,6 +112,19 @@ internal static class Program
     private static bool IsHelpOrVersionRequest(string[] args)
     {
 
+        if (args.Length > 0
+            && string.Equals(
+                args[0],
+                ApplicationDeepLinkCodec.ArgumentName,
+                StringComparison.Ordinal))
+        {
+
+            return false;
+
+        }
+
+        bool rootVersionRequested = false;
+
         foreach (string argument in args)
         {
 
@@ -129,19 +135,26 @@ internal static class Program
 
             }
 
-            if (argument is "--help" or "-h" or "-?" or "/?" or "--version")
+            if (argument is "--help" or "-h" or "-?" or "/?")
             {
 
                 return true;
 
             }
 
+            if (string.Equals(argument, "--version", StringComparison.Ordinal))
+            {
+
+                rootVersionRequested = true;
+
+            }
+
         }
 
-        return string.Equals(
-            InstallationFactoryResetArgvPreflight.FindRootCommand(args),
-            "help",
-            StringComparison.Ordinal);
+        string? rootCommand = InstallationFactoryResetArgvPreflight.FindRootCommand(args);
+
+        return string.Equals(rootCommand, "help", StringComparison.Ordinal)
+            || (rootVersionRequested && rootCommand is null);
 
     }
 
@@ -211,7 +224,7 @@ internal static class CliBootstrapDiagnostics
     // way an operator finds out which command to reach for, and it needs no configuration to answer.
     private static readonly string[] DiagnosticVerbs = ["doctor", "config", "help"];
 
-    private static readonly string[] HelpOrVersionFlags = ["--help", "-h", "-?", "/?", "--version"];
+    private static readonly string[] HelpFlags = ["--help", "-h", "-?", "/?"];
 
     internal static bool AllowsDegradedConfiguration(string[] args)
     {
@@ -224,6 +237,8 @@ internal static class CliBootstrapDiagnostics
             return false;
 
         }
+
+        bool rootVersionRequested = false;
 
         foreach (string arg in args)
         {
@@ -238,10 +253,17 @@ internal static class CliBootstrapDiagnostics
 
             }
 
-            if (HelpOrVersionFlags.Contains(arg, StringComparer.Ordinal))
+            if (HelpFlags.Contains(arg, StringComparer.Ordinal))
             {
 
                 return true;
+
+            }
+
+            if (string.Equals(arg, "--version", StringComparison.Ordinal))
+            {
+
+                rootVersionRequested = true;
 
             }
 
@@ -263,7 +285,8 @@ internal static class CliBootstrapDiagnostics
         // one command that can tell them what to fix, on the one occasion they need it.
         string? verb = InstallationFactoryResetArgvPreflight.FindRootCommand(args);
 
-        return verb is not null && DiagnosticVerbs.Contains(verb, StringComparer.Ordinal);
+        return (rootVersionRequested && verb is null)
+            || (verb is not null && DiagnosticVerbs.Contains(verb, StringComparer.Ordinal));
 
     }
 

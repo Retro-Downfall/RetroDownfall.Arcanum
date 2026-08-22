@@ -269,6 +269,33 @@ public sealed class ResourceSelectorTests
     }
 
     [Fact]
+    public async Task Selection_awaits_optional_recency_persistence_before_returning()
+    {
+
+        SelectionFixture fixture = new(
+            new Candidate("one", "Mordain", "active"));
+
+        TaskCompletionSource persistence = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        fixture.Recent.Persistence = persistence.Task;
+
+        Task<ResourceSelectionResult<Candidate>> selection =
+            fixture.SelectAsync("one", interactive: false);
+
+        Assert.False(selection.IsCompleted);
+
+        persistence.SetResult();
+
+        ResourceSelectionResult<Candidate> result = await selection;
+
+        Assert.Equal(ResourceSelectionStatus.Selected, result.Status);
+
+        Assert.Equal("one", result.Value!.Id);
+
+    }
+
+    [Fact]
     public async Task Selector_fetches_all_pages_before_resolving_large_collection()
     {
         FakePicker picker = new();
@@ -428,8 +455,23 @@ public sealed class ResourceSelectorTests
 
         public List<(string Kind, string Id)> Remembered { get; } = [];
 
+        public Task Persistence { get; set; } = Task.CompletedTask;
+
         public IReadOnlyList<string> GetRecentIds(string resourceKind) => RecentIds;
 
-        public void Remember(string resourceKind, string id) => Remembered.Add((resourceKind, id));
+        public async Task RememberAsync(
+            string resourceKind,
+            string id,
+            Func<CancellationToken, Task<Result<bool>>> revalidateAsync,
+            CancellationToken cancellationToken = default)
+        {
+
+            Remembered.Add((resourceKind, id));
+
+            _ = revalidateAsync;
+
+            await Persistence.WaitAsync(cancellationToken);
+
+        }
     }
 }

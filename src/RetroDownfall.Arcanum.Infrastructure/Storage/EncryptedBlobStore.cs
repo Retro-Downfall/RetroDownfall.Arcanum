@@ -153,7 +153,19 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
     public async Task<Stream> OpenReadAsync(
         string path,
         EncryptedBlobPurpose purpose,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await OpenReadCoreAsync(
+                path,
+                purpose,
+                peekKey: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    private async Task<Stream> OpenReadCoreAsync(
+        string path,
+        EncryptedBlobPurpose purpose,
+        bool peekKey,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ValidatePurpose(purpose);
@@ -177,9 +189,13 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             (EncryptedBlobDescriptor descriptor, byte[] header, byte[] noncePrefix) =
                 await ReadHeaderAsync(input, purpose, cancellationToken).ConfigureAwait(false);
             ValidateEnvelopeLength(input.Length, descriptor);
-            FileEncryptionKeyMaterial material = await _keyProvider
-                .GetForReadAsync(descriptor.KeyId, cancellationToken)
-                .ConfigureAwait(false);
+            FileEncryptionKeyMaterial material = peekKey
+                ? await _keyProvider
+                    .PeekForReadAsync(descriptor.KeyId, cancellationToken)
+                    .ConfigureAwait(false)
+                : await _keyProvider
+                    .GetForReadAsync(descriptor.KeyId, cancellationToken)
+                    .ConfigureAwait(false);
             byte[] purposeKey = DerivePurposeKey(material.MasterKey.Span, purpose);
             return new EncryptedBlobReadStream(
                 input,
@@ -268,7 +284,11 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         bool verifyAllChunks,
         CancellationToken cancellationToken = default)
     {
-        await using Stream stream = await OpenReadAsync(path, purpose, cancellationToken)
+        await using Stream stream = await OpenReadCoreAsync(
+                path,
+                purpose,
+                peekKey: true,
+                cancellationToken)
             .ConfigureAwait(false);
         EncryptedBlobDescriptor descriptor =
             ((EncryptedBlobReadStream)stream).Descriptor;

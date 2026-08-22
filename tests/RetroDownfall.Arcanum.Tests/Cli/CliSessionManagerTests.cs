@@ -1,9 +1,13 @@
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using Spectre.Console;
 using Spectre.Console.Testing;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -85,14 +89,17 @@ public sealed class CliSessionManagerTests : IDisposable
     }
 
     [Fact]
-    public void SaveSessionId_round_trips_guid()
+    public void GetLastSessionId_reads_the_legacy_fallback_when_authoritative_context_is_absent()
     {
 
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        Guid expected = Guid.Parse(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        File.WriteAllText(_sessionPath, expected.ToString("D"));
+
         CliSessionManager manager = CreateManager();
-
-        Guid expected = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-
-        manager.SaveSessionId(expected);
 
         Guid? actual = manager.GetLastSessionId();
 
@@ -101,14 +108,21 @@ public sealed class CliSessionManagerTests : IDisposable
     }
 
     [Fact]
-    public void ClearSession_removes_persisted_id()
+    public async Task ClearSession_removes_the_authoritative_context_id()
     {
 
-        CliSessionManager manager = CreateManager();
+        CliContextStore store = new(
+            Path.Combine(
+                ArcanumPaths.GrimoireDirectory,
+                "cli-context.json"));
 
-        manager.SaveSessionId(Guid.NewGuid());
+        CliSessionManager manager = CreateManager(contextStore: store);
 
-        manager.ClearSession();
+        _ = await manager.SaveSessionIdAsync(
+            Guid.NewGuid(),
+            AllowSessionAsync);
+
+        _ = await manager.ClearSessionAsync();
 
         Assert.False(File.Exists(_sessionPath));
 
@@ -117,7 +131,7 @@ public sealed class CliSessionManagerTests : IDisposable
     }
 
     [Fact]
-    public void Session_changes_are_mirrored_into_the_versioned_context_document()
+    public async Task Session_changes_are_persisted_in_the_versioned_context_document()
     {
 
         string contextPath = Path.Combine(
@@ -131,13 +145,164 @@ public sealed class CliSessionManagerTests : IDisposable
         Guid expected = Guid.Parse(
             "dddddddd-dddd-dddd-dddd-dddddddddddd");
 
-        manager.SaveSessionId(expected);
+        _ = await manager.SaveSessionIdAsync(
+            expected,
+            AllowSessionAsync);
 
         Assert.Equal(expected, store.Load().SessionId);
 
-        manager.ClearSession();
+        _ = await manager.ClearSessionAsync();
 
         Assert.Null(store.Load().SessionId);
+
+    }
+
+    [Fact]
+    public async Task Saving_the_authoritative_context_does_not_create_or_replace_the_legacy_session_fallback()
+    {
+
+        string contextPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "cli-context.json");
+
+        CliContextStore store = new(contextPath);
+
+        CliSessionManager manager = CreateManager(contextStore: store);
+
+        Guid expected = Guid.Parse(
+            "abababab-abab-abab-abab-abababababab");
+
+        _ = await manager.SaveSessionIdAsync(
+            expected,
+            AllowSessionAsync);
+
+        Assert.Equal(expected, store.Load().SessionId);
+
+        Assert.False(File.Exists(_sessionPath));
+
+    }
+
+    [Fact]
+    public async Task Clearing_the_authoritative_context_does_not_delete_the_legacy_session_fallback()
+    {
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        const string legacy = "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd";
+
+        File.WriteAllText(_sessionPath, legacy);
+
+        CliContextStore store = new(
+            Path.Combine(
+                ArcanumPaths.GrimoireDirectory,
+                "cli-context.json"));
+
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty with
+            {
+
+                SessionId = Guid.Parse(
+                    "dededede-dede-dede-dede-dededededede"),
+
+            });
+
+        CliSessionManager manager = CreateManager(contextStore: store);
+
+        _ = await manager.ClearSessionAsync();
+
+        Assert.Null(store.Load().SessionId);
+
+        Assert.Equal(legacy, File.ReadAllText(_sessionPath));
+
+    }
+
+    [Theory]
+    [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
+    [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
+    public async Task Refused_session_save_retains_the_authoritative_context_and_never_writes_legacy_state(
+        byte dispositionValue)
+    {
+
+        ArcanumClientMutationDisposition disposition =
+            (ArcanumClientMutationDisposition)dispositionValue;
+
+        string contextPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "cli-context.json");
+
+        CliContextStore store = new(contextPath);
+
+        Guid retained = Guid.Parse(
+            "18181818-1818-1818-1818-181818181818");
+
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty with { SessionId = retained });
+
+        RecordingArcanumClientMutationBoundary boundary = new(disposition);
+
+        CliSessionManager manager = CreateManager(
+            contextStore: store,
+            mutationBoundary: boundary);
+
+        ArcanumClientMutationResult<CliContextDocument> result =
+            await manager.SaveSessionIdAsync(
+                Guid.Parse(
+                    "19191919-1919-1919-1919-191919191919"),
+                AllowSessionAsync);
+
+        Assert.Equal(disposition, result.Disposition);
+
+        Assert.Equal(retained, store.Load().SessionId);
+
+        Assert.False(File.Exists(_sessionPath));
+
+        Assert.Equal(1, boundary.Calls);
+
+    }
+
+    [Theory]
+    [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
+    [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
+    public async Task Refused_session_clear_retains_the_authoritative_context_and_legacy_fallback(
+        byte dispositionValue)
+    {
+
+        ArcanumClientMutationDisposition disposition =
+            (ArcanumClientMutationDisposition)dispositionValue;
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        const string legacy = "20202020-2020-2020-2020-202020202020";
+
+        File.WriteAllText(_sessionPath, legacy);
+
+        CliContextStore store = new(
+            Path.Combine(
+                ArcanumPaths.GrimoireDirectory,
+                "cli-context.json"));
+
+        Guid retained = Guid.Parse(
+            "21212121-2121-2121-2121-212121212121");
+
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty with { SessionId = retained });
+
+        RecordingArcanumClientMutationBoundary boundary = new(disposition);
+
+        CliSessionManager manager = CreateManager(
+            contextStore: store,
+            mutationBoundary: boundary);
+
+        ArcanumClientMutationResult<CliContextDocument> result =
+            await manager.ClearSessionAsync();
+
+        Assert.Equal(disposition, result.Disposition);
+
+        Assert.Equal(retained, store.Load().SessionId);
+
+        Assert.Equal(legacy, File.ReadAllText(_sessionPath));
+
+        Assert.Equal(1, boundary.Calls);
 
     }
 
@@ -148,14 +313,17 @@ public sealed class CliSessionManagerTests : IDisposable
         Guid legacy = Guid.Parse(
             "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
 
-        CreateManager().SaveSessionId(legacy);
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(_sessionPath, legacy.ToString("D"));
 
         CliContextStore store = new(
             Path.Combine(
                 ArcanumPaths.GrimoireDirectory,
                 "cli-context.json"));
 
-        store.Save(CliContextDocument.Empty);
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty);
 
         CliSessionManager manager = CreateManager(contextStore: store);
 
@@ -257,7 +425,7 @@ public sealed class CliSessionManagerTests : IDisposable
     }
 
     [Fact]
-    public void SaveSessionId_quiet_does_not_write_spectre_when_directory_unusable()
+    public async Task SaveSessionId_quiet_does_not_write_spectre_when_directory_unusable()
     {
         // Force IO failure by pointing at a non-writable path via a temp file that we replace with a directory
         // is hard; instead verify quiet path on GetLastSessionId IO by deleting mid-read isn't needed —
@@ -270,8 +438,18 @@ public sealed class CliSessionManagerTests : IDisposable
 
         try
         {
-            CliSessionManager manager = CreateManager();
-            manager.SaveSessionId(Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), quiet: true);
+            CliContextStore store = new(
+                Path.Combine(
+                    ArcanumPaths.GrimoireDirectory,
+                    "cli-context.json"));
+
+            CliSessionManager manager = CreateManager(contextStore: store);
+
+            _ = await manager.SaveSessionIdAsync(
+                Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                AllowSessionAsync,
+                quiet: true);
+
             Assert.True(string.IsNullOrEmpty(console.Output), $"Expected no Spectre output, got: {console.Output}");
             Assert.Equal(Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), manager.GetLastSessionId(quiet: true));
             Assert.True(string.IsNullOrEmpty(console.Output));
@@ -288,7 +466,7 @@ public sealed class CliSessionManagerTests : IDisposable
     /// redirected <c>run</c> that stream carries the answer.
     /// </summary>
     [Fact]
-    public void SaveSessionId_warns_on_the_diagnostic_stream_not_the_payload_stream()
+    public async Task SaveSessionId_warns_on_the_diagnostic_stream_not_the_payload_stream()
     {
 
         TestConsole console = new();
@@ -308,7 +486,9 @@ public sealed class CliSessionManagerTests : IDisposable
 
             CliSessionManager manager = CreateManager(contextStore: new UnwritableContextStore());
 
-            manager.SaveSessionId(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
+            _ = await manager.SaveSessionIdAsync(
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                AllowSessionAsync);
 
             Assert.True(
                 string.IsNullOrEmpty(console.Output),
@@ -330,17 +510,35 @@ public sealed class CliSessionManagerTests : IDisposable
 
     private static CliSessionManager CreateManager(
         ILogger<CliSessionManager>? logger = null,
-        ICliContextStore? contextStore = null)
+        ICliContextStore? contextStore = null,
+        IArcanumClientMutationBoundary? mutationBoundary = null)
     {
 
         return new CliSessionManager(
             new ConsoleDispatcher(new CliInvocationContext()),
             logger,
-            contextStore);
+            contextStore,
+            mutationBoundary
+                ?? new RecordingArcanumClientMutationBoundary());
 
     }
 
-    private sealed class UnwritableContextStore : ICliContextStore
+    private static Task<Result<bool>> AllowSessionAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        _ = sessionId;
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Result<bool>.Success(true));
+
+    }
+
+    private sealed class UnwritableContextStore :
+        ICliContextStore,
+        ICliContextExclusiveWriter
     {
 
         public string FilePath => "/does-not-exist/cli-context.json";
@@ -349,6 +547,10 @@ public sealed class CliSessionManagerTests : IDisposable
             throw new IOException("The context file could not be read.");
 
         public void Save(CliContextDocument document) =>
+            throw new IOException("The context file could not be written.");
+
+        void ICliContextExclusiveWriter.SaveUnderExclusive(
+            CliContextDocument document) =>
             throw new IOException("The context file could not be written.");
 
     }

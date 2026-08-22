@@ -1,7 +1,13 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 
@@ -10,6 +16,161 @@ namespace RetroDownfall.Arcanum.Tests.Logging;
 [Collection("ProcessEnvironment")]
 public sealed class LoggingBootstrapperTests
 {
+
+    [Fact]
+    public void Infrastructure_registration_does_not_create_the_guarded_root_or_log_path()
+    {
+
+        string testHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            Guid.NewGuid().ToString("N"));
+
+        using TestingEnvironmentScope scope = new(testHome);
+
+        Serilog.ILogger previousStaticLogger = Serilog.Log.Logger;
+
+        try
+        {
+
+            string guardedRoot = ArcanumPaths.GrimoireDirectory;
+
+            string logDirectory = ArcanumPaths.LogDirectory;
+
+            ServiceCollection services = new();
+
+            _ = services.AddArcanumInfrastructure(
+                new ConfigurationBuilder().Build());
+
+            Assert.False(Directory.Exists(guardedRoot));
+
+            Assert.False(Directory.Exists(logDirectory));
+
+        }
+        finally
+        {
+
+            Serilog.Log.Logger = previousStaticLogger;
+
+            if (Directory.Exists(testHome))
+            {
+
+                Directory.Delete(testHome, recursive: true);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public void Production_logging_materialization_and_prestart_emit_do_not_create_the_guarded_root_or_log_path()
+    {
+
+        string testHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            Guid.NewGuid().ToString("N"));
+
+        using TestingEnvironmentScope scope = new(
+            testHome,
+            dotnetEnvironment: "Testing",
+            aspNetCoreEnvironment: Environments.Production);
+
+        Serilog.ILogger previousStaticLogger = Serilog.Log.Logger;
+
+        try
+        {
+
+            string guardedRoot = ArcanumPaths.GrimoireDirectory;
+
+            string logDirectory = ArcanumPaths.LogDirectory;
+
+            ServiceCollection services = new();
+
+            services.AddSingleton<IHostEnvironment>(new ProductionHostEnvironment());
+
+            _ = services.AddArcanumInfrastructure(
+                new ConfigurationBuilder().Build());
+
+            using ServiceProvider provider = services.BuildServiceProvider();
+
+            ILoggerFactory factory = provider.GetRequiredService<ILoggerFactory>();
+
+            factory.CreateLogger("PreLockStartup")
+                .LogInformation("Pre-lock startup diagnostic.");
+
+            Assert.False(Directory.Exists(guardedRoot));
+
+            Assert.False(Directory.Exists(logDirectory));
+
+        }
+        finally
+        {
+
+            Serilog.Log.Logger = previousStaticLogger;
+
+            if (Directory.Exists(testHome))
+            {
+
+                Directory.Delete(testHome, recursive: true);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public void Host_lock_file_sink_is_inert_until_activation_and_never_reopens_after_deactivation()
+    {
+
+        string retainedParent = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            Guid.NewGuid().ToString("N"));
+
+        string guardedRoot = Path.Combine(retainedParent, "arcanum");
+
+        string logDirectory = Path.Combine(guardedRoot, "logs");
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            logDirectory,
+            retainedFileCountLimit: 3,
+            enabled: true);
+
+        using Serilog.Core.Logger logger = new Serilog.LoggerConfiguration()
+            .WriteTo.Sink(sink)
+            .CreateLogger();
+
+        logger.Information("Before the host lock is attached.");
+
+        Assert.False(Directory.Exists(guardedRoot));
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        Assert.False(Directory.Exists(guardedRoot));
+
+        sink.Activate(held, guardedRoot);
+
+        logger.Information("The host lock is attached and topology is converged.");
+
+        Assert.NotEmpty(Directory.GetFiles(logDirectory, "*.json"));
+
+        sink.Deactivate();
+
+        Directory.Delete(guardedRoot, recursive: true);
+
+        logger.Information("After host lock release.");
+
+        Assert.False(Directory.Exists(guardedRoot));
+
+        Assert.Throws<InvalidOperationException>(() =>
+            sink.Activate(held, guardedRoot));
+
+    }
 
     [Fact]
     public void ResolveLogDirectory_UsesTestingIsolatedRoot()
@@ -84,12 +245,15 @@ public sealed class LoggingBootstrapperTests
 
         private readonly Dictionary<string, string?> _original = new();
 
-        public TestingEnvironmentScope(string testHome)
+        public TestingEnvironmentScope(
+            string testHome,
+            string dotnetEnvironment = "Testing",
+            string aspNetCoreEnvironment = "Testing")
         {
 
-            Set("ASPNETCORE_ENVIRONMENT", "Testing");
+            Set("ASPNETCORE_ENVIRONMENT", aspNetCoreEnvironment);
 
-            Set("DOTNET_ENVIRONMENT", "Testing");
+            Set("DOTNET_ENVIRONMENT", dotnetEnvironment);
 
             Set("ARCANUM_TEST_HOME", testHome);
 
@@ -115,6 +279,20 @@ public sealed class LoggingBootstrapperTests
             global::System.Environment.SetEnvironmentVariable(name, value);
 
         }
+
+    }
+
+    private sealed class ProductionHostEnvironment : IHostEnvironment
+    {
+
+        public string EnvironmentName { get; set; } = Environments.Production;
+
+        public string ApplicationName { get; set; } = "Arcanum.Tests";
+
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+
+        public IFileProvider ContentRootFileProvider { get; set; } =
+            new NullFileProvider();
 
     }
 

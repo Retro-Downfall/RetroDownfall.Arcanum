@@ -40,6 +40,12 @@ internal sealed class FileConfigurationPresetPersistence(
             () => ReadUnderTransactionAsync(cancellationToken),
             cancellationToken);
 
+    public Task<Result<ConfigurationPresetSnapshot>> PeekAsync(
+        CancellationToken cancellationToken = default) =>
+        RunTransactionAsync(
+            () => PeekUnderTransactionAsync(cancellationToken),
+            cancellationToken);
+
     public Task<Result<ConfigurationPresetCommitResult>> ApplyAsync(
         ConfigurationPresetCommitRequest request,
         CancellationToken cancellationToken = default)
@@ -115,6 +121,44 @@ internal sealed class FileConfigurationPresetPersistence(
 
             return Result<ConfigurationPresetSnapshot>.Failure(
                 new Error("Preset.RecoveryFailed", exception.Message));
+
+        }
+
+    }
+
+    private async Task<Result<ConfigurationPresetSnapshot>> PeekUnderTransactionAsync(
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            using SecureFileReadResult journal = await SecureFileReader.ReadBytesAsync(
+                    ArcanumPaths.ConfigurationPresetJournalFile,
+                    MaxSidecarBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (journal.Status != SecureFileReadStatus.NotFound)
+            {
+
+                return Result<ConfigurationPresetSnapshot>.Failure(
+                    new Error(
+                        "Preset.RecoveryRequired",
+                        "A prepared preset transaction requires exclusive recovery before setup can continue."));
+
+            }
+
+            return await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (Exception exception) when (IsExpectedFileFailure(exception))
+        {
+
+            logger.LogError(exception, "Preset state peek failed.");
+
+            return Result<ConfigurationPresetSnapshot>.Failure(
+                new Error("Preset.ReadFailed", exception.Message));
 
         }
 

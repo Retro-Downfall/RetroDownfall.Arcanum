@@ -162,6 +162,56 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 
     }
 
+    /// <summary>
+    /// Reads the master API key without promoting the Data Protection fallback into OS storage.
+    /// An OS read failure remains ambiguous even when the fallback is readable, because that
+    /// fallback may have been superseded by a credential the process cannot currently inspect.
+    /// </summary>
+    public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
+    {
+
+        await _gate.WaitAsync().ConfigureAwait(false);
+
+        try
+        {
+
+            OsCredentialStoreResult os = _osStore.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MasterApiKeyAccount);
+
+            if (os.Status == OsCredentialStoreStatus.Ok
+                && !string.IsNullOrWhiteSpace(os.Value))
+            {
+
+                return SecretStoreReadResult.Ok(os.Value);
+
+            }
+
+            if (os.Status == OsCredentialStoreStatus.Failed)
+            {
+
+                return SecretStoreReadResult.Corrupted(
+                    "OS key storage failed while peeking at the master API key. "
+                    + (os.Message ?? "Restore the credential before retrying."));
+
+            }
+
+            SecretStoreReadResult fallback = await _dataProtectionStore
+                .GetApiKeyReadResultAsync()
+                .ConfigureAwait(false);
+
+            return NormalizePeekFallback(fallback);
+
+        }
+        finally
+        {
+
+            _gate.Release();
+
+        }
+
+    }
+
     public async Task SaveApiKeyAsync(string apiKey)
     {
 
@@ -340,6 +390,43 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         }
     }
 
+    /// <summary>
+    /// Reads the dedicated file-encryption key without restoring its recovery mirror into OS
+    /// storage. A failed OS read fails closed because the mirror may be stale.
+    /// </summary>
+    public async Task<SecretStoreReadResult> PeekFileEncryptionSecretReadResultAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            OsCredentialStoreResult os = _osStore.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.FileEncryptionKeyAccount);
+            if (os.Status == OsCredentialStoreStatus.Ok
+                && !string.IsNullOrWhiteSpace(os.Value))
+            {
+                return SecretStoreReadResult.Ok(os.Value);
+            }
+
+            if (os.Status == OsCredentialStoreStatus.Failed)
+            {
+                return SecretStoreReadResult.Corrupted(
+                    "OS key storage failed while peeking at the file-encryption master key. "
+                    + (os.Message ?? "Restore the OS credential and backup before retrying."));
+            }
+
+            SecretStoreReadResult fallback = await _dataProtectionStore
+                .GetFileEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false);
+
+            return NormalizePeekFallback(fallback);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task SaveFileEncryptionSecretAsync(string encryptionSecret)
     {
         ArgumentNullException.ThrowIfNull(encryptionSecret);
@@ -374,5 +461,11 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             _gate.Release();
         }
     }
+
+    private static SecretStoreReadResult NormalizePeekFallback(SecretStoreReadResult fallback) =>
+        fallback.Status == SecretStoreReadStatus.Ok
+        && string.IsNullOrWhiteSpace(fallback.Value)
+            ? SecretStoreReadResult.Missing()
+            : fallback;
 
 }

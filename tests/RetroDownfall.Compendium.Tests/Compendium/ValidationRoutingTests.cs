@@ -40,7 +40,7 @@ public sealed class ValidationRoutingTests : IDisposable
     public async Task WriteAsync_returns_validation_error_pointers_that_match_descriptor_keys()
     {
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ArcanumSettings settings = new()
 
@@ -112,7 +112,7 @@ public sealed class ValidationRoutingTests : IDisposable
     public async Task WriteAsync_validation_error_detail_is_non_empty()
     {
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ArcanumSettings settings = new()
 

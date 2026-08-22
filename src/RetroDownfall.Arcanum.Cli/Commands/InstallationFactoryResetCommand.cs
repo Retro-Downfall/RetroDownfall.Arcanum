@@ -28,6 +28,12 @@ internal interface IInstallationResetApplyBoundary
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken);
 
+    Task<Result<InstallationResetResult>> ApplyAsync(
+        InstallationResetApplyRequest request,
+        InstallationResetHostHandoff? hostHandoff,
+        bool onlineCompletionDurable,
+        CancellationToken cancellationToken);
+
     Task<Result<InstallationResetResult>> ApplyFreshAsync(
         InstallationResetPlanRequest request,
         InstallationResetPlan confirmedPlan,
@@ -180,6 +186,8 @@ internal sealed class InstallationFactoryResetCommand(
             Result<InstallationResetResult> resumed = await applyBoundary
                 .ApplyAsync(
                     new InstallationResetApplyRequest(request, active.PlanId),
+                    active.HostHandoff,
+                    active.OnlineDataCompletionDurable,
                     cancellationToken)
                 .ConfigureAwait(false);
 

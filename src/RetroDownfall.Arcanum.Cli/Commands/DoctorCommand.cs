@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Diagnostics;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using Spectre.Console;
@@ -36,7 +37,8 @@ public sealed class DoctorCommand(
     ICliEnvironment cliEnvironment,
     IConsoleDispatcher consoleDispatcher,
     DoctorDiagnosticRunner diagnosticRunner,
-    IConfirmationPrompt confirmationPrompt)
+    IConfirmationPrompt confirmationPrompt,
+    IGrimoireCliInitialization initialization)
 {
 
     private const string OkGlyph = "\u2713";
@@ -82,9 +84,26 @@ public sealed class DoctorCommand(
 
         }
 
-        Result<DoctorReport> report = fixPermissions
-            ? await BuildWithPermissionRepairAsync(request, cancellationToken).ConfigureAwait(false)
-            : await BuildReportAsync(request, cancellationToken).ConfigureAwait(false);
+        bool mutates = fixPermissions || request.Apply && request.Repairs.Count > 0;
+
+        Result<DoctorReport> report = await BuildReportAsync(
+                mutates ? request with { Apply = false } : request,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (report.IsSuccess && mutates)
+        {
+
+            IReadOnlyList<DoctorRepairResult> applied = await initialization
+                .RunExclusiveAsync(
+                    (_, token) => ApplyRequestedRepairsAsync(request, fixPermissions, token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            report = Result<DoctorReport>.Success(
+                MergeAppliedRepairs(report.Value, applied, fixPermissions, request.Strict));
+
+        }
 
         if (report.IsFailure)
         {
@@ -119,42 +138,75 @@ public sealed class DoctorCommand(
     }
 
     /// <summary>
-    /// The <c>--fix-permissions</c> path: the operator's own request runs unchanged, and the
-    /// owner-only repair is applied alongside it. Kept separate from the request rather than merged
-    /// into <see cref="DoctorRunRequest.Repairs"/> so the alias can never flip another repair's
-    /// <c>Apply</c>, which is exactly the bypass this shape exists to prevent.
+    /// Revalidates each requested mutation under exclusive installation ownership, then applies only
+    /// repairs whose plan still reports work. Unrelated diagnostics stay outside the lock so the
+    /// maintenance-lock check never mistakes this command's own lease for an external owner.
     /// </summary>
-    private async Task<Result<DoctorReport>> BuildWithPermissionRepairAsync(
+    private async Task<IReadOnlyList<DoctorRepairResult>> ApplyRequestedRepairsAsync(
         DoctorRunRequest request,
+        bool fixPermissions,
         CancellationToken cancellationToken)
     {
 
-        Result<DoctorReport> report = await BuildReportAsync(request, cancellationToken)
-            .ConfigureAwait(false);
+        List<IDoctorRepair> selected = request.Apply
+            ? [.. diagnosticRunner.SelectRepairs(request).Value]
+            : [];
 
-        if (report.IsFailure)
+        if (fixPermissions)
         {
 
-            return report;
+            IDoctorRepair? permissions = diagnosticRunner.Repairs.FirstOrDefault(
+                static repair => repair.Id == PermissionApplyOwnerOnlyRepair.RepairId);
+
+            if (permissions is not null
+                && !selected.Any(repair => string.Equals(
+                    repair.Id,
+                    permissions.Id,
+                    StringComparison.Ordinal)))
+            {
+
+                selected.Add(permissions);
+
+            }
 
         }
 
-        IDoctorRepair? permissions = diagnosticRunner.Repairs.FirstOrDefault(
-            static repair => repair.Id == PermissionApplyOwnerOnlyRepair.RepairId);
+        List<DoctorRepairResult> results = [];
 
-        if (permissions is null)
+        foreach (IDoctorRepair repair in selected)
         {
 
-            return report;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            DoctorRepairResult revalidated = await RunRepairPhaseAsync(
+                    repair,
+                    apply: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            results.Add(revalidated.State == DoctorRepairState.Planned
+                ? await RunRepairPhaseAsync(repair, apply: true, cancellationToken)
+                    .ConfigureAwait(false)
+                : revalidated);
 
         }
 
-        DoctorRepairResult applied;
+        return results;
+
+    }
+
+    private static async Task<DoctorRepairResult> RunRepairPhaseAsync(
+        IDoctorRepair repair,
+        bool apply,
+        CancellationToken cancellationToken)
+    {
 
         try
         {
 
-            applied = await permissions.ApplyAsync(cancellationToken).ConfigureAwait(false);
+            return apply
+                ? await repair.ApplyAsync(cancellationToken).ConfigureAwait(false)
+                : await repair.PlanAsync(cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -166,23 +218,74 @@ public sealed class DoctorCommand(
         catch (Exception exception)
         {
 
-            applied = new DoctorRepairResult(
-                permissions.Id,
+            return new DoctorRepairResult(
+                repair.Id,
                 DoctorRepairState.Failed,
-                "The owner-only permission repair could not be applied.",
+                apply ? "The repair could not be applied." : "The repair could not be planned.",
                 [],
                 exception.GetType().Name);
 
         }
 
-        return Result<DoctorReport>.Success(report.Value with
+    }
+
+    private static DoctorReport MergeAppliedRepairs(
+        DoctorReport report,
+        IReadOnlyList<DoctorRepairResult> applied,
+        bool fixPermissions,
+        bool strict)
+    {
+
+        Dictionary<string, DoctorRepairResult> replacements = applied.ToDictionary(
+            static result => result.RepairId,
+            StringComparer.Ordinal);
+
+        List<DoctorRepairResult> merged = [];
+
+        foreach (DoctorRepairResult planned in report.Repairs ?? [])
         {
-            Repairs =
-            [
-                .. (report.Value.Repairs ?? []).Where(result => result.RepairId != permissions.Id),
-                applied,
-            ],
-        });
+
+            if (fixPermissions
+                && string.Equals(
+                    planned.RepairId,
+                    PermissionApplyOwnerOnlyRepair.RepairId,
+                    StringComparison.Ordinal))
+            {
+
+                continue;
+
+            }
+
+            merged.Add(replacements.Remove(planned.RepairId, out DoctorRepairResult? replacement)
+                ? replacement
+                : planned);
+
+        }
+
+        if (fixPermissions
+            && replacements.Remove(
+                PermissionApplyOwnerOnlyRepair.RepairId,
+                out DoctorRepairResult? permissions))
+        {
+
+            merged.Add(permissions);
+
+        }
+
+        merged.AddRange(replacements.Values);
+
+        DoctorOutcome outcome = report.Outcome ?? DoctorOutcomes.Aggregate(
+            report.Checks.Select(static check => check.Outcome ?? DoctorOutcome.Healthy));
+
+        bool healthy = !merged.Any(static repair => repair.State == DoctorRepairState.Failed)
+            && !DoctorOutcomes.IsFailure(outcome, strict);
+
+        return report with
+        {
+            Healthy = healthy,
+            Outcome = outcome,
+            Repairs = merged,
+        };
 
     }
 
@@ -892,7 +995,7 @@ public sealed class DoctorCommand(
             SecretStoreReadResult stored = string.IsNullOrWhiteSpace(provider.Name)
                 ? SecretStoreReadResult.Missing()
                 : await providerCredentialStore
-                    .GetApiKeyReadResultAsync(provider.Name, cancellationToken)
+                    .PeekApiKeyReadResultAsync(provider.Name, cancellationToken)
                     .ConfigureAwait(false);
 
             references.Add(new CredentialReferenceStatus(
@@ -932,7 +1035,7 @@ public sealed class DoctorCommand(
             else
             {
                 SecretStoreReadResult stored = await webResearchCredentialStore
-                    .GetPerplexityApiKeyReadResultAsync(cancellationToken)
+                    .PeekPerplexityApiKeyReadResultAsync(cancellationToken)
                     .ConfigureAwait(false);
 
                 references.Add(new CredentialReferenceStatus(
@@ -1102,7 +1205,14 @@ public sealed class DoctorCommand(
         {
 
             // Synchronous probe via secret store — never print the key.
-            string? key = secretStore.GetApiKeyAsync().GetAwaiter().GetResult();
+            SecretStoreReadResult keyRead = secretStore
+                .PeekApiKeyReadResultAsync()
+                .GetAwaiter()
+                .GetResult();
+
+            string? key = keyRead.Status == SecretStoreReadStatus.Ok
+                ? keyRead.Value
+                : null;
 
             if (!string.IsNullOrWhiteSpace(key))
             {
@@ -1253,7 +1363,13 @@ public sealed class DoctorCommand(
 
         HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        SecretStoreReadResult apiKeyRead = await secretStore
+            .PeekApiKeyReadResultAsync()
+            .ConfigureAwait(false);
+
+        string? apiKey = apiKeyRead.Status == SecretStoreReadStatus.Ok
+            ? apiKeyRead.Value
+            : null;
 
         DoctorProbeResult probe = await ProbeApiReachabilityAsync(
                 client,

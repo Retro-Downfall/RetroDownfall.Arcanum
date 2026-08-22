@@ -357,6 +357,7 @@ public sealed class PresetsSectionViewModelTests
             dialogs,
             new SynchronousUiDispatcher(),
             NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance,
             presetService: presetService);
 
     private static async Task WaitForLoadAsync(ConfigurationViewModel root)

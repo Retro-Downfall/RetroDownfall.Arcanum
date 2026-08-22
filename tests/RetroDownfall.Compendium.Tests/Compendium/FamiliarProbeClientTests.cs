@@ -142,12 +142,17 @@ public sealed class FamiliarProbeClientTests
     private sealed class StubSecretStore(string apiKey) : ISecretStore
     {
 
-        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("The Familiar probe must use Peek.");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("The Familiar probe must use Peek.");
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
             Task.FromResult(SecretStoreReadResult.Ok(apiKey));
 
-        public Task SaveApiKeyAsync(string value) => Task.CompletedTask;
+        public Task SaveApiKeyAsync(string value) =>
+            throw new InvalidOperationException("The Familiar probe must not persist credentials.");
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 

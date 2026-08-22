@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Spectre.Console;
@@ -102,8 +103,6 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
 
         }
 
-        ListenAnySecurityPolicy.PersistAcknowledgement();
-
         return null;
 
     }
@@ -124,11 +123,16 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         bool configuredListenAny = ArcanumEnvironment.IsHostAnyEnabled(
             ReadConfiguredListenAny(probeConfig));
 
+        bool persistListenAnyAcknowledgement = false;
+
         if (configuredListenAny)
         {
 
-            int? refusal = EnforceListenAnyPolicy(
-                ListenAnySecurityPolicy.RequiresInteractiveConfirmation(ReadConfiguredListenAny(probeConfig)));
+            bool requiresInteractiveConfirmation =
+                ListenAnySecurityPolicy.RequiresInteractiveConfirmation(
+                    ReadConfiguredListenAny(probeConfig));
+
+            int? refusal = EnforceListenAnyPolicy(requiresInteractiveConfirmation);
 
             if (refusal is not null)
             {
@@ -136,6 +140,8 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
                 return refusal.Value;
 
             }
+
+            persistListenAnyAcknowledgement = requiresInteractiveConfirmation;
 
         }
 
@@ -170,34 +176,51 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
 
         bool autoLaunched = IsAutoLaunched();
 
-        if (autoLaunched)
-        {
-            RedirectConsoleToBootstrapLog();
-        }
-
-        if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(cancellationToken).ConfigureAwait(false) is string newApiKey)
-        {
-
-            if (autoLaunched)
-            {
-                AnsiConsole.MarkupLine(
-                    themePalette.HighlightMarkup(
-                        Markup.Escape("Master API key generated. Retrieve it with 'arcanum key show'.")));
-            }
-            else
-            {
-                // Raw stdout: the key is a credential, not presentation, and must never be wrapped
-                // at Spectre's profile width.
-                Console.Out.WriteLine(newApiKey);
-
-                AnsiConsole.MarkupLine(
-                    themePalette.HighlightMarkup(
-                        Markup.Escape("New Master API Key generated and secured. Save this key — it will not be shown again.")));
-            }
-
-        }
-
         WebApplication app = builder.Build();
+
+        GrimoireDatabaseHostedService databaseHost = app.Services
+            .GetRequiredService<GrimoireDatabaseHostedService>();
+
+        if (autoLaunched || persistListenAnyAcknowledgement)
+        {
+
+            databaseHost.ConfigurePostTopologyStartupAction(() =>
+            {
+
+                IDisposable? consoleRedirection = null;
+
+                try
+                {
+
+                    if (autoLaunched)
+                    {
+
+                        consoleRedirection = RedirectConsoleToBootstrapLog();
+
+                    }
+
+                    if (persistListenAnyAcknowledgement)
+                    {
+
+                        ListenAnySecurityPolicy.PersistAcknowledgement();
+
+                    }
+
+                    return consoleRedirection;
+
+                }
+                catch
+                {
+
+                    consoleRedirection?.Dispose();
+
+                    throw;
+
+                }
+
+            });
+
+        }
 
         bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(builder.Configuration));
 
@@ -235,6 +258,30 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         try
         {
             await app.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            string? newApiKey = databaseHost.TakeGeneratedMasterApiKey();
+
+            if (newApiKey is not null)
+            {
+
+                if (autoLaunched)
+                {
+                    AnsiConsole.MarkupLine(
+                        themePalette.HighlightMarkup(
+                            Markup.Escape("Master API key generated. Retrieve it with 'arcanum key show'.")));
+                }
+                else
+                {
+                    // Raw stdout: the key is a credential, not presentation, and must never be wrapped
+                    // at Spectre's profile width.
+                    Console.Out.WriteLine(newApiKey);
+
+                    AnsiConsole.MarkupLine(
+                        themePalette.HighlightMarkup(
+                            Markup.Escape("New Master API Key generated and secured. Save this key — it will not be shown again.")));
+                }
+
+            }
 
             IGrimoireDbReadiness readiness = app.Services.GetRequiredService<IGrimoireDbReadiness>();
             await readiness.WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
@@ -333,7 +380,7 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
     /// Redirects Console.Out/Error to an owner-only bootstrap log so stray Console.WriteLine
     /// from libraries does not vanish. Does not add a second Serilog sink.
     /// </summary>
-    internal static void RedirectConsoleToBootstrapLog()
+    internal static IDisposable RedirectConsoleToBootstrapLog()
     {
         string logPath = ArcanumServeLauncher.BootstrapLogPath;
 
@@ -343,6 +390,10 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         {
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
         }
+
+        TextWriter previousOut = Console.Out;
+
+        TextWriter previousError = Console.Error;
 
         StreamWriter writer = new(new FileStream(
             logPath,
@@ -358,6 +409,39 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         Console.SetError(writer);
 
         SecureFilePermissions.ApplyOwnerOnlyFile(logPath);
+
+        return new ConsoleRedirectionLease(
+            previousOut,
+            previousError,
+            writer);
+    }
+
+    private sealed class ConsoleRedirectionLease(
+        TextWriter previousOut,
+        TextWriter previousError,
+        StreamWriter writer) : IDisposable
+    {
+
+        private int _disposed;
+
+        public void Dispose()
+        {
+
+            if (Interlocked.Exchange(ref _disposed, 1) == 1)
+            {
+
+                return;
+
+            }
+
+            Console.SetOut(previousOut);
+
+            Console.SetError(previousError);
+
+            writer.Dispose();
+
+        }
+
     }
 
 }

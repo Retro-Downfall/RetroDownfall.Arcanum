@@ -881,6 +881,89 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     [Fact]
 
+    public async Task Peek_rejects_a_prepared_transaction_without_recovering_or_mutating_it()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings baseline = Settings(
+            saga: false,
+            attachments: false,
+            defaultModel: "local-model");
+
+        Assert.True((await writer.WriteAsync(baseline, CancellationToken.None)).IsSuccess);
+
+        ConfigurationPresetPlanningResult plan = GeneralAssistantPlan(baseline);
+
+        ConfigurationPresetProvenance provenance = Provenance(plan);
+
+        Assert.True(
+            (await writer.WriteAsync(plan.CandidateSettings, CancellationToken.None)).IsSuccess);
+
+        ConfigurationPresetJournalDocument journal = new(
+            "apply",
+            plan.BaselineValues,
+            plan.AppliedValues,
+            ConfigurationPresetHash.ComputeCanonicalValues(plan.BaselineValues),
+            ConfigurationPresetHash.ComputeCanonicalValues(plan.AppliedValues),
+            PreviousProvenance: null,
+            provenance,
+            DateTimeOffset.Parse("2026-08-03T12:00:00Z"));
+
+        await WriteJournalAsync(journal);
+
+        await WriteProvenanceAsync(
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            provenance);
+
+        string[] paths =
+        [
+            ArcanumPaths.ConfigurationFile,
+            ArcanumPaths.ConfigurationPresetJournalFile,
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+        ];
+
+        Dictionary<string, byte[]> before = new(StringComparer.Ordinal);
+
+        foreach (string path in paths)
+        {
+
+            before[path] = await File.ReadAllBytesAsync(path);
+
+        }
+
+        string[] namesBefore = Directory
+            .EnumerateFileSystemEntries(ArcanumPaths.GrimoireDirectory)
+            .Select(static path => Path.GetFileName(path)!)
+            .OrderBy(static name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Result<ConfigurationPresetSnapshot> result = await CreatePersistence(writer)
+            .PeekAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Preset.RecoveryRequired", result.Error.Code);
+
+        Assert.Equal(
+            namesBefore,
+            Directory
+                .EnumerateFileSystemEntries(ArcanumPaths.GrimoireDirectory)
+                .Select(static path => Path.GetFileName(path)!)
+                .OrderBy(static name => name, StringComparer.Ordinal)
+                .ToArray());
+
+        foreach (string path in paths)
+        {
+
+            Assert.Equal(before[path], await File.ReadAllBytesAsync(path));
+
+        }
+
+    }
+
+    [Fact]
+
     public async Task Recovery_keeps_a_committed_apply_and_post_commit_owned_drift()
     {
 

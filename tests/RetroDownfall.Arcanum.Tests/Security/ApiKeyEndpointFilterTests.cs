@@ -557,13 +557,12 @@ public sealed class ApiKeyEndpointFilterTests
     public int GetCallCount { get; set; }
 
     public Task<string?> GetApiKeyAsync()
-    {
-      GetCallCount++;
-
-      return Task.FromResult(ApiKey);
-    }
+      => throw new InvalidOperationException("Authentication must use the non-mutating Peek read.");
 
     public Task<SecretStoreReadResult> GetApiKeyReadResultAsync()
+      => throw new InvalidOperationException("Authentication must use the non-mutating Peek read.");
+
+    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
     {
       GetCallCount++;
 

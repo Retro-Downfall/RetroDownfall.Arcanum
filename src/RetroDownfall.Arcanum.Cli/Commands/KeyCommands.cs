@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using Spectre.Console;
@@ -20,7 +21,8 @@ public sealed class KeyCommands(
     IProviderCredentialStore providerCredentialStore,
     IOptions<ArcanumSettings> settings,
     IConsoleDispatcher console,
-    ICliInvocationContext invocationContext)
+    ICliInvocationContext invocationContext,
+    IGrimoireCliInitialization initialization)
 {
 
     /// <summary>Reserved credential name routed to the native web-research provider by default.</summary>
@@ -57,7 +59,7 @@ public sealed class KeyCommands(
         cancellationToken.ThrowIfCancellationRequested();
 
         SecretStoreReadResult result = await secretStore
-            .GetApiKeyReadResultAsync()
+            .PeekApiKeyReadResultAsync()
             .ConfigureAwait(false);
 
         if (result.Status == SecretStoreReadStatus.Missing)
@@ -126,7 +128,17 @@ public sealed class KeyCommands(
 
         }
 
-        await secretStore.SaveApiKeyAsync(key.Trim()).ConfigureAwait(false);
+        await RunMutationAsync(
+                token =>
+                {
+
+                    token.ThrowIfCancellationRequested();
+
+                    return secretStore.SaveApiKeyAsync(key.Trim());
+
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
 
         console.WritePayload(
             $"Master API key stored ({ArcanumCredentialIdentity.Service}/"
@@ -266,8 +278,10 @@ public sealed class KeyCommands(
         if (webResearch)
         {
 
-            await webResearchCredentialStore
-                .SavePerplexityApiKeyAsync(key.Trim(), cancellationToken)
+            await RunMutationAsync(
+                    token => webResearchCredentialStore
+                        .SavePerplexityApiKeyAsync(key.Trim(), token),
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             console.WritePayload(
@@ -278,8 +292,10 @@ public sealed class KeyCommands(
 
         }
 
-        await providerCredentialStore
-            .SaveApiKeyAsync(provider.Trim(), key.Trim(), cancellationToken)
+        await RunMutationAsync(
+                token => providerCredentialStore
+                    .SaveApiKeyAsync(provider.Trim(), key.Trim(), token),
+                cancellationToken)
             .ConfigureAwait(false);
 
         console.WritePayload(
@@ -366,8 +382,9 @@ public sealed class KeyCommands(
         if (webResearch)
         {
 
-            await webResearchCredentialStore
-                .DeletePerplexityApiKeyAsync(cancellationToken)
+            await RunMutationAsync(
+                    webResearchCredentialStore.DeletePerplexityApiKeyAsync,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             console.WritePayload("Perplexity API key deleted.");
@@ -376,8 +393,10 @@ public sealed class KeyCommands(
 
         }
 
-        await providerCredentialStore
-            .DeleteApiKeyAsync(provider.Trim(), cancellationToken)
+        await RunMutationAsync(
+                token => providerCredentialStore
+                    .DeleteApiKeyAsync(provider.Trim(), token),
+                cancellationToken)
             .ConfigureAwait(false);
 
         console.WritePayload($"Provider API key deleted for '{provider.Trim()}'.");
@@ -408,6 +427,26 @@ public sealed class KeyCommands(
             .ConfigureAwait(false);
 
         return SensitiveValueInput.NormalizeCredential(read);
+
+    }
+
+    private async Task RunMutationAsync(
+        Func<CancellationToken, Task> mutation,
+        CancellationToken cancellationToken)
+    {
+
+        _ = await initialization
+            .RunExclusiveAsync(
+                async (_, token) =>
+                {
+
+                    await mutation(token).ConfigureAwait(false);
+
+                    return true;
+
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
@@ -480,7 +519,7 @@ public sealed class KeyCommands(
         cancellationToken.ThrowIfCancellationRequested();
 
         SecretStoreReadResult result = await secretStore
-            .GetApiKeyReadResultAsync()
+            .PeekApiKeyReadResultAsync()
             .ConfigureAwait(false);
 
         return new CredentialInventoryEntryPayload(
@@ -524,7 +563,7 @@ public sealed class KeyCommands(
         cancellationToken.ThrowIfCancellationRequested();
 
         SecretStoreReadResult result = await secretStore
-            .GetFileEncryptionSecretReadResultAsync()
+            .PeekFileEncryptionSecretReadResultAsync()
             .ConfigureAwait(false);
 
         return new CredentialInventoryEntryPayload(
@@ -565,7 +604,7 @@ public sealed class KeyCommands(
         }
 
         SecretStoreReadResult result = await webResearchCredentialStore
-            .GetPerplexityApiKeyReadResultAsync(cancellationToken)
+            .PeekPerplexityApiKeyReadResultAsync(cancellationToken)
             .ConfigureAwait(false);
 
         return new CredentialInventoryEntryPayload(
@@ -605,7 +644,7 @@ public sealed class KeyCommands(
         }
 
         SecretStoreReadResult result = await providerCredentialStore
-            .GetApiKeyReadResultAsync(provider.Name, cancellationToken)
+            .PeekApiKeyReadResultAsync(provider.Name, cancellationToken)
             .ConfigureAwait(false);
 
         return new CredentialInventoryEntryPayload(

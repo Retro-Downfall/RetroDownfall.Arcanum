@@ -38,4 +38,17 @@ internal sealed class InMemoryInferenceTraceStore : IInferenceTraceStore
 
     }
 
+    public async Task<InferenceTraceStoreDocument> UpdateAsync(
+        Func<InferenceTraceStoreDocument, CancellationToken, Task<InferenceTraceStoreDocument>> update,
+        CancellationToken cancellationToken = default)
+    {
+
+        InferenceTraceStoreDocument document = await update(_document, cancellationToken);
+
+        await SaveAsync(document, cancellationToken);
+
+        return _document;
+
+    }
+
 }

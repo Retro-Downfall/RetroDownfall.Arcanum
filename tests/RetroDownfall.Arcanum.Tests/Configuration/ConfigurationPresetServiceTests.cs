@@ -572,6 +572,10 @@ public sealed class ConfigurationPresetServiceTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result<ConfigurationPresetSnapshot>.Success(Snapshot));
 
+        public Task<Result<ConfigurationPresetSnapshot>> PeekAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<ConfigurationPresetSnapshot>.Success(Snapshot));
+
         public Task<Result<ConfigurationPresetCommitResult>> ApplyAsync(
             ConfigurationPresetCommitRequest request,
             CancellationToken cancellationToken = default)

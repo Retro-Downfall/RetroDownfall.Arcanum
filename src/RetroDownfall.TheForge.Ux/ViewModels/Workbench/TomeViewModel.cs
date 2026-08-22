@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
@@ -88,7 +89,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         INavigationService navigation,
         FoundryFloorViewModel foundryFloor,
         IClipboardService clipboard,
-        IConfirmationDialogService confirmationDialog)
+        IConfirmationDialogService confirmationDialog,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         SessionId = sessionId;
@@ -105,7 +107,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         Title = $"Tome: {sessionId:D}";
 
-        Trace = new InferenceTraceViewModel();
+        Trace = new InferenceTraceViewModel(mutationRunner);
 
     }
 

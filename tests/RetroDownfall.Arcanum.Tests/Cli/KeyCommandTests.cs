@@ -2,11 +2,14 @@ using System.Text.Json;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -40,10 +43,14 @@ public sealed class KeyCommandTests
 
         FakeProviderCredentialStore providers = new();
 
+        FakeWebResearchCredentialStore webResearch = new();
+
+        FakeSecretStore secrets = new();
+
         providers.Stored["alpha"] = ProviderSecret;
 
         CliTestResult result = CliTestHarness.Run(
-            CreateServices(providers),
+            CreateServices(providers, webResearch, secrets),
             "key",
             "list",
             "--json");
@@ -86,6 +93,51 @@ public sealed class KeyCommandTests
             provider.GetProperty("environmentVariable").GetString());
 
         Assert.False(string.IsNullOrWhiteSpace(provider.GetProperty("recovery").GetString()));
+
+        Assert.Equal(0, providers.OrdinaryReadCount);
+
+        Assert.True(providers.PeekReadCount > 0);
+
+        Assert.Equal(0, providers.WriteCount);
+
+        Assert.Equal(0, webResearch.OrdinaryReadCount);
+
+        Assert.True(webResearch.PeekReadCount > 0);
+
+        Assert.Equal(0, webResearch.WriteCount);
+
+        Assert.Equal(0, secrets.OrdinaryReadCount);
+
+        Assert.True(secrets.PeekReadCount > 0);
+
+        Assert.Equal(0, secrets.WriteCount);
+
+    }
+
+    [Fact]
+    public async Task Show_peeks_the_master_key_without_persisting_or_repairing_it()
+    {
+
+        FakeSecretStore secrets = new()
+        {
+
+            MasterApiKey = "master-peek-secret",
+
+        };
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(secretStore: secrets),
+            ["key", "show"]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Contains("master-peek-secret", result.Error, StringComparison.Ordinal);
+
+        Assert.Equal(0, secrets.OrdinaryReadCount);
+
+        Assert.Equal(1, secrets.PeekReadCount);
+
+        Assert.Equal(0, secrets.WriteCount);
 
     }
 
@@ -266,9 +318,159 @@ public sealed class KeyCommandTests
 
     }
 
+    [Theory]
+    [InlineData("A running host owns the maintenance lock.")]
+    [InlineData("The maintenance lock topology is unsafe.")]
+    [InlineData("An installation factory reset is active.")]
+    public async Task Refused_exclusive_ownership_blocks_every_key_mutation_before_store_effects(
+        string refusal)
+    {
+
+        foreach (string operation in new[]
+                 {
+
+                     "master-set",
+
+                     "provider-set",
+
+                     "provider-delete",
+
+                     "web-set",
+
+                     "web-delete",
+
+                 })
+        {
+
+            FakeProviderCredentialStore providers = new();
+
+            FakeWebResearchCredentialStore webResearch = new();
+
+            FakeSecretStore secrets = new();
+
+            RecordingGrimoireCliInitialization initialization = new(refusal);
+
+            (string[] Arguments, string? Input) invocation = operation switch
+            {
+                "master-set" => (["key", "set"], "master-secret\n"),
+                "provider-set" => (["key", "provider", "set", "alpha"], ProviderSecret + "\n"),
+                "provider-delete" => (["key", "provider", "delete", "alpha"], null),
+                "web-set" => (["key", "provider", "set", "perplexity"], "pplx-secret\n"),
+                _ => (["key", "provider", "delete", "perplexity"], null),
+            };
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                CreateServices(providers, webResearch, secrets, initialization),
+                invocation.Arguments,
+                invocation.Input);
+
+            Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+            Assert.Contains("unexpected CLI error", result.Error, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Equal(1, initialization.ExclusiveCalls);
+
+            Assert.Equal(0, initialization.BootstrapCalls);
+
+            Assert.Equal(0, providers.WriteCount);
+
+            Assert.Equal(0, webResearch.WriteCount);
+
+            Assert.Equal(0, secrets.WriteCount);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Read_only_key_commands_never_request_exclusive_ownership()
+    {
+
+        RecordingGrimoireCliInitialization initialization = new(
+            "Read-only key commands must not enter the writer boundary.");
+
+        FakeProviderCredentialStore providers = new();
+
+        providers.Stored["alpha"] = ProviderSecret;
+
+        FakeSecretStore secrets = new() { MasterApiKey = "master-secret" };
+
+        _ = await CliTestHarness.RunAsync(
+            CreateServices(providers, secretStore: secrets, initialization: initialization),
+            ["key", "show"]);
+
+        _ = await CliTestHarness.RunAsync(
+            CreateServices(providers, secretStore: secrets, initialization: initialization),
+            ["key", "list", "--json"]);
+
+        _ = await CliTestHarness.RunAsync(
+            CreateServices(providers, secretStore: secrets, initialization: initialization),
+            ["key", "provider", "status", "alpha"]);
+
+        Assert.Equal(0, initialization.ExclusiveCalls);
+
+    }
+
+    [Fact]
+    public async Task Key_mutation_keeps_exclusive_ownership_until_the_async_store_write_finishes()
+    {
+
+        TaskCompletionSource writeEntered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource releaseWrite = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        RecordingGrimoireCliInitialization initialization = new();
+
+        FakeProviderCredentialStore providers = new()
+        {
+
+            SaveGate = async () =>
+            {
+
+                Assert.True(initialization.IsInsideExclusiveCallback);
+
+                writeEntered.TrySetResult();
+
+                await releaseWrite.Task;
+
+            },
+
+        };
+
+        Task<CliTestResult> run = CliTestHarness.RunAsync(
+            CreateServices(providers, initialization: initialization),
+            ["key", "provider", "set", "alpha"],
+            ProviderSecret + "\n");
+
+        await writeEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(initialization.IsInsideExclusiveCallback);
+
+        Assert.False(initialization.CallbackCompleted);
+
+        Assert.False(run.IsCompleted);
+
+        releaseWrite.TrySetResult();
+
+        CliTestResult result = await run;
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.True(initialization.CallbackCompleted);
+
+        Assert.False(initialization.IsInsideExclusiveCallback);
+
+        Assert.Equal(ProviderSecret, providers.Stored["alpha"]);
+
+    }
+
     private static ServiceCollection CreateServices(
         FakeProviderCredentialStore? providerStore = null,
-        FakeWebResearchCredentialStore? webResearchStore = null)
+        FakeWebResearchCredentialStore? webResearchStore = null,
+        FakeSecretStore? secretStore = null,
+        IGrimoireCliInitialization? initialization = null)
     {
 
         ServiceCollection services = new();
@@ -277,13 +479,18 @@ public sealed class KeyCommandTests
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
+        services.RemoveAll<IGrimoireCliInitialization>();
+
+        services.AddSingleton<IGrimoireCliInitialization>(
+            initialization ?? new RecordingGrimoireCliInitialization());
+
         services.AddSingleton<IProviderCredentialStore>(
             providerStore ?? new FakeProviderCredentialStore());
 
         services.AddSingleton<IWebResearchCredentialStore>(
             webResearchStore ?? new FakeWebResearchCredentialStore());
 
-        services.AddSingleton<ISecretStore>(new FakeSecretStore());
+        services.AddSingleton<ISecretStore>(secretStore ?? new FakeSecretStore());
 
         services.AddSingleton<IOptions<ArcanumSettings>>(
             new OptionsWrapper<ArcanumSettings>(
@@ -319,25 +526,52 @@ public sealed class KeyCommandTests
 
         public HashSet<string> Corrupt { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+        public int OrdinaryReadCount { get; private set; }
+
+        public int PeekReadCount { get; private set; }
+
+        public int WriteCount { get; private set; }
+
+        public Func<Task>? SaveGate { get; init; }
+
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync(
             string providerName,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
-                Corrupt.Contains(providerName)
-                    ? SecretStoreReadResult.Corrupted("corrupt")
-                    : Stored.TryGetValue(providerName, out string? value)
-                        ? SecretStoreReadResult.Ok(value)
-                        : SecretStoreReadResult.Missing());
+            CancellationToken cancellationToken = default)
+        {
 
-        public Task SaveApiKeyAsync(
+            OrdinaryReadCount++;
+
+            return Read(providerName);
+
+        }
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
+            string providerName,
+            CancellationToken cancellationToken = default)
+        {
+
+            PeekReadCount++;
+
+            return Read(providerName);
+
+        }
+
+        public async Task SaveApiKeyAsync(
             string providerName,
             string apiKey,
             CancellationToken cancellationToken = default)
         {
 
-            Stored[providerName] = apiKey;
+            WriteCount++;
 
-            return Task.CompletedTask;
+            if (SaveGate is not null)
+            {
+
+                await SaveGate().ConfigureAwait(false);
+
+            }
+
+            Stored[providerName] = apiKey;
 
         }
 
@@ -346,11 +580,21 @@ public sealed class KeyCommandTests
             CancellationToken cancellationToken = default)
         {
 
+            WriteCount++;
+
             _ = Stored.Remove(providerName);
 
             return Task.CompletedTask;
 
         }
+
+        private Task<SecretStoreReadResult> Read(string providerName) =>
+            Task.FromResult(
+                Corrupt.Contains(providerName)
+                    ? SecretStoreReadResult.Corrupted("corrupt")
+                    : Stored.TryGetValue(providerName, out string? value)
+                        ? SecretStoreReadResult.Ok(value)
+                        : SecretStoreReadResult.Missing());
 
     }
 
@@ -359,17 +603,38 @@ public sealed class KeyCommandTests
 
         public string? Stored { get; private set; }
 
+        public int OrdinaryReadCount { get; private set; }
+
+        public int PeekReadCount { get; private set; }
+
+        public int WriteCount { get; private set; }
+
         public Task<SecretStoreReadResult> GetPerplexityApiKeyReadResultAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
-                Stored is null
-                    ? SecretStoreReadResult.Missing()
-                    : SecretStoreReadResult.Ok(Stored));
+            CancellationToken cancellationToken = default)
+        {
+
+            OrdinaryReadCount++;
+
+            return Read();
+
+        }
+
+        public Task<SecretStoreReadResult> PeekPerplexityApiKeyReadResultAsync(
+            CancellationToken cancellationToken = default)
+        {
+
+            PeekReadCount++;
+
+            return Read();
+
+        }
 
         public Task SavePerplexityApiKeyAsync(
             string apiKey,
             CancellationToken cancellationToken = default)
         {
+
+            WriteCount++;
 
             Stored = apiKey;
 
@@ -380,29 +645,98 @@ public sealed class KeyCommandTests
         public Task DeletePerplexityApiKeyAsync(CancellationToken cancellationToken = default)
         {
 
+            WriteCount++;
+
             Stored = null;
 
             return Task.CompletedTask;
 
         }
 
+        private Task<SecretStoreReadResult> Read() =>
+            Task.FromResult(
+                Stored is null
+                    ? SecretStoreReadResult.Missing()
+                    : SecretStoreReadResult.Ok(Stored));
+
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
 
-        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
+        public string? MasterApiKey { get; init; }
 
-        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
-            Task.FromResult(SecretStoreReadResult.Missing());
+        public int OrdinaryReadCount { get; private set; }
 
-        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+        public int PeekReadCount { get; private set; }
+
+        public int WriteCount { get; private set; }
+
+        public Task<string?> GetApiKeyAsync()
+        {
+
+            OrdinaryReadCount++;
+
+            return Task.FromResult(MasterApiKey);
+
+        }
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync()
+        {
+
+            OrdinaryReadCount++;
+
+            return MasterRead();
+
+        }
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
+        {
+
+            PeekReadCount++;
+
+            return MasterRead();
+
+        }
+
+        public Task SaveApiKeyAsync(string apiKey)
+        {
+
+            WriteCount++;
+
+            return Task.CompletedTask;
+
+        }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() =>
             Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
+
+        public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync()
+        {
+
+            OrdinaryReadCount++;
+
+            return Task.FromResult(SecretStoreReadResult.Missing());
+
+        }
+
+        public Task<SecretStoreReadResult> PeekFileEncryptionSecretReadResultAsync()
+        {
+
+            PeekReadCount++;
+
+            return Task.FromResult(SecretStoreReadResult.Missing());
+
+        }
+
+        private Task<SecretStoreReadResult> MasterRead() =>
+            Task.FromResult(
+                string.IsNullOrWhiteSpace(MasterApiKey)
+                    ? SecretStoreReadResult.Missing()
+                    : SecretStoreReadResult.Ok(MasterApiKey));
 
     }
 

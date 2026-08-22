@@ -547,7 +547,36 @@ Every route in this family is protected by the normal `/api` key filter. Status 
 }
 ```
 
+An installation-reset-owned global/all request adds the optional trailing `installationResetHandoff` object; ordinary callers that omit it keep the exact handoff-free JSON and behavior above:
+
+```json
+{
+  "confirmation": "factory-reset",
+  "expectedPlanId": "confirmed online data-plan id",
+  "requestedOperationId": "0ef8ab55-5c55-4f88-97ef-d204ad13e67d",
+  "installationResetHandoff": {
+    "requestedOperationId": "0ef8ab55-5c55-4f88-97ef-d204ad13e67d",
+    "installationPlanId": "confirmed installation-plan id",
+    "scope": "Global",
+    "acceptedBinding": {
+      "bindingId": "confirmed installation binding id",
+      "selectedRoots": ["grimoire"],
+      "excludedRoots": ["backups"],
+      "preservedBackups": [],
+      "credentialAccounts": ["master-api-key"],
+      "dataPlanIds": ["confirmed online data-plan id"]
+    }
+  }
+}
+```
+
+Every handoff property is required once the object is present. `requestedOperationId` must be nonempty and identical in both locations. `installationPlanId` is the installation-reset plan identity and is distinct in meaning from the singleton `acceptedBinding.dataPlanIds[0]`, which must equal the request's `expectedPlanId`; their text is not required to differ. `Global` forbids `workspace`; `All` requires the exact valid workspace binding. Arrays and strings retain the current installation-plan bounds, and the complete candidate is preflighted against the 64 KiB authenticated-envelope boundary before any key, external identity, anchor, or file write.
+
 `POST /api/data/factory-reset/plan` is a loopback-only planning seam used by the installation-reset coordinator. `Global` forbids a workspace binding. `Workspace` requires the exact registered Campaign id and canonical root. The existing `POST /api/data/factory-reset` confirmation contract remains available for compatibility and retains its data-only boundary. A global/all installation reset obtains this authenticated online plan and rebinds its exact `planId` into the local installation plan before any dry-run output, disclosure, or confirmation; an unreachable host, missing API key, absent current Covenant inventory, or local/online candidate mismatch fails before active state or shutdown. Workspace installation reset remains offline. The reset-plan route, reset apply, factory-plan route, and factory apply all require `CovenantAuthorityRequirement.LifecycleManage` through the pre-binding authority boundary.
+
+The typed handoff arm is host-owned. After API-key authentication and recovery-route admission, the endpoint validates the complete request and active recovery identity before it borrows the singleton installation maintenance lock. It reads the exact database installation UUID, begins or recovers the authenticated V2 publication, and only then starts/replays the data operation. Handoff-free requests do not resolve the coordinator or lock accessor. A pre-effect `Data.PlanChanged` retires the prepared publication under that same lock before the error response; cancellation, an uncertain response, any post-effect failure, or mismatched replay evidence leaves it active. On success the host advances the publication with the exact requested/server operation identities, data-plan identity, reconciliation, and observed counts before serializing the result. An existing exact proof is idempotent; a completed LRO replay that reports zero counts cannot erase a prior nonzero proof.
+
+The V2 active envelope is internal persistence, not a second public payload. Its outer profile, installation, operation, revision, previous digest, location, scope, and plan fields are authenticated data and remain display-only until AES-GCM authentication succeeds and the decrypted payload repeats the exact operation/scope/plan. Partial, unknown, rolled-back, cross-profile, cross-installation, wrong-location, missing-key, missing-anchor, and noncanonical evidence all produce one content-free recovery refusal.
 
 `DataRetentionOperation` is emitted as `Prune`, `DeleteSession`, `DeleteAttachment`, `ResetMemory`, `FactoryReset`, or `ResetWorkspace`. The two DELETE routes construct the corresponding target operation from `{id}`; callers do not send a body. `MemoryResetScope` is emitted as `Entry`, `Attachments`, `Workspace`, `Saga`, `Lexicon`, or `Covenant`. `Covenant` uses the same plan/apply vocabulary but never the ordinary reset executor: preview returns its content-free inventory, and apply commits a V3 `InventoryPrepared` checkpoint before acquiring exclusive admission and then awaits the ten-phase coordinator (DESIGN §10.20.1–§10.20.4). Enum input matching is case-insensitive; responses use the canonical casing shown here. `RetentionDataClass` response values likewise retain their CLR casing, such as `ActiveSessions`. `Covenant` is inventoried and has no configurable rule at all: `PUT /api/data/retention` with that class is refused **400** `Data.InvalidRequest` with a message saying so, deliberately distinct from the "not recognized" refusal an unknown class receives. `RetentionRuleUpdateRequest.dataClass` names one configured rule. Matching is case-insensitive after hyphens, underscores, and spaces are removed; grouped aliases include `attachments`, `workspace-indexes`, `accounting`, and `daemon-history`, while typed attachment, batch-file, workspace, and accounting subclasses resolve to their governing rule. `days` is clamped to 1–3,650 and is required when `enabled` is `true`. It is optional when `enabled` is `false`; disabling a rule preserves its prior day value and does not add a capability restriction to explicit deletion. `GET /api/data/retention` returns the complete effective policy, including sweep bounds, accounting floor, and protected session ids. A successful PUT persists the normalized rule and makes it immediately authoritative for subsequent GET, status, and planning calls. The same process-authoritative snapshot controls subsequent inference- and guardrail-log planning and apply calls. Log writers only create, secure, and append dated files; they never enumerate or delete historical files. The former host/security day fields are removed. A query without `from` searches all dated files, and only the canonical `AuditLogs` / `GuardrailLogs` retention rules can trigger age-based mutation. Mutation selectors and `enabled` are required: omission never selects a default destructive scope or silently substitutes `false`. The sole presence-aware field is retention `days`, under the rule above. Data-class and memory-scope choices accept documented names and aliases only; JSON/CLI numeric enum spellings are rejected before mutation.
 

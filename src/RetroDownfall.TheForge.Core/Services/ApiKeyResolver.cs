@@ -10,10 +10,10 @@ namespace RetroDownfall.TheForge.Core.Services;
 /// (same identity Arcanum writes at bootstrap). Resolution order:
 /// <list type="number">
 /// <item>OS keychain (<see cref="ArcanumCredentialIdentity"/>).</item>
-/// <item>Legacy plaintext <c>the-forge.json</c> <see cref="TheForgeSettings.ApiKey"/> — migrated into the keychain then stripped.</item>
+/// <item>Legacy plaintext <c>the-forge.json</c> <see cref="TheForgeSettings.ApiKey"/> — used for this session only.</item>
 /// <item><c>THEFORGE_ARCANUM_KEY</c> environment variable (trim; empty/whitespace = absent; never persisted).</item>
-/// <item>Optional shell-out to <c>arcanum key show</c> — result persisted into the keychain when possible.</item>
-/// <item>Otherwise <see langword="null"/> — caller prompts the user to paste and calls <see cref="PersistAsync"/>.</item>
+/// <item>Optional shell-out to <c>arcanum key show</c> — result used for this session only.</item>
+/// <item>Otherwise <see langword="null"/> — caller may prompt for a process-only pasted key.</item>
 /// </list>
 /// </summary>
 public sealed class ApiKeyResolver
@@ -21,15 +21,13 @@ public sealed class ApiKeyResolver
 
     public const string EnvironmentVariableName = "THEFORGE_ARCANUM_KEY";
 
-    /// <summary>Shortest value accepted from <c>arcanum key show</c> before it is written to the OS store.</summary>
+    /// <summary>Shortest value accepted from <c>arcanum key show</c>.</summary>
     internal const int MinRecoveredKeyLength = 8;
 
-    /// <summary>Longest value accepted from <c>arcanum key show</c> before it is written to the OS store.</summary>
+    /// <summary>Longest value accepted from <c>arcanum key show</c>.</summary>
     internal const int MaxRecoveredKeyLength = 512;
 
     private readonly IOsCredentialStore _osStore;
-
-    private readonly ITheForgeSettingsStore _settingsStore;
 
     private readonly ILogger<ApiKeyResolver> _logger;
 
@@ -47,7 +45,7 @@ public sealed class ApiKeyResolver
 
         _osStore = osStore ?? throw new ArgumentNullException(nameof(osStore));
 
-        _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
+        ArgumentNullException.ThrowIfNull(settingsStore);
 
         _logger = logger;
 
@@ -59,8 +57,8 @@ public sealed class ApiKeyResolver
 
     /// <summary>
     /// Resolves the API key from the OS store (with legacy the-forge.json / env / CLI fallbacks). Returns
-    /// a null <see cref="ApiKeyResolution.Key"/> when no source yields a key; callers should prompt
-    /// the user to paste one and call <see cref="PersistAsync"/>.
+    /// a null <see cref="ApiKeyResolution.Key"/> when no source yields a key; callers may prompt the
+    /// user for a key that remains in process memory only.
     /// </summary>
     public async Task<ApiKeyResolution> ResolveAsync(TheForgeSettings currentSettings, CancellationToken cancellationToken)
     {
@@ -88,25 +86,8 @@ public sealed class ApiKeyResolver
 
             string legacy = currentSettings.ApiKey!;
 
-            OsCredentialStoreResult migrate = _osStore.Set(
-                ArcanumCredentialIdentity.Service,
-                ArcanumCredentialIdentity.MasterApiKeyAccount,
-                legacy);
-
-            if (migrate.Status == OsCredentialStoreStatus.Ok)
-            {
-
-                _logger.LogInformation("Migrated the-forge.json apiKey into the OS credential store; stripping plaintext cache.");
-
-                await StripForgeJsonApiKeyAsync(currentSettings, cancellationToken).ConfigureAwait(false);
-
-                return new ApiKeyResolution(legacy, IsSessionOnly: false);
-
-            }
-
-            _logger.LogWarning(
-                "Could not migrate the-forge.json apiKey into the OS store ({Message}); using in-memory value only.",
-                migrate.Message);
+            _logger.LogInformation(
+                "Legacy the-forge.json apiKey is available; using it for this session without modifying credential state.");
 
             return new ApiKeyResolution(legacy, IsSessionOnly: true);
 
@@ -146,49 +127,10 @@ public sealed class ApiKeyResolver
 
         }
 
-        OsCredentialStoreResult persist = _osStore.Set(
-            ArcanumCredentialIdentity.Service,
-            ArcanumCredentialIdentity.MasterApiKeyAccount,
-            recovered);
+        _logger.LogInformation(
+            "`arcanum key show` returned a master API key; using it for this session without modifying credential state.");
 
-        if (persist.Status != OsCredentialStoreStatus.Ok)
-        {
-
-            _logger.LogWarning(
-                "`arcanum key show` succeeded but OS store persist failed: {Message}",
-                persist.Message);
-
-            return new ApiKeyResolution(recovered, IsSessionOnly: true);
-
-        }
-
-        return new ApiKeyResolution(recovered, IsSessionOnly: false);
-
-    }
-
-    /// <summary>
-    /// Persists a pasted (or otherwise obtained) key into the OS credential store. Also strips any
-    /// legacy plaintext <c>apiKey</c> from <c>the-forge.json</c>.
-    /// </summary>
-    public async Task PersistAsync(TheForgeSettings currentSettings, string apiKey, CancellationToken cancellationToken)
-    {
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
-
-        OsCredentialStoreResult result = _osStore.Set(
-            ArcanumCredentialIdentity.Service,
-            ArcanumCredentialIdentity.MasterApiKeyAccount,
-            apiKey.Trim());
-
-        if (result.Status != OsCredentialStoreStatus.Ok)
-        {
-
-            throw new InvalidOperationException(
-                result.Message ?? "Failed to store the API key in the OS credential store.");
-
-        }
-
-        await StripForgeJsonApiKeyAsync(currentSettings, cancellationToken).ConfigureAwait(false);
+        return new ApiKeyResolution(recovered, IsSessionOnly: true);
 
     }
 
@@ -207,23 +149,6 @@ public sealed class ApiKeyResolver
         string trimmed = raw.Trim();
 
         return trimmed.Length == 0 ? null : trimmed;
-
-    }
-
-    private async Task StripForgeJsonApiKeyAsync(TheForgeSettings currentSettings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(currentSettings.ApiKey)
-            && !File.Exists(_settingsStore.SettingsPath))
-        {
-
-            return;
-
-        }
-
-        await _settingsStore
-            .SavePatchAsync(static s => s with { ApiKey = null }, cancellationToken)
-            .ConfigureAwait(false);
 
     }
 

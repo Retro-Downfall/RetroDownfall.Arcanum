@@ -1,5 +1,7 @@
 using A2A;
 
+using System.Diagnostics.CodeAnalysis;
+
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -42,6 +44,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.Chronosync;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
@@ -70,6 +73,23 @@ namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 
 public static class ServiceCollectionExtensions
 {
+    internal static IServiceCollection AddInstallationResetRecoveryAwareHostedService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService>(
+        this IServiceCollection services)
+        where TService : class, IHostedService
+    {
+
+        services.TryAddSingleton<TService>();
+
+        services.AddHostedService(static sp =>
+            new InstallationResetRecoveryAwareHostedService<TService>(
+                sp.GetRequiredService<TService>(),
+                sp.GetService<InstallationResetApiAdmission>()));
+
+        return services;
+
+    }
+
     /// <summary>
     /// Registers <see cref="IEyeOfTheWorld"/> without pulling the full infrastructure stack (for example the CLI <c>look</c> command).
     /// </summary>
@@ -90,12 +110,72 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Registers the retained client-mutation mutex and read-only maintenance-evidence admission
+    /// used by first-party clients that write installation-local state.
+    /// </summary>
+    public static IServiceCollection AddArcanumClientMutationCoordination(
+        this IServiceCollection services)
+    {
+
+        services.TryAddSingleton<IOsCredentialStore>(static _ =>
+            new OsCredentialStore());
+
+        services.TryAddSingleton<IInstallationStartupProbe>(static sp =>
+            new InstallationStartupProbe(
+                ArcanumPaths.GrimoireDirectory,
+                ArcanumPaths.ConfigurationFile,
+                ArcanumPaths.GrimoireDatabaseFile,
+                ArcanumPaths.ApiKeyStoreFile,
+                sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.TryAddSingleton(static _ =>
+            new ClientMutationBlockerStore(ArcanumPaths.GrimoireDirectory));
+
+        services.TryAddSingleton<IClientMutationResetEvidenceProbe>(static sp =>
+            new InstallationResetClientMutationEvidenceProbe(
+                sp.GetRequiredService<IInstallationStartupProbe>()));
+
+        services.TryAddSingleton<IClientMutationRestoreEvidenceProbe>(static sp =>
+            new BackupRestoreClientMutationEvidenceProbe(
+                ArcanumPaths.GrimoireDirectory,
+                sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.TryAddSingleton<IClientMutationEvidenceProbe>(static sp =>
+            new CompositeClientMutationEvidenceProbe(
+                sp.GetRequiredService<ClientMutationBlockerStore>(),
+                sp.GetRequiredService<IClientMutationResetEvidenceProbe>(),
+                sp.GetRequiredService<IClientMutationRestoreEvidenceProbe>()));
+
+        services.TryAddSingleton(static sp =>
+            new InstallationMaintenanceCoordination(
+                ArcanumPaths.GrimoireDirectory,
+                sp.GetRequiredService<ClientMutationBlockerStore>(),
+                sp.GetRequiredService<IClientMutationResetEvidenceProbe>(),
+                sp.GetRequiredService<IClientMutationRestoreEvidenceProbe>()));
+
+        services.TryAddSingleton(static sp =>
+            new ArcanumClientMutationBoundary(
+                ArcanumPaths.GrimoireDirectory,
+                sp.GetRequiredService<IClientMutationEvidenceProbe>()));
+
+        services.TryAddSingleton<IArcanumClientMutationBoundary>(static sp =>
+            sp.GetRequiredService<ArcanumClientMutationBoundary>());
+
+        return services;
+
+    }
+
+    /// <summary>
     /// Registers the shared preset catalog, planner orchestration, complete-candidate validation,
     /// secure credential-readiness probe, and atomic file persistence used by the CLI and
     /// Compendium.
     /// </summary>
     public static IServiceCollection AddArcanumConfigurationPresets(
-        this IServiceCollection services)
+        this IServiceCollection services,
+        Func<
+            IServiceProvider,
+            IConfigurationPresetService,
+            IConfigurationPresetService>? decorate = null)
     {
 
         services.AddDataProtection()
@@ -126,9 +206,19 @@ public static class ServiceCollectionExtensions
             IConfigurationPresetPersistence,
             FileConfigurationPresetPersistence>();
 
-        services.TryAddSingleton<
-            IConfigurationPresetService,
-            ConfigurationPresetService>();
+        services.TryAddSingleton<ConfigurationPresetService>();
+
+        services.TryAddSingleton<IConfigurationPresetService>(sp =>
+        {
+
+            IConfigurationPresetService inner =
+                sp.GetRequiredService<ConfigurationPresetService>();
+
+            return decorate is null
+                ? inner
+                : decorate(sp, inner);
+
+        });
 
         return services;
 
@@ -164,6 +254,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddArcanumGrimoireForCli(this IServiceCollection services)
     {
+        services.AddArcanumClientMutationCoordination();
+
         services.AddSingleton<IGrimoireDbPassphraseSource, GrimoireDbPassphraseSource>();
 
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
@@ -209,14 +301,13 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
 
         // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
-        // here so the CLI chronosync path cannot drift from AddArcanumInfrastructure.
+        // here for the deliberately offline CLI maintenance operations.
         services.AddScoped<ISessionAttachmentStore, SessionAttachmentStore>();
         services.AddScoped<ISessionContextPinStore, SessionContextPinStore>();
         services.AddScoped<IAttachmentSourceResolver, AttachmentSourceResolver>();
 
-        // AttachmentSourceResolver requires the host workspace context; without it the whole
-        // chronosync graph (IChronosyncEngine, used by the ordinary `arcanum run` route) fails to
-        // activate in the CLI container.
+        // AttachmentSourceResolver requires the host workspace context when offline maintenance
+        // resolves repository services from the CLI container.
         services.TryAddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
 
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
@@ -240,8 +331,6 @@ public static class ServiceCollectionExtensions
         // publication port so a caller cannot reach entry writes through it (§10.13).
         services.AddScoped<IGrimoireTurnCommitter>(
             static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
-
-        services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
 
         services.AddSingleton<IGrimoireCliInitialization, GrimoireCliInitialization>();
         services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
@@ -339,8 +428,16 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<IInstallationResetWorkspaceResolver>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
-        services.TryAddScoped<IInstallationResetActiveStore>(static _ =>
-            new InstallationResetActiveStore(ArcanumPaths.GrimoireDirectory));
+        services.TryAddScoped<InstallationResetActiveStore>(provider =>
+            new InstallationResetActiveStore(
+                ArcanumPaths.GrimoireDirectory,
+                provider.GetRequiredService<IOsCredentialStore>()));
+
+        services.TryAddScoped<IInstallationResetActiveStore>(provider =>
+            provider.GetRequiredService<InstallationResetActiveStore>());
+
+        services.TryAddScoped<IInstallationResetDatabaseIdentityReader>(provider =>
+            provider.GetRequiredService<InstallationResetExistingGrimoire>());
 
         services.TryAddScoped<IInstallationResetCredentialService>(provider =>
             new InstallationResetCredentialCatalog(
@@ -358,7 +455,16 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped(static _ =>
             new InstallationResetControlPaths(ArcanumPaths.GrimoireDirectory));
 
-        services.TryAddScoped<IInstallationResetService, InstallationResetService>();
+        services.TryAddScoped<InstallationResetService>();
+
+        services.TryAddScoped<IInstallationResetService>(provider =>
+            provider.GetRequiredService<InstallationResetService>());
+
+        services.TryAddScoped<IInstallationResetOnlineDataHandoff>(provider =>
+            provider.GetRequiredService<InstallationResetService>());
+
+        services.TryAddScoped<IInstallationResetLockedService>(provider =>
+            provider.GetRequiredService<InstallationResetService>());
 
         return services;
     }
@@ -368,6 +474,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddArcanumBackup(this IServiceCollection services)
     {
+
+        services.AddArcanumClientMutationCoordination();
 
         services.TryAddSingleton(BackupStatePaths.Default);
 
@@ -427,7 +535,8 @@ public static class ServiceCollectionExtensions
                     // held protected state, so there is nothing to reconcile and nothing to close.
                     RestoreStaging = ResolveRestoreStaging(serviceProvider),
 
-                }));
+                },
+                serviceProvider.GetRequiredService<InstallationMaintenanceCoordination>()));
 
         return services;
 
@@ -601,7 +710,7 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<IDaemonJob>(sp => new UnseenServantDaemonJob(captured, sp));
         }
 
-        services.AddHostedService<UnseenServantService>();
+        services.AddInstallationResetRecoveryAwareHostedService<UnseenServantService>();
 
         return services;
     }
@@ -617,8 +726,6 @@ public static class ServiceCollectionExtensions
                     ?? new ArcanumSettings());
         services.Configure<ArcanumSettings>(settings =>
             ConfigurationBootstrapper.CopySettings(settingsSnapshot, settings));
-
-        services.AddHostedService<PidFileService>();
 
         services.AddSingleton<ConfigurationWriter>();
 
@@ -752,9 +859,6 @@ public static class ServiceCollectionExtensions
         // shutdown, and a disable is the one publication that must not be lost.
         services.AddSingleton<CovenantFeatureConfigurationPublisher>();
 
-        services.AddHostedService(
-            static sp => sp.GetRequiredService<CovenantFeatureConfigurationPublisher>());
-
         services.AddCovenantAuthority();
 
         services.AddCampaignPathIdentity();
@@ -778,52 +882,102 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkspaceIndexInspectorService, WorkspaceIndexInspectorService>();
         services.AddSingleton<SpellWeaveCache>();
         services.AddSingleton<LongRunningOperationReconciliationStatus>();
-        services.AddHostedService<GrimoireDatabaseHostedService>();
+
+        services.AddSingleton<InstallationResetMaintenanceLockAccessor>();
+
+        services.AddSingleton<InstallationResetApiAdmission>();
+
+        services.AddSingleton<IInstallationResetMaintenanceLockAccessor>(
+            static sp => sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>());
+
+        services.TryAddScoped(
+            static sp => new InstallationResetActiveStore(
+                ArcanumPaths.GrimoireDirectory,
+                sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.AddScoped<IInstallationResetDatabaseIdentityReader,
+            InstallationResetDatabaseIdentityReader>();
+
+        services.AddScoped<IInstallationResetHostHandoffCoordinator,
+            InstallationResetHostHandoffCoordinator>();
+
+        services.AddSingleton<IInstallationResetStartupRecovery>(
+            static sp => new InstallationResetStartupRecovery(
+                ArcanumPaths.GrimoireDirectory,
+                new InstallationResetActiveStore(
+                    ArcanumPaths.GrimoireDirectory,
+                    sp.GetRequiredService<IOsCredentialStore>())));
+
+        services.AddSingleton(
+            static sp => new GrimoireDatabaseHostedService(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<ISecretStore>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                ArcanumPaths.GrimoireDirectory,
+                sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>(),
+                sp.GetRequiredService<IInstallationResetStartupRecovery>(),
+                sp.GetRequiredService<HostLockSerilogFileSink>(),
+                ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync,
+                sp.GetRequiredService<InstallationResetApiAdmission>(),
+                startupCoordination:
+                    sp.GetRequiredService<InstallationMaintenanceCoordination>()));
+
+        services.AddHostedService(
+            static sp => sp.GetRequiredService<GrimoireDatabaseHostedService>());
+
+        // Keep the singleton resolvable above for snapshot composition, but start its subscription
+        // only after the lock-first host has authenticated the active installation identity and
+        // published the converged schema. A configured true value must never become visible from a
+        // database whose expected identity has not passed verification.
+        services.AddHostedService(
+            static sp => sp.GetRequiredService<CovenantFeatureConfigurationPublisher>());
+
+        services.AddHostedService<PidFileService>();
 
         // Must run after the encrypted Grimoire is migrated and before durable workloads below
         // begin accepting potentially conflicting work.
-        services.AddHostedService<LongRunningOperationStartupHostedService>();
+        services.AddInstallationResetRecoveryAwareHostedService<LongRunningOperationStartupHostedService>();
 
         // One-shot pending attachment GC; runs after Grimoire schema bootstrap above.
-        services.AddHostedService<SessionAttachmentPendingGcHostedService>();
+        services.AddInstallationResetRecoveryAwareHostedService<SessionAttachmentPendingGcHostedService>();
 
         // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until
         // Arcanum:Features:SessionSearch / CodebaseRetrieval are enabled, so registering them
         // unconditionally is safe on the hot path. Registered after
         // GrimoireDatabaseHostedService so the Grimoire (and The Weave's schema) is guaranteed ready
         // before either service's first tick can run any query.
-        services.AddHostedService<EntryWeavingService>();
+        services.AddInstallationResetRecoveryAwareHostedService<EntryWeavingService>();
 
         services.AddSingleton<SessionAttachmentIndexingService>();
         services.AddSingleton<ISessionAttachmentIndexQueue>(
             static sp => sp.GetRequiredService<SessionAttachmentIndexingService>());
-        services.AddHostedService(static sp => sp.GetRequiredService<SessionAttachmentIndexingService>());
+        services.AddInstallationResetRecoveryAwareHostedService<SessionAttachmentIndexingService>();
 
         services.AddSingleton<IWorkspaceFileWatcherFactory, WorkspaceFileWatcherFactory>();
         services.AddSingleton<WorkspaceIndexingService>();
         services.AddSingleton<IWorkspaceIndexingService>(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
         services.AddSingleton<IWorkspaceIndexRuntimeStatusProvider>(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
-        services.AddHostedService(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
+        services.AddInstallationResetRecoveryAwareHostedService<WorkspaceIndexingService>();
 
         // RAG Phase 4 — Saga extraction is event-driven (enqueued by WizardIntelligenceProvider after a
         // successful turn), not polling, so registering it unconditionally is safe on the hot path.
         // Registered as a singleton (not just a hosted service) so the hub can resolve it directly to
         // call EnqueueExtraction, mirroring WorkspaceIndexingService's singleton+hosted-factory pattern.
         services.AddSingleton<SagaExtractionService>();
-        services.AddHostedService(static sp => sp.GetRequiredService<SagaExtractionService>());
+        services.AddInstallationResetRecoveryAwareHostedService<SagaExtractionService>();
 
         // The Tapestry (§21.11) — idles unless Arcanum:Features:Tapestry is enabled, so registering it
         // unconditionally is free on the hot path. Registered after GrimoireDatabaseHostedService so
         // The Weave's schema is guaranteed ready before the first sweep.
         services.AddScoped<ITapestrySummarizer, TapestrySummarizer>();
         services.AddScoped<TapestryWeaver>();
-        services.AddHostedService<TapestryWeavingService>();
+        services.AddInstallationResetRecoveryAwareHostedService<TapestryWeavingService>();
 
-        services.AddHostedService<ArcanumSettingsClampStartupLogger>();
+        services.AddInstallationResetRecoveryAwareHostedService<ArcanumSettingsClampStartupLogger>();
 
-        services.AddHostedService<ArcanumSecurityStartupChecks>();
+        services.AddInstallationResetRecoveryAwareHostedService<ArcanumSecurityStartupChecks>();
 
-        services.AddHostedService<FileEncryptionKeyBootstrapHostedService>();
+        services.AddInstallationResetRecoveryAwareHostedService<FileEncryptionKeyBootstrapHostedService>();
 
         // Options must be fully configured here — pooled contexts reject OnConfiguring mutations
         // (including AddInterceptors). Passphrase is set by GrimoireDatabaseHostedService before
@@ -871,7 +1025,7 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<CovenantResetCheckpointInitiator>();
 
-        services.AddHostedService<DataRetentionSweepHostedService>();
+        services.AddInstallationResetRecoveryAwareHostedService<DataRetentionSweepHostedService>();
 
         services.AddScoped<LongRunningOperationReconciler>();
         services.AddScoped<IDurableOperationDiagnostics, DurableOperationDiagnostics>();
@@ -959,7 +1113,7 @@ public static class ServiceCollectionExtensions
         // Unrenewed, background reconciliation reclaimed every Sending that ran past 15 minutes and
         // cancelled the peer's task out from under the call that was still awaiting it.
         services.AddSingleton<A2ASendingLeaseRenewer>();
-        services.AddHostedService(static sp => sp.GetRequiredService<A2ASendingLeaseRenewer>());
+        services.AddInstallationResetRecoveryAwareHostedService<A2ASendingLeaseRenewer>();
         // Delegated spend is read from those same durable records, so the day's external cost survives
         // the process that spent it and is never confused with local spend (issue #69).
         services.AddScoped<IExternalSpendLedger, A2AExternalSpendLedger>();
@@ -986,11 +1140,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
         services.AddSingleton<CampaignLoggerQueue>();
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());
-        services.AddHostedService<Loremaster>();
+        services.AddInstallationResetRecoveryAwareHostedService<Loremaster>();
         services.AddSingleton<ChronicleHub>();
         services.AddSingleton<ApprenticeService>();
         services.AddSingleton<IApprenticeRuntime>(static sp => sp.GetRequiredService<ApprenticeService>());
-        services.AddHostedService(static sp => sp.GetRequiredService<ApprenticeService>());
+        services.AddInstallationResetRecoveryAwareHostedService<ApprenticeService>();
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
         services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
         services.AddSingleton<InMemoryEventBus>();
@@ -1068,7 +1222,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IMcpConnectionManager>(static sp => sp.GetRequiredService<McpConnectionManager>());
 
-        services.AddHostedService<McpServerBootstrapHostedService>();
+        services.AddInstallationResetRecoveryAwareHostedService<McpServerBootstrapHostedService>();
 
         services.AddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
 
@@ -1137,7 +1291,7 @@ public static class ServiceCollectionExtensions
                 return handler;
             });
 
-        services.AddHostedService<ProviderHealthProbeService>();
+        services.AddInstallationResetRecoveryAwareHostedService<ProviderHealthProbeService>();
 
         return services;
     }

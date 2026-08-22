@@ -292,7 +292,7 @@ public sealed class ArcanumHealthChecker(
             }
 
             if (await apiKeyResolver
-                    .ResolveAsync(provider, cancellationToken)
+                    .PeekAsync(provider, cancellationToken)
                     .ConfigureAwait(false) is not null)
             {
                 credentialBacked++;

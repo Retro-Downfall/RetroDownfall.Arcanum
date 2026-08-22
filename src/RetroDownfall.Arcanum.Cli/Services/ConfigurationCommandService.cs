@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
@@ -26,6 +28,16 @@ internal interface IConfigurationCommandService
         CancellationToken cancellationToken);
 
     Task<Result> WriteAsync(
+        ConfigurationCommandSnapshot snapshot,
+        ArcanumSettings settings,
+        CancellationToken cancellationToken);
+
+}
+
+internal interface IConfigurationCommandExclusiveWriter
+{
+
+    Task<Result> WriteUnderExclusiveAsync(
         ConfigurationCommandSnapshot snapshot,
         ArcanumSettings settings,
         CancellationToken cancellationToken);
@@ -57,7 +69,10 @@ internal enum ConfigurationAccessMode
 internal sealed class ConfigurationCommandService(
     ArcanumApiClient apiClient,
     ConfigurationValidator validator,
-    ConfigurationWriter writer) : IConfigurationCommandService
+    ConfigurationWriter writer,
+    IGrimoireCliInitialization initialization) :
+    IConfigurationCommandService,
+    IConfigurationCommandExclusiveWriter
 {
 
     public string ConfigurationPath =>
@@ -142,7 +157,23 @@ internal sealed class ConfigurationCommandService(
 
     }
 
-    public async Task<Result> WriteAsync(
+    public Task<Result> WriteAsync(
+        ConfigurationCommandSnapshot snapshot,
+        ArcanumSettings settings,
+        CancellationToken cancellationToken) =>
+        snapshot.AccessMode == ConfigurationAccessMode.HostApi
+            ? WriteCoreAsync(snapshot, settings, cancellationToken)
+            : initialization.RunExclusiveAsync(
+                (_, token) => WriteCoreAsync(snapshot, settings, token),
+                cancellationToken);
+
+    public Task<Result> WriteUnderExclusiveAsync(
+        ConfigurationCommandSnapshot snapshot,
+        ArcanumSettings settings,
+        CancellationToken cancellationToken) =>
+        WriteCoreAsync(snapshot, settings, cancellationToken);
+
+    private async Task<Result> WriteCoreAsync(
         ConfigurationCommandSnapshot snapshot,
         ArcanumSettings settings,
         CancellationToken cancellationToken)

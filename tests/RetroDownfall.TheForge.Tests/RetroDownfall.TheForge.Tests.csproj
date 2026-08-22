@@ -36,6 +36,8 @@
 
   <ItemGroup>
 
+    <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Infrastructure\RetroDownfall.Arcanum.Infrastructure.csproj" />
+
     <ProjectReference Include="..\..\src\RetroDownfall.TheForge.Ux\RetroDownfall.TheForge.Ux.csproj" />
 
   </ItemGroup>

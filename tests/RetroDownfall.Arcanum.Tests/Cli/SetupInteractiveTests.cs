@@ -3,6 +3,7 @@ using System.Text.Json;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -11,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -149,6 +152,43 @@ public sealed class SetupInteractiveTests : IDisposable
         Assert.DoesNotContain(ProviderSecret, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ProviderSecret, result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [InlineData("A running host owns the maintenance lock.")]
+    [InlineData("The maintenance lock topology is unsafe.")]
+    [InlineData("An installation factory reset is active.")]
+    public async Task Interactive_commit_refusal_prevents_every_setup_effect(string refusal)
+    {
+
+        SetupWorld world = NewWorld();
+
+        string[] script = [.. CompleteScript(_workspaceRoot)];
+
+        ScriptedPrompt prompt = new(script, script.Length);
+
+        RecordingGrimoireCliInitialization initialization = new(refusal);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(world, prompt, initialization),
+            ["setup"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Equal(1, initialization.ExclusiveCalls);
+
+        Assert.Equal(0, initialization.BootstrapCalls);
+
+        Assert.Equal(0, world.ConfigurationWrites);
+
+        Assert.Equal(0, world.PresetApplies);
+
+        Assert.Empty(world.ProviderCredentials);
+
+        Assert.Null(world.WebResearchCredential);
+
+        Assert.Null(world.SavedContext);
 
     }
 
@@ -335,7 +375,10 @@ public sealed class SetupInteractiveTests : IDisposable
     private SetupWorld NewWorld() =>
         new() { OriginalWorkspaceRoot = _workspaceRoot };
 
-    private static ServiceCollection CreateServices(SetupWorld world, ISetupPrompt? prompt = null)
+    private static ServiceCollection CreateServices(
+        SetupWorld world,
+        ISetupPrompt? prompt = null,
+        IGrimoireCliInitialization? initialization = null)
     {
 
         ServiceCollection services = new();
@@ -344,7 +387,14 @@ public sealed class SetupInteractiveTests : IDisposable
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
+        services.RemoveAll<IGrimoireCliInitialization>();
+
+        services.AddSingleton<IGrimoireCliInitialization>(
+            initialization ?? new RecordingGrimoireCliInitialization());
+
         services.AddSingleton<IConfigurationCommandService>(world);
+
+        services.AddSingleton<IConfigurationCommandExclusiveWriter>(world);
 
         services.AddSingleton<IConfigurationPresetService>(world);
 
@@ -355,6 +405,10 @@ public sealed class SetupInteractiveTests : IDisposable
         services.AddSingleton<IWebResearchCredentialStore>(world);
 
         services.AddSingleton<ICliContextStore>(world);
+
+        services.RemoveAll<ICliContextExclusiveWriter>();
+
+        services.AddSingleton<ICliContextExclusiveWriter>(world);
 
         services.AddSingleton<ISetupProviderProbe>(world);
 
@@ -427,11 +481,13 @@ public sealed class SetupInteractiveTests : IDisposable
 
     private sealed record SetupWorld :
         IConfigurationCommandService,
+        IConfigurationCommandExclusiveWriter,
         IConfigurationPresetService,
         IConfigurationPresetPersistence,
         IProviderCredentialStore,
         IWebResearchCredentialStore,
         ICliContextStore,
+        ICliContextExclusiveWriter,
         ISetupProviderProbe
     {
 
@@ -495,6 +551,12 @@ public sealed class SetupInteractiveTests : IDisposable
             return Task.FromResult(Result.Success());
 
         }
+
+        public Task<Result> WriteUnderExclusiveAsync(
+            ConfigurationCommandSnapshot snapshot,
+            ArcanumSettings settings,
+            CancellationToken cancellationToken) =>
+            WriteAsync(snapshot, settings, cancellationToken);
 
         public IReadOnlyList<ConfigurationPresetDefinition> List() =>
             ConfigurationPresetCatalog.All;
@@ -575,6 +637,10 @@ public sealed class SetupInteractiveTests : IDisposable
                         ConfigurationEnvironmentResolver.Resolve(OriginalSettings),
                         null)));
 
+        Task<Result<ConfigurationPresetSnapshot>> IConfigurationPresetPersistence.PeekAsync(
+            CancellationToken cancellationToken) =>
+            ((IConfigurationPresetPersistence)this).ReadAsync(cancellationToken);
+
         Task<Result<ConfigurationPresetCommitResult>> IConfigurationPresetPersistence.ApplyAsync(
             ConfigurationPresetCommitRequest request,
             CancellationToken cancellationToken) =>
@@ -646,6 +712,9 @@ public sealed class SetupInteractiveTests : IDisposable
         public CliContextDocument Load() => SavedContext ?? CliContextDocument.Empty;
 
         public void Save(CliContextDocument document) => SavedContext = document;
+
+        public void SaveUnderExclusive(CliContextDocument document) =>
+            SavedContext = document;
 
         public Task<SetupConnectivityResult> ProbeAsync(
             string? endpoint,

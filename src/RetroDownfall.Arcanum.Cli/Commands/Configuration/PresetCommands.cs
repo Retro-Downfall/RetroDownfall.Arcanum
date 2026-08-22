@@ -8,12 +8,15 @@ using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
 
 internal sealed class PresetCommands(
     IConfigurationPresetService presetService,
     IConsoleDispatcher console,
-    ICliInvocationContext invocationContext)
+    ICliInvocationContext invocationContext,
+    IGrimoireCliInitialization initialization)
 {
 
     public async Task<int> List(CancellationToken cancellationToken)
@@ -102,8 +105,9 @@ internal sealed class PresetCommands(
         CancellationToken cancellationToken)
     {
 
-        Result<ConfigurationPresetPlan> result = await presetService
-            .DiffAsync(name, cancellationToken)
+        Result<ConfigurationPresetPlan> result = await RunPresetInteractionAsync(
+                token => presetService.DiffAsync(name, token),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -139,8 +143,9 @@ internal sealed class PresetCommands(
         CancellationToken cancellationToken)
     {
 
-        Result<ConfigurationPresetApplyResult> result = await presetService
-            .ApplyAsync(name, cancellationToken)
+        Result<ConfigurationPresetApplyResult> result = await RunPresetInteractionAsync(
+                token => presetService.ApplyAsync(name, token),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -174,8 +179,9 @@ internal sealed class PresetCommands(
     public async Task<int> Reset(CancellationToken cancellationToken)
     {
 
-        Result<ConfigurationPresetResetResult> result = await presetService
-            .ResetAsync(cancellationToken)
+        Result<ConfigurationPresetResetResult> result = await RunPresetInteractionAsync(
+                presetService.ResetAsync,
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -212,8 +218,9 @@ internal sealed class PresetCommands(
         CancellationToken cancellationToken)
     {
 
-        Result<ConfigurationPresetInspection> result = await presetService
-            .InspectAsync(cancellationToken)
+        Result<ConfigurationPresetInspection> result = await RunPresetInteractionAsync(
+                presetService.InspectAsync,
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsSuccess)
@@ -229,6 +236,13 @@ internal sealed class PresetCommands(
         return null;
 
     }
+
+    private Task<T> RunPresetInteractionAsync<T>(
+        Func<CancellationToken, Task<T>> interaction,
+        CancellationToken cancellationToken) =>
+        initialization.RunExclusiveAsync(
+            (_, token) => interaction(token),
+            cancellationToken);
 
     private void WriteList(ConfigurationPresetListPayload payload)
     {

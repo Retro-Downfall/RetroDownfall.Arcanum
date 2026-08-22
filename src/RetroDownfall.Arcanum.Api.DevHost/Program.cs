@@ -2,12 +2,14 @@ using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
-using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 
 if (SandboxExecHelper.TryHandle(args))
@@ -54,16 +56,6 @@ builder.Logging.ClearProviders();
 
 builder.Services.AddArcanumApiServices(builder.Configuration);
 
-if (!string.Equals(builder.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
-{
-    if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync().ConfigureAwait(false) is string newApiKey)
-    {
-        Console.WriteLine(newApiKey);
-
-        Log.Information("New Master API Key generated and secured. Save this key — it will not be shown again.");
-    }
-}
-
 WebApplication app = builder.Build();
 
 app.UseArcanumExceptionHandler();
@@ -78,15 +70,39 @@ app.UseArcanumMetrics();
 
 app.MapArcanumEndpoints();
 
-Console.Error.WriteLine($"Arcanum DevHost listening on http://localhost:{listenPort}");
-
 try
 {
-    await app.RunAsync().ConfigureAwait(false);
+    await app.StartAsync().ConfigureAwait(false);
+
+    string? newApiKey = app.Services
+        .GetRequiredService<GrimoireDatabaseHostedService>()
+        .TakeGeneratedMasterApiKey();
+
+    if (newApiKey is not null)
+    {
+        Console.WriteLine(newApiKey);
+
+        Log.Information("New Master API Key generated and secured. Save this key — it will not be shown again.");
+    }
+
+    Console.Error.WriteLine($"Arcanum DevHost listening on http://localhost:{listenPort}");
+
+    await app.WaitForShutdownAsync().ConfigureAwait(false);
 
     return 0;
 }
 finally
 {
+    try
+    {
+        await app.StopAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Arcanum DevHost StopAsync during cleanup failed.");
+    }
+
+    await app.DisposeAsync().ConfigureAwait(false);
+
     Log.CloseAndFlush();
 }

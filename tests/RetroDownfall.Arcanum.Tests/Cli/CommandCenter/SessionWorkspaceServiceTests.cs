@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -184,6 +185,163 @@ public sealed class SessionWorkspaceServiceTests
     }
 
     [Fact]
+    public async Task Resume_cancellation_during_last_session_persistence_propagates_and_retains_prior_state()
+    {
+
+        Guid prior = Guid.Parse(
+            "41414141-4141-4141-4141-414141414141");
+
+        Guid requested = Guid.Parse(
+            "42424242-4242-4242-4242-424242424242");
+
+        DateTimeOffset now = DateTimeOffset.Parse(
+            "2026-08-22T15:00:00Z");
+
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(
+                requested,
+                null,
+                "Requested",
+                "Active",
+                EntryCount: 1,
+                now,
+                now,
+                null,
+                0),
+            entries:
+            [
+
+                new EntryDto(
+                    Guid.NewGuid(),
+                    requested,
+                    "assistant",
+                    "replacement transcript",
+                    null,
+                    null,
+                    now),
+
+            ]);
+
+        SessionWorkspaceService workspace = CreateWorkspace(
+            handler,
+            out RecordingLastSessionStore store);
+
+        using CancellationTokenSource cancellation = new();
+
+        store.BeforeSave = cancellation.Cancel;
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(prior, "Prior", "Active", 1);
+
+        state.Log.Append(SessionLogEntryKind.User, "retain prior transcript");
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => workspace.ResumeSessionAsync(
+                state,
+                requested,
+                cancellation.Token));
+
+        Assert.Equal(prior, state.SessionId);
+
+        Assert.Equal("Prior", state.SessionTitle);
+
+        Assert.Contains(
+            "retain prior transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "replacement transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.Null(state.TransientStatus);
+
+        Assert.Null(store.LastSaved);
+
+    }
+
+    [Theory]
+    [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
+    [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
+    public async Task Resume_last_session_persistence_refusal_preserves_the_prior_active_state(
+        byte dispositionValue)
+    {
+
+        Guid prior = Guid.Parse(
+            "13131313-1313-1313-1313-131313131313");
+
+        Guid requested = Guid.Parse(
+            "14141414-1414-1414-1414-141414141414");
+
+        DateTimeOffset now = DateTimeOffset.Parse(
+            "2026-08-22T12:00:00Z");
+
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(
+                requested,
+                null,
+                "Requested",
+                "Active",
+                EntryCount: 1,
+                now,
+                now,
+                null,
+                0),
+            entries:
+            [
+
+                new EntryDto(
+                    Guid.NewGuid(),
+                    requested,
+                    "assistant",
+                    "replacement transcript",
+                    null,
+                    null,
+                    now),
+
+            ]);
+
+        SessionWorkspaceService workspace = CreateWorkspace(
+            handler,
+            out RecordingLastSessionStore store);
+
+        store.RefusalDisposition =
+            (ArcanumClientMutationDisposition)dispositionValue;
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(prior, "Prior", "Active", 1);
+
+        state.Log.Append(SessionLogEntryKind.User, "retain prior transcript");
+
+        SessionResumeResult result = await workspace.ResumeSessionAsync(
+            state,
+            requested,
+            CancellationToken.None);
+
+        Assert.Equal(SessionResumeOutcome.Failed, result.Outcome);
+
+        Assert.Equal(prior, state.SessionId);
+
+        Assert.Equal("Prior", state.SessionTitle);
+
+        Assert.Contains(
+            "retain prior transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "replacement transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.Null(store.LastSaved);
+
+    }
+
+    [Fact]
     public async Task Resume_with_entry_count_above_loaded_shows_older_marker()
     {
         Guid id = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
@@ -316,6 +474,58 @@ public sealed class SessionWorkspaceServiceTests
 
     }
 
+    [Fact]
+    public async Task Refresh_cancellation_propagates_and_retains_prior_session_catalog_state()
+    {
+
+        using CancellationTokenSource cancellation = new();
+
+        FakeSessionHttp handler = new()
+        {
+
+            BeforeSessionQuery = cancellation.Cancel,
+
+        };
+
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+
+        SessionListItem retained = new(
+            Guid.Parse("43434343-4343-4343-4343-434343434343"),
+            "Retained",
+            "Active",
+            DateTimeOffset.Parse("2026-08-22T15:15:00Z"),
+            EntryCount: 3);
+
+        CommandCenterState state = new(new SessionLogBuffer())
+        {
+
+            Sessions = [retained],
+
+            LastError = "retained error",
+
+        };
+
+        state.ApplySessionMeta(
+            retained.Id,
+            retained.Title,
+            retained.Status,
+            retained.EntryCount);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => workspace.RefreshSessionsAsync(
+                state,
+                cancellation.Token));
+
+        Assert.Equal([retained], state.Sessions);
+
+        Assert.Equal(retained.Id, state.SessionId);
+
+        Assert.Equal("retained error", state.LastError);
+
+        Assert.Null(state.TransientStatus);
+
+    }
+
     private static SessionSummaryDto Summary(
         string id,
         string title,
@@ -346,6 +556,231 @@ public sealed class SessionWorkspaceServiceTests
         Assert.False(store.Cleared);
         Assert.Contains("New Session", state.Log.RenderPlainText(), StringComparison.Ordinal);
         Assert.Contains("Last session unavailable", state.FooterHint ?? "", StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
+    [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
+    public async Task Fork_last_session_persistence_refusal_preserves_the_source_active_state(
+        byte dispositionValue)
+    {
+
+        Guid sourceId = Guid.Parse(
+            "15151515-1515-1515-1515-151515151515");
+
+        Guid forkId = Guid.Parse(
+            "16161616-1616-1616-1616-161616161616");
+
+        DateTimeOffset now = DateTimeOffset.Parse(
+            "2026-08-22T12:30:00Z");
+
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(
+                forkId,
+                null,
+                "Fork",
+                "Active",
+                1,
+                now,
+                now,
+                null,
+                0,
+                sourceId),
+            entries:
+            [
+
+                new EntryDto(
+                    Guid.NewGuid(),
+                    forkId,
+                    "assistant",
+                    "fork replacement transcript",
+                    null,
+                    null,
+                    now),
+
+            ],
+            fork: new SessionDetailDto(
+                forkId,
+                null,
+                "Fork",
+                "Active",
+                1,
+                now,
+                now,
+                null,
+                0,
+                sourceId));
+
+        SessionWorkspaceService workspace = CreateWorkspace(
+            handler,
+            out RecordingLastSessionStore store);
+
+        store.RefusalDisposition =
+            (ArcanumClientMutationDisposition)dispositionValue;
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(sourceId, "Source", "Active", 1);
+
+        state.Log.Append(SessionLogEntryKind.User, "retain source transcript");
+
+        SessionForkResult result = await workspace.ForkSessionAsync(
+            state,
+            new ForkSessionRequest(),
+            CancellationToken.None);
+
+        Assert.Equal(SessionForkOutcome.Failed, result.Outcome);
+
+        Assert.Equal(sourceId, state.SessionId);
+
+        Assert.Equal("Source", state.SessionTitle);
+
+        Assert.Contains(
+            "retain source transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "fork replacement transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.Null(store.LastSaved);
+
+    }
+
+    [Fact]
+    public async Task Fork_cancellation_during_last_session_persistence_propagates_and_retains_source_state()
+    {
+
+        Guid sourceId = Guid.Parse(
+            "44444444-4444-4444-4444-444444444444");
+
+        Guid forkId = Guid.Parse(
+            "45454545-4545-4545-4545-454545454545");
+
+        DateTimeOffset now = DateTimeOffset.Parse(
+            "2026-08-22T15:30:00Z");
+
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(
+                forkId,
+                null,
+                "Fork",
+                "Active",
+                1,
+                now,
+                now,
+                null,
+                0,
+                sourceId),
+            entries:
+            [
+
+                new EntryDto(
+                    Guid.NewGuid(),
+                    forkId,
+                    "assistant",
+                    "fork replacement transcript",
+                    null,
+                    null,
+                    now),
+
+            ],
+            fork: new SessionDetailDto(
+                forkId,
+                null,
+                "Fork",
+                "Active",
+                1,
+                now,
+                now,
+                null,
+                0,
+                sourceId));
+
+        SessionWorkspaceService workspace = CreateWorkspace(
+            handler,
+            out RecordingLastSessionStore store);
+
+        using CancellationTokenSource cancellation = new();
+
+        store.BeforeSave = cancellation.Cancel;
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(sourceId, "Source", "Active", 1);
+
+        state.Log.Append(SessionLogEntryKind.User, "retain source transcript");
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => workspace.ForkSessionAsync(
+                state,
+                new ForkSessionRequest(),
+                cancellation.Token));
+
+        Assert.Equal(sourceId, state.SessionId);
+
+        Assert.Equal("Source", state.SessionTitle);
+
+        Assert.Contains(
+            "retain source transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "fork replacement transcript",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.Null(state.TransientStatus);
+
+        Assert.Null(store.LastSaved);
+
+    }
+
+    [Theory]
+    [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
+    [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
+    public async Task Bound_session_persistence_refusal_warns_and_retains_the_prior_state(
+        byte dispositionValue)
+    {
+
+        Guid prior = Guid.Parse(
+            "20202020-2020-2020-2020-202020202020");
+
+        Guid remote = Guid.Parse(
+            "21212121-2121-2121-2121-212121212121");
+
+        SessionWorkspaceService workspace = CreateWorkspace(
+            new FakeSessionHttp(),
+            out RecordingLastSessionStore store);
+
+        store.RefusalDisposition =
+            (ArcanumClientMutationDisposition)dispositionValue;
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(prior, "Prior", "Active", 1);
+
+        bool persisted = await workspace.PersistBoundSessionAsync(
+            state,
+            remote,
+            CancellationToken.None);
+
+        Assert.False(persisted);
+
+        Assert.Equal(prior, state.SessionId);
+
+        Assert.Equal("Prior", state.SessionTitle);
+
+        Assert.Null(store.LastSaved);
+
+        Assert.Contains(
+            "Warning:",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
     }
 
     [Fact]
@@ -413,12 +848,63 @@ public sealed class SessionWorkspaceServiceTests
 
         public bool Cleared { get; private set; }
 
+        public bool ThrowOnSave { get; set; }
+
+        public Action? BeforeSave { get; set; }
+
+        public ArcanumClientMutationDisposition? RefusalDisposition { get; set; }
+
         public Guid? GetLastSessionId() => LastId;
 
-        public void SaveSessionId(Guid id)
+        public Task<ArcanumClientMutationResult<CliContextDocument>>
+            SaveSessionIdAsync(
+                Guid id,
+                Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+                CancellationToken cancellationToken)
         {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _ = revalidateAsync;
+
+            BeforeSave?.Invoke();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (ThrowOnSave)
+            {
+
+                throw new IOException(
+                    "The active session could not be persisted.");
+
+            }
+
+            if (RefusalDisposition is { } disposition)
+            {
+
+                Error error = disposition is
+                    ArcanumClientMutationDisposition.Blocked
+                    ? new Error(
+                        ErrorCodes.Data.ResetInProgress,
+                        "An installation maintenance operation is active.")
+                    : new Error(
+                        ErrorCodes.Data.ControlPathUnavailable,
+                        "Client mutation admission could not be validated safely.");
+
+                return Task.FromResult(
+                    disposition is ArcanumClientMutationDisposition.Blocked
+                        ? ArcanumClientMutationResult<CliContextDocument>.Blocked(error)
+                        : ArcanumClientMutationResult<CliContextDocument>.Unsafe(error));
+
+            }
+
             LastSaved = id;
             LastId = id;
+
+            return Task.FromResult(
+                ArcanumClientMutationResult<CliContextDocument>.Completed(
+                    CliContextDocument.Empty with { SessionId = id }));
+
         }
     }
 
@@ -456,6 +942,8 @@ public sealed class SessionWorkspaceServiceTests
         public List<int> EntryOffsets { get; } = [];
 
         public List<DateTimeOffset?> SessionCursors { get; } = [];
+
+        public Action? BeforeSessionQuery { get; init; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -515,6 +1003,11 @@ public sealed class SessionWorkspaceServiceTests
             if (path.EndsWith("/sessions", StringComparison.Ordinal)
                 || path.EndsWith("/sessions/", StringComparison.Ordinal))
             {
+
+                BeforeSessionQuery?.Invoke();
+
+                cancellationToken.ThrowIfCancellationRequested();
+
                 string? beforeText = System.Web.HttpUtility.ParseQueryString(
                     request.RequestUri?.Query ?? string.Empty)["beforeUpdatedAt"];
 

@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Options;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Cli.Commands;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -11,6 +13,8 @@ using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using System.Text.Json.Serialization.Metadata;
 
@@ -425,7 +429,8 @@ public sealed class BackupRestoreProtectedStateCommandTests
             Restore.Exposure = Exposure;
 
             BackupCommands commands = new(
-                new ThrowingBackupService(),
+                new ThrowingGrimoireInitialization(),
+                new ThrowingScopeFactory(),
                 Restore,
                 Passphrases,
                 _prompt,
@@ -590,6 +595,29 @@ public sealed class BackupRestoreProtectedStateCommandTests
             string? directory,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("A restore lists nothing.");
+
+    }
+
+    private sealed class ThrowingGrimoireInitialization : IGrimoireCliInitialization
+    {
+
+        public Task<T> RunExclusiveAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A restore never enters the CLI backup boundary.");
+
+        public Task<T> RunExclusiveWithBootstrapAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) =>
+            RunExclusiveAsync(operation, cancellationToken);
+
+    }
+
+    private sealed class ThrowingScopeFactory : IServiceScopeFactory
+    {
+
+        public IServiceScope CreateScope() =>
+            throw new InvalidOperationException("A restore never creates a backup-service scope.");
 
     }
 

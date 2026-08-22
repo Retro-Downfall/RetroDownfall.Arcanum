@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -40,6 +41,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
     private readonly ITextInputDialogService _textInputDialog;
 
     private readonly IWhispersService _whispers;
+
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
 
     private readonly CancellationTokenSource _lifetimeCts = new();
 
@@ -160,7 +163,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         IConfirmationDialogService confirmationDialog,
         IArtifactFileDialogService fileDialog,
         ITextInputDialogService textInputDialog,
-        IWhispersService whispers)
+        IWhispersService whispers,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         PromptId = promptId;
@@ -179,9 +183,12 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         _whispers = whispers;
 
+        _mutationRunner = mutationRunner;
+
         Title = $"Scriptorium: {promptId:D}";
 
         Trace = new InferenceTraceViewModel(
+            mutationRunner,
             openPromptTestPreview: () => StatusText = "Use the Test tab for assembled-context preview (no LLM cost).");
 
     }
@@ -909,7 +916,36 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 cancellationToken,
                 _lifetimeCts.Token);
 
-            PromptExportDto? export = await _dataSource.ExportAsync(Prompt.Id, linked.Token).ConfigureAwait(true);
+            PromptExportDto? export = null;
+
+            await _mutationRunner
+                .RunAsync(
+                    path,
+                    async admittedCancellationToken =>
+                    {
+
+                        export = await _dataSource
+                            .ExportAsync(Prompt.Id, admittedCancellationToken)
+                            .ConfigureAwait(true);
+
+                        if (export is null)
+                        {
+
+                            return;
+
+                        }
+
+                        await ArtifactImportExportHelper
+                            .WriteJsonAlreadyAdmittedAsync(
+                                path,
+                                export,
+                                TheForgeJsonContext.Default.PromptExportDto,
+                                admittedCancellationToken)
+                            .ConfigureAwait(true);
+
+                    },
+                    linked.Token)
+                .ConfigureAwait(true);
 
             if (export is null)
             {
@@ -921,10 +957,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 return;
 
             }
-
-            string json = JsonSerializer.Serialize(export, TheForgeJsonContext.Default.PromptExportDto);
-
-            await File.WriteAllTextAsync(path, json, linked.Token).ConfigureAwait(true);
 
             StatusText = "Exported.";
 

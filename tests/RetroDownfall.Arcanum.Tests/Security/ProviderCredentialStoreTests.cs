@@ -219,6 +219,114 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Peek_returns_a_legacy_mirror_without_promoting_or_changing_files()
+    {
+
+        using (ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore()))
+        {
+
+            await writer.SaveApiKeyAsync("OpenAI", "peek-provider-secret");
+
+        }
+
+        string[] before = SnapshotFileTree();
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        IProviderCredentialStore contract = store;
+
+        SecretStoreReadResult first = await contract.PeekApiKeyReadResultAsync("OpenAI");
+
+        SecretStoreReadResult second = await contract.PeekApiKeyReadResultAsync("OpenAI");
+
+        Assert.Equal(SecretStoreReadStatus.Ok, first.Status);
+
+        Assert.Equal("peek-provider-secret", first.Value);
+
+        Assert.Equal(first, second);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+    }
+
+    [Fact]
+    public async Task Peek_fails_closed_when_the_os_read_is_ambiguous_even_with_a_valid_mirror()
+    {
+
+        using (ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore()))
+        {
+
+            await writer.SaveApiKeyAsync("OpenAI", "possibly-superseded-provider-secret");
+
+        }
+
+        string[] before = SnapshotFileTree();
+
+        RecordingOsCredentialStore os = new(
+            OsCredentialStoreResult.Failed("test ambiguous read"));
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        SecretStoreReadResult result = await ((IProviderCredentialStore)store)
+            .PeekApiKeyReadResultAsync("OpenAI");
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+    }
+
+    [Fact]
+    public async Task Peek_reports_missing_and_corrupt_mirrors_without_creating_or_repairing_state()
+    {
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        string[] missingBefore = SnapshotFileTree();
+
+        SecretStoreReadResult missing = await ((IProviderCredentialStore)store)
+            .PeekApiKeyReadResultAsync("OpenAI");
+
+        Assert.Equal(SecretStoreReadStatus.Missing, missing.Status);
+
+        Assert.Equal(missingBefore, SnapshotFileTree());
+
+        string path = ArcanumPaths.InferenceProviderApiKeyStoreFile("OpenAI");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
+
+        string[] corruptBefore = SnapshotFileTree();
+
+        SecretStoreReadResult corrupt = await ((IProviderCredentialStore)store)
+            .PeekApiKeyReadResultAsync("OpenAI");
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, corrupt.Status);
+
+        Assert.Equal(corruptBefore, SnapshotFileTree());
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+    }
+
+    [Fact]
     public async Task A_corrupt_mirror_fails_closed_without_generating_a_replacement()
     {
 
@@ -386,6 +494,35 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Resolver_peek_uses_only_the_non_mutating_credential_contract()
+    {
+
+        RecordingProviderCredentialStore store = new();
+
+        ProviderApiKeyResolver resolver = new(store);
+
+        ProviderSettings provider = new()
+        {
+
+            Name = "OpenAI",
+
+            Endpoint = "https://api.openai.invalid/v1",
+
+        };
+
+        Assert.Equal(
+            "peek-secret",
+            await resolver.PeekAsync(provider, CancellationToken.None));
+
+        Assert.Equal(0, store.OrdinaryReadCount);
+
+        Assert.Equal(1, store.PeekReadCount);
+
+        Assert.Equal(0, store.WriteCount);
+
+    }
+
+    [Fact]
     public async Task Resolver_prefers_an_environment_reference_over_the_secure_store()
     {
 
@@ -493,6 +630,105 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         }
 
         global::System.Environment.SetEnvironmentVariable(name, value);
+
+    }
+
+    private string[] SnapshotFileTree() => Directory
+        .EnumerateFiles(_testHome, "*", SearchOption.AllDirectories)
+        .Order(StringComparer.Ordinal)
+        .Select(path =>
+            Path.GetRelativePath(_testHome, path)
+            + "|"
+            + File.GetLastWriteTimeUtc(path).Ticks
+            + "|"
+            + Convert.ToBase64String(File.ReadAllBytes(path)))
+        .ToArray();
+
+    private sealed class RecordingProviderCredentialStore : IProviderCredentialStore
+    {
+
+        public int OrdinaryReadCount { get; private set; }
+
+        public int PeekReadCount { get; private set; }
+
+        public int WriteCount { get; private set; }
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync(
+            string providerName,
+            CancellationToken cancellationToken = default)
+        {
+
+            OrdinaryReadCount++;
+
+            return Task.FromResult(SecretStoreReadResult.Ok("ordinary-secret"));
+
+        }
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
+            string providerName,
+            CancellationToken cancellationToken = default)
+        {
+
+            PeekReadCount++;
+
+            return Task.FromResult(SecretStoreReadResult.Ok("peek-secret"));
+
+        }
+
+        public Task SaveApiKeyAsync(
+            string providerName,
+            string apiKey,
+            CancellationToken cancellationToken = default)
+        {
+
+            WriteCount++;
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task DeleteApiKeyAsync(
+            string providerName,
+            CancellationToken cancellationToken = default)
+        {
+
+            WriteCount++;
+
+            return Task.CompletedTask;
+
+        }
+
+    }
+
+    private sealed class RecordingOsCredentialStore(OsCredentialStoreResult readResult)
+        : IOsCredentialStore
+    {
+
+        public bool IsAvailable => readResult.Status != OsCredentialStoreStatus.Unavailable;
+
+        public int SetCallCount { get; private set; }
+
+        public int DeleteCallCount { get; private set; }
+
+        public OsCredentialStoreResult TryGet(string service, string account) => readResult;
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+
+            SetCallCount++;
+
+            return OsCredentialStoreResult.Ok(secret);
+
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account)
+        {
+
+            DeleteCallCount++;
+
+            return OsCredentialStoreResult.Ok(string.Empty);
+
+        }
 
     }
 

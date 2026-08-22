@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Health;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Hosting;
@@ -44,7 +45,8 @@ internal static class HealthEndpoints
             return Results.Json(response, ArcanumJsonContext.Default.ApiResponseHealthReportDto, statusCode: statusCode);
 
         })
-        .WithName("GetHealth");
+        .WithName("GetHealth")
+        .WithMetadata(InstallationResetRecoveryApiRouteMetadata.GetHealth);
 
         apiGroup.MapGet("/grimoire/stats", async (GrimoireStatsService statsService, HttpContext httpContext, CancellationToken cancellationToken) =>
         {

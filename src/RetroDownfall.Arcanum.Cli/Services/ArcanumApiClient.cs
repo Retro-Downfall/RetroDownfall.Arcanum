@@ -187,16 +187,25 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
     {
         try
         {
-            return await secretStore
-                .GetApiKeyAsync()
+            SecretStoreReadResult read = await secretStore
+                .PeekApiKeyReadResultAsync()
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            return read.Status == SecretStoreReadStatus.Ok
+                && !string.IsNullOrWhiteSpace(read.Value)
+                    ? read.Value
+                    : null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
         catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception)
         {
             return null;
         }
@@ -210,7 +219,9 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
         Func<HttpResponseMessage, byte[], ApiResponse<T>?, Result<T>> mapResponse,
         CancellationToken cancellationToken,
-        string httpClientName = RequestHttpClientName)
+        string httpClientName = RequestHttpClientName,
+        string? idempotencyKey = null,
+        bool retryResponseBodyIOExceptionOnce = false)
     {
         string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
@@ -221,39 +232,66 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
         HttpClient client = httpClientFactory.CreateClient(httpClientName);
 
-        using HttpRequestMessage request = new(method, relativePath);
-
-        if (body is not null)
-        {
-            ByteArrayContent content = new(body);
-
-            if (contentType is not null)
-            {
-                content.Headers.ContentType = contentType;
-            }
-
-            request.Content = content;
-        }
-
-        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
         try
         {
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            int maxAttempts = retryResponseBodyIOExceptionOnce ? 2 : 1;
 
-            byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (responseBytes is null)
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
-                return Result<T>.Failure(ResponseTooLargeError);
+
+                using HttpRequestMessage request = new(method, relativePath);
+
+                if (body is not null)
+                {
+                    ByteArrayContent content = new(body);
+
+                    if (contentType is not null)
+                    {
+                        content.Headers.ContentType = contentType;
+                    }
+
+                    request.Content = content;
+                }
+
+                _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+                if (idempotencyKey is not null)
+                {
+                    _ = request.Headers.TryAddWithoutValidation(
+                        ArcanumApiHeaders.IdempotencyKey,
+                        idempotencyKey);
+                }
+
+                using HttpResponseMessage response = await client
+                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                    .ConfigureAwait(false);
+
+                byte[]? responseBytes;
+
+                try
+                {
+                    responseBytes = await TryReadCappedContentAsync(
+                            response.Content,
+                            MaxResponseBytes,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (IOException) when (retryResponseBodyIOExceptionOnce && attempt == 0)
+                {
+                    continue;
+                }
+
+                if (responseBytes is null)
+                {
+                    return Result<T>.Failure(ResponseTooLargeError);
+                }
+
+                ApiResponse<T>? envelope = TryDeserialize(responseBytes, responseTypeInfo);
+
+                return mapResponse(response, responseBytes, envelope);
             }
 
-            ApiResponse<T>? envelope = TryDeserialize(responseBytes, responseTypeInfo);
-
-            return mapResponse(response, responseBytes, envelope);
+            return Result<T>.Failure(RequestDisconnectedError);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -293,7 +331,9 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
         Func<ApiResponse<T>, Result<T>> mapSuccess,
         CancellationToken cancellationToken,
-        string httpClientName = RequestHttpClientName)
+        string httpClientName = RequestHttpClientName,
+        string? idempotencyKey = null,
+        bool retryResponseBodyIOExceptionOnce = false)
     {
         return await SendRequestAsync(
             method,
@@ -330,7 +370,9 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
                 return Result<T>.Failure(new Error("Api.HttpError", fallback));
             },
             cancellationToken,
-            httpClientName).ConfigureAwait(false);
+            httpClientName,
+            idempotencyKey,
+            retryResponseBodyIOExceptionOnce).ConfigureAwait(false);
     }
 
     private async Task<Result<T>> SendRequestAsync<T>(
@@ -2082,7 +2124,7 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         PingRequest body,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         if (apiKey is null)
         {
@@ -3631,7 +3673,7 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         Guid id,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         if (apiKey is null)
         {

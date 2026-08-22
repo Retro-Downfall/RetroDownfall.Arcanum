@@ -7,6 +7,8 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -355,6 +357,163 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task A_repair_does_not_report_its_own_exclusive_lock_as_external_contention()
+    {
+
+        ServiceCollection services = BuildServices();
+
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton<IConfirmationPrompt>(new StubConfirmationPrompt(true));
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "doctor",
+                "--json",
+                "--only",
+                "runtime.maintenance_lock",
+                "--repair",
+                "paths.create_managed_directories",
+                "--apply",
+            ]);
+
+        DoctorReport report = Deserialize(result.Output);
+
+        DoctorCheck maintenanceLock = Assert.Single(report.Checks);
+
+        Assert.Equal(DoctorOutcome.Healthy, maintenanceLock.Outcome);
+
+        Assert.DoesNotContain(
+            "held",
+            maintenanceLock.Detail ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(Directory.Exists(ArcanumPaths.AttachmentsDirectory));
+
+    }
+
+    [Theory]
+    [InlineData("A running host owns the maintenance lock.")]
+    [InlineData("The maintenance lock topology is unsafe.")]
+    [InlineData("An installation factory reset is active.")]
+    public async Task Refused_exclusive_ownership_blocks_mkdir_pid_and_permission_repairs(
+        string refusal)
+    {
+
+        RecordingGrimoireCliInitialization directoriesInitialization = new(refusal);
+
+        ServiceCollection directoriesServices = BuildServices(directoriesInitialization);
+
+        directoriesServices.RemoveAll<IConfirmationPrompt>();
+
+        directoriesServices.AddSingleton<IConfirmationPrompt>(new StubConfirmationPrompt(true));
+
+        CliTestResult directoriesResult = await CliTestHarness.RunAsync(
+            directoriesServices,
+            [
+                "doctor",
+                "--repair",
+                "paths.create_managed_directories",
+                "--apply",
+            ]);
+
+        Assert.Equal((int)CliExitCode.GenericError, directoriesResult.ExitCode);
+
+        Assert.False(Directory.Exists(ArcanumPaths.AttachmentsDirectory));
+
+        Assert.Equal(1, directoriesInitialization.ExclusiveCalls);
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        string pidPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.pid");
+
+        await File.WriteAllTextAsync(pidPath, "not-a-pid");
+
+        RecordingGrimoireCliInitialization pidInitialization = new(refusal);
+
+        ServiceCollection pidServices = BuildServices(pidInitialization);
+
+        pidServices.RemoveAll<IConfirmationPrompt>();
+
+        pidServices.AddSingleton<IConfirmationPrompt>(new StubConfirmationPrompt(true));
+
+        CliTestResult pidResult = await CliTestHarness.RunAsync(
+            pidServices,
+            [
+                "doctor",
+                "--repair",
+                "runtime.remove_stale_pid",
+                "--apply",
+            ]);
+
+        Assert.Equal((int)CliExitCode.GenericError, pidResult.ExitCode);
+
+        Assert.Equal("not-a-pid", await File.ReadAllTextAsync(pidPath));
+
+        Assert.Equal(1, pidInitialization.ExclusiveCalls);
+
+        await File.WriteAllTextAsync(ArcanumPaths.ConfigurationFile, "{}");
+
+        UnixFileMode? originalMode = null;
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            originalMode = UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.GroupRead
+                | UnixFileMode.OtherRead;
+
+            File.SetUnixFileMode(ArcanumPaths.ConfigurationFile, originalMode.Value);
+
+        }
+
+        RecordingGrimoireCliInitialization permissionsInitialization = new(refusal);
+
+        CliTestResult permissionsResult = await CliTestHarness.RunAsync(
+            BuildServices(permissionsInitialization),
+            ["doctor", "--fix-permissions"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, permissionsResult.ExitCode);
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            Assert.Equal(
+                originalMode!.Value,
+                File.GetUnixFileMode(ArcanumPaths.ConfigurationFile));
+
+        }
+
+        Assert.Equal(1, permissionsInitialization.ExclusiveCalls);
+
+    }
+
+    [Fact]
+    public async Task Doctor_plans_and_catalog_operations_remain_outside_exclusive_ownership()
+    {
+
+        RecordingGrimoireCliInitialization initialization = new(
+            "Read-only doctor operations must not enter the writer boundary.");
+
+        _ = await CliTestHarness.RunAsync(
+            BuildServices(initialization),
+            ["doctor", "--json", "--repair", "paths.create_managed_directories"]);
+
+        _ = await CliTestHarness.RunAsync(
+            BuildServices(initialization),
+            ["doctor", "list", "--json"]);
+
+        _ = await CliTestHarness.RunAsync(
+            BuildServices(initialization),
+            ["doctor", "explain", "paths.create_managed_directories", "--json"]);
+
+        Assert.Equal(0, initialization.ExclusiveCalls);
+
+    }
+
+    [Fact]
     public async Task Fix_permissions_with_json_emits_the_typed_report_rather_than_a_text_payload()
     {
 
@@ -550,7 +709,8 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
 
     }
 
-    private ServiceCollection BuildServices()
+    private ServiceCollection BuildServices(
+        IGrimoireCliInitialization? initialization = null)
     {
 
         ServiceCollection services = new();
@@ -558,6 +718,15 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
         ConfigurationManager configuration = new();
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        if (initialization is not null)
+        {
+
+            services.RemoveAll<IGrimoireCliInitialization>();
+
+            services.AddSingleton<IGrimoireCliInitialization>(initialization);
+
+        }
 
         services.AddSingleton<ISecretStore>(new NullSecretStore());
 
@@ -649,12 +818,17 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
     private sealed class NullSecretStore : ISecretStore
     {
 
-        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("Doctor must use Peek for the master key.");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("Doctor must use Peek for the master key.");
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
             Task.FromResult(SecretStoreReadResult.Missing());
 
-        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+        public Task SaveApiKeyAsync(string apiKey) =>
+            throw new InvalidOperationException("Doctor must not persist the master key.");
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
@@ -665,12 +839,17 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
     private sealed class SecretBearingStore(string secret) : ISecretStore
     {
 
-        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(secret);
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("Doctor must use Peek for the master key.");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("Doctor must use Peek for the master key.");
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
             Task.FromResult(SecretStoreReadResult.Ok(secret));
 
-        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+        public Task SaveApiKeyAsync(string apiKey) =>
+            throw new InvalidOperationException("Doctor must not persist the master key.");
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(secret);
 

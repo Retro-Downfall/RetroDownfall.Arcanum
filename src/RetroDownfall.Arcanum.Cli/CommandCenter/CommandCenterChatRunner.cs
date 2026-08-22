@@ -309,19 +309,13 @@ internal sealed class CommandCenterChatRunner(
                     case IntelligenceEventType.ConversationBound:
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid bound))
                         {
-                            state.SessionId = bound;
-                            state.SelectedSessionId = bound;
-                            if (string.IsNullOrWhiteSpace(state.SessionTitle))
-                            {
-                                state.SessionTitle = "Untitled";
-                            }
+                            _ = await sessionWorkspace
+                                .PersistBoundSessionAsync(
+                                    state,
+                                    bound,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
 
-                            if (string.IsNullOrWhiteSpace(state.SessionStatus))
-                            {
-                                state.SessionStatus = "Active";
-                            }
-
-                            sessionWorkspace.PersistBoundSession(state, bound);
                             await uiUpdates.WriteAsync(
                                     new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshHeader),
                                     cancellationToken)

@@ -51,6 +51,8 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
 
     private readonly ITextInputDialogService _textInputDialog;
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     private bool _disposed;
 
     [ObservableProperty]
@@ -96,7 +98,8 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
         IWhispersService whispers,
         IConfirmationDialogService confirmationDialog,
         IArtifactFileDialogService fileDialog,
-        ITextInputDialogService textInputDialog)
+        ITextInputDialogService textInputDialog,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         _dataSource = dataSource;
@@ -112,6 +115,8 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
         _fileDialog = fileDialog;
 
         _textInputDialog = textInputDialog;
+
+        _mutationRunner = mutationRunner;
 
         Title = "Diagnostic MCP Invocation";
 
@@ -407,27 +412,58 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
 
         }
 
-        DiagnosticMcpFixtureStoreDocument document = await _fixtureStore.LoadAsync(cancellationToken).ConfigureAwait(true);
+        try
+        {
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+            await _fixtureStore
+                .UpdateAsync(
+                    (document, _) =>
+                    {
 
-        DiagnosticMcpFixtureRecord fixture = new(
-            Guid.NewGuid(),
-            name.Trim(),
-            now,
-            now,
-            SelectedTool,
-            SelectedServer?.Name,
-            string.IsNullOrWhiteSpace(WorkingDirectory) ? null : WorkingDirectory,
-            string.IsNullOrWhiteSpace(ArgumentsText) ? "{}" : ArgumentsText,
-            string.IsNullOrWhiteSpace(ResultText) ? null : ResultText,
-            ResultText.Length > 0 ? now : null);
+                        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        List<DiagnosticMcpFixtureRecord> fixtures = [fixture, .. document.Fixtures];
+                        string toolName = string.IsNullOrWhiteSpace(SelectedTool)
+                            ? throw new InvalidOperationException("The selected tool changed before the fixture could be saved.")
+                            : SelectedTool;
 
-        await _fixtureStore
-            .SaveAsync(new DiagnosticMcpFixtureStoreDocument(DiagnosticMcpFixtureStore.CurrentSchemaVersion, document.CreatedAt, now, fixtures), cancellationToken)
-            .ConfigureAwait(true);
+                        DiagnosticMcpFixtureRecord fixture = new(
+                            Guid.NewGuid(),
+                            name.Trim(),
+                            now,
+                            now,
+                            toolName,
+                            SelectedServer?.Name,
+                            string.IsNullOrWhiteSpace(WorkingDirectory) ? null : WorkingDirectory,
+                            string.IsNullOrWhiteSpace(ArgumentsText) ? "{}" : ArgumentsText,
+                            string.IsNullOrWhiteSpace(ResultText) ? null : ResultText,
+                            ResultText.Length > 0 ? now : null);
+
+                        List<DiagnosticMcpFixtureRecord> fixtures = [fixture, .. document.Fixtures];
+
+                        return Task.FromResult(
+                            new DiagnosticMcpFixtureStoreDocument(
+                                DiagnosticMcpFixtureStore.CurrentSchemaVersion,
+                                document.CreatedAt,
+                                now,
+                                fixtures));
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = "Fixture was not saved.";
+
+            _whispers.Show(WhisperSeverity.Error, "Fixture save blocked.");
+
+            return;
+
+        }
 
         await LoadFixturesAsync(cancellationToken).ConfigureAwait(true);
 
@@ -457,18 +493,44 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
 
         }
 
-        DiagnosticMcpFixtureStoreDocument document = await _fixtureStore.LoadAsync(cancellationToken).ConfigureAwait(true);
+        Guid fixtureId = SelectedFixture.Id;
 
-        List<DiagnosticMcpFixtureRecord> fixtures = document.Fixtures
-            .Where(static f => true)
-            .Where(f => f.Id != SelectedFixture.Id)
-            .ToList();
+        try
+        {
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+            await _fixtureStore
+                .UpdateAsync(
+                    (document, _) =>
+                    {
 
-        await _fixtureStore
-            .SaveAsync(new DiagnosticMcpFixtureStoreDocument(DiagnosticMcpFixtureStore.CurrentSchemaVersion, document.CreatedAt, now, fixtures), cancellationToken)
-            .ConfigureAwait(true);
+                        List<DiagnosticMcpFixtureRecord> fixtures = document.Fixtures
+                            .Where(f => f.Id != fixtureId)
+                            .ToList();
+
+                        return Task.FromResult(
+                            new DiagnosticMcpFixtureStoreDocument(
+                                DiagnosticMcpFixtureStore.CurrentSchemaVersion,
+                                document.CreatedAt,
+                                DateTimeOffset.UtcNow,
+                                fixtures));
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = "Fixture was not deleted.";
+
+            _whispers.Show(WhisperSeverity.Error, "Fixture delete blocked.");
+
+            return;
+
+        }
 
         await LoadFixturesAsync(cancellationToken).ConfigureAwait(true);
 
@@ -538,7 +600,16 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
         try
         {
 
-            await File.WriteAllTextAsync(path, ResultText, System.Text.Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+            await _mutationRunner
+                .RunAsync(
+                    path,
+                    admittedCancellationToken => File.WriteAllTextAsync(
+                        path,
+                        ResultText,
+                        System.Text.Encoding.UTF8,
+                        admittedCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(true);
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -577,11 +648,33 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
 
         }
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        try
+        {
 
-        await _fixtureStore
-            .SaveAsync(new DiagnosticMcpFixtureStoreDocument(DiagnosticMcpFixtureStore.CurrentSchemaVersion, now, now, []), cancellationToken)
-            .ConfigureAwait(true);
+            await _fixtureStore
+                .UpdateAsync(
+                    (document, _) => Task.FromResult(
+                        new DiagnosticMcpFixtureStoreDocument(
+                            DiagnosticMcpFixtureStore.CurrentSchemaVersion,
+                            document.CreatedAt,
+                            DateTimeOffset.UtcNow,
+                            [])),
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = "Fixtures were not cleared.";
+
+            _whispers.Show(WhisperSeverity.Error, "Fixture clear blocked.");
+
+            return;
+
+        }
 
         Fixtures.Clear();
 

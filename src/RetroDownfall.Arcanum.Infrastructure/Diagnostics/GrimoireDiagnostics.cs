@@ -91,7 +91,13 @@ internal static class GrimoireProbe
         try
         {
 
-            apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+            SecretStoreReadResult apiKeyRead = await secretStore
+                .PeekApiKeyReadResultAsync()
+                .ConfigureAwait(false);
+
+            apiKey = apiKeyRead.Status is SecretStoreReadStatus.Ok
+                ? apiKeyRead.Value
+                : null;
 
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

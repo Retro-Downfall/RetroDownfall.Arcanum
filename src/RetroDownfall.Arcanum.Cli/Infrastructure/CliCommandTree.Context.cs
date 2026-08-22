@@ -39,7 +39,9 @@ internal static partial class CliCommandTree
 
         clear.Add(scope);
 
-        clear.SetAction((ParseResult parseResult) =>
+        clear.SetAction(async (
+            ParseResult parseResult,
+            CancellationToken cancellationToken) =>
         {
 
             if (!TryParseScope(
@@ -52,7 +54,9 @@ internal static partial class CliCommandTree
 
             }
 
-            return handler.Clear(parsedScope);
+            return await handler
+                .Clear(parsedScope, cancellationToken)
+                .ConfigureAwait(false);
 
         });
 

@@ -12,4 +12,8 @@ public interface IComparisonRunStore
 
     Task SaveAsync(ComparisonStoreDocument document, CancellationToken cancellationToken = default);
 
+    Task<ComparisonStoreDocument> UpdateAsync(
+        Func<ComparisonStoreDocument, CancellationToken, Task<ComparisonStoreDocument>> update,
+        CancellationToken cancellationToken = default);
+
 }

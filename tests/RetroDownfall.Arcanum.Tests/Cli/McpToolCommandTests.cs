@@ -153,9 +153,9 @@ public sealed class McpToolCommandTests
 
         Assert.Equal(0, result.ExitCode);
 
-        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(3, handler.Requests.Count);
 
-        HttpRequestMessage request = handler.Requests[1];
+        HttpRequestMessage request = handler.Requests[^1];
 
         Assert.Equal(HttpMethod.Post, request.Method);
 
@@ -184,9 +184,9 @@ public sealed class McpToolCommandTests
 
         Assert.Equal(0, result.ExitCode);
 
-        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(3, handler.Requests.Count);
 
-        Assert.Equal("/api/mcp/workspace-server", handler.Requests[1].RequestUri!.AbsolutePath);
+        Assert.Equal("/api/mcp/workspace-server", handler.Requests[^1].RequestUri!.AbsolutePath);
 
         Assert.Contains("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
 

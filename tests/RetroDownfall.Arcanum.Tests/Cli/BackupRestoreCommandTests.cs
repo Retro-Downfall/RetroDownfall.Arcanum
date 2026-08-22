@@ -614,9 +614,16 @@ public sealed class BackupRestoreCommandTests
     private sealed class ThrowingGrimoireInitialization : IGrimoireCliInitialization
     {
 
-        public Task EnsureInitializedAsync(CancellationToken cancellationToken) =>
+        public Task<T> RunExclusiveAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "The backup family must never bootstrap the Grimoire.");
+
+        public Task<T> RunExclusiveWithBootstrapAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) =>
+            RunExclusiveAsync(operation, cancellationToken);
 
     }
 

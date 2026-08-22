@@ -8,8 +8,6 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
-using RetroDownfall.Arcanum.Infrastructure.Hosting;
-
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 public sealed record RunCommandRequest(
@@ -77,8 +75,6 @@ internal sealed class RunCommand(
     ICliInferenceContextResolver contextResolver,
 
     IRunExecutionDispatcher executionDispatcher,
-
-    IGrimoireCliInitialization grimoireBootstrapper,
 
     IArcanumServeLauncher serveLauncher,
 
@@ -235,23 +231,6 @@ internal sealed class RunCommand(
 
             return Fail(
                 "Prompt, redirected standard input, or --with @path context is required.");
-
-        }
-
-        try
-        {
-
-            await grimoireBootstrapper
-                .EnsureInitializedAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-        }
-        catch (MissingMasterApiKeyException exception)
-        {
-
-            return Fail(
-                exception.Message,
-                CliExitCode.GenericError);
 
         }
 

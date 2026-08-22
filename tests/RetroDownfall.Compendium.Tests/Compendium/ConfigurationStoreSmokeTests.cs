@@ -25,6 +25,18 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
     }
 
     [Fact]
+    public void Constructor_does_not_create_the_managed_configuration_root()
+    {
+
+        Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
+
+        using ArcanumConfigurationStore store = new(enableWatcher: false);
+
+        Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
+
+    }
+
+    [Fact]
 
     public async Task RoundTrip_preserves_provider_credential_reference_and_host_port()
     {
@@ -77,7 +89,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
                 new ArcanumConfigurationFile { Arcanum = seed },
                 ConfigurationJsonContext.Default.ArcanumConfigurationFile));
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ArcanumSettings read = await store.ReadAsync(CancellationToken.None);
 
@@ -149,7 +161,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
               }
             }
             """);
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         InvalidOperationException error =
             await Assert.ThrowsAsync<InvalidOperationException>(
@@ -177,7 +189,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
             "arcanum.json");
         _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
         await File.WriteAllTextAsync(configPath, json);
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         InvalidOperationException error =
             await Assert.ThrowsAsync<InvalidOperationException>(
@@ -205,7 +217,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
             + new string('x', ArcanumConfigurationStore.MaxConfigurationBytes)
             + "\"}}");
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         InvalidOperationException error =
             await Assert.ThrowsAsync<InvalidOperationException>(
@@ -227,7 +239,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
         _ = Directory.CreateDirectory(destination);
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ConfigurationWriteResult result = await store.WriteAsync(
             new ArcanumSettings(),
@@ -690,7 +702,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
             Path.Combine(_tempRoot, ".config"),
             "not a directory");
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         Assert.Equal(
             Path.Combine(_tempRoot, ".config", "arcanum", "arcanum.json"),

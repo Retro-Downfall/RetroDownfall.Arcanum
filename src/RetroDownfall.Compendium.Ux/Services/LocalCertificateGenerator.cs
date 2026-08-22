@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Compendium.Ux.Services;
 
@@ -16,8 +17,50 @@ public sealed class LocalCertificateGenerator
 
     private const int ValidityDays = 397;
 
-    public LocalCertificateResult Generate() =>
-        Generate(ArcanumPaths.CertificatesDirectory, DateTimeOffset.UtcNow);
+    private readonly IArcanumClientMutationBoundary? _mutationBoundary;
+
+    public LocalCertificateGenerator(IArcanumClientMutationBoundary mutationBoundary)
+    {
+
+        _mutationBoundary = mutationBoundary
+            ?? throw new ArgumentNullException(nameof(mutationBoundary));
+
+    }
+
+    internal LocalCertificateGenerator()
+    {
+
+    }
+
+    public async Task<LocalCertificateResult> GenerateAsync(
+        CancellationToken cancellationToken = default)
+    {
+
+        if (_mutationBoundary is null)
+        {
+
+            throw new InvalidOperationException(
+                "Certificate generation requires the client-mutation boundary.");
+
+        }
+
+        ArcanumClientMutationResult<LocalCertificateResult> admitted =
+            await _mutationBoundary
+                .RunAsync(
+                    admittedCancellationToken => Task.Run(
+                        () => Generate(
+                            ArcanumPaths.CertificatesDirectory,
+                            DateTimeOffset.UtcNow),
+                        admittedCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        return admitted.IsCompleted
+            ? admitted.Value
+            : throw new InvalidOperationException(
+                $"{admitted.Error.Code}: {admitted.Error.Message}");
+
+    }
 
     internal LocalCertificateResult Generate(string certificatesDirectory, DateTimeOffset now)
     {

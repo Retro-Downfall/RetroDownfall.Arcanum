@@ -1,5 +1,7 @@
 using System.Text.Json;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -25,6 +27,10 @@ internal sealed record BackupRestoreStagingIndexRecord(
 /// </remarks>
 internal static class BackupRestoreStagingIndex
 {
+
+    private const int MaximumBytes = 1024 * 1024;
+
+    private const int MaximumRoots = 1024;
 
     internal const int CurrentVersion = 1;
 
@@ -143,6 +149,95 @@ internal static class BackupRestoreStagingIndex
 
     }
 
+    internal static async Task<Result<BackupRestoreStagingIndexRecord?>>
+        InspectAsync(
+            string grimoireDirectory,
+            CancellationToken cancellationToken)
+    {
+
+        string path = PathFor(grimoireDirectory);
+
+        Result<NoFollowPathTopologyKind> topology =
+            NoFollowPathTopology.Classify(path);
+
+        if (topology.IsFailure)
+        {
+
+            return Failure("The restore staging index topology is indeterminate.");
+
+        }
+
+        if (topology.Value is NoFollowPathTopologyKind.Absent)
+        {
+
+            return Result<BackupRestoreStagingIndexRecord?>.Success(null);
+
+        }
+
+        if (topology.Value is not NoFollowPathTopologyKind.RegularFile
+            || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                path,
+                out FileHandleMetadata metadata)
+            || metadata.Kind is not FileSystemObjectKind.RegularFile
+            || metadata.HardLinkCount != 1
+            || !SecureFilePermissions.HasOwnerOnlyPosture(
+                path,
+                isDirectory: false))
+        {
+
+            return Failure(
+                "The restore staging index identity or owner-only permissions are unsafe.");
+
+        }
+
+        try
+        {
+
+            using SecureFileReadResult read = await SecureFileReader.ReadBytesAsync(
+                    path,
+                    MaximumBytes,
+                    cancellationToken,
+                    metadata.Identity)
+                .ConfigureAwait(false);
+
+            if (read.Status is not SecureFileReadStatus.Success)
+            {
+
+                return Failure("The restore staging index could not be read safely.");
+
+            }
+
+            BackupRestoreStagingIndexRecord? record = JsonSerializer.Deserialize(
+                read.Bytes.Span,
+                BackupJsonContext.Default.BackupRestoreStagingIndexRecord);
+
+            if (record is null
+                || record.Version != CurrentVersion
+                || record.StagingRoots is null
+                || record.StagingRoots.Length > MaximumRoots
+                || !HasExactCanonicalRootSet(record.StagingRoots))
+            {
+
+                return Failure("The restore staging index is malformed.");
+
+            }
+
+            return record;
+
+        }
+        catch (Exception exception) when (
+            exception is JsonException
+                or NotSupportedException
+                or IOException
+                or UnauthorizedAccessException)
+        {
+
+            return Failure("The restore staging index could not be read safely.");
+
+        }
+
+    }
+
     /// <summary>Replaces the recorded set, deleting the index once nothing is left to point at.</summary>
     public static void Write(string grimoireDirectory, IReadOnlyList<string> stagingRoots)
     {
@@ -202,5 +297,66 @@ internal static class BackupRestoreStagingIndex
 
     private static string Normalize(string stagingRoot) =>
         Path.TrimEndingDirectorySeparator(Path.GetFullPath(stagingRoot));
+
+    private static bool HasExactCanonicalRootSet(
+        IReadOnlyList<string> stagingRoots)
+    {
+
+        StringComparer comparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        HashSet<string> unique = new(comparer);
+
+        foreach (string value in stagingRoots)
+        {
+
+            if (string.IsNullOrWhiteSpace(value)
+                || !Path.IsPathFullyQualified(value))
+            {
+
+                return false;
+
+            }
+
+            string normalized;
+
+            try
+            {
+
+                normalized = Normalize(value);
+
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException
+                    or NotSupportedException
+                    or PathTooLongException)
+            {
+
+                return false;
+
+            }
+
+            if (!comparer.Equals(value, normalized)
+                || !BackupRestoreJournal.IsCanonicalStagingName(
+                    Path.GetFileName(normalized))
+                || !unique.Add(normalized))
+            {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
+
+    }
+
+    private static Result<BackupRestoreStagingIndexRecord?> Failure(
+        string message) =>
+        Result<BackupRestoreStagingIndexRecord?>.Failure(new Error(
+            ErrorCodes.Data.ControlPathUnavailable,
+            message));
 
 }

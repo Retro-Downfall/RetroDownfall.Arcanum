@@ -225,7 +225,7 @@ public sealed class SessionManagementCommandTests
 
         Assert.Equal(0, result.ExitCode);
 
-        Assert.Equal(3, handler.Requests.Count);
+        Assert.Equal(4, handler.Requests.Count);
 
     }
 

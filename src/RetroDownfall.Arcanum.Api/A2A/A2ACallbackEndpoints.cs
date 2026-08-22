@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
@@ -52,6 +53,7 @@ internal static class A2ACallbackEndpoints
             $"{A2AClientService.ResolveCallbackPath(a2a)}/{{configId}}",
             HandleAsync)
         .WithName("PostA2ASendingCallback")
+        .WithMetadata(InstallationResetRecoveryHiddenRouteMetadata.Instance)
         .AllowAnonymous();
 
         if (!string.IsNullOrWhiteSpace(rateLimiterPolicyName))

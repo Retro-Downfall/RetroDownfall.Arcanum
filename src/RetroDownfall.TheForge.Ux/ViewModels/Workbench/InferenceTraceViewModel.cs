@@ -30,6 +30,8 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
     private readonly IInferenceTraceStore? _store;
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     private readonly IArtifactFileDialogService? _fileDialog;
 
     private readonly Action? _openSpellCastPreview;
@@ -54,11 +56,15 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
     private string? _lastError;
 
     public InferenceTraceViewModel(
+        ITheForgeLocalMutationRunner mutationRunner,
         IInferenceTraceStore? store = null,
         IArtifactFileDialogService? fileDialog = null,
         Action? openSpellCastPreview = null,
         Action? openPromptTestPreview = null)
     {
+
+        _mutationRunner = mutationRunner
+            ?? throw new ArgumentNullException(nameof(mutationRunner));
 
         _store = store;
 
@@ -208,7 +214,16 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
         try
         {
 
-            await File.WriteAllTextAsync(path, BuildExportJson(), Encoding.UTF8, cancellationToken).ConfigureAwait(true);
+            await _mutationRunner
+                .RunAsync(
+                    path,
+                    admittedCancellationToken => File.WriteAllTextAsync(
+                        path,
+                        BuildExportJson(),
+                        Encoding.UTF8,
+                        admittedCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(true);
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -246,14 +261,23 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
         try
         {
 
-            InferenceTraceStoreDocument document = await _store.LoadAsync(cancellationToken).ConfigureAwait(true);
+            await _store
+                .UpdateAsync(
+                    (document, _) =>
+                    {
 
-            List<InferenceTraceRecord> traces = [ToRecord(Guid.NewGuid(), DateTimeOffset.UtcNow), .. document.Traces];
+                        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-            DateTimeOffset now = DateTimeOffset.UtcNow;
+                        List<InferenceTraceRecord> traces = [ToRecord(Guid.NewGuid(), now), .. document.Traces];
 
-            await _store.SaveAsync(
-                    new InferenceTraceStoreDocument(InferenceTraceStore.CurrentSchemaVersion, document.CreatedAt, now, traces),
+                        return Task.FromResult(
+                            new InferenceTraceStoreDocument(
+                                InferenceTraceStore.CurrentSchemaVersion,
+                                document.CreatedAt,
+                                now,
+                                traces));
+
+                    },
                     cancellationToken)
                 .ConfigureAwait(true);
 

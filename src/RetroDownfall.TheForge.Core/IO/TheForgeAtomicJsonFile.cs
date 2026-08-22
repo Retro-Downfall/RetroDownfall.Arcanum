@@ -5,7 +5,7 @@ using RetroDownfall.TheForge.Core.IO;
 namespace RetroDownfall.TheForge.Core.IO;
 
 /// <summary>Atomic temp-file replace writer with owner-only permissions for The Forge local JSON stores.</summary>
-public static class TheForgeAtomicJsonFile
+internal static class TheForgeAtomicJsonFile
 {
 
     public static async Task WriteAsync<T>(

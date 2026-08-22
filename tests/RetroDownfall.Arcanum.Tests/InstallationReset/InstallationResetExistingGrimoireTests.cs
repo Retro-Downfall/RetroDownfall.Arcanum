@@ -213,7 +213,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
     }
 
     [Fact]
-    public async Task Missing_global_grimoire_apply_converges_without_creating_a_database()
+    public async Task Missing_global_grimoire_lockless_apply_is_refused_without_creating_a_database()
     {
 
         using ServiceProvider provider = CreateProvider();
@@ -239,11 +239,9 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 plan.Value.PlanId),
             CancellationToken.None);
 
-        Assert.True(applied.IsSuccess, applied.Error.Message);
+        Assert.True(applied.IsFailure);
 
-        Assert.Equal(0, applied.Value.RowsDeleted);
-
-        Assert.False(applied.Value.ResumeRequired);
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, applied.Error.Code);
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
 
@@ -252,10 +250,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         Assert.False(File.Exists(activeStore.ActivePath));
 
-        Assert.Empty(Directory.GetFiles(
-            _testHome,
-            "*",
-            SearchOption.AllDirectories));
+        Assert.False(Directory.Exists(_testHome));
 
     }
 

@@ -62,6 +62,14 @@ public static class ArcanumCredentialIdentity
     /// <summary>Prefix owning one profile's anti-rollback restore-journal anchor.</summary>
     public const string BackupRestoreJournalAnchorAccountPrefix = "backup-restore-journal-anchor-";
 
+    /// <summary>Prefix owning the AES-256-GCM key for one profile's installation-reset active record.</summary>
+    public const string InstallationResetActiveKeyAccountPrefix =
+        "installation-reset-active-key-";
+
+    /// <summary>Prefix owning one profile's installation-reset active-record anti-rollback anchor.</summary>
+    public const string InstallationResetActiveAnchorAccountPrefix =
+        "installation-reset-active-anchor-";
+
     /// <summary>
     /// The exact length of the lowercase-hex profile-namespace digest every restore-journal account is
     /// suffixed with.
@@ -89,6 +97,52 @@ public static class ArcanumCredentialIdentity
     /// <exception cref="ArgumentException">The suffix is not a canonical profile-namespace digest.</exception>
     public static string BackupRestoreJournalAnchorAccount(string profileNamespaceDigestHex) =>
         BackupRestoreJournalAnchorAccountPrefix + RequireProfileNamespaceSuffix(profileNamespaceDigestHex);
+
+    /// <summary>The installation-reset active-record key account for one profile namespace.</summary>
+    /// <exception cref="ArgumentException">The suffix is not a canonical profile-namespace digest.</exception>
+    internal static string InstallationResetActiveKeyAccount(string profileSuffix) =>
+        InstallationResetActiveKeyAccountPrefix + RequireProfileNamespaceSuffix(profileSuffix);
+
+    /// <summary>The installation-reset active-record anchor account for one profile namespace.</summary>
+    /// <exception cref="ArgumentException">The suffix is not a canonical profile-namespace digest.</exception>
+    internal static string InstallationResetActiveAnchorAccount(string profileSuffix) =>
+        InstallationResetActiveAnchorAccountPrefix + RequireProfileNamespaceSuffix(profileSuffix);
+
+    /// <summary>
+    /// True when <paramref name="account"/> is one of the two namespaced installation-reset active
+    /// record accounts.
+    /// </summary>
+    internal static bool IsInstallationResetActiveAccount(string account)
+    {
+
+        if (account is null)
+        {
+
+            return false;
+
+        }
+
+        foreach (string prefix in (string[])
+                 [
+                     InstallationResetActiveKeyAccountPrefix,
+                     InstallationResetActiveAnchorAccountPrefix,
+                 ])
+        {
+
+            if (account.Length == prefix.Length + ProfileNamespaceSuffixLength
+                && account.StartsWith(prefix, StringComparison.Ordinal)
+                && IsCanonicalProfileNamespaceSuffix(account[prefix.Length..]))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
 
     /// <summary>
     /// True when <paramref name="account"/> is one of the three namespaced restore-journal accounts.

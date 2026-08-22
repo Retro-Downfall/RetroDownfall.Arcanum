@@ -803,6 +803,33 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task ValidateNetworkAsync_AllowListWithEquivalentIpv6Literal_Allows()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(
+            campaignId,
+            _workspace.Root,
+            new SanctumConfig
+            {
+                Enabled = true,
+                NetworkPolicy = NetworkPolicy.AllowList,
+                AllowedDomains = ["::1"],
+            }));
+
+        SanctumResult result = await CreateGuard(repository).ValidateNetworkAsync(
+            campaignId.ToString(),
+            "http://[0:0:0:0:0:0:0:1]/",
+            "fetch_url");
+
+        Assert.True(result.Allowed);
+
+    }
+
     /// <summary>
     /// An IP-literal allow entry authorises that address, not every name that happens to resolve to it.
     /// The operator wrote an address; a hostname request is a different subject and carries its own Host

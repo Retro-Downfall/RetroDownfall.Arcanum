@@ -1,7 +1,10 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels;
@@ -11,6 +14,7 @@ using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
 
+[Collection(TheForgeProcessEnvironmentCollection.Name)]
 public class ArtifactImportExportHelperTests
 {
 
@@ -36,6 +40,7 @@ public class ArtifactImportExportHelperTests
         {
 
             await ArtifactImportExportHelper.WriteJsonAsync(
+                ImmediateTheForgeLocalMutationRunner.Instance,
                 path,
                 export,
                 TheForgeJsonContext.Default.CampaignExportDto,
@@ -82,6 +87,117 @@ public class ArtifactImportExportHelperTests
 
     }
 
+    [Fact]
+    public async Task WriteJsonAsync_SnapshotsTheValueAfterMutationAdmission()
+    {
+
+        CampaignDto campaign = new(
+            Guid.NewGuid(),
+            "Admission",
+            "/campaigns/admission",
+            RetroDownfall.Arcanum.Core.Workspaces.WorkspaceType.Campaign,
+            null,
+            CampaignSettings.CreateDefault(),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        List<CampaignExportSpellDto> spells = [];
+
+        CampaignExportDto export = new(campaign, spells, []);
+
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"forge-admitted-export-{Guid.NewGuid():N}.json");
+
+        try
+        {
+
+            await ArtifactImportExportHelper.WriteJsonAsync(
+                new BeforeMutationRunner(
+                    () => spells.Add(new CampaignExportSpellDto(
+                        "admitted",
+                        null,
+                        "# admitted",
+                        []))),
+                path,
+                export,
+                TheForgeJsonContext.Default.CampaignExportDto,
+                CancellationToken.None);
+
+            (CampaignExportDto? roundTrip, string? error) =
+                await ArtifactImportExportHelper.ReadJsonAsync(
+                    path,
+                    TheForgeJsonContext.Default.CampaignExportDto,
+                    CancellationToken.None);
+
+            Assert.Null(error);
+
+            CampaignExportSpellDto written = Assert.Single(roundTrip!.Spells);
+
+            Assert.Equal("admitted", written.Name);
+
+        }
+        finally
+        {
+
+            if (File.Exists(path))
+            {
+
+                File.Delete(path);
+
+            }
+
+        }
+
+    }
+
+    [Theory]
+    [InlineData(false, ErrorCodes.Data.FileLocked)]
+    [InlineData(true, ErrorCodes.Data.ControlPathUnavailable)]
+    public async Task Managed_root_export_refusal_returns_error_without_creating_a_file(
+        bool unsafeDisposition,
+        string expectedCode)
+    {
+
+        using TheForgeTestHomeScope home = new("forge-artifact-refusal");
+
+        string managedRoot = ArcanumPaths.GrimoireDirectory;
+
+        string path = Path.Combine(managedRoot, "exports", "campaign.json");
+
+        Error error = new(expectedCode, "refused for test");
+
+        RecordingBoundary boundary = new(error, unsafeDisposition);
+
+        TheForgeLocalMutationRunner runner = new(boundary);
+
+        CampaignDto campaign = new(
+            Guid.NewGuid(),
+            "Refused",
+            "/campaigns/refused",
+            RetroDownfall.Arcanum.Core.Workspaces.WorkspaceType.Campaign,
+            null,
+            CampaignSettings.CreateDefault(),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        string? writeError = await ArtifactImportExportHelper.WriteJsonAsync(
+            runner,
+            path,
+            new CampaignExportDto(campaign, [], []),
+            TheForgeJsonContext.Default.CampaignExportDto,
+            CancellationToken.None);
+
+        Assert.Contains(expectedCode, writeError, StringComparison.Ordinal);
+
+        Assert.Equal(1, boundary.CallCount);
+
+        Assert.False(File.Exists(path));
+
+        Assert.False(Directory.Exists(managedRoot));
+
+    }
+
     private sealed class ControllableFileDialog(string? path) : IArtifactFileDialogService
     {
 
@@ -99,6 +215,52 @@ public class ArtifactImportExportHelperTests
 
         public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult(path);
+
+    }
+
+    private sealed class BeforeMutationRunner(Action beforeMutation) : ITheForgeLocalMutationRunner
+    {
+
+        public Task RunAsync(
+            string path,
+            Func<CancellationToken, Task> mutation,
+            CancellationToken cancellationToken = default)
+        {
+
+            beforeMutation();
+
+            return mutation(cancellationToken);
+
+        }
+
+    }
+
+    private sealed class RecordingBoundary(
+        Error error,
+        bool unsafeDisposition) : IArcanumClientMutationBoundary
+    {
+
+        public int CallCount { get; private set; }
+
+        public Task<ArcanumClientMutationResult<T>> RunAsync<T>(
+            Func<T> mutation,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<ArcanumClientMutationResult<T>> RunAsync<T>(
+            Func<CancellationToken, Task<T>> mutation,
+            CancellationToken cancellationToken = default)
+        {
+
+            CallCount++;
+
+            ArcanumClientMutationResult<T> result = unsafeDisposition
+                ? ArcanumClientMutationResult<T>.Unsafe(error)
+                : ArcanumClientMutationResult<T>.Blocked(error);
+
+            return Task.FromResult(result);
+
+        }
 
     }
 
@@ -121,7 +283,8 @@ public class SpellPromptImportFlowTests
             new AlwaysCancelConfirmation(),
             new ControllableFileDialog(null),
             new AlwaysNullTextInput(),
-            new FakeWhispersService());
+            new FakeWhispersService(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
         await viewModel.ImportAsync(CancellationToken.None);
 
@@ -161,7 +324,8 @@ public class SpellPromptImportFlowTests
                 new AlwaysCancelConfirmation(),
                 new ControllableFileDialog(path),
                 new AlwaysNullTextInput(),
-                whispers);
+                whispers,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
             await viewModel.ImportAsync(CancellationToken.None);
 
@@ -231,7 +395,8 @@ public class SpellPromptImportFlowTests
                 new AlwaysCancelConfirmation(),
                 new ControllableFileDialog(path),
                 new AlwaysNullTextInput(),
-                whispers);
+                whispers,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
             await viewModel.ImportAsync(CancellationToken.None);
 

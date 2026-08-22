@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
@@ -11,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -80,7 +83,8 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         ConfigurationCommandService service = new(
             apiClient,
             new ConfigurationValidator(),
-            new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance));
+            new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance),
+            new RecordingGrimoireCliInitialization());
 
         Result<ConfigurationCommandSnapshot> result = await service.ReadAsync(
             CancellationToken.None);
@@ -115,7 +119,8 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
                 new UnreachableHttpClientFactory(),
                 new FakeSecretStore()),
             new ConfigurationValidator(),
-            writer);
+            writer,
+            new RecordingGrimoireCliInitialization());
 
         Result<ConfigurationCommandSnapshot> read = await service.ReadAsync(
             CancellationToken.None);
@@ -152,6 +157,67 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         Assert.Equal(
             6124,
             ConfigurationBootstrapper.LoadPersistedArcanumSettings().Host.Port);
+
+    }
+
+    [Theory]
+    [InlineData("A running host owns the maintenance lock.")]
+    [InlineData("The maintenance lock topology is unsafe.")]
+    [InlineData("An installation factory reset is active.")]
+    public async Task Local_write_refusal_preserves_configuration_bytes(string refusal)
+    {
+
+        global::System.Environment.SetEnvironmentVariable(PortVariable, null);
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        const string original = """{"Arcanum":{"host":{"port":5001}}}""";
+
+        await File.WriteAllTextAsync(ArcanumPaths.ConfigurationFile, original);
+
+        RecordingGrimoireCliInitialization initialization = new(refusal);
+
+        ServiceCollection services = new();
+
+        services.AddSingleton(
+            new ArcanumApiClient(
+                new UnreachableHttpClientFactory(),
+                new FakeSecretStore()));
+
+        services.AddSingleton(new ConfigurationValidator());
+
+        services.AddSingleton(
+            new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance));
+
+        services.AddSingleton<IGrimoireCliInitialization>(initialization);
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        ConfigurationCommandService service =
+            ActivatorUtilities.CreateInstance<ConfigurationCommandService>(provider);
+
+        ArcanumSettings persisted = ConfigurationBootstrapper.LoadPersistedArcanumSettings();
+
+        ConfigurationCommandSnapshot snapshot = new(
+            persisted,
+            ConfigurationAccessMode.LocalBootstrap,
+            []);
+
+        ArcanumSettings candidate = persisted with
+        {
+
+            Host = persisted.Host with { Port = 7333 },
+
+        };
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.WriteAsync(snapshot, candidate, CancellationToken.None));
+
+        Assert.Equal(original, await File.ReadAllTextAsync(ArcanumPaths.ConfigurationFile));
+
+        Assert.Equal(1, initialization.ExclusiveCalls);
+
+        Assert.Equal(0, initialization.BootstrapCalls);
 
     }
 

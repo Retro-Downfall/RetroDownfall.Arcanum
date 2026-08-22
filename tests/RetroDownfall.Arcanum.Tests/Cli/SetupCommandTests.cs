@@ -3,6 +3,7 @@ using System.Text.Json;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -11,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -183,9 +186,51 @@ public sealed class SetupCommandTests : IDisposable
 
         Assert.Empty(world.ProviderCredentials);
 
+        Assert.Equal(0, world.CredentialOrdinaryReadCount);
+
+        Assert.True(world.CredentialPeekReadCount > 0);
+
+        Assert.Equal(0, world.CredentialWriteCount);
+
         Assert.Contains("workspaces.defaultRoot", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("Completion summary", result.Output, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Plan_fails_closed_when_the_preset_snapshot_cannot_be_read()
+    {
+
+        SetupWorld world = NewWorld() with
+        {
+
+            PresetReadFailure = new Error(
+                "Preset.RecoveryRequired",
+                "A prepared preset transaction requires exclusive recovery."),
+
+        };
+
+        CliTestResult result = CliTestHarness.Run(
+            CreateServices(world),
+            "setup",
+            "--plan",
+            "--provider",
+            "alpha",
+            "--endpoint",
+            "https://provider.test/v1",
+            "--model",
+            "gpt-test");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("prepared preset transaction", result.Error, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0, world.ConfigurationWrites);
+
+        Assert.Equal(0, world.PresetApplies);
+
+        Assert.Equal(0, world.CredentialWriteCount);
 
     }
 
@@ -309,6 +354,351 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(
             "https://provider.test/v1",
             world.WrittenSettings?.Providers.Single().Endpoint);
+
+    }
+
+    [Fact]
+    public async Task Apply_revalidates_configuration_inside_the_exclusive_boundary_before_credentials()
+    {
+
+        SetupWorld world = NewWorld();
+
+        RecordingGrimoireCliInitialization initialization = new(
+            beforeOperation: () =>
+            {
+
+                ArcanumSettings changed = ConfigurationPathAccessor.Clone(world.OriginalSettings);
+
+                changed.DefaultModel = "changed-after-review";
+
+                world.ConfigurationReadOverride = changed;
+
+            });
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(world, initialization),
+            [
+                "setup",
+                "--apply",
+                "--provider",
+                "alpha",
+                "--endpoint",
+                "https://provider.test/v1",
+                "--model",
+                "gpt-test",
+                "--provider-key-stdin",
+            ],
+            ProviderSecret + global::System.Environment.NewLine);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, world.CredentialWriteCount);
+
+        Assert.Equal(0, world.ConfigurationWrites);
+
+        Assert.Equal(0, world.PresetApplies);
+
+        Assert.Empty(world.ProviderCredentials);
+
+    }
+
+    [Fact]
+    public async Task Apply_rejects_configuration_access_mode_drift_before_credentials()
+    {
+
+        SetupWorld world = NewWorld();
+
+        world.ConfigurationAccessMode = ConfigurationAccessMode.HostApi;
+
+        RecordingGrimoireCliInitialization initialization = new(
+            beforeOperation: () =>
+                world.ConfigurationAccessMode = ConfigurationAccessMode.LocalBootstrap);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(world, initialization),
+            [
+                "setup",
+                "--apply",
+                "--provider",
+                "alpha",
+                "--endpoint",
+                "https://provider.test/v1",
+                "--model",
+                "gpt-test",
+                "--provider-key-stdin",
+            ],
+            ProviderSecret + global::System.Environment.NewLine);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, world.CredentialWriteCount);
+
+        Assert.Equal(0, world.ConfigurationWrites);
+
+        Assert.Equal(0, world.PresetApplies);
+
+        Assert.Empty(world.ProviderCredentials);
+
+    }
+
+    [Fact]
+    public async Task Apply_revalidates_preset_provenance_inside_the_exclusive_boundary_before_credentials()
+    {
+
+        SetupWorld world = NewWorld();
+
+        RecordingGrimoireCliInitialization initialization = new(
+            beforeOperation: () =>
+            {
+
+                world.PresetProvenanceOverride = new ConfigurationPresetProvenance(
+                    "general-assistant",
+                    1,
+                    DateTimeOffset.Parse("2026-08-22T12:00:00Z"),
+                    "changed-after-review",
+                    ImmutableArray<ConfigurationPresetBaselineValue>.Empty,
+                    ImmutableArray<ConfigurationPresetBaselineValue>.Empty);
+
+            });
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(world, initialization),
+            [
+                "setup",
+                "--apply",
+                "--provider",
+                "alpha",
+                "--endpoint",
+                "https://provider.test/v1",
+                "--model",
+                "gpt-test",
+                "--provider-key-stdin",
+            ],
+            ProviderSecret + global::System.Environment.NewLine);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, world.CredentialWriteCount);
+
+        Assert.Equal(0, world.ConfigurationWrites);
+
+        Assert.Equal(0, world.PresetApplies);
+
+        Assert.Empty(world.ProviderCredentials);
+
+    }
+
+    [Fact]
+    public async Task Apply_revalidates_the_drafted_provider_stored_presence_before_credentials()
+    {
+
+        SetupWorld world = NewWorld();
+
+        RecordingGrimoireCliInitialization initialization = new(
+            beforeOperation: () => world.ProviderCredentials["alpha"] = "sk-arrived-after-review");
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(world, initialization),
+            [
+                "setup",
+                "--apply",
+                "--provider",
+                "alpha",
+                "--endpoint",
+                "https://provider.test/v1",
+                "--model",
+                "gpt-test",
+                "--provider-key-stdin",
+            ],
+            ProviderSecret + global::System.Environment.NewLine);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal("sk-arrived-after-review", world.ProviderCredentials["alpha"]);
+
+        Assert.Equal(0, world.CredentialWriteCount);
+
+        Assert.Equal(0, world.ConfigurationWrites);
+
+        Assert.Equal(0, world.PresetApplies);
+
+    }
+
+    [Fact]
+    public async Task Apply_revalidates_the_exact_candidate_provider_environment_reference()
+    {
+
+        const string variable = "ARCANUM_SETUP_EXPLICIT_PROVIDER_KEY";
+
+        string? previous = global::System.Environment.GetEnvironmentVariable(variable);
+
+        global::System.Environment.SetEnvironmentVariable(variable, null);
+
+        try
+        {
+
+            SetupWorld world = NewWorld();
+
+            world.OriginalSettings.Providers =
+            [
+                new ProviderSettings
+                {
+
+                    Name = "alpha",
+
+                    Endpoint = "https://provider.test/v1",
+
+                    CredentialEnvironmentVariable = variable,
+
+                    Models = ["gpt-test"],
+
+                },
+            ];
+
+            world.OriginalSettings.DefaultModel = "gpt-test";
+
+            RecordingGrimoireCliInitialization initialization = new(
+                beforeOperation: () =>
+                    global::System.Environment.SetEnvironmentVariable(
+                        variable,
+                        "sk-arrived-after-review"));
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                CreateServices(world, initialization),
+                [
+                    "setup",
+                    "--apply",
+                    "--provider",
+                    "alpha",
+                    "--endpoint",
+                    "https://provider.test/v1",
+                    "--model",
+                    "gpt-test",
+                ]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Equal(0, world.CredentialWriteCount);
+
+            Assert.Equal(0, world.ConfigurationWrites);
+
+            Assert.Equal(0, world.PresetApplies);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, previous);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Apply_revalidates_the_drafted_web_environment_presence_before_credentials()
+    {
+
+        const string variable = EnvironmentCredentialResolver.DefaultPerplexityApiKeyEnvironmentVariable;
+
+        string? previous = global::System.Environment.GetEnvironmentVariable(variable);
+
+        global::System.Environment.SetEnvironmentVariable(variable, null);
+
+        try
+        {
+
+            SetupWorld world = NewWorld();
+
+            RecordingGrimoireCliInitialization initialization = new(
+                beforeOperation: () =>
+                    global::System.Environment.SetEnvironmentVariable(
+                        variable,
+                        "pplx-arrived-after-review"));
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                CreateServices(world, initialization),
+                [
+                    "setup",
+                    "--apply",
+                    "--provider",
+                    "alpha",
+                    "--endpoint",
+                    "https://provider.test/v1",
+                    "--model",
+                    "gpt-test",
+                    "--research",
+                    "--research-key-stdin",
+                ],
+                ResearchSecret + global::System.Environment.NewLine);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Equal(0, world.CredentialWriteCount);
+
+            Assert.Equal(0, world.ConfigurationWrites);
+
+            Assert.Equal(0, world.PresetApplies);
+
+            Assert.Null(world.WebResearchCredential);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, previous);
+
+        }
+
+    }
+
+    [Theory]
+    [InlineData("A running host owns the maintenance lock.")]
+    [InlineData("The maintenance lock topology is unsafe.")]
+    [InlineData("An installation factory reset is active.")]
+    public async Task Noninteractive_apply_refusal_prevents_every_setup_commit_effect(
+        string refusal)
+    {
+
+        SetupWorld world = NewWorld();
+
+        RecordingGrimoireCliInitialization initialization = new(refusal);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(world, initialization),
+            [
+                "setup",
+                "--apply",
+                "--provider",
+                "alpha",
+                "--endpoint",
+                "https://provider.test/v1",
+                "--model",
+                "gpt-test",
+                "--preset",
+                "general-assistant",
+                "--provider-key-stdin",
+                "--workspace",
+                _workspaceRoot,
+            ],
+            ProviderSecret + global::System.Environment.NewLine);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Equal(1, initialization.ExclusiveCalls);
+
+        Assert.Equal(0, initialization.BootstrapCalls);
+
+        Assert.Equal(0, world.ConfigurationWrites);
+
+        Assert.Equal(0, world.PresetApplies);
+
+        Assert.Equal(0, world.CredentialWriteCount);
+
+        Assert.Empty(world.ProviderCredentials);
+
+        Assert.Null(world.WebResearchCredential);
+
+        Assert.Null(world.SavedContext);
 
     }
 
@@ -592,6 +982,119 @@ public sealed class SetupCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Provider_environment_and_stored_coexistence_never_deletes_the_replaced_store_on_rollback()
+    {
+
+        const string variable = "ARCANUM_PROVIDER_ALPHA_API_KEY";
+
+        string? previousEnvironment = global::System.Environment.GetEnvironmentVariable(variable);
+
+        global::System.Environment.SetEnvironmentVariable(variable, "sk-environment-value");
+
+        try
+        {
+
+            SetupWorld world = NewWorld() with
+            {
+
+                PresetFailure = new Error("Preset.PrerequisitesMissing", "not applicable"),
+
+            };
+
+            world.ProviderCredentials["alpha"] = "sk-previous-stored-value";
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                CreateServices(world),
+                [
+                    "setup",
+                    "--apply",
+                    "--provider",
+                    "alpha",
+                    "--endpoint",
+                    "https://provider.test/v1",
+                    "--model",
+                    "gpt-test",
+                    "--provider-key-stdin",
+                ],
+                ProviderSecret + global::System.Environment.NewLine);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Equal(ProviderSecret, world.ProviderCredentials["alpha"]);
+
+            Assert.Contains(
+                "arcanum key provider set alpha",
+                result.Error,
+                StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, previousEnvironment);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Web_environment_and_stored_coexistence_never_deletes_the_replaced_store_on_rollback()
+    {
+
+        const string variable = EnvironmentCredentialResolver.DefaultPerplexityApiKeyEnvironmentVariable;
+
+        string? previousEnvironment = global::System.Environment.GetEnvironmentVariable(variable);
+
+        global::System.Environment.SetEnvironmentVariable(variable, "pplx-environment-value");
+
+        try
+        {
+
+            SetupWorld world = NewWorld() with
+            {
+
+                PresetFailure = new Error("Preset.PrerequisitesMissing", "not applicable"),
+
+            };
+
+            world.SetWebResearchCredential("pplx-previous-stored-value");
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                CreateServices(world),
+                [
+                    "setup",
+                    "--apply",
+                    "--provider",
+                    "alpha",
+                    "--endpoint",
+                    "https://provider.test/v1",
+                    "--model",
+                    "gpt-test",
+                    "--research",
+                    "--research-key-stdin",
+                ],
+                ResearchSecret + global::System.Environment.NewLine);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Equal(ResearchSecret, world.WebResearchCredential);
+
+            Assert.Contains(
+                "arcanum key provider set perplexity",
+                result.Error,
+                StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, previousEnvironment);
+
+        }
+
+    }
+
+    [Fact]
     public void Re_running_setup_against_a_matching_installation_is_idempotent()
     {
 
@@ -842,7 +1345,9 @@ public sealed class SetupCommandTests : IDisposable
     private SetupWorld NewWorld() =>
         new() { OriginalWorkspaceRoot = _originalWorkspaceRoot };
 
-    private static ServiceCollection CreateServices(SetupWorld world)
+    private static ServiceCollection CreateServices(
+        SetupWorld world,
+        IGrimoireCliInitialization? initialization = null)
     {
 
         ServiceCollection services = new();
@@ -851,7 +1356,14 @@ public sealed class SetupCommandTests : IDisposable
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
+        services.RemoveAll<IGrimoireCliInitialization>();
+
+        services.AddSingleton<IGrimoireCliInitialization>(
+            initialization ?? new RecordingGrimoireCliInitialization());
+
         services.AddSingleton<IConfigurationCommandService>(world);
+
+        services.AddSingleton<IConfigurationCommandExclusiveWriter>(world);
 
         services.AddSingleton<IConfigurationPresetService>(world);
 
@@ -862,6 +1374,10 @@ public sealed class SetupCommandTests : IDisposable
         services.AddSingleton<IWebResearchCredentialStore>(world);
 
         services.AddSingleton<ICliContextStore>(world);
+
+        services.RemoveAll<ICliContextExclusiveWriter>();
+
+        services.AddSingleton<ICliContextExclusiveWriter>(world);
 
         services.AddSingleton<ISetupProviderProbe>(world);
 
@@ -875,11 +1391,13 @@ public sealed class SetupCommandTests : IDisposable
     /// </summary>
     private sealed record SetupWorld :
         IConfigurationCommandService,
+        IConfigurationCommandExclusiveWriter,
         IConfigurationPresetService,
         IConfigurationPresetPersistence,
         IProviderCredentialStore,
         IWebResearchCredentialStore,
         ICliContextStore,
+        ICliContextExclusiveWriter,
         ISetupProviderProbe
     {
 
@@ -906,6 +1424,12 @@ public sealed class SetupCommandTests : IDisposable
 
         public int PresetApplies { get; private set; }
 
+        public int CredentialOrdinaryReadCount { get; private set; }
+
+        public int CredentialPeekReadCount { get; private set; }
+
+        public int CredentialWriteCount { get; private set; }
+
         public ArcanumSettings? WrittenSettings { get; private set; }
 
         public CliContextDocument? SavedContext { get; private set; }
@@ -916,6 +1440,15 @@ public sealed class SetupCommandTests : IDisposable
         public Error? ConfigurationWriteFailure { get; init; }
 
         public Error? PresetFailure { get; init; }
+
+        public Error? PresetReadFailure { get; init; }
+
+        public ArcanumSettings? ConfigurationReadOverride { get; set; }
+
+        public ConfigurationAccessMode ConfigurationAccessMode { get; set; } =
+            ConfigurationAccessMode.LocalBootstrap;
+
+        public ConfigurationPresetProvenance? PresetProvenanceOverride { get; set; }
 
         public bool PresetIdempotent { get; set; }
 
@@ -928,8 +1461,8 @@ public sealed class SetupCommandTests : IDisposable
             Task.FromResult(
                 Result<ConfigurationCommandSnapshot>.Success(
                     new ConfigurationCommandSnapshot(
-                        OriginalSettings,
-                        ConfigurationAccessMode.LocalBootstrap,
+                        ConfigurationReadOverride ?? OriginalSettings,
+                        ConfigurationAccessMode,
                         [])));
 
         public Task<Result> ValidateAsync(
@@ -969,6 +1502,12 @@ public sealed class SetupCommandTests : IDisposable
             return Task.FromResult(Result.Success());
 
         }
+
+        public Task<Result> WriteUnderExclusiveAsync(
+            ConfigurationCommandSnapshot snapshot,
+            ArcanumSettings settings,
+            CancellationToken cancellationToken) =>
+            WriteAsync(snapshot, settings, cancellationToken);
 
         public IReadOnlyList<ConfigurationPresetDefinition> List() =>
             ConfigurationPresetCatalog.All;
@@ -1050,21 +1589,28 @@ public sealed class SetupCommandTests : IDisposable
             throw new NotSupportedException("The wizard inspects through the persistence snapshot.");
 
         Task<Result<ConfigurationPresetSnapshot>> IConfigurationPresetPersistence.ReadAsync(
-            CancellationToken cancellationToken) =>
+            CancellationToken cancellationToken) => PresetSnapshot();
+
+        Task<Result<ConfigurationPresetSnapshot>> IConfigurationPresetPersistence.PeekAsync(
+            CancellationToken cancellationToken) => PresetSnapshot();
+
+        private Task<Result<ConfigurationPresetSnapshot>> PresetSnapshot() =>
             Task.FromResult(
-                Result<ConfigurationPresetSnapshot>.Success(
-                    new ConfigurationPresetSnapshot(
-                        OriginalSettings,
-                        ConfigurationEnvironmentResolver.Resolve(OriginalSettings),
-                        PresetIdempotent
-                            ? new ConfigurationPresetProvenance(
-                                "general-assistant",
-                                1,
-                                DateTimeOffset.UnixEpoch,
-                                "hash",
-                                ImmutableArray<ConfigurationPresetBaselineValue>.Empty,
-                                ImmutableArray<ConfigurationPresetBaselineValue>.Empty)
-                            : null)));
+                PresetReadFailure is { } failure
+                    ? Result<ConfigurationPresetSnapshot>.Failure(failure)
+                    : Result<ConfigurationPresetSnapshot>.Success(
+                        new ConfigurationPresetSnapshot(
+                            OriginalSettings,
+                            ConfigurationEnvironmentResolver.Resolve(OriginalSettings),
+                            PresetIdempotent
+                                ? new ConfigurationPresetProvenance(
+                                    "general-assistant",
+                                    1,
+                                    DateTimeOffset.UnixEpoch,
+                                    "hash",
+                                    ImmutableArray<ConfigurationPresetBaselineValue>.Empty,
+                                    ImmutableArray<ConfigurationPresetBaselineValue>.Empty)
+                                : PresetProvenanceOverride)));
 
         Task<Result<ConfigurationPresetCommitResult>> IConfigurationPresetPersistence.ApplyAsync(
             ConfigurationPresetCommitRequest request,
@@ -1078,17 +1624,33 @@ public sealed class SetupCommandTests : IDisposable
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync(
             string providerName,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
-                ProviderCredentials.TryGetValue(providerName, out string? value)
-                    ? SecretStoreReadResult.Ok(value)
-                    : SecretStoreReadResult.Missing());
+            CancellationToken cancellationToken = default)
+        {
+
+            CredentialOrdinaryReadCount++;
+
+            return ReadProvider(providerName);
+
+        }
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
+            string providerName,
+            CancellationToken cancellationToken = default)
+        {
+
+            CredentialPeekReadCount++;
+
+            return ReadProvider(providerName);
+
+        }
 
         public Task SaveApiKeyAsync(
             string providerName,
             string apiKey,
             CancellationToken cancellationToken = default)
         {
+
+            CredentialWriteCount++;
 
             ProviderCredentials[providerName] = apiKey;
 
@@ -1103,6 +1665,8 @@ public sealed class SetupCommandTests : IDisposable
             CancellationToken cancellationToken = default)
         {
 
+            CredentialWriteCount++;
+
             _ = ProviderCredentials.Remove(providerName);
 
             return Task.CompletedTask;
@@ -1110,16 +1674,31 @@ public sealed class SetupCommandTests : IDisposable
         }
 
         public Task<SecretStoreReadResult> GetPerplexityApiKeyReadResultAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
-                WebResearchCredential is null
-                    ? SecretStoreReadResult.Missing()
-                    : SecretStoreReadResult.Ok(WebResearchCredential));
+            CancellationToken cancellationToken = default)
+        {
+
+            CredentialOrdinaryReadCount++;
+
+            return ReadWebResearch();
+
+        }
+
+        public Task<SecretStoreReadResult> PeekPerplexityApiKeyReadResultAsync(
+            CancellationToken cancellationToken = default)
+        {
+
+            CredentialPeekReadCount++;
+
+            return ReadWebResearch();
+
+        }
 
         public Task SavePerplexityApiKeyAsync(
             string apiKey,
             CancellationToken cancellationToken = default)
         {
+
+            CredentialWriteCount++;
 
             WebResearchCredential = apiKey;
 
@@ -1132,15 +1711,35 @@ public sealed class SetupCommandTests : IDisposable
         public Task DeletePerplexityApiKeyAsync(CancellationToken cancellationToken = default)
         {
 
+            CredentialWriteCount++;
+
             WebResearchCredential = null;
 
             return Task.CompletedTask;
 
         }
 
+        public void SetWebResearchCredential(string value) =>
+            WebResearchCredential = value;
+
+        private Task<SecretStoreReadResult> ReadProvider(string providerName) =>
+            Task.FromResult(
+                ProviderCredentials.TryGetValue(providerName, out string? value)
+                    ? SecretStoreReadResult.Ok(value)
+                    : SecretStoreReadResult.Missing());
+
+        private Task<SecretStoreReadResult> ReadWebResearch() =>
+            Task.FromResult(
+                WebResearchCredential is null
+                    ? SecretStoreReadResult.Missing()
+                    : SecretStoreReadResult.Ok(WebResearchCredential));
+
         public CliContextDocument Load() => SavedContext ?? CliContextDocument.Empty;
 
         public void Save(CliContextDocument document) => SavedContext = document;
+
+        public void SaveUnderExclusive(CliContextDocument document) =>
+            SavedContext = document;
 
         public string? ProbedApiKey { get; private set; }
 

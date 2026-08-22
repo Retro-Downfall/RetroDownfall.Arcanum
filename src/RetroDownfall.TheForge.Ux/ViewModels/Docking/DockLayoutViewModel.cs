@@ -474,14 +474,20 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
         Bottom.PropertyChanged -= OnGroupPropertyChanged;
 
-        // Flush pending layout save before cancelling the debounce timer.
-        FlushPersist();
+        bool hadPendingPersist = _persistCts is not null;
 
         _persistCts?.Cancel();
 
         _persistCts?.Dispose();
 
         _persistCts = null;
+
+        if (hadPendingPersist)
+        {
+
+            _ = FlushPersistAsync();
+
+        }
 
         GC.SuppressFinalize(this);
 
@@ -701,10 +707,10 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
     }
 
-    private void FlushPersist()
+    private async Task FlushPersistAsync()
     {
 
-        if (_settingsStore is null || _persistCts is null)
+        if (_settingsStore is null)
         {
 
             return;
@@ -714,7 +720,7 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
         try
         {
 
-            PersistNowAsync(CancellationToken.None).GetAwaiter().GetResult();
+            await PersistNowAsync(CancellationToken.None).ConfigureAwait(false);
 
         }
         catch (Exception ex)

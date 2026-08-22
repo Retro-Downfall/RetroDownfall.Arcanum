@@ -1216,6 +1216,16 @@ public sealed class AttachmentCommandTests
 
             Requests.Add(recorded);
 
+            if (recorded.Path == "/api/perception/chronosync")
+            {
+
+                return JsonResponse(
+                    """
+                    {"data":{"previousSnapshotTime":null,"newThreads":[],"missingThreads":[],"domainChanged":false,"previousDomain":null},"isSuccess":true,"error":null,"traceId":"test"}
+                    """);
+
+            }
+
             if (recorded.Path == "/api/intelligence/ping-stream")
             {
 
@@ -1409,11 +1419,20 @@ public sealed class AttachmentCommandTests
 
     }
 
-    private sealed class NoopGrimoireInitialization : IGrimoireCliInitialization
+    private sealed class NoopGrimoireInitialization :
+        IGrimoireCliInitialization,
+        IServiceProvider
     {
 
-        public Task EnsureInitializedAsync(CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task<T> RunExclusiveAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) => operation(this, cancellationToken);
+
+        public Task<T> RunExclusiveWithBootstrapAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) => operation(this, cancellationToken);
+
+        public object? GetService(Type serviceType) => null;
 
     }
 

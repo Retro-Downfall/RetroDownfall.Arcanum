@@ -13,6 +13,64 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 public sealed class InstallationResetCredentialCatalogTests
 {
 
+    [Fact]
+    public void Installation_reset_active_accounts_require_one_canonical_profile_suffix()
+    {
+
+        string profileSuffix = new string('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength);
+
+        string otherProfileSuffix = new string('b', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength);
+
+        string keyAccount = ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(profileSuffix);
+
+        string anchorAccount = ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(profileSuffix);
+
+        Assert.Equal("installation-reset-active-key-" + profileSuffix, keyAccount);
+
+        Assert.Equal("installation-reset-active-anchor-" + profileSuffix, anchorAccount);
+
+        Assert.True(ArcanumCredentialIdentity.IsInstallationResetActiveAccount(keyAccount));
+
+        Assert.True(ArcanumCredentialIdentity.IsInstallationResetActiveAccount(anchorAccount));
+
+        Assert.NotEqual(
+            keyAccount,
+            ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(otherProfileSuffix));
+
+        Assert.NotEqual(
+            anchorAccount,
+            ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(otherProfileSuffix));
+
+        foreach (string invalid in (string[])
+                 [
+                     ArcanumCredentialIdentity.InstallationResetActiveKeyAccountPrefix,
+                     "installation-reset-active-key",
+                     ArcanumCredentialIdentity.InstallationResetActiveKeyAccountPrefix
+                         + profileSuffix.ToUpperInvariant(),
+                     ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix + "too-short",
+                     ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix
+                         + new string('g', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength),
+                     ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(profileSuffix),
+                 ])
+        {
+
+            Assert.False(ArcanumCredentialIdentity.IsInstallationResetActiveAccount(invalid));
+
+        }
+
+        _ = Assert.Throws<ArgumentException>(
+            () => ArcanumCredentialIdentity.InstallationResetActiveKeyAccount("too-short"));
+
+        _ = Assert.Throws<ArgumentException>(
+            () => ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(
+                profileSuffix.ToUpperInvariant()));
+
+        _ = Assert.Throws<ArgumentException>(
+            () => ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(
+                ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(otherProfileSuffix)));
+
+    }
+
     /// <summary>
     /// Ordinary credential cleanup keeps the host-tools marker, asserted where the erasure paths do.
     /// </summary>

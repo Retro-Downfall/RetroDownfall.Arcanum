@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -45,6 +47,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
     private readonly GrimoireSchemaInstaller _schemaInstaller;
 
+    private readonly InstallationMaintenanceCoordination? _maintenanceCoordination;
+
     /// <summary>
     /// The Covenant arm of a full restore, or <see langword="null"/> on an installation that never
     /// enabled the gate.
@@ -58,7 +62,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         Func<IBackupService>? safetyBackupFactory,
         TimeProvider timeProvider,
         GrimoireSchemaInstaller schemaInstaller,
-        BackupRestoreServiceOptions? options = null)
+        BackupRestoreServiceOptions? options = null,
+        InstallationMaintenanceCoordination? maintenanceCoordination = null)
     {
 
         _paths = paths;
@@ -75,6 +80,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             ?? throw new ArgumentNullException(nameof(schemaInstaller));
 
         _options = options ?? new BackupRestoreServiceOptions();
+
+        _maintenanceCoordination = maintenanceCoordination;
 
         _covenant = _options.RestoreStaging is { } staging
             ? new BackupRestoreCovenantCoordinator(
@@ -125,13 +132,15 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         ArgumentNullException.ThrowIfNull(request);
 
-        using ArcanumMaintenanceLock? maintenance = ArcanumMaintenanceLock.TryAcquire(
-            _paths.GrimoireDirectory);
+        ArcanumMaintenanceLockAcquisitionResult acquisition =
+            ArcanumMaintenanceLock.AcquireDetailed(_paths.GrimoireDirectory);
+
+        using ArcanumMaintenanceLock? maintenance = acquisition.Lock;
 
         return await BuildPlanAsync(
             request,
             recoveryPassphrase,
-            maintenance is not null,
+            acquisition.Disposition,
             cancellationToken).ConfigureAwait(false);
 
     }
@@ -148,13 +157,15 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         List<BackupRestorePhaseRecord> phases = [];
 
-        using ArcanumMaintenanceLock? maintenance = ArcanumMaintenanceLock.TryAcquire(
-            _paths.GrimoireDirectory);
+        ArcanumMaintenanceLockAcquisitionResult acquisition =
+            ArcanumMaintenanceLock.AcquireDetailed(_paths.GrimoireDirectory);
+
+        using ArcanumMaintenanceLock? maintenance = acquisition.Lock;
 
         BackupRestorePlan plan = await BuildPlanAsync(
             request,
             recoveryPassphrase,
-            maintenance is not null,
+            acquisition.Disposition,
             cancellationToken).ConfigureAwait(false);
 
         Record(phases, BackupRestorePhase.Authenticate, $"Archive format {plan.FormatVersion} accepted.");
@@ -220,14 +231,98 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         }
 
-        return await ExecuteAsync(
-            request,
-            recoveryPassphrase,
-            operationId,
-            plan,
-            phases,
-            maintenance,
-            cancellationToken).ConfigureAwait(false);
+        InstallationMaintenanceCoordinationLease? coordinationLease = null;
+
+        try
+        {
+
+            if (request.ConflictMode is BackupRestoreConflictMode.ReplaceInstallation
+                && _maintenanceCoordination is not null)
+            {
+
+                if (maintenance is null)
+                {
+
+                    return Rejected(
+                        operationId,
+                        plan,
+                        phases,
+                        [
+                            new BackupVerifyIssue(
+                                ErrorCodes.Data.ControlPathUnavailable,
+                                "Replacement restore requires the exact acquired maintenance lock before client coordination."),
+                        ]);
+
+                }
+
+                InstallationMaintenanceCoordinationResult coordinated =
+                    await _maintenanceCoordination
+                        .AcquireReplacementRestoreAsync(
+                            maintenance,
+                            operationId,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                if (coordinated.Disposition
+                    is not InstallationMaintenanceCoordinationDisposition.Acquired)
+                {
+
+                    return Rejected(
+                        operationId,
+                        plan,
+                        phases,
+                        [Issue(coordinated.Error)]);
+
+                }
+
+                coordinationLease = coordinated.BorrowAcquiredLease();
+
+            }
+
+            BackupRestoreResult restored = await ExecuteAsync(
+                request,
+                recoveryPassphrase,
+                operationId,
+                plan,
+                phases,
+                maintenance,
+                cancellationToken).ConfigureAwait(false);
+
+            if (coordinationLease is not null
+                && restored.Status is not BackupRestoreStatus.ReconciliationRequired)
+            {
+
+                Result removed = await coordinationLease
+                    .RemoveBlockerIfSafeAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (removed.IsFailure)
+                {
+
+                    restored = restored with
+                    {
+                        Status = BackupRestoreStatus.ReconciliationRequired,
+                        Issues = [.. restored.Issues, Issue(removed.Error)],
+                    };
+
+                }
+
+            }
+
+            return restored;
+
+        }
+        finally
+        {
+
+            if (coordinationLease is not null)
+            {
+
+                await coordinationLease.DisposeAsync().ConfigureAwait(false);
+
+            }
+
+        }
 
     }
 
@@ -250,7 +345,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     private async Task<BackupRestorePlan> BuildPlanAsync(
         BackupRestoreRequest request,
         ReadOnlyMemory<char> recoveryPassphrase,
-        bool maintenanceAcquired,
+        ArcanumMaintenanceLockAcquisitionDisposition maintenanceDisposition,
         CancellationToken cancellationToken)
     {
 
@@ -266,13 +361,21 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         string destinationRoot = ResolveDestinationRoot(request, blockers);
 
+        bool maintenanceAcquired = maintenanceDisposition
+            is ArcanumMaintenanceLockAcquisitionDisposition.Acquired;
+
         if (!maintenanceAcquired)
         {
 
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_maintenance_unavailable",
-                "Another process holds the Arcanum maintenance lock for this installation. Stop the "
-                + "running host (or the other restore) and try again.",
+                maintenanceDisposition is ArcanumMaintenanceLockAcquisitionDisposition.Contended
+                    ? "Another process holds the Arcanum maintenance lock for this installation. Stop the "
+                        + "running host, or wait for the installation reset or other restore to finish, then "
+                        + "try again."
+                    : "The Arcanum maintenance-lock topology, identity, or owner-only permissions "
+                        + "could not be validated safely. Inspect the installation path and its "
+                        + "permissions before trying again; the current installation is unchanged.",
                 ArcanumMaintenanceLock.LockPathFor(_paths.GrimoireDirectory)));
 
         }
@@ -678,6 +781,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         try
         {
+
+            _options.BeforeFirstRestoreMutationForTests?.Invoke();
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagingParent);
 

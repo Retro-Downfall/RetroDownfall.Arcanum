@@ -45,7 +45,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
                 ["Path: (empty or invalid)"]);
         }
 
-        string root = Path.GetFullPath(directoryPath);
+        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
 
         if (!Directory.Exists(root))
         {

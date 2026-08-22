@@ -144,6 +144,16 @@ public interface IFileEncryptionKeyProvider
     ValueTask<FileEncryptionKeyMaterial> GetForReadAsync(
         string keyId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolves existing key material without migrating, repairing, or persisting credential state.
+    /// The default preserves compatibility for providers whose ordinary read is already pure;
+    /// migration-capable providers must override it.
+    /// </summary>
+    ValueTask<FileEncryptionKeyMaterial> PeekForReadAsync(
+        string keyId,
+        CancellationToken cancellationToken = default) =>
+        GetForReadAsync(keyId, cancellationToken);
 }
 
 public interface IFileEncryptionKeyRing : IFileEncryptionKeyProvider

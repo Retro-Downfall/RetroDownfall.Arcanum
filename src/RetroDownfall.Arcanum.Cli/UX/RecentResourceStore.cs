@@ -1,5 +1,7 @@
 using System.Text;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.UX;
@@ -12,15 +14,22 @@ public sealed class RecentResourceStore : IRecentResourceStore
     private const int MaxEntries = 50;
     private readonly object _gate = new();
     private readonly string _path;
+    private readonly IArcanumClientMutationBoundary _mutationBoundary;
 
-    public RecentResourceStore()
-        : this(Path.Combine(ArcanumPaths.GrimoireDirectory, "recent-resources.txt"))
+    public RecentResourceStore(IArcanumClientMutationBoundary mutationBoundary)
+        : this(
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "recent-resources.txt"),
+            mutationBoundary)
     {
     }
 
-    internal RecentResourceStore(string path)
+    internal RecentResourceStore(
+        string path,
+        IArcanumClientMutationBoundary mutationBoundary)
     {
         _path = path;
+
+        _mutationBoundary = mutationBoundary;
     }
 
     public IReadOnlyList<string> GetRecentIds(string resourceKind)
@@ -35,85 +44,120 @@ public sealed class RecentResourceStore : IRecentResourceStore
         }
     }
 
-    public void Remember(string resourceKind, string id)
+    public async Task RememberAsync(
+        string resourceKind,
+        string id,
+        Func<CancellationToken, Task<Result<bool>>> revalidateAsync,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(revalidateAsync);
+
         if (string.IsNullOrWhiteSpace(resourceKind) || string.IsNullOrWhiteSpace(id))
         {
             return;
         }
 
-        lock (_gate)
+        _ = await _mutationBoundary
+            .RunAsync(
+                async token =>
+                {
+
+                    Result<bool> revalidated = await revalidateAsync(token)
+                        .ConfigureAwait(false);
+
+                    if (revalidated.IsFailure || !revalidated.Value)
+                    {
+
+                        return false;
+
+                    }
+
+                    lock (_gate)
+                    {
+
+                        RememberUnderExclusive(resourceKind, id);
+
+                    }
+
+                    return true;
+
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private void RememberUnderExclusive(string resourceKind, string id)
+    {
+
+        try
         {
+            List<RecentEntry> entries = ReadEntries()
+                .Where(entry => !(string.Equals(entry.Kind, resourceKind, StringComparison.Ordinal)
+                    && string.Equals(entry.Id, id, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            entries.Add(new RecentEntry(resourceKind, id, DateTimeOffset.UtcNow));
+            entries = entries.OrderByDescending(entry => entry.SelectedAt).Take(MaxEntries).ToList();
+
+            string? directory = Path.GetDirectoryName(_path);
+            if (string.IsNullOrEmpty(directory))
+            {
+                return;
+            }
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
+            string temp = _path + ".tmp." + Guid.NewGuid().ToString("N");
+
             try
             {
-                List<RecentEntry> entries = ReadEntries()
-                    .Where(entry => !(string.Equals(entry.Kind, resourceKind, StringComparison.Ordinal)
-                        && string.Equals(entry.Id, id, StringComparison.OrdinalIgnoreCase)))
-                    .ToList();
-                entries.Add(new RecentEntry(resourceKind, id, DateTimeOffset.UtcNow));
-                entries = entries.OrderByDescending(entry => entry.SelectedAt).Take(MaxEntries).ToList();
 
-                string? directory = Path.GetDirectoryName(_path);
-                if (string.IsNullOrEmpty(directory))
+                using (FileStream stream = new(
+                    temp,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None))
+                using (StreamWriter writer = new(stream, Encoding.UTF8))
                 {
-                    return;
+
+                    SecureFilePermissions.ApplyOwnerOnlyFile(temp);
+
+                    foreach (RecentEntry entry in entries)
+                    {
+
+                        writer.WriteLine(Serialize(entry));
+
+                    }
+
+                    writer.Flush();
+
+                    stream.Flush(flushToDisk: true);
+
                 }
 
-                SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
-                string temp = _path + ".tmp." + Guid.NewGuid().ToString("N");
+                File.Move(temp, _path, overwrite: true);
+
+                SecureFilePermissions.ApplyOwnerOnlyFile(_path);
+
+            }
+            finally
+            {
 
                 try
                 {
 
-                    using (FileStream stream = new(
-                        temp,
-                        FileMode.CreateNew,
-                        FileAccess.Write,
-                        FileShare.None))
-                    using (StreamWriter writer = new(stream, Encoding.UTF8))
-                    {
-
-                        SecureFilePermissions.ApplyOwnerOnlyFile(temp);
-
-                        foreach (RecentEntry entry in entries)
-                        {
-
-                            writer.WriteLine(Serialize(entry));
-
-                        }
-
-                        writer.Flush();
-
-                        stream.Flush(flushToDisk: true);
-
-                    }
-
-                    File.Move(temp, _path, overwrite: true);
-
-                    SecureFilePermissions.ApplyOwnerOnlyFile(_path);
+                    File.Delete(temp);
 
                 }
-                finally
+                catch (Exception cleanupException) when (
+                    cleanupException is IOException or UnauthorizedAccessException)
                 {
 
-                    try
-                    {
-
-                        File.Delete(temp);
-
-                    }
-                    catch (Exception cleanupException) when (
-                        cleanupException is IOException or UnauthorizedAccessException)
-                    {
-
-                    }
-
                 }
+
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
-            {
-                // Recency is an optional UX hint. Selection must continue when it cannot persist.
-            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // Recency is an optional UX hint. Selection must continue when it cannot persist.
         }
     }
 

@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -322,9 +323,14 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
     {
         public Guid? GetLastSessionId() => null;
 
-        public void SaveSessionId(Guid id)
-        {
-        }
+        public Task<ArcanumClientMutationResult<CliContextDocument>>
+            SaveSessionIdAsync(
+                Guid id,
+                Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+                CancellationToken cancellationToken) =>
+            Task.FromResult(
+                ArcanumClientMutationResult<CliContextDocument>.Completed(
+                    CliContextDocument.Empty with { SessionId = id }));
     }
 
     private sealed class TestOptionsMonitor(ArcanumSettings current) : IOptionsMonitor<ArcanumSettings>
@@ -1004,9 +1010,14 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     {
         public Guid? GetLastSessionId() => null;
 
-        public void SaveSessionId(Guid id)
-        {
-        }
+        public Task<ArcanumClientMutationResult<CliContextDocument>>
+            SaveSessionIdAsync(
+                Guid id,
+                Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+                CancellationToken cancellationToken) =>
+            Task.FromResult(
+                ArcanumClientMutationResult<CliContextDocument>.Completed(
+                    CliContextDocument.Empty with { SessionId = id }));
     }
 
     private sealed class TestOptionsMonitor(ArcanumSettings current) : IOptionsMonitor<ArcanumSettings>

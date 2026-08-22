@@ -1,7 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -9,65 +12,181 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 public sealed class GrimoireCliInitialization(
     ISecretStore secretStore,
     IGrimoireDbPassphraseSource passphraseSource,
-    IServiceScopeFactory scopeFactory) : IGrimoireCliInitialization
+    IServiceScopeFactory scopeFactory,
+    IInstallationStartupProbe startupProbe,
+    IArcanumClientMutationBoundary clientMutationBoundary) : IGrimoireCliInitialization
 {
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
-    private volatile bool _completed;
-
     /// <summary>
-    /// Bootstraps the Grimoire for a CLI invocation, taking the installation lock only if it is free.
+    /// Acquires exclusive installation ownership without bootstrapping, and retains it until the
+    /// caller's entire operation has completed.
     /// </summary>
     /// <remarks>
-    /// Two arms, both deliberate. If the lock is acquired the CLI is the sole owner of this
-    /// installation and runs the full bootstrap under it, including Covenant authority preparation.
-    /// If it cannot be acquired a live host holds it, and that host already prepared authority at its
-    /// own startup, so the CLI proceeds without the lock and without repeating that work.
-    ///
-    /// <para>Hard-failing on the second arm would be a regression, not a safety improvement.
-    /// <c>arcanum ask</c> and <c>arcanum run</c> are expected to work while the host is running, and
-    /// they already do so safely through WAL journaling plus <c>busy_timeout</c> rather than through
-    /// exclusive ownership. Refusing to start because a host exists would break the ordinary case to
-    /// protect a case the concurrency model already covers.</para>
-    ///
-    /// <para>The first arm therefore also owns interrupted-restore recovery. Both phases run inside the
-    /// bootstrap under this lock, and a restore whose topology or authority cannot be proved throws out
-    /// of here rather than completing: a CLI that reported success would be a second surface publishing
-    /// readiness on a replacement nobody revalidated (§10.19.8).</para>
+    /// This boundary is only for commands that intentionally operate on local storage without a host.
+    /// Host-facing commands use the authenticated API instead. Contention and unsafe lock evidence both
+    /// fail closed; neither is authority to bootstrap or open the Grimoire without ownership.
     /// </remarks>
-    public async Task EnsureInitializedAsync(CancellationToken cancellationToken)
+    public Task<T> RunExclusiveAsync<T>(
+        Func<IServiceProvider, CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken) =>
+        RunExclusiveCoreAsync(
+            operation,
+            bootstrapGrimoire: false,
+            cancellationToken);
+
+    /// <summary>
+    /// Acquires exclusive installation ownership, bootstraps under that exact handle, and retains it
+    /// until the caller's entire operation has completed.
+    /// </summary>
+    public Task<T> RunExclusiveWithBootstrapAsync<T>(
+        Func<IServiceProvider, CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken) =>
+        RunExclusiveCoreAsync(
+            operation,
+            bootstrapGrimoire: true,
+            cancellationToken);
+
+    private async Task<T> RunExclusiveCoreAsync<T>(
+        Func<IServiceProvider, CancellationToken, Task<T>> operation,
+        bool bootstrapGrimoire,
+        CancellationToken cancellationToken)
     {
-        if (_completed)
-        {
-            return;
-        }
+        ArgumentNullException.ThrowIfNull(operation);
 
         await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            if (_completed)
+            ArcanumMaintenanceLockAcquisitionResult acquisition =
+                ArcanumMaintenanceLock.AcquireDetailed(ArcanumPaths.GrimoireDirectory);
+
+            if (acquisition.Disposition
+                is ArcanumMaintenanceLockAcquisitionDisposition.Unsafe)
             {
-                return;
+
+                throw new InvalidOperationException(
+                    "The Arcanum maintenance lock could not be acquired safely because its topology, identity, or owner-only permissions could not be validated.");
+
             }
 
-            using ArcanumMaintenanceLock? cliLock =
-                ArcanumMaintenanceLock.TryAcquire(ArcanumPaths.GrimoireDirectory);
+            if (acquisition.Disposition
+                is ArcanumMaintenanceLockAcquisitionDisposition.Contended)
+            {
+
+                throw new InvalidOperationException(
+                    "The exclusive Grimoire operation cannot begin while a running host, backup restore, or installation reset owns the maintenance lock.");
+
+            }
+
+            using ArcanumMaintenanceLock cliLock = acquisition.BorrowAcquiredLock();
+
+            ArcanumClientMutationResult<T> mutation = await clientMutationBoundary
+                .RunAsync(
+                    token => RunUnderBothLocksAsync(
+                        operation,
+                        bootstrapGrimoire,
+                        acquisition,
+                        cliLock,
+                        token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!mutation.IsCompleted)
+            {
+
+                throw new InvalidOperationException(
+                    mutation.Disposition is ArcanumClientMutationDisposition.Blocked
+                        ? "The exclusive Grimoire operation is blocked by active client mutation or installation maintenance evidence. "
+                            + mutation.Error.Message
+                        : "The exclusive Grimoire operation could not validate client-mutation coordination safely. "
+                            + mutation.Error.Message);
+
+            }
+
+            return mutation.Value;
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+    }
+
+    private async Task<T> RunUnderBothLocksAsync<T>(
+        Func<IServiceProvider, CancellationToken, Task<T>> operation,
+        bool bootstrapGrimoire,
+        ArcanumMaintenanceLockAcquisitionResult acquisition,
+        ArcanumMaintenanceLock cliLock,
+        CancellationToken cancellationToken)
+    {
+
+        GrimoireGuardedRootTopology.EnsureOwnedRootIsSafe(
+            cliLock,
+            ArcanumPaths.GrimoireDirectory);
+
+        Result<ActiveInstallationReset?> activeRead = await startupProbe
+            .ReadActiveResetAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            throw new InvalidOperationException(
+                "Installation reset recovery state could not be read safely. "
+                + activeRead.Error.Message);
+
+        }
+
+        if (activeRead.Value is not null)
+        {
+
+            throw new InvalidOperationException(
+                "An installation factory reset is active. Resume it before running a direct Grimoire operation.");
+
+        }
+
+        if (bootstrapGrimoire)
+        {
 
             await GrimoireDatabaseBootstrapper
                 .EnsureInitializedAsync(
                     secretStore,
                     passphraseSource,
                     scopeFactory,
+                    ArcanumPaths.GrimoireDatabaseFile,
+                    ArcanumPaths.GrimoireDirectory,
                     cliLock,
+                    expectedInstallationId: null,
+                    postRestoreTopology: _ =>
+                    {
+
+                        ArcanumMaintenanceLock borrowed =
+                            acquisition.BorrowAcquiredLock();
+
+                        if (!ReferenceEquals(borrowed, cliLock))
+                        {
+
+                            throw new InvalidOperationException(
+                                "Post-restore CLI bootstrap requires the exact acquired maintenance lock.");
+
+                        }
+
+                        GrimoireGuardedRootTopology.EnsureOwnedRootIsSafe(
+                            borrowed,
+                            ArcanumPaths.GrimoireDirectory);
+
+                        return Task.CompletedTask;
+
+                    },
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            _completed = true;
         }
-        finally
-        {
-            _mutex.Release();
-        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        return await operation(scope.ServiceProvider, cancellationToken)
+            .ConfigureAwait(false);
+
     }
 }

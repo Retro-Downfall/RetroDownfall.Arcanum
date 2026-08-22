@@ -41,11 +41,13 @@ internal interface ISetupCommitter
 /// anything has been applied still propagates: there the abort message is true.</para>
 /// </summary>
 internal sealed class SetupCommitter(
-    IConfigurationCommandService configurationService,
+    IConfigurationCommandExclusiveWriter configurationWriter,
     IConfigurationPresetService presetService,
     IProviderCredentialStore providerCredentialStore,
     IWebResearchCredentialStore webResearchCredentialStore,
-    ICliContextStore contextStore) : ISetupCommitter
+    ICliContextStore contextStore,
+    ICliContextExclusiveWriter contextWriter,
+    ISetupPlanner planner) : ISetupCommitter
 {
 
     public async Task<SetupCommitOutcome> CommitAsync(
@@ -72,6 +74,23 @@ internal sealed class SetupCommitter(
         bool webResearchCredentialCleared = false;
 
         bool configurationWritten = false;
+
+        Result revalidated = await planner
+            .RevalidateAsync(context, draft, plan, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (revalidated.IsFailure)
+        {
+
+            return new SetupCommitOutcome(
+                Committed: false,
+                SetupStep.Commit,
+                [],
+                [],
+                revalidated.Error.Message,
+                Recovery: null);
+
+        }
 
         try
         {
@@ -141,8 +160,11 @@ internal sealed class SetupCommitter(
 
             }
 
-            Result write = await configurationService
-                .WriteAsync(context.Snapshot, plan.Candidate, cancellationToken)
+            Result write = await configurationWriter
+                .WriteUnderExclusiveAsync(
+                    context.Snapshot,
+                    plan.Candidate,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             if (write.IsFailure)
@@ -301,8 +323,8 @@ internal sealed class SetupCommitter(
 
             // The candidate is what is persisted right now, so it — not the pre-wizard snapshot —
             // is the optimistic-concurrency expectation for writing the original values back.
-            Result restore = await configurationService
-                .WriteAsync(
+            Result restore = await configurationWriter
+                .WriteUnderExclusiveAsync(
                     context.Snapshot with { Settings = plan.Candidate },
                     context.Snapshot.Settings,
                     CancellationToken.None)
@@ -454,7 +476,7 @@ internal sealed class SetupCommitter(
 
             CliContextDocument current = contextStore.Load();
 
-            contextStore.Save(
+            contextWriter.SaveUnderExclusive(
                 current with
                 {
 

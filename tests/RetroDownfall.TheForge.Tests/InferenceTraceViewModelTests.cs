@@ -14,7 +14,8 @@ public class InferenceTraceViewModelTests
     public void Capture_GroupsToolRounds_AndExportsJson()
     {
 
-        InferenceTraceViewModel trace = new();
+        InferenceTraceViewModel trace = new(
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
         trace.BeginCapture("spell", "echo");
 
@@ -55,6 +56,7 @@ public class InferenceTraceViewModelTests
         // A directory that does not exist: File.WriteAllTextAsync throws, exactly as a read-only
         // volume, a vanished removable drive, or a permission denial would.
         InferenceTraceViewModel trace = new(
+            ImmediateTheForgeLocalMutationRunner.Instance,
             fileDialog: new FixedPathArtifactFileDialogService(FixedPathArtifactFileDialogService.UnwritablePath()));
 
         trace.BeginCapture("spell", "echo");
@@ -71,7 +73,9 @@ public class InferenceTraceViewModelTests
     public async Task PersistAsync_WhenTheStoreFails_ReportsInsteadOfEscaping()
     {
 
-        InferenceTraceViewModel trace = new(store: new ThrowingInferenceTraceStore());
+        InferenceTraceViewModel trace = new(
+            ImmediateTheForgeLocalMutationRunner.Instance,
+            store: new ThrowingInferenceTraceStore());
 
         trace.BeginCapture("spell", "echo");
 
@@ -87,7 +91,8 @@ public class InferenceTraceViewModelTests
     public void DryRunButtons_WithoutHooks_SetHonestStatus()
     {
 
-        InferenceTraceViewModel trace = new();
+        InferenceTraceViewModel trace = new(
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
         trace.OpenSpellCastPreviewCommand.Execute(null);
 
@@ -103,7 +108,8 @@ public class InferenceTraceViewModelTests
     public void Reasoning_capture_and_export_retain_event_metadata_but_redact_body()
     {
         const string sensitive = "sensitive client-safe reasoning body";
-        InferenceTraceViewModel trace = new();
+        InferenceTraceViewModel trace = new(
+            ImmediateTheForgeLocalMutationRunner.Instance);
         trace.BeginCapture("session", Guid.NewGuid().ToString("D"));
 
         trace.Capture(new IntelligenceEvent(
@@ -153,6 +159,11 @@ public class InferenceTraceViewModelTests
 
         public Task SaveAsync(InferenceTraceStoreDocument document, CancellationToken cancellationToken = default) =>
             Task.FromException(new IOException("the-forge traces file is read-only"));
+
+        public Task<InferenceTraceStoreDocument> UpdateAsync(
+            Func<InferenceTraceStoreDocument, CancellationToken, Task<InferenceTraceStoreDocument>> update,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<InferenceTraceStoreDocument>(new IOException("the-forge traces file is read-only"));
 
     }
 

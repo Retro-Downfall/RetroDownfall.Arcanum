@@ -213,14 +213,15 @@ internal static class CovenantRetainedEvidence
             .. ProductionSourceInventory.Sources()
                 .Where(static source => !source.Is("HostProcessToolsMarkerStore.cs"))
                 .Where(static source => !source.Is("ArcanumCredentialIdentity.cs"))
+                .Where(static source => !source.Is("InstallationResetCredentialCatalog.cs"))
                 .Where(static source => source.Names(ArcanumCredentialIdentity.HostProcessToolsTaintAccount)
                     || source.Names("HostProcessToolsTaintAccount"))
                 .Select(static source => source.RelativePath),
         ];
 
-        // Ordinary credential cleanup keeps the operating-system marker by never naming it. The store
-        // cannot be enumerated, so an account no path spells is an account no path can delete, and the
-        // only production file entitled to spell this one is its own compare-deleting store.
+        // The marker store owns compare-deletion. The closed reset catalog may name the account only
+        // in its explicit retained-identity filter; the catalog tests prove it never returns that name
+        // to DeleteAndVerify. No other production file may spell the marker account.
         Assert.Empty(credentialOffenders);
 
     }

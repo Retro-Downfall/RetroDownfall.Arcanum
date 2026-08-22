@@ -1,13 +1,18 @@
 using System.Net;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.ViewModels;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
 
+[Collection(TheForgeProcessEnvironmentCollection.Name)]
 public sealed class OpenAiCompatApiClientReliabilityTests
 {
     [Fact]
@@ -110,7 +115,83 @@ public sealed class OpenAiCompatApiClientReliabilityTests
         }
     }
 
-    private static OpenAiCompatApiClient CreateClient(HttpMessageHandler handler) =>
+    [Theory]
+    [InlineData(false, ErrorCodes.Data.FileLocked)]
+    [InlineData(true, ErrorCodes.Data.ControlPathUnavailable)]
+    public async Task DownloadToFileAsync_managed_root_refusal_never_stages_or_replaces(
+        bool unsafeDisposition,
+        string expectedCode)
+    {
+
+        using TheForgeTestHomeScope home = new("forge-download-refusal");
+
+        string managedRoot = ArcanumPaths.GrimoireDirectory;
+
+        string destination = Path.Combine(managedRoot, "downloads", "result.jsonl");
+
+        Error error = new(expectedCode, "refused for test");
+
+        RecordingBoundary boundary = new(error, unsafeDisposition);
+
+        SuccessfulDownloadHandler handler = new("new-content"u8.ToArray());
+
+        OpenAiCompatApiClient client = CreateClient(
+            handler,
+            new TheForgeLocalMutationRunner(boundary));
+
+        OpenAiResult<bool> result = await client.DownloadToFileAsync(
+            "/v1/files/file-1/content",
+            destination,
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+
+        Assert.Equal(expectedCode, result.ErrorCode);
+
+        Assert.Equal(1, boundary.CallCount);
+
+        Assert.Equal(0, handler.CallCount);
+
+        Assert.False(File.Exists(destination));
+
+        Assert.False(Directory.Exists(managedRoot));
+
+    }
+
+    [Fact]
+    public async Task DownloadToFileAsync_outside_managed_root_preserves_bytes_and_bypasses_boundary()
+    {
+
+        using TheForgeTestHomeScope home = new("forge-download-outside");
+
+        byte[] expected = "operator-owned-download"u8.ToArray();
+
+        string destination = Path.Combine(home.Root, "result.jsonl");
+
+        RecordingBoundary boundary = new(
+            new Error(ErrorCodes.Data.FileLocked, "refused for test"),
+            unsafeDisposition: false);
+
+        OpenAiCompatApiClient client = CreateClient(
+            new SuccessfulDownloadHandler(expected),
+            new TheForgeLocalMutationRunner(boundary));
+
+        OpenAiResult<bool> result = await client.DownloadToFileAsync(
+            "/v1/files/file-1/content",
+            destination,
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+
+        Assert.Equal(expected, await File.ReadAllBytesAsync(destination));
+
+        Assert.Equal(0, boundary.CallCount);
+
+    }
+
+    private static OpenAiCompatApiClient CreateClient(
+        HttpMessageHandler handler,
+        ITheForgeLocalMutationRunner? mutationRunner = null) =>
         new(
             new StaticHttpClientFactory(handler),
             new StaticTheForgeSettingsMonitor(new TheForgeSettings
@@ -118,7 +199,8 @@ public sealed class OpenAiCompatApiClientReliabilityTests
                 BaseUrl = "http://localhost:5001",
             }),
             new StaticApiKeyProvider(),
-            NullLogger<OpenAiCompatApiClient>.Instance);
+            NullLogger<OpenAiCompatApiClient>.Instance,
+            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance);
 
     private sealed class StaticApiKeyProvider : ITheForgeApiKeyProvider
     {
@@ -176,6 +258,59 @@ public sealed class OpenAiCompatApiClientReliabilityTests
                 Content = new StreamContent(LastStream),
             });
         }
+    }
+
+    private sealed class SuccessfulDownloadHandler(byte[] payload) : HttpMessageHandler
+    {
+
+        public int CallCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+
+            CallCount++;
+
+            return Task.FromResult(
+                new HttpResponseMessage(HttpStatusCode.OK)
+                {
+
+                    Content = new ByteArrayContent(payload),
+
+                });
+
+        }
+
+    }
+
+    private sealed class RecordingBoundary(
+        Error error,
+        bool unsafeDisposition) : IArcanumClientMutationBoundary
+    {
+
+        public int CallCount { get; private set; }
+
+        public Task<ArcanumClientMutationResult<T>> RunAsync<T>(
+            Func<T> mutation,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<ArcanumClientMutationResult<T>> RunAsync<T>(
+            Func<CancellationToken, Task<T>> mutation,
+            CancellationToken cancellationToken = default)
+        {
+
+            CallCount++;
+
+            ArcanumClientMutationResult<T> result = unsafeDisposition
+                ? ArcanumClientMutationResult<T>.Unsafe(error)
+                : ArcanumClientMutationResult<T>.Blocked(error);
+
+            return Task.FromResult(result);
+
+        }
+
     }
 
     private sealed class FaultingReadStream : Stream

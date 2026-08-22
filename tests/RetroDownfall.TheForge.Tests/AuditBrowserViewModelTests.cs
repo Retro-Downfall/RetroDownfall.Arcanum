@@ -1,4 +1,7 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels;
@@ -218,6 +221,77 @@ public class AuditBrowserViewModelTests
     }
 
     [Fact]
+    public async Task ExportInferenceJson_SnapshotsRecordsAfterMutationAdmission()
+    {
+
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"audit-admitted-export-{Guid.NewGuid():N}.json");
+
+        InferenceAuditRecord record = new(
+            DateTimeOffset.UtcNow.ToString("O"),
+            null,
+            "chat",
+            "before-admission",
+            "provider",
+            1,
+            2,
+            3,
+            4,
+            0,
+            [],
+            null,
+            null,
+            null,
+            null,
+            null);
+
+        FakeAuditBrowserDataSource dataSource = new()
+        {
+            InferenceResult = new DataSourceResult<InferenceAuditRecord[]>(
+                [record],
+                true,
+                null,
+                null),
+        };
+
+        AuditBrowserViewModel? viewModel = null;
+
+        try
+        {
+
+            viewModel = NewViewModel(
+                dataSource,
+                fileDialog: new ControllableFileDialog(path),
+                mutationRunner: new BeforeMutationTheForgeLocalMutationRunner(
+                    () => viewModel!.InferenceRecords.Clear()));
+
+            await viewModel.RefreshInferenceAsync(CancellationToken.None);
+
+            await viewModel.ExportInferenceJsonAsync(CancellationToken.None);
+
+            InferenceAuditRecord[]? written = JsonSerializer.Deserialize(
+                await File.ReadAllTextAsync(path),
+                TheForgeJsonContext.Default.InferenceAuditRecordArray);
+
+            Assert.Empty(written!);
+
+        }
+        finally
+        {
+
+            if (File.Exists(path))
+            {
+
+                File.Delete(path);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
     public async Task CopyDisabledPaths_Inference_CopiesPaths()
     {
 
@@ -237,14 +311,16 @@ public class AuditBrowserViewModelTests
         FakeAuditBrowserDataSource dataSource,
         NavigationService? navigation = null,
         ControllableFileDialog? fileDialog = null,
-        FakeClipboardService? clipboard = null) =>
+        FakeClipboardService? clipboard = null,
+        ITheForgeLocalMutationRunner? mutationRunner = null) =>
         new(
             dataSource,
             navigation ?? new NavigationService(),
             new FoundryFloorViewModel(new NullLogService()),
             fileDialog ?? new ControllableFileDialog(null),
             clipboard ?? new FakeClipboardService(),
-            new FakeWhispersService());
+            new FakeWhispersService(),
+            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance);
 
     private sealed class FakeAuditBrowserDataSource : IAuditBrowserDataSource
     {

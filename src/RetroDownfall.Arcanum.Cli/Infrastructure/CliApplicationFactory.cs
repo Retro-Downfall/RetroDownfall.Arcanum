@@ -107,7 +107,13 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<CliSessionManager>();
 
-        services.AddSingleton<ICliContextStore, CliContextStore>();
+        services.AddSingleton<CliContextStore>();
+
+        services.AddSingleton<ICliContextStore>(serviceProvider =>
+            serviceProvider.GetRequiredService<CliContextStore>());
+
+        services.AddSingleton<ICliContextExclusiveWriter>(serviceProvider =>
+            serviceProvider.GetRequiredService<CliContextStore>());
 
         services.AddSingleton<CliContextService>();
 
@@ -142,13 +148,6 @@ internal static class CliApplicationFactory
 
         services.AddArcanumInstallationReset(settingsSnapshot);
 
-        services.AddScoped<IInstallationResetOnlineDataHandoff>(serviceProvider =>
-            (IInstallationResetOnlineDataHandoff)serviceProvider
-                .GetRequiredService<IInstallationResetService>());
-
-        services.AddSingleton<IInstallationStartupProbe>(static _ =>
-            InstallationStartupProbe.CreateDefault());
-
         services.AddArcanumConfigurationPresets();
 
         services.AddHttpClient(
@@ -177,7 +176,13 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<FileBatchApiClient>();
 
-        services.AddSingleton<IConfigurationCommandService, ConfigurationCommandService>();
+        services.AddSingleton<ConfigurationCommandService>();
+
+        services.AddSingleton<IConfigurationCommandService>(serviceProvider =>
+            serviceProvider.GetRequiredService<ConfigurationCommandService>());
+
+        services.AddSingleton<IConfigurationCommandExclusiveWriter>(serviceProvider =>
+            serviceProvider.GetRequiredService<ConfigurationCommandService>());
 
         services.AddSingleton<CompendiumLauncher>();
 

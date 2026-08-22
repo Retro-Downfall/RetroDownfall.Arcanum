@@ -253,6 +253,7 @@ public sealed class FamiliarProviderEditorTests
             new StubDialogService(),
             new SynchronousUiDispatcher(),
             NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance,
             probeClient: new UnavailableHostProbeClient());
 
         ProvidersSectionViewModel.ProviderViewModel row = Assert.Single(editor.Providers.Providers);

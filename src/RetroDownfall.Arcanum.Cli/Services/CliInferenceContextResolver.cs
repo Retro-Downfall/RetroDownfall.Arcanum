@@ -47,7 +47,7 @@ public interface ICliInferenceContextResolver
 }
 
 public sealed class CliInferenceContextResolver(
-    CliContextService contextService,
+    ICliContextService contextService,
     ICliResourceCatalog resources,
     IOptions<ArcanumSettings> settings) : ICliInferenceContextResolver
 {

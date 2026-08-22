@@ -2,6 +2,8 @@ using System.Globalization;
 
 using System.Text.Json.Serialization.Metadata;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -16,10 +18,13 @@ using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 internal sealed class BackupCommands(
-    IBackupService backupService,
+    IGrimoireCliInitialization initialization,
+    IServiceScopeFactory scopeFactory,
     IBackupRestoreService restoreService,
     IBackupPassphraseReader passphraseReader,
     IConfirmationPrompt confirmationPrompt,
@@ -56,8 +61,12 @@ internal sealed class BackupCommands(
         if (dryRun)
         {
 
-            BackupPlan plan = await backupService
-                .PlanAsync(planRequest, cancellationToken)
+            BackupPlan plan = await initialization
+                .RunExclusiveAsync(
+                    (services, token) => services
+                        .GetRequiredService<IBackupService>()
+                        .PlanAsync(planRequest, token),
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             Write(
@@ -85,13 +94,17 @@ internal sealed class BackupCommands(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        BackupCreateResult result = await backupService
-            .CreateAsync(
-                new BackupCreateRequest(
-                    planRequest,
-                    outputPath,
-                    overwrite),
-                passphrase.Value,
+        BackupCreateResult result = await initialization
+            .RunExclusiveAsync(
+                (services, token) => services
+                    .GetRequiredService<IBackupService>()
+                    .CreateAsync(
+                        new BackupCreateRequest(
+                            planRequest,
+                            outputPath,
+                            overwrite),
+                        passphrase.Value,
+                        token),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -136,7 +149,11 @@ internal sealed class BackupCommands(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        BackupInspectResult result = await backupService
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IBackupService backup = scope.ServiceProvider.GetRequiredService<IBackupService>();
+
+        BackupInspectResult result = await backup
             .InspectAsync(
                 archivePath,
                 passphrase?.Value,
@@ -175,7 +192,11 @@ internal sealed class BackupCommands(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        BackupVerifyResult result = await backupService
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IBackupService backup = scope.ServiceProvider.GetRequiredService<IBackupService>();
+
+        BackupVerifyResult result = await backup
             .VerifyAsync(
                 archivePath,
                 passphrase.Value,
@@ -198,7 +219,11 @@ internal sealed class BackupCommands(
         CancellationToken cancellationToken)
     {
 
-        IReadOnlyList<BackupListItem> result = await backupService
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IBackupService backup = scope.ServiceProvider.GetRequiredService<IBackupService>();
+
+        IReadOnlyList<BackupListItem> result = await backup
             .ListAsync(directory, cancellationToken)
             .ConfigureAwait(false);
 

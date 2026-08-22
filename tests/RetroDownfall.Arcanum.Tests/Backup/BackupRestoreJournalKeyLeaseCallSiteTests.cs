@@ -16,11 +16,61 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 {
 
-    private const string AuthenticatorFileName = "BackupRestoreJournalAuthenticator.cs";
+    private const string AuthenticatorPath =
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournalAuthenticator.cs";
 
-    private const string KeyProviderFileName = "BackupRestoreJournalKeyProvider.cs";
+    private const string KeyProviderPath =
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournalKeyProvider.cs";
 
-    private const string CredentialIdentityFileName = "ArcanumCredentialIdentity.cs";
+    private const string ActiveAuthenticatorPath =
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+        + "InstallationResetActiveRecordAuthenticator.cs";
+
+    private const string ActiveKeyProviderPath =
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+        + "InstallationResetActiveRecordKeyProvider.cs";
+
+    private const string CredentialIdentityPath =
+        "src/RetroDownfall.Arcanum.Secrets/Security/ArcanumCredentialIdentity.cs";
+
+    // The credential layer itself, which only forwards the account name it is handed.
+    private static readonly string[] CredentialBackendOwners =
+    [
+        "src/RetroDownfall.Arcanum.Secrets/Security/IOsCredentialStore.cs",
+        "src/RetroDownfall.Arcanum.Secrets/Security/OsCredentialStore.cs",
+        "src/RetroDownfall.Arcanum.Secrets/Security/WindowsOsCredentialStore.cs",
+        "src/RetroDownfall.Arcanum.Secrets/Security/MacOsCredentialStore.cs",
+        "src/RetroDownfall.Arcanum.Secrets/Security/LinuxOsCredentialStore.cs",
+        "src/RetroDownfall.Arcanum.Secrets/Security/InMemoryOsCredentialStore.cs",
+    ];
+
+    // The callers that decide *which* account goes away. Each is here with its reason.
+    private static readonly string[] CredentialDeletionDeciderOwners =
+    [
+        // The closed reset catalog. The three journal accounts are absent from CollectAccounts.
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+        + "InstallationResetCredentialCatalog.cs",
+
+        // Removes only one profile's reset-active key under the concrete installation lock.
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+        + "InstallationResetActiveRecordKeyProvider.cs",
+
+        // Removes only one profile's reset-active anchor under that same concrete lock.
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+        + "InstallationResetActiveAnchorStore.cs",
+
+        // Compare-deletes only host-process-tools-taint, and only against its exact digest.
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsMarkerStore.cs",
+
+        // Purges only the superseded master-api-key after a failed OS write.
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs",
+
+        // Only inference-provider-{NAME}-api-key.
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderCredentialStore.cs",
+
+        // Only provider-perplexity-api-key.
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/WebResearchCredentialStore.cs",
+    ];
 
     [Fact]
     public void The_authenticator_is_the_only_production_caller_that_takes_a_journal_key()
@@ -30,8 +80,10 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         [
             .. ProductionSourceInventory.Sources()
                 .Where(static source =>
-                    !source.Is(AuthenticatorFileName)
-                    && !source.Is(KeyProviderFileName)
+                    !source.IsExactOwner(AuthenticatorPath)
+                    && !source.IsExactOwner(KeyProviderPath)
+                    && !source.IsExactOwner(ActiveAuthenticatorPath)
+                    && !source.IsExactOwner(ActiveKeyProviderPath)
                     && source.Names("TryTakeKey"))
                 .Select(static source => source.RelativePath),
         ];
@@ -53,7 +105,7 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         [
             .. ProductionSourceInventory.Sources()
                 .Where(static source =>
-                    !source.Is(KeyProviderFileName)
+                    !source.IsExactOwner(KeyProviderPath)
                     && source.Names("BackupRestoreJournalKeyLease.Mint"))
                 .Select(static source => source.RelativePath),
         ];
@@ -74,7 +126,7 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         [
             .. ProductionSourceInventory.Sources()
                 .Where(static source =>
-                    !source.Is(CredentialIdentityFileName)
+                    !source.IsExactOwner(CredentialIdentityPath)
                     && source.Names("\"backup-restore-journal-"))
                 .Select(static source => source.RelativePath),
         ];
@@ -103,49 +155,8 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
     public void Credential_deletion_stays_inside_its_known_inventory()
     {
 
-        // The credential layer itself, which only forwards the account name it is handed.
-        string[] backends =
-        [
-            "IOsCredentialStore.cs",
-            "OsCredentialStore.cs",
-            "WindowsOsCredentialStore.cs",
-            "MacOsCredentialStore.cs",
-            "LinuxOsCredentialStore.cs",
-            "InMemoryOsCredentialStore.cs",
-        ];
-
-        // The callers that decide *which* account goes away. Each is here with its reason.
-        string[] deciders =
-        [
-            // The closed reset catalog. The three journal accounts are absent from CollectAccounts.
-            "InstallationResetCredentialCatalog.cs",
-
-            // Compare-deletes only host-process-tools-taint, and only against its exact digest.
-            "HostProcessToolsMarkerStore.cs",
-
-            // Purges only the superseded master-api-key after a failed OS write.
-            "OsKeychainSecretStore.cs",
-
-            // Only inference-provider-{NAME}-api-key.
-            "ProviderCredentialStore.cs",
-
-            // Only provider-perplexity-api-key.
-            "WebResearchCredentialStore.cs",
-        ];
-
-        List<string> offenders =
-        [
-            .. ProductionSourceInventory.Sources()
-                .Where(source =>
-                    !backends.Any(name => source.Is(name))
-                    && !deciders.Any(name => source.Is(name))
-                    && (source.Names(".Delete(ArcanumCredentialIdentity.Service")
-                        || source.Names("credentials.Delete(")
-                        || source.Names("credentialStore.Delete(")
-                        || source.Names("_credentials.Delete(")
-                        || source.Names("_osStore.Delete(")))
-                .Select(static source => source.RelativePath),
-        ];
+        List<string> offenders = CredentialDeletionOffenders(
+            ProductionSourceInventory.Sources());
 
         Assert.True(
             offenders.Count == 0,
@@ -160,7 +171,7 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         [
             .. ProductionSourceInventory.Sources()
                 .Where(source =>
-                    deciders.Any(name => source.Is(name))
+                    CredentialDeletionDeciderOwners.Any(source.IsExactOwner)
                     && source.Names("ArcanumCredentialIdentity.BackupRestoreJournal"))
                 .Select(static source => source.RelativePath),
         ];
@@ -173,5 +184,49 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
             + string.Join(", ", naming));
 
     }
+
+    [Fact]
+    public void Credential_deletion_inventory_rejects_duplicate_basenames_outside_owner_directories()
+    {
+
+        const string wrongBackend =
+            "src/Adversarial/Security/IOsCredentialStore.cs";
+
+        const string wrongDecider =
+            "src/Adversarial/InstallationReset/InstallationResetActiveAnchorStore.cs";
+
+        ProductionSource[] sources =
+        [
+            new(
+                "src/RetroDownfall.Arcanum.Secrets/Security/IOsCredentialStore.cs",
+                "credentials.Delete("),
+            new(wrongBackend, "credentials.Delete("),
+            new(
+                "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+                + "InstallationResetActiveAnchorStore.cs",
+                "credentials.Delete("),
+            new(wrongDecider, "credentials.Delete("),
+        ];
+
+        Assert.Equal(
+            [wrongBackend, wrongDecider],
+            CredentialDeletionOffenders(sources));
+
+    }
+
+    private static List<string> CredentialDeletionOffenders(
+        IEnumerable<ProductionSource> sources) =>
+    [
+        .. sources
+            .Where(source =>
+                !CredentialBackendOwners.Any(source.IsExactOwner)
+                && !CredentialDeletionDeciderOwners.Any(source.IsExactOwner)
+                && (source.Names(".Delete(ArcanumCredentialIdentity.Service")
+                    || source.Names("credentials.Delete(")
+                    || source.Names("credentialStore.Delete(")
+                    || source.Names("_credentials.Delete(")
+                    || source.Names("_osStore.Delete(")))
+            .Select(static source => source.RelativePath),
+    ];
 
 }

@@ -96,7 +96,15 @@ internal sealed partial class InstallationResetCredentialCatalog(
 
         }
 
-        return [.. accounts.Order(StringComparer.Ordinal)];
+        return [.. accounts
+            .Where(static account =>
+                !ArcanumCredentialIdentity.IsBackupRestoreJournalAccount(account)
+                && !ArcanumCredentialIdentity.IsInstallationResetActiveAccount(account)
+                && !string.Equals(
+                    account,
+                    ArcanumCredentialIdentity.HostProcessToolsTaintAccount,
+                    StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)];
 
     }
 

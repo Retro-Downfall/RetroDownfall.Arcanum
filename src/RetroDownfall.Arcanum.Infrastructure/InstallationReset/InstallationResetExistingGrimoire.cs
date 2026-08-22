@@ -36,7 +36,9 @@ internal sealed class InstallationResetExistingGrimoire(
     ArcanumSettings settings,
     TimeProvider timeProvider,
     ILoggerFactory loggerFactory)
-    : IInstallationResetDataService, IInstallationResetWorkspaceResolver
+    : IInstallationResetDataService,
+      IInstallationResetWorkspaceResolver,
+      IInstallationResetDatabaseIdentityReader
 {
 
     private static readonly LongRunningOperationState[] RecoverableFactoryStates =
@@ -177,6 +179,18 @@ internal sealed class InstallationResetExistingGrimoire(
                     campaigns);
 
             },
+            cancellationToken);
+
+    public Task<Result<Guid>> ReadAsync(
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(
+            writable: false,
+            static async (_, _, context, token) =>
+                await InstallationResetDatabaseIdentityReader
+                    .ReadOpenConnectionAsync(
+                        (SqliteConnection)context.Database.GetDbConnection(),
+                        token)
+                    .ConfigureAwait(false),
             cancellationToken);
 
     private async Task<Result<T>> ExecuteAsync<T>(

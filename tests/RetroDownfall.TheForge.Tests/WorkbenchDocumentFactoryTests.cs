@@ -225,7 +225,8 @@ public class WorkbenchDocumentFactoryTests
             new NullArtifactFileDialogService(),
             new NullTextInputDialogService(),
             new FakeClipboardService(),
-            new FakeWhispersService());
+            new FakeWhispersService(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     }
 

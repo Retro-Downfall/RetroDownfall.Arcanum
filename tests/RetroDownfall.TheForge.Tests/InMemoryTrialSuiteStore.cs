@@ -47,4 +47,31 @@ internal sealed class InMemoryTrialSuiteStore : ITrialSuiteStore
 
     }
 
+    public async Task<TrialSuiteStoreDocument> UpdateAsync(
+        Func<TrialSuiteStoreDocument, CancellationToken, Task<TrialSuiteStoreDocument>> update,
+        CancellationToken cancellationToken = default)
+    {
+
+        TrialSuiteStoreDocument document = await update(_document, cancellationToken);
+
+        await SaveAsync(document, cancellationToken);
+
+        return _document;
+
+    }
+
+    public async Task<TrialSuiteStoreDocument> UpdatePreparedAsync<TPreparation>(
+        Func<TrialSuiteStoreDocument, CancellationToken, Task<TPreparation>> prepare,
+        Func<TrialSuiteStoreDocument, TPreparation, TrialSuiteStoreDocument> commit,
+        CancellationToken cancellationToken = default)
+    {
+
+        TPreparation preparation = await prepare(_document, cancellationToken);
+
+        await SaveAsync(commit(_document, preparation), cancellationToken);
+
+        return _document;
+
+    }
+
 }

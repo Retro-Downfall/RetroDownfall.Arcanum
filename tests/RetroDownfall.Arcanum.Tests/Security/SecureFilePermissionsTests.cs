@@ -50,6 +50,10 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
 
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+
+        SecureFilePermissions.WindowsOwnerOnlyDirectoryCreateForTests = null;
+
         global::System.Environment.SetEnvironmentVariable(
             "DOTNET_ENVIRONMENT",
             _originalDotnetEnvironment);
@@ -63,6 +67,29 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
             _originalTestHome);
 
         await _temp.DisposeAsync();
+
+    }
+
+    [Theory]
+    [InlineData(true, 448, 42u, 42u, true)]
+    [InlineData(false, 384, 42u, 42u, true)]
+    [InlineData(true, 448, 42u, 43u, false)]
+    [InlineData(true, 493, 42u, 42u, false)]
+    public void Unix_strict_posture_requires_exact_mode_and_effective_user_ownership(
+        bool isDirectory,
+        int mode,
+        uint ownerUserId,
+        uint effectiveUserId,
+        bool expected)
+    {
+
+        bool actual = SecureFilePermissions.UnixOwnerOnlyPostureMatches(
+            (UnixFileMode)mode,
+            ownerUserId,
+            effectiveUserId,
+            isDirectory);
+
+        Assert.Equal(expected, actual);
 
     }
 

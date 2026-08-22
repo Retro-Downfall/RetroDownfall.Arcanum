@@ -345,7 +345,8 @@ public sealed class FailClosedEditorTests
         RecordingDialogService dialogs = new();
 
         host.AttachServices(
-            static () => throw new IOException("No space left on device"),
+            static _ => Task.FromException<LocalCertificateResult>(
+                new IOException("No space left on device")),
             dialogs);
 
         host.LoadFrom(new HostSettings());
@@ -485,7 +486,8 @@ public sealed class FailClosedEditorTests
             store,
             dialogService,
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
     private static async Task WaitForAsync(Func<bool> condition)
     {

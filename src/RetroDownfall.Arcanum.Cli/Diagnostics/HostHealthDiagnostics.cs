@@ -47,7 +47,13 @@ public sealed class HostHealthComponentsCheck(
 
         HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        SecretStoreReadResult apiKeyRead = await secretStore
+            .PeekApiKeyReadResultAsync()
+            .ConfigureAwait(false);
+
+        string? apiKey = apiKeyRead.Status == SecretStoreReadStatus.Ok
+            ? apiKeyRead.Value
+            : null;
 
         HealthProbeResult probe = await ArcanumHealthProbe
             .ProbeAsync(

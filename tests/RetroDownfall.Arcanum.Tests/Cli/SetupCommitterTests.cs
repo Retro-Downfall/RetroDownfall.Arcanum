@@ -228,6 +228,28 @@ public sealed class SetupCommitterTests
 
     }
 
+    [Fact]
+    public async Task Successful_setup_writes_context_through_the_outer_owned_exclusive_seam()
+    {
+
+        CommitWorld world = new();
+
+        SetupCommitOutcome outcome = await CommitAsync(
+            world,
+            Draft(SetupCredentialAction.Unchanged),
+            Plan(credentialPresent: true, willReplaceExisting: false),
+            CancellationToken.None);
+
+        Assert.True(outcome.Committed);
+
+        Assert.Equal(0, world.UnprotectedContextSaves);
+
+        Assert.Equal(1, world.ExclusiveContextSaves);
+
+        Assert.Equal("gpt-test", world.SavedContext?.Model);
+
+    }
+
     private static Task<SetupCommitOutcome> CommitAsync(
         CommitWorld world,
         SetupDraft draft,
@@ -235,7 +257,14 @@ public sealed class SetupCommitterTests
         CancellationToken cancellationToken)
     {
 
-        SetupCommitter committer = new(world, world, world, world, world);
+        SetupCommitter committer = new(
+            world,
+            world,
+            world,
+            world,
+            world,
+            world,
+            world);
 
         return committer.CommitAsync(
             new SetupPlanContext(
@@ -304,10 +333,13 @@ public sealed class SetupCommitterTests
     /// </summary>
     private sealed class CommitWorld :
         IConfigurationCommandService,
+        IConfigurationCommandExclusiveWriter,
         IConfigurationPresetService,
         IProviderCredentialStore,
         IWebResearchCredentialStore,
-        ICliContextStore
+        ICliContextStore,
+        ICliContextExclusiveWriter,
+        ISetupPlanner
     {
 
         public ArcanumSettings OriginalSettings { get; } = new();
@@ -332,6 +364,10 @@ public sealed class SetupCommitterTests
         public string FilePath => "/tmp/arcanum-test/cli-context.json";
 
         public CliContextDocument? SavedContext { get; private set; }
+
+        public int UnprotectedContextSaves { get; private set; }
+
+        public int ExclusiveContextSaves { get; private set; }
 
         public Task<Result<ConfigurationCommandSnapshot>> ReadAsync(
             CancellationToken cancellationToken) =>
@@ -370,6 +406,12 @@ public sealed class SetupCommitterTests
             return Task.FromResult(Result.Success());
 
         }
+
+        public Task<Result> WriteUnderExclusiveAsync(
+            ConfigurationCommandSnapshot snapshot,
+            ArcanumSettings settings,
+            CancellationToken cancellationToken) =>
+            WriteAsync(snapshot, settings, cancellationToken);
 
         public IReadOnlyList<ConfigurationPresetDefinition> List() =>
             ConfigurationPresetCatalog.All;
@@ -517,7 +559,51 @@ public sealed class SetupCommitterTests
 
         public CliContextDocument Load() => SavedContext ?? CliContextDocument.Empty;
 
-        public void Save(CliContextDocument document) => SavedContext = document;
+        public void Save(CliContextDocument document)
+        {
+
+            UnprotectedContextSaves++;
+
+            SavedContext = document;
+
+        }
+
+        public void SaveUnderExclusive(CliContextDocument document)
+        {
+
+            ExclusiveContextSaves++;
+
+            SavedContext = document;
+
+        }
+
+        Task<Result<SetupPlanContext>> ISetupPlanner.ReadAsync(
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The committer test supplies its reviewed context.");
+
+        SetupDraft ISetupPlanner.Seed(SetupPlanContext context) =>
+            throw new NotSupportedException("The committer test supplies its draft.");
+
+        Task<SetupCredentialPresence> ISetupPlanner.ProviderCredentialPresenceAsync(
+            string? providerName,
+            string? credentialEnvironmentVariable,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The committer test supplies its credential plan.");
+
+        Task<SetupPlan> ISetupPlanner.PlanAsync(
+            SetupPlanContext context,
+            SetupDraft draft,
+            SetupConnectivityResult connectivity,
+            SetupStep step,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The committer test supplies its plan.");
+
+        Task<Result> ISetupPlanner.RevalidateAsync(
+            SetupPlanContext context,
+            SetupDraft draft,
+            SetupPlan plan,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
 
     }
 

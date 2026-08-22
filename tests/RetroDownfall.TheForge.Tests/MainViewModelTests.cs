@@ -431,7 +431,9 @@ internal static class MainViewModelFactory
 
         string tempPath = Path.Combine(Path.GetTempPath(), $"forge-test-{Guid.NewGuid():N}.json");
 
-        TheForgeSettingsStore settingsStore = new(tempPath);
+        TheForgeSettingsStore settingsStore = new(
+            tempPath,
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
         NullArsenalDataSource arsenalDataSource = new();
 
@@ -448,7 +450,8 @@ internal static class MainViewModelFactory
             new FakeWhispersService(),
             new NullConfirmationDialogService(),
             new NullArtifactFileDialogService(),
-            new NullTextInputDialogService());
+            new NullTextInputDialogService(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
         RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ModelsProvidersViewModel arsenalModelsProviders = new(modelsProvidersDataSource, foundryFloor);
 
@@ -468,7 +471,8 @@ internal static class MainViewModelFactory
                 new NullArtifactFileDialogService(),
                 new FakeWhispersService(),
                 foundryFloor,
-                connection),
+                connection,
+                ImmediateTheForgeLocalMutationRunner.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.WarTable.WarTableViewModel(new NullWarTableDataSource()),
             new RetroDownfall.TheForge.Ux.ViewModels.Gatehouse.GatehouseViewModel(new NullGatehouseDataSource(), new FakeWhispersService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Treasury.TreasuryViewModel(
@@ -532,7 +536,8 @@ internal static class MainViewModelFactory
                 foundryFloor,
                 new NullArtifactFileDialogService(),
                 new FakeClipboardService(),
-                new FakeWhispersService()),
+                new FakeWhispersService(),
+                ImmediateTheForgeLocalMutationRunner.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.FilesBatches.FilesBatchesViewModel(
                 new NullFilesBatchesDataSource(),
                 connection,
@@ -565,7 +570,8 @@ internal static class MainViewModelFactory
                 new NullArtifactFileDialogService(),
                 new NullTextInputDialogService(),
                 new FakeClipboardService(),
-                new FakeWhispersService()),
+                new FakeWhispersService(),
+                ImmediateTheForgeLocalMutationRunner.Instance),
             settingsStore,
             new StaticTheForgeSettingsMonitor(),
             new NullCampaignCommandCoordinator(),

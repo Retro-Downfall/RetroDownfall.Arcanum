@@ -42,6 +42,7 @@ using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
 using Scalar.AspNetCore;
@@ -473,7 +474,7 @@ public static class ApiBootstrapper
         // reconciliation it delegates to is owned by Api (#40).
         services.AddScoped<ILongRunningOperationRecoveryHandler, BatchOperationRecoveryHandler>();
 
-        services.AddHostedService(static sp => sp.GetRequiredService<BatchProcessingService>());
+        services.AddInstallationResetRecoveryAwareHostedService<BatchProcessingService>();
 
         services.AddScoped<IProvingGroundsArbiter, ProvingGroundsArbiter>();
 
@@ -611,6 +612,22 @@ public static class ApiBootstrapper
             if (context.GetEndpoint()?.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is null)
             {
 
+                if (await HideRecoveryIneligibleAnonymousRouteAsync(context).ConfigureAwait(false))
+                {
+
+                    return;
+
+                }
+
+                if (context.GetEndpoint()?.Metadata
+                        .GetMetadata<InstallationResetRecoveryBlockedRouteMetadata>() is not null
+                    && await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
+                {
+
+                    return;
+
+                }
+
                 await next().ConfigureAwait(false);
 
                 return;
@@ -621,6 +638,13 @@ public static class ApiBootstrapper
 
             if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
             {
+
+                if (await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
+                {
+
+                    return;
+
+                }
 
                 // Authentication stays first, so a wrong key plus a malformed context policy is a
                 // 401 rather than a 400: a 400 would confirm to an unauthenticated caller that they
@@ -641,6 +665,98 @@ public static class ApiBootstrapper
             await ApiKeyAuthenticator.Unauthorized(context).ExecuteAsync(context).ConfigureAwait(false);
 
         });
+    }
+
+    private static async Task<bool> HideRecoveryIneligibleAnonymousRouteAsync(
+        HttpContext context)
+    {
+
+        if (context.GetEndpoint()?.Metadata
+                .GetMetadata<InstallationResetRecoveryHiddenRouteMetadata>() is null
+            || context.RequestServices.GetService<InstallationResetApiAdmission>()?
+                .ActiveRecovery is null)
+        {
+
+            return false;
+
+        }
+
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+
+        await context.Response.CompleteAsync().ConfigureAwait(false);
+
+        return true;
+
+    }
+
+    /// <summary>
+    /// Applies the recovery-host API gate after API-key authentication but before Covenant authority,
+    /// request-body limits, parameter binding, or route handlers.
+    /// </summary>
+    private static async Task<bool> ApplyInstallationResetRecoveryAdmissionAsync(
+        HttpContext context)
+    {
+
+        if (context.RequestServices.GetService<InstallationResetApiAdmission>()?
+                .ActiveRecovery is null)
+        {
+
+            return false;
+
+        }
+
+        InstallationResetRecoveryApiRouteMetadata? admitted = context.GetEndpoint()?.Metadata
+            .GetMetadata<InstallationResetRecoveryApiRouteMetadata>();
+
+        if (admitted is not null
+            && string.Equals(
+                context.Request.Method,
+                admitted.Method,
+                StringComparison.Ordinal))
+        {
+
+            return false;
+
+        }
+
+        const string Message =
+            "An installation factory reset is active; only its recovery operation is available.";
+
+        IResult blocked;
+
+        if (context.Request.Path.StartsWithSegments(
+                "/v1",
+                StringComparison.OrdinalIgnoreCase))
+        {
+
+            blocked = Results.Json(
+                new OpenAiErrorResponse(
+                    new OpenAiErrorDetail(
+                        Message,
+                        "invalid_request_error",
+                        Param: null,
+                        Code: "installation_reset_in_progress")),
+                ArcanumJsonContext.Default.OpenAiErrorResponse,
+                statusCode: StatusCodes.Status409Conflict);
+
+        }
+        else
+        {
+
+            blocked = Results.Json(
+                ApiResponse<string>.FromResult(
+                    Result<string>.Failure(
+                        new Error(ErrorCodes.Data.ResetInProgress, Message)),
+                    context.TraceIdentifier),
+                ArcanumJsonContext.Default.ApiResponseString,
+                statusCode: StatusCodes.Status409Conflict);
+
+        }
+
+        await blocked.ExecuteAsync(context).ConfigureAwait(false);
+
+        return true;
+
     }
 
     /// <summary>
@@ -865,7 +981,9 @@ public static class ApiBootstrapper
 
         bool rateLimitEnabled = IsRateLimitEnabled(app.Configuration);
 
-        RouteGroupBuilder openAiV1 = app.MapGroup("/v1").RequireArcanumApiKey();
+        RouteGroupBuilder openAiV1 = app
+            .MapGroup("/v1")
+            .RequireArcanumApiKey();
 
         if (rateLimitEnabled)
         {
@@ -888,7 +1006,9 @@ public static class ApiBootstrapper
 
         openAiV1.MapOpenAiV1Batches();
 
-        var apiGroup = app.MapGroup("/api").RequireArcanumApiKey();
+        var apiGroup = app
+            .MapGroup("/api")
+            .RequireArcanumApiKey();
 
         if (rateLimitEnabled)
         {
@@ -898,6 +1018,8 @@ public static class ApiBootstrapper
         // Canonical path stays GET /metrics (not /api/metrics). Auth is attached via
         // RequireArcanumApiKey when RequireApiKey is effective (default true; false only on loopback).
         RouteHandlerBuilder metrics = app.MapMetricsEndpoint();
+
+        metrics.WithMetadata(InstallationResetRecoveryBlockedRouteMetadata.Instance);
 
         if (IsMetricsRequireApiKeyEffective(app.Configuration))
         {

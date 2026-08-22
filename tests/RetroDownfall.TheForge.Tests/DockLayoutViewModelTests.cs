@@ -229,7 +229,9 @@ public class DockLayoutViewModelTests
         try
         {
 
-            TheForgeSettingsStore store = new(path);
+            TheForgeSettingsStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
             await store.SaveAsync(new TheForgeSettings { Theme = "light" });
 
@@ -239,7 +241,7 @@ public class DockLayoutViewModelTests
 
             layout.Dispose();
 
-            TheForgeSettings loaded = await store.LoadAsync();
+            TheForgeSettings loaded = await WaitForPersistedLayoutAsync(store);
 
             Assert.False(string.IsNullOrWhiteSpace(loaded.LayoutState));
 
@@ -271,7 +273,9 @@ public class DockLayoutViewModelTests
         try
         {
 
-            TheForgeSettingsStore store = new(path);
+            TheForgeSettingsStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
             await store.SaveAsync(new TheForgeSettings { Theme = "light" });
 
@@ -281,7 +285,7 @@ public class DockLayoutViewModelTests
 
             layout.Dispose();
 
-            TheForgeSettings loaded = await store.LoadAsync();
+            TheForgeSettings loaded = await WaitForPersistedLayoutAsync(store);
 
             Assert.Equal("light", loaded.Theme);
 
@@ -301,6 +305,30 @@ public class DockLayoutViewModelTests
             }
 
         }
+
+    }
+
+    private static async Task<TheForgeSettings> WaitForPersistedLayoutAsync(
+        TheForgeSettingsStore store)
+    {
+
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+
+            TheForgeSettings loaded = await store.LoadAsync();
+
+            if (!string.IsNullOrWhiteSpace(loaded.LayoutState))
+            {
+
+                return loaded;
+
+            }
+
+            await Task.Delay(10);
+
+        }
+
+        return await store.LoadAsync();
 
     }
 

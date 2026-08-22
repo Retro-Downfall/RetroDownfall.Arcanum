@@ -66,7 +66,7 @@ internal sealed class ArcanumServeLauncher(
 
         HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        string? apiKey = await PeekApiKeyAsync().ConfigureAwait(false);
 
         HealthProbeResult probe = await ArcanumHealthProbe
             .ProbeAsync(client, healthUrl, apiKey, ProbeTimeout, cancellationToken)
@@ -218,7 +218,7 @@ internal sealed class ArcanumServeLauncher(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string? key = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+            string? key = await PeekApiKeyAsync().ConfigureAwait(false);
 
             last = await ArcanumHealthProbe
                 .ProbeAsync(client, healthUrl, key, ProbeTimeout, cancellationToken)
@@ -253,7 +253,7 @@ internal sealed class ArcanumServeLauncher(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string? key = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+            string? key = await PeekApiKeyAsync().ConfigureAwait(false);
 
             HealthProbeResult probe = await ArcanumHealthProbe
                 .ProbeAsync(client, healthUrl, key, ProbeTimeout, cancellationToken)
@@ -305,6 +305,17 @@ internal sealed class ArcanumServeLauncher(
             sw.Elapsed,
             BootstrapLogPath,
             $"Timed out waiting for arcanum serve. Check {BootstrapLogPath} and run `arcanum doctor`.");
+
+    }
+
+    private async Task<string?> PeekApiKeyAsync()
+    {
+
+        SecretStoreReadResult result = await secretStore
+            .PeekApiKeyReadResultAsync()
+            .ConfigureAwait(false);
+
+        return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
 
     }
 

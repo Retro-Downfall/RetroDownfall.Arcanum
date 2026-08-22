@@ -17,15 +17,40 @@ internal sealed record SetupPlanContext(
     ConfigurationCommandSnapshot Snapshot,
     ConfigurationPresetProvenance? Provenance,
     SetupCredentialPresence ProviderCredential,
-    SetupCredentialPresence WebResearchCredential);
+    SetupCredentialPresence WebResearchCredential)
+{
+
+    public string ConfigurationHash { get; } =
+        ConfigurationPresetHash.ComputeSettings(Snapshot.Settings);
+
+    public ImmutableArray<string> EnvironmentOverrides { get; } =
+        [.. Snapshot.EnvironmentOverrides];
+
+}
 
 /// <summary>
 /// Whether a credential is usable right now, and where it comes from. Carries no value.
 /// </summary>
-internal readonly record struct SetupCredentialPresence(bool Present, bool FromEnvironment)
+internal readonly record struct SetupCredentialPresence(
+    bool Present,
+    bool FromEnvironment,
+    bool Stored)
 {
 
-    public static SetupCredentialPresence Absent { get; } = new(false, false);
+    public SetupCredentialPresence(bool present, bool fromEnvironment)
+        : this(present, fromEnvironment, present && !fromEnvironment)
+    {
+    }
+
+    public static SetupCredentialPresence Absent { get; } = new(false, false, false);
+
+    public static SetupCredentialPresence From(
+        SecretStoreReadResult stored,
+        bool fromEnvironment) =>
+        new(
+            fromEnvironment || stored.Status == SecretStoreReadStatus.Ok,
+            fromEnvironment,
+            stored.Status != SecretStoreReadStatus.Missing);
 
 }
 
@@ -65,6 +90,12 @@ internal interface ISetupPlanner
         SetupStep step,
         CancellationToken cancellationToken);
 
+    Task<Result> RevalidateAsync(
+        SetupPlanContext context,
+        SetupDraft draft,
+        SetupPlan plan,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
@@ -101,15 +132,17 @@ internal sealed class SetupPlanner(
         ConfigurationPresetProvenance? provenance = null;
 
         Result<ConfigurationPresetSnapshot> presetSnapshot = await presetPersistence
-            .ReadAsync(cancellationToken)
+            .PeekAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (presetSnapshot.IsSuccess)
+        if (presetSnapshot.IsFailure)
         {
 
-            provenance = presetSnapshot.Value.Provenance;
+            return Result<SetupPlanContext>.Failure(presetSnapshot.Error);
 
         }
+
+        provenance = presetSnapshot.Value.Provenance;
 
         ProviderSettings? provider = ResolveCurrentProvider(settings);
 
@@ -121,30 +154,16 @@ internal sealed class SetupPlanner(
 
         WebBrowsingSettings webResearch = settings.ResolveWebBrowsing();
 
-        bool researchFromEnvironment =
-            EnvironmentCredentialResolver.ResolveWebResearchApiKey(webResearch) is not null;
-
-        bool researchStored = false;
-
-        if (!researchFromEnvironment)
-        {
-
-            SecretStoreReadResult stored = await webResearchCredentialStore
-                .GetPerplexityApiKeyReadResultAsync(cancellationToken)
+        SetupCredentialPresence webResearchCredential =
+            await WebResearchCredentialPresenceAsync(webResearch, cancellationToken)
                 .ConfigureAwait(false);
-
-            researchStored = stored.Status == SecretStoreReadStatus.Ok;
-
-        }
 
         return Result<SetupPlanContext>.Success(
             new SetupPlanContext(
                 snapshot.Value,
                 provenance,
                 providerCredential,
-                new SetupCredentialPresence(
-                    researchStored || researchFromEnvironment,
-                    researchFromEnvironment)));
+                webResearchCredential));
 
     }
 
@@ -170,18 +189,14 @@ internal sealed class SetupPlanner(
 
         };
 
-        if (EnvironmentCredentialResolver.ResolveProviderApiKey(probe) is not null)
-        {
-
-            return new SetupCredentialPresence(true, true);
-
-        }
+        bool fromEnvironment =
+            EnvironmentCredentialResolver.ResolveProviderApiKey(probe) is not null;
 
         SecretStoreReadResult stored = await providerCredentialStore
-            .GetApiKeyReadResultAsync(probe.Name, cancellationToken)
+            .PeekApiKeyReadResultAsync(probe.Name, cancellationToken)
             .ConfigureAwait(false);
 
-        return new SetupCredentialPresence(stored.Status == SecretStoreReadStatus.Ok, false);
+        return SetupCredentialPresence.From(stored, fromEnvironment);
 
     }
 
@@ -234,15 +249,23 @@ internal sealed class SetupPlanner(
         CancellationToken cancellationToken)
     {
 
+        ArcanumSettings candidate = BuildCandidate(context.Snapshot.Settings, draft);
+
+        ProviderSettings? candidateProvider = ResolveDraftedProvider(
+            candidate,
+            draft.ProviderName);
+
         SetupCredentialPresence providerCredential = await ProviderCredentialPresenceAsync(
-                draft.ProviderName,
-                draft.ProviderCredential == SetupCredentialAction.Reference
-                    ? draft.ProviderCredentialEnvironmentVariable
-                    : null,
+                candidateProvider?.Name ?? draft.ProviderName,
+                candidateProvider?.CredentialEnvironmentVariable,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        ArcanumSettings candidate = BuildCandidate(context.Snapshot.Settings, draft);
+        SetupCredentialPresence webResearchCredential =
+            await WebResearchCredentialPresenceAsync(
+                    candidate.ResolveWebBrowsing(),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         List<string> blockers = [];
 
@@ -303,7 +326,7 @@ internal sealed class SetupPlanner(
             SetupCredentialAction.Store => true,
             SetupCredentialAction.Reference => true,
             SetupCredentialAction.Clear => false,
-            _ => context.WebResearchCredential.Present,
+            _ => webResearchCredential.Present,
         };
 
         ConfigurationPresetPlanningContext presetContext = new(
@@ -373,7 +396,7 @@ internal sealed class SetupPlanner(
 
         SetupCredentialPlanPayload[] credentials = BuildCredentialPlan(
             providerCredential,
-            context.WebResearchCredential,
+            webResearchCredential,
             draft);
 
         bool credentialChanges = credentials.Any(static credential =>
@@ -407,15 +430,151 @@ internal sealed class SetupPlanner(
             candidate,
             payload,
             providerCredential,
-            context.WebResearchCredential,
+            webResearchCredential,
             draft.ProviderCredential == SetupCredentialAction.Store
-                && providerCredential.Present
-                && !providerCredential.FromEnvironment,
+                && providerCredential.Stored,
             draft.WebResearchCredential == SetupCredentialAction.Store
-                && context.WebResearchCredential.Present
-                && !context.WebResearchCredential.FromEnvironment);
+                && webResearchCredential.Stored);
 
     }
+
+    public async Task<Result> RevalidateAsync(
+        SetupPlanContext context,
+        SetupDraft draft,
+        SetupPlan plan,
+        CancellationToken cancellationToken)
+    {
+
+        Result<ConfigurationCommandSnapshot> snapshot = await configurationService
+            .ReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (snapshot.IsFailure)
+        {
+
+            return Result.Failure(snapshot.Error);
+
+        }
+
+        bool configurationMatches = string.Equals(
+                context.ConfigurationHash,
+                ConfigurationPresetHash.ComputeSettings(snapshot.Value.Settings),
+                StringComparison.Ordinal)
+            && context.Snapshot.AccessMode == snapshot.Value.AccessMode
+            && context.EnvironmentOverrides.SequenceEqual(
+                snapshot.Value.EnvironmentOverrides,
+                StringComparer.Ordinal);
+
+        if (!configurationMatches)
+        {
+
+            return StateChanged("The configuration changed after setup was reviewed.");
+
+        }
+
+        Result<ConfigurationPresetSnapshot> presetSnapshot = await presetPersistence
+            .PeekAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (presetSnapshot.IsFailure)
+        {
+
+            return Result.Failure(presetSnapshot.Error);
+
+        }
+
+        if (!ProvenanceMatches(context.Provenance, presetSnapshot.Value.Provenance))
+        {
+
+            return StateChanged("Preset provenance changed after setup was reviewed.");
+
+        }
+
+        ProviderSettings? candidateProvider = ResolveDraftedProvider(
+            plan.Candidate,
+            draft.ProviderName);
+
+        SetupCredentialPresence providerCredential = await ProviderCredentialPresenceAsync(
+                candidateProvider?.Name ?? draft.ProviderName,
+                candidateProvider?.CredentialEnvironmentVariable,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        SetupCredentialPresence webResearchCredential =
+            await WebResearchCredentialPresenceAsync(
+                    plan.Candidate.ResolveWebBrowsing(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        if (providerCredential != plan.ProviderCredential
+            || webResearchCredential != plan.WebResearchCredential)
+        {
+
+            return StateChanged(
+                "Credential availability changed after setup was reviewed.");
+
+        }
+
+        return Result.Success();
+
+    }
+
+    private async Task<SetupCredentialPresence> WebResearchCredentialPresenceAsync(
+        WebBrowsingSettings settings,
+        CancellationToken cancellationToken)
+    {
+
+        bool fromEnvironment =
+            EnvironmentCredentialResolver.ResolveWebResearchApiKey(settings) is not null;
+
+        SecretStoreReadResult stored = await webResearchCredentialStore
+            .PeekPerplexityApiKeyReadResultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return SetupCredentialPresence.From(stored, fromEnvironment);
+
+    }
+
+    private static bool ProvenanceMatches(
+        ConfigurationPresetProvenance? expected,
+        ConfigurationPresetProvenance? current)
+    {
+
+        if (expected is null || current is null)
+        {
+
+            return expected is null && current is null;
+
+        }
+
+        return string.Equals(expected.PresetId, current.PresetId, StringComparison.Ordinal)
+            && expected.Version == current.Version
+            && expected.AppliedAt == current.AppliedAt
+            && string.Equals(
+                expected.OwnedValuesHash,
+                current.OwnedValuesHash,
+                StringComparison.Ordinal)
+            && ValuesMatch(expected.BaselineValues, current.BaselineValues)
+            && ValuesMatch(expected.AppliedValues, current.AppliedValues);
+
+    }
+
+    private static bool ValuesMatch(
+        ImmutableArray<ConfigurationPresetBaselineValue> expected,
+        ImmutableArray<ConfigurationPresetBaselineValue> current) =>
+        expected.Length == current.Length
+        && expected.Zip(current).All(static pair =>
+            string.Equals(pair.First.Path, pair.Second.Path, StringComparison.Ordinal)
+            && string.Equals(
+                pair.First.CanonicalJson,
+                pair.Second.CanonicalJson,
+                StringComparison.Ordinal));
+
+    private static Result StateChanged(string message) =>
+        Result.Failure(
+            new Error(
+                "Setup.StateChanged",
+                $"{message} Review the updated setup plan before applying it."));
 
     /// <summary>
     /// Applies only the paths the wizard declares ownership of. Everything else on the persisted
@@ -646,5 +805,14 @@ internal sealed class SetupPlanner(
             out _)
             ? provider
             : (settings.Providers ?? []).FirstOrDefault();
+
+    private static ProviderSettings? ResolveDraftedProvider(
+        ArcanumSettings settings,
+        string? providerName) =>
+        (settings.Providers ?? []).FirstOrDefault(provider =>
+            string.Equals(
+                provider.Name,
+                providerName?.Trim(),
+                StringComparison.OrdinalIgnoreCase));
 
 }

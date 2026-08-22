@@ -12,8 +12,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 public static class ArcanumMasterKeyBootstrapper
 {
     /// <summary>
-    /// Ensures a master API key exists in the OS credential store (with security.dat fallback)
-    /// before the generic host starts (required for Grimoire SQLCipher key derivation).
+    /// Ensures a master API key exists in the OS credential store (with security.dat fallback).
+    /// The shipping host invokes this only from its post-restore-topology startup callback while its
+    /// exact installation maintenance lock remains attached, before Grimoire SQLCipher key derivation.
     /// </summary>
     /// <returns>The newly generated key material when one was created; otherwise null.</returns>
     public static async Task<string?> EnsureMasterApiKeyExistsAsync(CancellationToken cancellationToken = default)

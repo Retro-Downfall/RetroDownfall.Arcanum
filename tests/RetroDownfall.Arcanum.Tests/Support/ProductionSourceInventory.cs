@@ -24,6 +24,18 @@ internal readonly record struct ProductionSource(string RelativePath, string Tex
     internal bool Is(string fileName) =>
         string.Equals(Path.GetFileName(RelativePath), fileName, StringComparison.Ordinal);
 
+    /// <summary>
+    /// Reports whether this file is the exact normalized repository-relative owner.
+    /// </summary>
+    internal bool IsExactOwner(string repositoryRelativePath) =>
+        string.Equals(
+            NormalizeRepositoryRelativePath(RelativePath),
+            NormalizeRepositoryRelativePath(repositoryRelativePath),
+            StringComparison.Ordinal);
+
+    private static string NormalizeRepositoryRelativePath(string path) =>
+        path.Replace('\\', '/');
+
 }
 
 /// <summary>

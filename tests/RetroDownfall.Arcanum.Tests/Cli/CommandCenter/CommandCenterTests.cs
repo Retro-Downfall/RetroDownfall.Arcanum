@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
+
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class ShellCommandParserTests
@@ -673,9 +675,14 @@ public sealed class ShellCommandDispatcherTests
     {
         public Guid? GetLastSessionId() => null;
 
-        public void SaveSessionId(Guid id)
-        {
-        }
+        public Task<ArcanumClientMutationResult<CliContextDocument>>
+            SaveSessionIdAsync(
+                Guid id,
+                Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+                CancellationToken cancellationToken) =>
+            Task.FromResult(
+                ArcanumClientMutationResult<CliContextDocument>.Completed(
+                    CliContextDocument.Empty with { SessionId = id }));
     }
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory

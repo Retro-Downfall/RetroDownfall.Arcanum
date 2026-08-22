@@ -10,16 +10,20 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Security;
 using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -39,6 +43,8 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     private readonly IServiceScopeFactory _scopeFactory;
 
+    private readonly InMemoryOsCredentialStore _credentialStore = new();
+
     public GrimoireDatabaseBootstrapperTests()
     {
 
@@ -56,23 +62,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         _passphraseSource = new GrimoireDbPassphraseSource();
 
-        ServiceCollection services = new();
-
-        services.AddSingleton<GrimoireDbReadiness>();
-
-        services.AddSingleton<IGrimoireDbReadiness>(
-            static sp => sp.GetRequiredService<GrimoireDbReadiness>());
-
-        // The OS-secret boundary the authenticated restore journal is anchored in. Without it the
-        // bootstrap cannot read an anchor at all, and the restore-recovery phases have nothing to
-        // authenticate against.
-        services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
-
-        // The bootstrapper resolves the whole schema-installation graph out of this scope, so a
-        // container that registers only readiness fails at install time rather than at compile time.
-        _ = services.AddGrimoireSchemaInstallation();
-
-        _scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        _scopeFactory = CreateScopeFactory(_credentialStore);
 
     }
 
@@ -668,25 +658,265 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
-    [Fact]
-    public async Task StartAsync_refuses_active_reset_before_acquiring_the_maintenance_lock()
+    [Theory]
+    [InlineData(LockedStartupTopology.DirectRootSymlink)]
+    [InlineData(LockedStartupTopology.AncestorSymlink)]
+    [InlineData(LockedStartupTopology.NonDirectoryAncestor)]
+    [InlineData(LockedStartupTopology.InaccessibleAncestor)]
+    public async Task StartAsync_rejects_ambiguous_topology_before_recovery_or_shipping_mutation(
+        LockedStartupTopology topology)
     {
 
-        using ArcanumMaintenanceLock? held =
-            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+        if (topology is LockedStartupTopology.InaccessibleAncestor
+            && OperatingSystem.IsWindows())
+        {
 
-        Assert.NotNull(held);
+            return;
+
+        }
+
+        string target = Path.Combine(_tempDir, $"topology-target-{topology}");
+
+        string guardedRoot;
+
+        string? symlink = null;
+
+        string? inaccessible = null;
+
+        UnixFileMode? originalMode = null;
+
+        switch (topology)
+        {
+            case LockedStartupTopology.DirectRootSymlink:
+                Directory.CreateDirectory(target);
+
+                guardedRoot = Path.Combine(_tempDir, "direct-root-link");
+
+                Directory.CreateSymbolicLink(guardedRoot, target);
+
+                symlink = guardedRoot;
+
+                break;
+
+            case LockedStartupTopology.AncestorSymlink:
+                Directory.CreateDirectory(target);
+
+                symlink = Path.Combine(_tempDir, "ancestor-link");
+
+                Directory.CreateSymbolicLink(symlink, target);
+
+                guardedRoot = Path.Combine(symlink, "retained-parent", "arcanum");
+
+                break;
+
+            case LockedStartupTopology.NonDirectoryAncestor:
+                string obstruction = Path.Combine(_tempDir, "file-obstruction");
+
+                File.WriteAllText(obstruction, "unchanged");
+
+                guardedRoot = Path.Combine(obstruction, "retained-parent", "arcanum");
+
+                break;
+
+            default:
+                inaccessible = Path.Combine(_tempDir, "inaccessible-ancestor");
+
+                Directory.CreateDirectory(inaccessible);
+
+                originalMode = File.GetUnixFileMode(inaccessible);
+
+                File.SetUnixFileMode(
+                    inaccessible,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+                guardedRoot = Path.Combine(inaccessible, "retained-parent", "arcanum");
+
+                break;
+        }
+
+        int recoveryCalls = 0;
+
+        int shippingMutationCalls = 0;
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            new DelegateStartupRecovery((_, _) =>
+            {
+
+                recoveryCalls++;
+
+                return Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
+                    new InstallationResetStartupRecoveryState(
+                        ActiveReset: null,
+                        ExpectedInstallationId: null,
+                        IsLegacyV1: false)));
+
+            }),
+            sink,
+            masterKeyBootstrap: _ =>
+            {
+
+                shippingMutationCalls++;
+
+                return Task.FromException<string?>(
+                    new IOException("Injected post-topology mutation stop."));
+
+            });
+
+        try
+        {
+
+            Exception error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                service.StartAsync(CancellationToken.None));
+
+            Assert.Contains(
+                "validated safely",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            if (Directory.Exists(target))
+            {
+
+                Assert.Empty(Directory.GetFileSystemEntries(target));
+
+            }
+
+            Assert.Equal(0, recoveryCalls);
+
+            Assert.Equal(0, shippingMutationCalls);
+
+            Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
+
+        }
+        finally
+        {
+
+            if (inaccessible is not null && originalMode is not null)
+            {
+
+                File.SetUnixFileMode(inaccessible, originalMode.Value);
+
+            }
+
+            if (symlink is not null
+                && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(symlink, out _))
+            {
+
+                Directory.Delete(symlink);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public async Task StartAsync_admits_a_genuinely_absent_guarded_root_after_ordinary_lineage()
+    {
+
+        string guardedRoot = Path.Combine(
+            _tempDir,
+            "fresh-lineage",
+            "retained-parent",
+            "arcanum");
+
+        int recoveryCalls = 0;
+
+        int shippingMutationCalls = 0;
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            new InstallationResetMaintenanceLockAccessor(),
+            new DelegateStartupRecovery((_, _) =>
+            {
+
+                recoveryCalls++;
+
+                return Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
+                    new InstallationResetStartupRecoveryState(
+                        ActiveReset: null,
+                        ExpectedInstallationId: null,
+                        IsLegacyV1: false)));
+
+            }),
+            sink,
+            masterKeyBootstrap: _ =>
+            {
+
+                shippingMutationCalls++;
+
+                return Task.FromException<string?>(
+                    new IOException("Injected post-topology mutation stop."));
+
+            });
+
+        _ = await Assert.ThrowsAsync<IOException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.Equal(1, recoveryCalls);
+
+        Assert.Equal(1, shippingMutationCalls);
+
+        Assert.False(Directory.Exists(guardedRoot));
+
+    }
+
+    [Fact]
+    public async Task StartAsync_acquires_the_maintenance_lock_before_classifying_active_reset_evidence()
+    {
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        DelegateStartupRecovery recovery = new((held, _) =>
+        {
+
+            held.AssertHeldFor(_tempDir);
+
+            Result<ArcanumMaintenanceLock> borrowed = accessor.BorrowHeldLock(_tempDir);
+
+            Assert.True(borrowed.IsSuccess);
+
+            Assert.Same(held, borrowed.Value);
+
+            return Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
+                new InstallationResetStartupRecoveryState(
+                    new ActiveInstallationReset(
+                        InstallationResetScope.Workspace,
+                        WorkspaceRoot: "/selected/workspace",
+                        PlanId: "active-plan"),
+                    ExpectedInstallationId: null,
+                    IsLegacyV1: true)));
+
+        });
 
         GrimoireDatabaseHostedService service = new(
             _scopeFactory,
             _secretStore,
             new GrimoireDbPassphraseSource(),
             _tempDir,
-            new ActiveResetProbe(
-                new ActiveInstallationReset(
-                    InstallationResetScope.Global,
-                    WorkspaceRoot: null,
-                    PlanId: "active-plan")));
+            accessor,
+            recovery);
 
         InvalidOperationException error =
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -697,12 +927,1652 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             error.Message,
             StringComparison.OrdinalIgnoreCase);
 
+
+        Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
+
+        using ArcanumMaintenanceLock? reacquired =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(reacquired);
+
+        Assert.False(File.Exists(_dbPath));
+
+    }
+
+    [Theory]
+    [InlineData(StartupRecoveryFailureMode.ReturnedFailure)]
+    [InlineData(StartupRecoveryFailureMode.ThrownFailure)]
+    [InlineData(StartupRecoveryFailureMode.Cancellation)]
+    public async Task StartAsync_detaches_and_disposes_the_host_lock_when_locked_recovery_fails(
+        StartupRecoveryFailureMode mode)
+    {
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        DelegateStartupRecovery recovery = new((held, cancellationToken) =>
+        {
+
+            Assert.Same(held, accessor.BorrowHeldLock(_tempDir).Value);
+
+            return mode switch
+            {
+                StartupRecoveryFailureMode.ReturnedFailure =>
+                    Task.FromResult(Result<InstallationResetStartupRecoveryState>.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.ManualRecoveryRequired,
+                            "Locked recovery failed."))),
+                StartupRecoveryFailureMode.ThrownFailure =>
+                    Task.FromException<Result<InstallationResetStartupRecoveryState>>(
+                        new IOException("Injected locked-recovery failure.")),
+                _ => Task.FromCanceled<Result<InstallationResetStartupRecoveryState>>(
+                    new CancellationToken(canceled: true)),
+            };
+
+        });
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            accessor,
+            recovery);
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
+
+        using ArcanumMaintenanceLock? reacquired =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(reacquired);
+
+        using IServiceScope scope = _scopeFactory.CreateScope();
+
+        GrimoireDbReadiness readiness =
+            scope.ServiceProvider.GetRequiredService<GrimoireDbReadiness>();
+
+        Assert.False(readiness.IsReady);
+
+        Assert.NotNull(readiness.Failure);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_detaches_and_disposes_the_host_lock_when_bootstrap_fails()
+    {
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset());
+
+        _ = await Assert.ThrowsAsync<MissingMasterApiKeyException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
+
+        using ArcanumMaintenanceLock? reacquired =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(reacquired);
+
+        using IServiceScope scope = _scopeFactory.CreateScope();
+
+        GrimoireDbReadiness readiness =
+            scope.ServiceProvider.GetRequiredService<GrimoireDbReadiness>();
+
+        Assert.False(readiness.IsReady);
+
+        Assert.IsType<MissingMasterApiKeyException>(readiness.Failure);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_runs_shipping_mutations_after_locked_admission_under_the_attached_lock()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "post-topology-root");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        bool recoveryCompleted = false;
+
+        DelegateStartupRecovery recovery = new((held, _) =>
+        {
+
+            Assert.Same(held, accessor.BorrowHeldLock(guardedRoot).Value);
+
+            Assert.False(Directory.Exists(guardedRoot));
+
+            recoveryCompleted = true;
+
+            return Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
+                new InstallationResetStartupRecoveryState(
+                    ActiveReset: null,
+                    ExpectedInstallationId: null,
+                    IsLegacyV1: false)));
+
+        });
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            recovery,
+            sink,
+            masterKeyBootstrap: cancellationToken =>
+            {
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Assert.True(recoveryCompleted);
+
+                Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
+
+                Assert.False(Directory.Exists(guardedRoot));
+
+                return Task.FromException<string?>(
+                    new IOException("Injected post-topology bootstrap failure."));
+
+            });
+
+        bool startupActionInvoked = false;
+
+        bool startupLeaseDisposed = false;
+
+        service.ConfigurePostTopologyStartupAction(() =>
+        {
+
+            Assert.True(recoveryCompleted);
+
+            Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
+
+            startupActionInvoked = true;
+
+            return new DelegateDisposable(() =>
+            {
+
+                Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
+
+                startupLeaseDisposed = true;
+
+            });
+
+        });
+
+        IOException error = await Assert.ThrowsAsync<IOException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.Contains("post-topology", error.Message, StringComparison.Ordinal);
+
+        Assert.True(startupActionInvoked);
+
+        Assert.True(startupLeaseDisposed);
+
+        Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
+
+        Assert.False(Directory.Exists(guardedRoot));
+
+        using ArcanumMaintenanceLock reacquired = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        Assert.Throws<InvalidOperationException>(() =>
+            sink.Activate(reacquired, guardedRoot));
+
+    }
+
+    [Fact]
+    public async Task StartAsync_cleans_a_terminal_blocker_suffix_and_retains_the_client_mutex_through_startup()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "client-coordinated-root");
+
+        StaticClientResetEvidenceProbe reset = new(active: null);
+
+        StaticClientRestoreEvidenceProbe restore = new(active: false);
+
+        ClientMutationBlockerStore blocker = new(guardedRoot);
+
+        InstallationMaintenanceCoordination coordination = new(
+            guardedRoot,
+            blocker,
+            reset,
+            restore);
+
+        InstallationMaintenanceCoordinationResult opening = await coordination
+            .AcquireInstallationResetAsync(
+                InstallationResetScope.All,
+                "accepted-plan",
+                operationId: null,
+                CancellationToken.None);
+
+        await opening.BorrowAcquiredLease().DisposeAsync();
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset(),
+            sink,
+            masterKeyBootstrap: async _ =>
+            {
+
+                Assert.Null((await blocker.InspectAsync()).Value);
+
+                ArcanumClientMutationLockAcquisitionResult competing =
+                    ArcanumClientMutationLock.AcquireDetailed(guardedRoot);
+
+                Assert.Equal(
+                    ArcanumClientMutationLockAcquisitionDisposition.Contended,
+                    competing.Disposition);
+
+                throw new IOException("Injected coordinated startup failure.");
+
+            },
+            startupCoordination: coordination);
+
+        _ = await Assert.ThrowsAsync<IOException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.Null((await blocker.InspectAsync()).Value);
+
+        using ArcanumClientMutationLock released = Assert.IsType<ArcanumClientMutationLock>(
+            ArcanumClientMutationLock.AcquireDetailed(guardedRoot).Lock);
+
+    }
+
+    [Fact]
+    public async Task Post_restore_activation_revalidates_a_replaced_root_before_shipping_mutation()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "post-restore-replaced-root");
+
+        string target = Path.Combine(_tempDir, "post-restore-symlink-target");
+
+        Directory.CreateDirectory(target);
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        accessor.AttachHostLock(held, guardedRoot);
+
+        int startupActionCalls = 0;
+
+        int masterBootstrapCalls = 0;
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: true);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset(),
+            sink,
+            masterKeyBootstrap: _ =>
+            {
+
+                masterBootstrapCalls++;
+
+                return Task.FromResult<string?>(null);
+
+            });
+
+        service.ConfigurePostTopologyStartupAction(() =>
+        {
+
+            startupActionCalls++;
+
+            return null;
+
+        });
+
+        Directory.CreateSymbolicLink(guardedRoot, target);
+
+        try
+        {
+
+            System.Reflection.MethodInfo activation = Assert.IsAssignableFrom<System.Reflection.MethodInfo>(
+                typeof(GrimoireDatabaseHostedService).GetMethod(
+                    "ActivatePostRestoreTopologyAsync",
+                    System.Reflection.BindingFlags.Instance
+                        | System.Reflection.BindingFlags.NonPublic));
+
+            Exception? error = await Record.ExceptionAsync(async () =>
+            {
+
+                Task invocation = Assert.IsAssignableFrom<Task>(activation.Invoke(
+                    service,
+                    [held, CancellationToken.None]));
+
+                await invocation;
+
+            });
+
+            Assert.Empty(Directory.GetFileSystemEntries(target));
+
+            Assert.IsType<InvalidOperationException>(error);
+
+            Assert.Equal(0, startupActionCalls);
+
+            Assert.Equal(0, masterBootstrapCalls);
+
+        }
+        finally
+        {
+
+            service.Dispose();
+
+            accessor.DetachHostLock(held);
+
+            if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(guardedRoot, out _))
+            {
+
+                Directory.Delete(guardedRoot);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public async Task No_hook_host_runs_the_configured_post_topology_action_before_root_creation()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "no-hook-post-topology-action");
+
+        _secretStore.SetApiKey("test-api-key");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        int startupActionCalls = 0;
+
+        int startupLeaseDisposals = 0;
+
+        bool rootWasAbsent = false;
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset());
+
+        service.ConfigurePostTopologyStartupAction(() =>
+        {
+
+            startupActionCalls++;
+
+            rootWasAbsent = !Directory.Exists(guardedRoot);
+
+            Assert.True(accessor.BorrowHeldLock(guardedRoot).IsSuccess);
+
+            return new DelegateDisposable(() => startupLeaseDisposals++);
+
+        });
+
+        await service.StartAsync(CancellationToken.None);
+
+        Assert.Equal(1, startupActionCalls);
+
+        Assert.True(rootWasAbsent);
+
+        Assert.True(Directory.Exists(guardedRoot));
+
+        Assert.Equal(0, startupLeaseDisposals);
+
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.Equal(1, startupLeaseDisposals);
+
+    }
+
+    [Fact]
+    public async Task No_hook_host_revalidates_root_after_restore_scope_converges_before_any_mutation()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "no-hook-post-restore-replaced-root");
+
+        string target = Path.Combine(_tempDir, "no-hook-post-restore-target");
+
+        Directory.CreateDirectory(target);
+
+        _secretStore.SetApiKey("test-api-key");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        int startupActionCalls = 0;
+
+        IServiceScopeFactory replacingScopeFactory = new DisposeCallbackScopeFactory(
+            _scopeFactory,
+            () => Directory.CreateSymbolicLink(guardedRoot, target));
+
+        GrimoireDatabaseHostedService service = new(
+            replacingScopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset());
+
+        service.ConfigurePostTopologyStartupAction(() =>
+        {
+
+            startupActionCalls++;
+
+            return null;
+
+        });
+
+        try
+        {
+
+            Exception? error = await Record.ExceptionAsync(() =>
+                service.StartAsync(CancellationToken.None));
+
+            Assert.Empty(Directory.GetFileSystemEntries(target));
+
+            Assert.IsType<InvalidOperationException>(error);
+
+            Assert.Equal(0, startupActionCalls);
+
+            Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
+
+        }
+        finally
+        {
+
+            service.Dispose();
+
+            if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(guardedRoot, out _))
+            {
+
+                Directory.Delete(guardedRoot);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public async Task StartAsync_rejected_recovery_invokes_no_configured_shipping_mutation()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "blocked-shipping-mutation");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        int masterBootstrapCalls = 0;
+
+        int startupActionCalls = 0;
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            new DelegateStartupRecovery((_, _) =>
+                Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
+                    new InstallationResetStartupRecoveryState(
+                        new ActiveInstallationReset(
+                            InstallationResetScope.Workspace,
+                            WorkspaceRoot: "/blocked",
+                            PlanId: "blocked-plan"),
+                        ExpectedInstallationId: null,
+                        IsLegacyV1: true)))),
+            sink,
+            masterKeyBootstrap: _ =>
+            {
+
+                masterBootstrapCalls++;
+
+                return Task.FromResult<string?>(null);
+
+            });
+
+        service.ConfigurePostTopologyStartupAction(() =>
+        {
+
+            startupActionCalls++;
+
+            return null;
+
+        });
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.Equal(0, masterBootstrapCalls);
+
+        Assert.Equal(0, startupActionCalls);
+
+        Assert.False(Directory.Exists(guardedRoot));
+
+    }
+
+    [Fact]
+    public async Task StartAsync_publishes_a_new_master_key_for_one_post_start_consumption()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "generated-master-key");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset(),
+            sink,
+            masterKeyBootstrap: _ =>
+            {
+
+                _secretStore.SetApiKey("generated-api-key");
+
+                return Task.FromResult<string?>("generated-api-key");
+
+            });
+
+        await service.StartAsync(CancellationToken.None);
+
+        Assert.Equal("generated-api-key", service.TakeGeneratedMasterApiKey());
+
+        Assert.Null(service.TakeGeneratedMasterApiKey());
+
+        await service.StopAsync(CancellationToken.None);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_attach_collision_disposes_only_the_new_lock_and_preserves_the_accessor_owner()
+    {
+
+        string incumbentRoot = Path.Combine(_tempDir, "incumbent");
+
+        Directory.CreateDirectory(incumbentRoot);
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        using ArcanumMaintenanceLock? incumbent =
+            ArcanumMaintenanceLock.TryAcquire(incumbentRoot);
+
+        Assert.NotNull(incumbent);
+
+        accessor.AttachHostLock(incumbent, incumbentRoot);
+
+        try
+        {
+
+            GrimoireDatabaseHostedService service = new(
+                _scopeFactory,
+                _secretStore,
+                new GrimoireDbPassphraseSource(),
+                _tempDir,
+                accessor,
+                DelegateStartupRecovery.NoActiveReset());
+
+            InvalidOperationException error =
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    service.StartAsync(CancellationToken.None));
+
+            Assert.Contains(
+                "different installation maintenance lock",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            Assert.Same(incumbent, accessor.BorrowHeldLock(incumbentRoot).Value);
+
+            using ArcanumMaintenanceLock? targetReacquired =
+                ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+            Assert.NotNull(targetReacquired);
+
+            using ArcanumMaintenanceLock? incumbentContender =
+                ArcanumMaintenanceLock.TryAcquire(incumbentRoot);
+
+            Assert.Null(incumbentContender);
+
+        }
+        finally
+        {
+
+            accessor.DetachHostLock(incumbent);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task A_second_StartAsync_refuses_without_overwriting_the_live_host_lock()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset());
+
+        await service.StartAsync(CancellationToken.None);
+
+        ArcanumMaintenanceLock incumbent = accessor.BorrowHeldLock(_tempDir).Value;
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.StartAsync(CancellationToken.None));
+
+        Assert.Contains("already started", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Same(incumbent, accessor.BorrowHeldLock(_tempDir).Value);
+
+        using (IServiceScope scope = _scopeFactory.CreateScope())
+        {
+
+            Assert.True(scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
+
+        }
+
+        service.Dispose();
+
+        Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
+
+        using ArcanumMaintenanceLock? reacquired =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(reacquired);
+
+    }
+
+    [Fact]
+    public async Task StopAsync_and_Dispose_detach_before_releasing_the_host_lock_idempotently()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset());
+
+        await service.StartAsync(CancellationToken.None);
+
+        Assert.True(accessor.BorrowHeldLock(_tempDir).IsSuccess);
+
+        await service.StopAsync(CancellationToken.None);
+
+        await service.StopAsync(CancellationToken.None);
+
+        service.Dispose();
+
+        service.Dispose();
+
+        Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
+
+        using ArcanumMaintenanceLock? reacquired =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(reacquired);
+
+    }
+
+    [Fact]
+    public async Task StopAsync_checkpoints_once_and_never_after_another_owner_reacquires_the_lock()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        TrackingPassphraseSource passphraseSource = new();
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            passphraseSource,
+            _tempDir,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset());
+
+        await service.StartAsync(CancellationToken.None);
+
+        int beforeStop = passphraseSource.ReadCount;
+
+        await service.StopAsync(CancellationToken.None);
+
+        int afterFirstStop = passphraseSource.ReadCount;
+
+        Assert.True(afterFirstStop > beforeStop);
+
+        using ArcanumMaintenanceLock otherOwner = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(_tempDir));
+
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.Equal(afterFirstStop, passphraseSource.ReadCount);
+
+    }
+
+    [Fact]
+    public async Task StopAsync_after_failed_StartAsync_never_opens_an_existing_database_without_the_lock()
+    {
+
+        string failedDatabasePath = Path.Combine(
+            _tempDir,
+            Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile));
+
+        await File.WriteAllBytesAsync(failedDatabasePath, [0x01, 0x02, 0x03]);
+
+        TrackingPassphraseSource passphraseSource = new();
+
+        passphraseSource.SetPassphrase("failed-start-passphrase");
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            passphraseSource,
+            _tempDir,
+            new InstallationResetMaintenanceLockAccessor(),
+            new DelegateStartupRecovery(static (_, _) =>
+                Task.FromException<Result<InstallationResetStartupRecoveryState>>(
+                    new IOException("Injected startup failure."))));
+
+        _ = await Assert.ThrowsAsync<IOException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        int afterFailedStart = passphraseSource.ReadCount;
+
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.Equal(afterFailedStart, passphraseSource.ReadCount);
+
+    }
+
+    [Fact]
+    public async Task Dispose_waits_for_the_entire_post_topology_startup_critical_section()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "dispose-during-start");
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        using ManualResetEventSlim actionEntered = new();
+
+        using ManualResetEventSlim releaseAction = new();
+
+        using ManualResetEventSlim disposeAttempted = new();
+
+        using ManualResetEventSlim disposeReturned = new();
+
+        bool startupLeaseDisposedUnderLock = false;
+
+        HostLockSerilogFileSink sink = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "logs"),
+            retainedFileCountLimit: 3,
+            enabled: false);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset(),
+            sink,
+            masterKeyBootstrap: _ => Task.FromException<string?>(
+                new IOException("Injected master-key bootstrap failure.")));
+
+        service.ConfigurePostTopologyStartupAction(() =>
+        {
+
+            actionEntered.Set();
+
+            releaseAction.Wait();
+
+            return new DelegateDisposable(() =>
+                startupLeaseDisposedUnderLock = accessor
+                    .BorrowHeldLock(guardedRoot)
+                    .IsSuccess);
+
+        });
+
+        Task start = Task.Run(() => service.StartAsync(CancellationToken.None));
+
+        Assert.True(actionEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        Task dispose = Task.Run(() =>
+        {
+
+            disposeAttempted.Set();
+
+            service.Dispose();
+
+            disposeReturned.Set();
+
+        });
+
+        Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
+
+        bool returnedBeforeStartupWasReleased;
+
+        bool lockStayedAttached;
+
+        try
+        {
+
+            returnedBeforeStartupWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
+
+            lockStayedAttached = accessor.BorrowHeldLock(guardedRoot).IsSuccess;
+
+        }
+        finally
+        {
+
+            releaseAction.Set();
+
+        }
+
+        _ = await Assert.ThrowsAsync<IOException>(async () => await start);
+
+        await dispose;
+
+        Assert.False(returnedBeforeStartupWasReleased);
+
+        Assert.True(lockStayedAttached);
+
+        Assert.True(startupLeaseDisposedUnderLock);
+
+        Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Dispose_waits_for_the_owned_shutdown_checkpoint_before_releasing_the_lock()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        TrackingPassphraseSource passphraseSource = new();
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            passphraseSource,
+            _tempDir,
+            accessor,
+            DelegateStartupRecovery.NoActiveReset());
+
+        await service.StartAsync(CancellationToken.None);
+
+        passphraseSource.BlockReads();
+
+        Task stop = Task.Run(() => service.StopAsync(CancellationToken.None));
+
+        Assert.True(passphraseSource.ReadEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        using ManualResetEventSlim disposeAttempted = new();
+
+        using ManualResetEventSlim disposeReturned = new();
+
+        Task dispose = Task.Run(() =>
+        {
+
+            disposeAttempted.Set();
+
+            service.Dispose();
+
+            disposeReturned.Set();
+
+        });
+
+        Assert.True(disposeAttempted.Wait(TimeSpan.FromSeconds(10)));
+
+        bool returnedBeforeCheckpointWasReleased;
+
+        bool lockStayedAttached;
+
+        try
+        {
+
+            returnedBeforeCheckpointWasReleased = disposeReturned.Wait(TimeSpan.FromMilliseconds(250));
+
+            lockStayedAttached = accessor.BorrowHeldLock(_tempDir).IsSuccess;
+
+        }
+        finally
+        {
+
+            passphraseSource.ReleaseReads();
+
+        }
+
+        await stop;
+
+        await dispose;
+
+        Assert.False(returnedBeforeCheckpointWasReleased);
+
+        Assert.True(lockStayedAttached);
+
+        Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_authenticates_v2_and_closes_the_single_envelope_ahead_window_before_bootstrap()
+    {
+
+        string guardedRoot = Path.Combine(_tempDir, "one-ahead");
+
+        Directory.CreateDirectory(guardedRoot);
+
+        InstallationResetActiveStore store = new(guardedRoot, _credentialStore);
+
+        InstallationResetActiveRecord prepared = CreateResetActiveRecord(
+            InstallationResetScope.Global,
+            InstallationResetPhase.Prepared,
+            InstallationResetDataHandoff.HostFactoryErasure);
+
+        Guid installationId = Guid.Parse("71515151-5151-4151-8151-515151515151");
+
+        InstallationResetActivePublication first;
+
+        using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+                   ArcanumMaintenanceLock.TryAcquire(guardedRoot)))
+        {
+
+            first = Value(await store.BeginAsync(
+                held,
+                installationId,
+                prepared,
+                CancellationToken.None));
+
+        }
+
+        InstallationResetActiveEnvelopeV2 ahead = SealEnvelope(
+            guardedRoot,
+            first,
+            InstallationResetActivePayloadV2.FromRecord(prepared),
+            revision: 2);
+
+        File.WriteAllBytes(
+            store.ActivePath,
+            Value(InstallationResetActiveRecordAuthenticator.EncodeEnvelope(ahead)));
+
+        Assert.True((await store.InspectAsync(CancellationToken.None)).IsFailure);
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        GrimoireDatabaseHostedService service = CreateLockedRecoveryHost(
+            guardedRoot,
+            accessor,
+            store);
+
+        _ = await Assert.ThrowsAsync<MissingMasterApiKeyException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        InstallationResetActiveRecoveryState recovered = Value(
+            await store.InspectAsync(CancellationToken.None));
+
+        Assert.Equal(
+            InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
+            recovered.Outcome);
+
+        Assert.Equal(2UL, recovered.Publication!.Anchor.Revision);
+
+        Assert.Equal(installationId, recovered.Publication.Envelope.InstallationId);
+
+        Assert.True(accessor.BorrowHeldLock(guardedRoot).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_allows_only_an_authenticated_prepared_global_or_all_host_handoff_without_proof()
+    {
+
+        InstallationResetActiveRecord global = CreateResetActiveRecord(
+            InstallationResetScope.Global,
+            InstallationResetPhase.Prepared,
+            InstallationResetDataHandoff.HostFactoryErasure);
+
+        InstallationResetActiveRecord all = CreateResetActiveRecord(
+            InstallationResetScope.All,
+            InstallationResetPhase.Prepared,
+            InstallationResetDataHandoff.HostFactoryErasure);
+
+        InstallationResetActiveRecord proofComplete = WithOnlineCompletion(
+            global,
+            InstallationResetPhase.DataResetComplete);
+
+        (string Name, InstallationResetActiveRecord Record, bool Allowed)[] cases =
+        [
+            ("global", global, true),
+            ("all", all, true),
+            ("workspace", CreateResetActiveRecord(
+                InstallationResetScope.Workspace,
+                InstallationResetPhase.Prepared,
+                handoff: null), false),
+            ("global-no-handoff", global with { DataHandoff = null }, false),
+            ("proof-complete", proofComplete, false),
+            ("offline", WithOnlineCompletion(
+                global,
+                InstallationResetPhase.OfflineCleanupComplete), false),
+            ("verified", WithOnlineCompletion(
+                global,
+                InstallationResetPhase.Verified), false),
+            ("completed", WithOnlineCompletion(
+                global,
+                InstallationResetPhase.Completed), false),
+        ];
+
+        foreach ((string name, InstallationResetActiveRecord record, bool allowed) in cases)
+        {
+
+            string guardedRoot = Path.Combine(_tempDir, "v2-admission-" + name);
+
+            Directory.CreateDirectory(guardedRoot);
+
+            InstallationResetActiveStore store = new(guardedRoot, _credentialStore);
+
+            using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+                       ArcanumMaintenanceLock.TryAcquire(guardedRoot)))
+            {
+
+                _ = Value(await store.BeginAsync(
+                    held,
+                    Guid.NewGuid(),
+                    record,
+                    CancellationToken.None));
+
+            }
+
+            GrimoireDatabaseHostedService service = CreateLockedRecoveryHost(
+                guardedRoot,
+                new InstallationResetMaintenanceLockAccessor(),
+                store);
+
+            Exception error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                service.StartAsync(CancellationToken.None));
+
+            if (allowed)
+            {
+
+                Assert.IsType<MissingMasterApiKeyException>(error);
+
+            }
+            else
+            {
+
+                Assert.Contains(
+                    "factory reset",
+                    Assert.IsType<InvalidOperationException>(error).Message,
+                    StringComparison.OrdinalIgnoreCase);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public async Task StartAsync_publishes_the_exact_authenticated_recovery_identity_only_for_the_host_lifetime()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        ActiveInstallationReset active = CreateHostRecoveryActive(
+            InstallationResetScope.Global) with
+        {
+            PlanId = "published-plan",
+            OperationId = Guid.Parse("57575757-5757-4757-8757-575757575757"),
+        };
+
+        InstallationResetApiAdmission admission = new();
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            new InstallationResetMaintenanceLockAccessor(),
+            new DelegateStartupRecovery((_, _) => Task.FromResult(
+                Result<InstallationResetStartupRecoveryState>.Success(
+                    new InstallationResetStartupRecoveryState(
+                        active,
+                        ExpectedInstallationId: null,
+                        IsLegacyV1: false)))),
+            admission);
+
+        await service.StartAsync(CancellationToken.None);
+
+        Assert.Equal(active.Scope, admission.ActiveRecovery?.Scope);
+
+        Assert.Equal(active.PlanId, admission.ActiveRecovery?.InstallationPlanId);
+
+        Assert.Equal(active.OperationId, admission.ActiveRecovery?.OperationId);
+
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.NotNull(admission.ActiveRecovery);
+
+    }
+
+    [Fact]
+    public async Task Recovery_host_retains_the_exact_client_mutex_and_durable_blocker_until_shutdown()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        string guardedRoot = Path.Combine(_tempDir, "retained-recovery-client-lock");
+
+        ActiveInstallationReset active = CreateHostRecoveryActive(
+            InstallationResetScope.All);
+
+        ClientMutationBlockerStore blocker = new(guardedRoot);
+
+        InstallationMaintenanceCoordination coordination = new(
+            guardedRoot,
+            blocker,
+            new StaticClientResetEvidenceProbe(active),
+            new StaticClientRestoreEvidenceProbe(active: false));
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            new InstallationResetMaintenanceLockAccessor(),
+            new DelegateStartupRecovery((_, _) => Task.FromResult(
+                Result<InstallationResetStartupRecoveryState>.Success(
+                    new InstallationResetStartupRecoveryState(
+                        active,
+                        ExpectedInstallationId: null,
+                        IsLegacyV1: false)))),
+            apiAdmission: new InstallationResetApiAdmission(),
+            startupCoordination: coordination);
+
+        await service.StartAsync(CancellationToken.None);
+
+        Assert.Equal(
+            ArcanumClientMutationLockAcquisitionDisposition.Contended,
+            ArcanumClientMutationLock.AcquireDetailed(guardedRoot).Disposition);
+
+        ClientMutationBlockerPublication publication = Assert.IsType<
+            ClientMutationBlockerPublication>((await blocker.InspectAsync()).Value);
+
+        Assert.Equal(active.PlanId, publication.Record.PlanId);
+
+        Assert.Equal(active.OperationId, publication.Record.OperationId);
+
+        await service.StopAsync(CancellationToken.None);
+
+        using ArcanumClientMutationLock released = Assert.IsType<ArcanumClientMutationLock>(
+            ArcanumClientMutationLock.AcquireDetailed(guardedRoot).Lock);
+
+        Assert.NotNull((await blocker.InspectAsync()).Value);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_allows_eligible_v1_only_for_locked_migration_and_blocks_every_other_legacy_state()
+    {
+
+        InstallationResetActiveRecord global = CreateResetActiveRecord(
+            InstallationResetScope.Global,
+            InstallationResetPhase.Prepared,
+            InstallationResetDataHandoff.HostFactoryErasure);
+
+        InstallationResetActiveRecord all = CreateResetActiveRecord(
+            InstallationResetScope.All,
+            InstallationResetPhase.Prepared,
+            InstallationResetDataHandoff.HostFactoryErasure);
+
+        (string Name, InstallationResetActiveRecord Record, bool Allowed)[] cases =
+        [
+            ("global", global, true),
+            ("all", all, true),
+            ("workspace", CreateResetActiveRecord(
+                InstallationResetScope.Workspace,
+                InstallationResetPhase.Prepared,
+                handoff: null), false),
+            ("global-no-handoff", global with { DataHandoff = null }, false),
+            ("proof-complete", WithOnlineCompletion(
+                global,
+                InstallationResetPhase.DataResetComplete), false),
+            ("completed", WithOnlineCompletion(
+                global,
+                InstallationResetPhase.Completed), false),
+        ];
+
+        foreach ((string name, InstallationResetActiveRecord record, bool allowed) in cases)
+        {
+
+            string guardedRoot = Path.Combine(_tempDir, "v1-admission-" + name);
+
+            Directory.CreateDirectory(guardedRoot);
+
+            InstallationResetActiveStore legacyWriter = new(guardedRoot);
+
+            Assert.True((await legacyWriter.WriteLegacyV1ForTestsAsync(
+                record,
+                CancellationToken.None)).IsSuccess);
+
+            byte[] before = await File.ReadAllBytesAsync(legacyWriter.ActivePath);
+
+            InstallationResetActiveStore authenticated = new(guardedRoot, _credentialStore);
+
+            GrimoireDatabaseHostedService service = CreateLockedRecoveryHost(
+                guardedRoot,
+                new InstallationResetMaintenanceLockAccessor(),
+                authenticated);
+
+            Exception error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                service.StartAsync(CancellationToken.None));
+
+            if (allowed)
+            {
+
+                Assert.IsType<MissingMasterApiKeyException>(error);
+
+            }
+            else
+            {
+
+                Assert.Contains(
+                    "factory reset",
+                    Assert.IsType<InvalidOperationException>(error).Message,
+                    StringComparison.OrdinalIgnoreCase);
+
+            }
+
+            Assert.Equal(before, await File.ReadAllBytesAsync(legacyWriter.ActivePath));
+
+            AssertNoResetCredentials(guardedRoot);
+
+        }
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StartAsync_completes_only_closed_or_key_only_suffixes_before_bootstrap(
+        bool keyOnly)
+    {
+
+        string guardedRoot = Path.Combine(
+            _tempDir,
+            keyOnly ? "startup-key-only" : "startup-closed");
+
+        Directory.CreateDirectory(guardedRoot);
+
+        if (keyOnly)
+        {
+
+            using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+                ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+            BackupRestoreProfileNamespace profile = Value(
+                BackupRestoreJournalAuthenticator.ResolveProfileNamespace(guardedRoot));
+
+            Value(new InstallationResetActiveRecordKeyProvider(_credentialStore).CreateOrOpen(
+                held,
+                guardedRoot,
+                profile)).Dispose();
+
+        }
+        else
+        {
+
+            using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+                ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+            InstallationResetActiveStore interrupted = new(
+                guardedRoot,
+                _credentialStore,
+                new InstallationResetActiveFilePersistence(
+                    failBeforeStep: step => string.Equals(
+                        step,
+                        "file:delete",
+                        StringComparison.Ordinal)));
+
+            InstallationResetActiveRecord completed = CreateResetActiveRecord(
+                InstallationResetScope.Global,
+                InstallationResetPhase.Completed,
+                handoff: null);
+
+            _ = Value(await interrupted.BeginAsync(
+                held,
+                Guid.NewGuid(),
+                completed,
+                CancellationToken.None));
+
+            Assert.True((await interrupted.RetireAsync(
+                held,
+                completed.OperationId,
+                CancellationToken.None)).IsFailure);
+
+        }
+
+        InstallationResetActiveStore store = new(guardedRoot, _credentialStore);
+
+        GrimoireDatabaseHostedService service = CreateLockedRecoveryHost(
+            guardedRoot,
+            new InstallationResetMaintenanceLockAccessor(),
+            store);
+
+        _ = await Assert.ThrowsAsync<MissingMasterApiKeyException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.Equal(
+            InstallationResetActiveRecoveryOutcome.NoActiveRecord,
+            Value(await store.InspectAsync(CancellationToken.None)).Outcome);
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StartAsync_compares_the_active_envelope_installation_uuid_before_readiness(
+        bool escapeHatchOptIn)
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        IServiceScopeFactory setupScopes = CreateScopeFactory(_credentialStore);
+
+        GrimoireDbPassphraseSource setupPassphrase = new();
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            setupPassphrase,
+            setupScopes,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        Guid databaseInstallationId = await ReadDatabaseInstallationIdAsync(
+            _dbPath,
+            setupPassphrase.Passphrase);
+
+        Guid activeInstallationId = Guid.Parse(
+            "81515151-5151-4151-8151-515151515151");
+
+        Assert.NotEqual(databaseInstallationId, activeInstallationId);
+
+        InstallationResetActiveStore store = new(_tempDir, _credentialStore);
+
+        using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+                   ArcanumMaintenanceLock.TryAcquire(_tempDir)))
+        {
+
+            _ = Value(await store.BeginAsync(
+                held,
+                activeInstallationId,
+                CreateResetActiveRecord(
+                    InstallationResetScope.Global,
+                    InstallationResetPhase.Prepared,
+                    InstallationResetDataHandoff.HostFactoryErasure),
+                CancellationToken.None));
+
+        }
+
+        IServiceScopeFactory hostScopes = CreateScopeFactory(
+            _credentialStore,
+            includeHostProcessTools: true,
+            escapeHatchOptIn);
+
+        InstallationResetApiAdmission admission = new();
+
+        GrimoireDatabaseHostedService service = new(
+            hostScopes,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            new InstallationResetMaintenanceLockAccessor(),
+            new InstallationResetStartupRecovery(_tempDir, store),
+            admission);
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                service.StartAsync(CancellationToken.None));
+
         Assert.DoesNotContain(
-            "maintenance lock",
+            activeInstallationId.ToString("D"),
             error.Message,
             StringComparison.OrdinalIgnoreCase);
 
-        Assert.False(File.Exists(_dbPath));
+        using IServiceScope scope = hostScopes.CreateScope();
+
+        GrimoireDbReadiness readiness =
+            scope.ServiceProvider.GetRequiredService<GrimoireDbReadiness>();
+
+        CovenantAvailabilitySnapshot availability = scope.ServiceProvider
+            .GetRequiredService<CovenantAvailability>()
+            .Current;
+
+        HostProcessToolsRuntimePolicy hostToolsPolicy = scope.ServiceProvider
+            .GetRequiredService<HostProcessToolsRuntimePolicy>();
+
+        Assert.False(readiness.IsReady);
+
+        Assert.IsType<GrimoireDatabaseUnavailableException>(readiness.Failure);
+
+        Assert.Equal(1, availability.Generation);
+
+        Assert.Equal(CovenantCapabilityState.Unavailable, availability.Canonical);
+
+        Assert.Null(availability.DatasetGeneration);
+
+        Assert.False(hostToolsPolicy.IsPublished);
+
+        Assert.False(hostToolsPolicy.CovenantPermitted);
+
+        Assert.False(hostToolsPolicy.HostProcessToolsPermitted);
+
+        Assert.Null(admission.ActiveRecovery);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_hard_host_tools_block_before_identity_keeps_the_process_policy_unpublished()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        IServiceScopeFactory hostScopes = CreateScopeFactory(
+            _credentialStore,
+            includeHostProcessTools: true,
+            escapeHatchOptIn: false,
+            markerReadStatusOverride: HostProcessToolsMarkerReadStatus.Malformed);
+
+        GrimoireDatabaseHostedService service = new(
+            hostScopes,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            new InstallationResetMaintenanceLockAccessor(),
+            DelegateStartupRecovery.NoActiveReset());
+
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        using IServiceScope scope = hostScopes.CreateScope();
+
+        HostProcessToolsRuntimePolicy policy = scope.ServiceProvider
+            .GetRequiredService<HostProcessToolsRuntimePolicy>();
+
+        CovenantAvailabilitySnapshot availability = scope.ServiceProvider
+            .GetRequiredService<CovenantAvailability>()
+            .Current;
+
+        GrimoireDbReadiness readiness = scope.ServiceProvider
+            .GetRequiredService<GrimoireDbReadiness>();
+
+        Assert.False(policy.IsPublished);
+
+        Assert.False(policy.CovenantPermitted);
+
+        Assert.False(policy.HostProcessToolsPermitted);
+
+        Assert.Equal(CovenantCapabilityState.Unavailable, availability.Canonical);
+
+        Assert.False(readiness.IsReady);
+
+        Assert.IsType<GrimoireDatabaseUnavailableException>(readiness.Failure);
+
+    }
+
+    [Theory]
+    [InlineData(ExpectedIdentityEvidence.Missing)]
+    [InlineData(ExpectedIdentityEvidence.Malformed)]
+    [InlineData(ExpectedIdentityEvidence.Ambiguous)]
+    [InlineData(ExpectedIdentityEvidence.Mismatch)]
+    public async Task Expected_installation_uuid_comparison_fails_closed_on_nonexact_authority_rows(
+        ExpectedIdentityEvidence evidence)
+    {
+
+        Guid expected = Guid.Parse("91515151-5151-4151-8151-515151515151");
+
+        await using SqliteConnection connection = new("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        await using (SqliteCommand create = connection.CreateCommand())
+        {
+
+            create.CommandText =
+                "CREATE TABLE covenant_authority_state (StateKey INTEGER, InstallationIdentity TEXT);";
+
+            _ = await create.ExecuteNonQueryAsync();
+
+        }
+
+        if (evidence is not ExpectedIdentityEvidence.Missing)
+        {
+
+            await InsertAuthorityIdentityAsync(
+                connection,
+                stateKey: 1,
+                evidence switch
+                {
+                    ExpectedIdentityEvidence.Malformed => "not-a-canonical-uuid",
+                    _ => Guid.Parse("a1515151-5151-4151-8151-515151515151")
+                        .ToString("D")
+                        .ToUpperInvariant(),
+                });
+
+        }
+
+        if (evidence is ExpectedIdentityEvidence.Ambiguous)
+        {
+
+            await InsertAuthorityIdentityAsync(
+                connection,
+                stateKey: 2,
+                expected.ToString("D").ToUpperInvariant());
+
+        }
+
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+            GrimoireDatabaseBootstrapper.VerifyExpectedInstallationIdentityAsync(
+                connection,
+                expected,
+                CancellationToken.None));
+
+    }
+
+    [Fact]
+    public async Task Expected_installation_uuid_comparison_accepts_only_the_exact_canonical_row()
+    {
+
+        Guid expected = Guid.Parse("b1515151-5151-4151-8151-515151515151");
+
+        await using SqliteConnection connection = new("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        await using (SqliteCommand create = connection.CreateCommand())
+        {
+
+            create.CommandText =
+                "CREATE TABLE covenant_authority_state (StateKey INTEGER, InstallationIdentity TEXT);";
+
+            _ = await create.ExecuteNonQueryAsync();
+
+        }
+
+        await InsertAuthorityIdentityAsync(
+            connection,
+            stateKey: 1,
+            expected.ToString("D").ToUpperInvariant());
+
+        await GrimoireDatabaseBootstrapper.VerifyExpectedInstallationIdentityAsync(
+            connection,
+            expected,
+            CancellationToken.None);
 
     }
 
@@ -747,7 +2617,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     }
 
     [Fact]
-    public async Task StartAsync_blocks_proof_complete_later_and_workspace_handoffs_before_host_lock()
+    public async Task StartAsync_blocks_proof_complete_later_and_workspace_handoffs_under_host_lock()
     {
 
         ActiveInstallationReset recoverable =
@@ -778,20 +2648,30 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             CreateHostRecoveryActive(InstallationResetScope.Workspace),
         ];
 
-        using ArcanumMaintenanceLock? held =
-            ArcanumMaintenanceLock.TryAcquire(_tempDir);
-
-        Assert.NotNull(held);
-
         foreach (ActiveInstallationReset active in blocked)
         {
+
+            InstallationResetMaintenanceLockAccessor accessor = new();
 
             GrimoireDatabaseHostedService service = new(
                 _scopeFactory,
                 _secretStore,
                 new GrimoireDbPassphraseSource(),
                 _tempDir,
-                new ActiveResetProbe(active));
+                accessor,
+                new DelegateStartupRecovery((held, _) =>
+                {
+
+                    Assert.Same(held, accessor.BorrowHeldLock(_tempDir).Value);
+
+                    return Task.FromResult(
+                        Result<InstallationResetStartupRecoveryState>.Success(
+                            new InstallationResetStartupRecoveryState(
+                                active,
+                                ExpectedInstallationId: null,
+                                IsLegacyV1: false)));
+
+                }));
 
             InvalidOperationException error =
                 await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -806,6 +2686,13 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 "maintenance lock",
                 error.Message,
                 StringComparison.OrdinalIgnoreCase);
+
+            Assert.True(accessor.BorrowHeldLock(_tempDir).IsFailure);
+
+            using ArcanumMaintenanceLock? reacquired =
+                ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+            Assert.NotNull(reacquired);
 
         }
 
@@ -852,6 +2739,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 Path.Combine(live, "grimoire.db"),
                 live,
                 held,
+                expectedInstallationId: null,
                 CancellationToken.None));
 
         Assert.False(File.Exists(Path.Combine(live, "grimoire.db")));
@@ -903,11 +2791,85 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             Path.Combine(live, "grimoire.db"),
             live,
             held,
+            expectedInstallationId: null,
             CancellationToken.None);
 
         Assert.False(Directory.Exists(stagingRoot));
 
         Assert.True(IsReady());
+
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_keeps_an_absent_live_root_closed_when_legacy_restore_evidence_is_ambiguous()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        string live = Path.Combine(_tempDir, "absent-legacy-live");
+
+        string stagingRoot = Path.Combine(
+            _tempDir,
+            BackupRestoreJournal.CreateStagingName());
+
+        OwnedTemporaryDirectory owned = OwnedTemporaryDirectory.Create(stagingRoot);
+
+        string stagedRoot = Path.Combine(
+            stagingRoot,
+            BackupRestoreJournal.StagedDirectoryName);
+
+        string displacedRoot = Path.Combine(
+            stagingRoot,
+            BackupRestoreJournal.DisplacedDirectoryName);
+
+        Directory.CreateDirectory(displacedRoot);
+
+        _ = BackupRestoreJournal.Write(
+            stagingRoot,
+            new BackupRestoreJournalRecord(
+                BackupRestoreJournal.CurrentVersion,
+                Guid.NewGuid(),
+                BackupRestoreConflictMode.ReplaceInstallation,
+                BackupRestorePhase.Commit,
+                Path.Combine(_tempDir, "different-installation"),
+                stagedRoot,
+                displacedRoot,
+                SafetyBackupPath: null,
+                Path.Combine(_tempDir, "source.arcbackup"),
+                owned.VolumeId,
+                owned.FileId));
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(live));
+
+        int postTopologyCalls = 0;
+
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                _secretStore,
+                new GrimoireDbPassphraseSource(),
+                _scopeFactory,
+                Path.Combine(live, "grimoire.db"),
+                live,
+                held,
+                expectedInstallationId: null,
+                postRestoreTopology: _ =>
+                {
+
+                    postTopologyCalls++;
+
+                    return Task.CompletedTask;
+
+                },
+                CancellationToken.None));
+
+        Assert.Equal(0, postTopologyCalls);
+
+        Assert.False(Directory.Exists(live));
+
+        Assert.True(Directory.Exists(displacedRoot));
+
+        Assert.False(IsReady());
 
     }
 
@@ -934,6 +2896,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             _dbPath,
             _tempDir,
             held,
+            expectedInstallationId: null,
             CancellationToken.None);
 
         Assert.True(readiness.IsReady);
@@ -951,6 +2914,56 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    private static IServiceScopeFactory CreateScopeFactory(
+        IOsCredentialStore credentials,
+        bool includeHostProcessTools = false,
+        bool escapeHatchOptIn = false,
+        HostProcessToolsMarkerReadStatus? markerReadStatusOverride = null)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<GrimoireDbReadiness>();
+
+        services.AddSingleton<IGrimoireDbReadiness>(
+            static sp => sp.GetRequiredService<GrimoireDbReadiness>());
+
+        services.AddSingleton<IOsCredentialStore>(credentials);
+
+        _ = services.AddGrimoireSchemaInstallation();
+
+        if (includeHostProcessTools)
+        {
+
+            HostProcessToolsRuntimePolicy policy = new();
+
+            services.AddSingleton(policy);
+
+            services.AddSingleton<IHostProcessToolsRuntimePolicy>(policy);
+
+            services.AddSingleton<IHostProcessToolsMarkerStore>(
+                new FakeHostProcessToolsMarkerStore
+                {
+                    ReadStatusOverride = markerReadStatusOverride,
+                });
+
+            services.AddSingleton<IHostProcessToolsEnvironmentProbe>(
+                new FakeHostProcessToolsEnvironmentProbe
+                {
+                    Edition = escapeHatchOptIn
+                        ? RetroDownfall.Arcanum.Core.Configuration.ArcanumEdition.Development
+                        : RetroDownfall.Arcanum.Core.Configuration.ArcanumEdition.Local,
+                    EscapeHatchOptIn = escapeHatchOptIn,
+                });
+
+        }
+
+        return services
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+
+    }
+
     private static ActiveInstallationReset CreateHostRecoveryActive(
         InstallationResetScope scope) =>
         new(
@@ -964,6 +2977,175 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             DataHandoff: InstallationResetDataHandoff.HostFactoryErasure,
             OnlineDataCompletionDurable: false);
 
+    private GrimoireDatabaseHostedService CreateLockedRecoveryHost(
+        string guardedRoot,
+        InstallationResetMaintenanceLockAccessor accessor,
+        InstallationResetActiveStore store) =>
+        new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            guardedRoot,
+            accessor,
+            new InstallationResetStartupRecovery(guardedRoot, store));
+
+    private static InstallationResetActiveRecord CreateResetActiveRecord(
+        InstallationResetScope scope,
+        InstallationResetPhase phase,
+        InstallationResetDataHandoff? handoff)
+    {
+
+        InstallationResetAcceptedBinding binding = new(
+            "binding",
+            ["/selected"],
+            ["/excluded"],
+            [],
+            [ArcanumCredentialIdentity.MasterApiKeyAccount],
+            ["data-plan"]);
+
+        return new InstallationResetActiveRecord(
+            InstallationResetActiveStore.CurrentVersion,
+            Guid.NewGuid(),
+            "composite-plan",
+            scope,
+            scope is InstallationResetScope.Workspace or InstallationResetScope.All
+                ? new DataRetentionWorkspaceBinding(
+                    Guid.NewGuid(),
+                    "/selected/workspace")
+                : null,
+            binding,
+            phase,
+            PointOfNoReturn: phase is not InstallationResetPhase.Prepared,
+            RowsDeleted: 0,
+            FilesDeleted: 0,
+            EstimatedBytesDeleted: 0,
+            CredentialResults: [],
+            LastErrorCode: null,
+            DataHandoff: handoff);
+
+    }
+
+    private static InstallationResetActiveRecord WithOnlineCompletion(
+        InstallationResetActiveRecord record,
+        InstallationResetPhase phase) =>
+        record with
+        {
+            Phase = phase,
+
+            PointOfNoReturn = true,
+
+            OnlineDataCompletion = new InstallationResetOnlineDataCompletion(
+                Guid.NewGuid(),
+                record.OperationId,
+                "data-plan",
+                RowsDeleted: 1,
+                FilesDeleted: 1,
+                EstimatedBytesDeleted: 1,
+                DerivedRecordsDeleted: 1),
+        };
+
+    private InstallationResetActiveEnvelopeV2 SealEnvelope(
+        string guardedRoot,
+        InstallationResetActivePublication publication,
+        InstallationResetActivePayloadV2 payload,
+        ulong revision)
+    {
+
+        BackupRestoreProfileNamespace profile = Value(
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(guardedRoot));
+
+        using InstallationResetActiveRecordKeyLease key = Value(
+            new InstallationResetActiveRecordKeyProvider(_credentialStore)
+                .OpenExisting(profile));
+
+        return Value(InstallationResetActiveRecordAuthenticator.Seal(
+            key,
+            publication.Location,
+            publication.Anchor.InstallationId,
+            revision,
+            publication.EnvelopeDigest,
+            payload));
+
+    }
+
+    private void AssertNoResetCredentials(string guardedRoot)
+    {
+
+        BackupRestoreProfileNamespace profile = Value(
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(guardedRoot));
+
+        string[] accounts =
+        [
+            ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(
+                profile.AccountSuffix),
+            ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(
+                profile.AccountSuffix),
+            ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(
+                profile.AccountSuffix),
+        ];
+
+        Assert.All(
+            accounts,
+            account => Assert.Equal(
+                OsCredentialStoreStatus.NotFound,
+                _credentialStore.TryGet(
+                    ArcanumCredentialIdentity.Service,
+                    account).Status));
+
+    }
+
+    private static async Task<Guid> ReadDatabaseInstallationIdAsync(
+        string databasePath,
+        string passphrase)
+    {
+
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Password = passphrase,
+        }.ToString());
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            "SELECT InstallationIdentity FROM covenant_authority_state WHERE StateKey = 1;";
+
+        string value = Assert.IsType<string>(await command.ExecuteScalarAsync());
+
+        return Guid.ParseExact(value, "D");
+
+    }
+
+    private static async Task InsertAuthorityIdentityAsync(
+        SqliteConnection connection,
+        long stateKey,
+        string identity)
+    {
+
+        await using SqliteCommand insert = connection.CreateCommand();
+
+        insert.CommandText =
+            "INSERT INTO covenant_authority_state (StateKey, InstallationIdentity) VALUES ($key, $identity);";
+
+        _ = insert.Parameters.AddWithValue("$key", stateKey);
+
+        _ = insert.Parameters.AddWithValue("$identity", identity);
+
+        _ = await insert.ExecuteNonQueryAsync();
+
+    }
+
+    private static T Value<T>(Result<T> result)
+    {
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        return result.Value;
+
+    }
+
     private sealed class ActiveResetProbe(
         ActiveInstallationReset active) : IInstallationStartupProbe
     {
@@ -975,6 +3157,245 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public Result<bool> IsFreshInstallation() =>
             Result<bool>.Success(false);
+
+    }
+
+    private sealed class StaticClientResetEvidenceProbe(
+        ActiveInstallationReset? active) : IClientMutationResetEvidenceProbe
+    {
+
+        public Task<Result<ActiveInstallationReset?>> InspectAsync(
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Task.FromResult(
+                Result<ActiveInstallationReset?>.Success(active));
+
+        }
+
+    }
+
+    private sealed class StaticClientRestoreEvidenceProbe(bool active) :
+        IClientMutationRestoreEvidenceProbe
+    {
+
+        public Task<Result<ActiveReplacementRestore?>> InspectAsync(
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Task.FromResult(
+                Result<ActiveReplacementRestore?>.Success(
+                    active
+                        ? new ActiveReplacementRestore(Guid.NewGuid())
+                        : null));
+
+        }
+
+    }
+
+    private sealed class DelegateStartupRecovery(
+        Func<
+            ArcanumMaintenanceLock,
+            CancellationToken,
+            Task<Result<InstallationResetStartupRecoveryState>>> recover)
+        : IInstallationResetStartupRecovery
+    {
+
+        public static DelegateStartupRecovery NoActiveReset() =>
+            new(static (_, _) =>
+                Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
+                    new InstallationResetStartupRecoveryState(
+                        ActiveReset: null,
+                        ExpectedInstallationId: null,
+                        IsLegacyV1: false))));
+
+        public Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default) =>
+            recover(heldInstallationLock, cancellationToken);
+
+    }
+
+    private sealed class DelegateDisposable(Action dispose) : IDisposable
+    {
+
+        public void Dispose() => dispose();
+
+    }
+
+    private sealed class DisposeCallbackScopeFactory(
+        IServiceScopeFactory inner,
+        Action afterFirstDispose) : IServiceScopeFactory
+    {
+
+        private int _callbackAvailable = 1;
+
+        public IServiceScope CreateScope() =>
+            new DisposeCallbackScope(
+                inner.CreateScope(),
+                () =>
+                {
+
+                    if (Interlocked.Exchange(ref _callbackAvailable, 0) == 1)
+                    {
+
+                        afterFirstDispose();
+
+                    }
+
+                });
+
+    }
+
+    private sealed class DisposeCallbackScope(
+        IServiceScope inner,
+        Action afterDispose) : IServiceScope, IAsyncDisposable
+    {
+
+        private int _disposed;
+
+        public IServiceProvider ServiceProvider => inner.ServiceProvider;
+
+        public void Dispose()
+        {
+
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+
+                return;
+
+            }
+
+            inner.Dispose();
+
+            afterDispose();
+
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+
+                return;
+
+            }
+
+            if (inner is IAsyncDisposable asyncDisposable)
+            {
+
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+
+            }
+            else
+            {
+
+                inner.Dispose();
+
+            }
+
+            afterDispose();
+
+        }
+
+    }
+
+    private sealed class TrackingPassphraseSource : IGrimoireDbPassphraseSource
+    {
+
+        private readonly ManualResetEventSlim _readEntered = new();
+
+        private readonly ManualResetEventSlim _releaseReads = new(initialState: true);
+
+        private string? _passphrase;
+
+        private int _readCount;
+
+        public int ReadCount => Volatile.Read(ref _readCount);
+
+        public ManualResetEventSlim ReadEntered => _readEntered;
+
+        public string Passphrase
+        {
+
+            get
+            {
+
+                _ = Interlocked.Increment(ref _readCount);
+
+                _readEntered.Set();
+
+                _releaseReads.Wait();
+
+                return _passphrase
+                    ?? throw new InvalidOperationException(
+                        "Grimoire database passphrase has not been initialized.");
+
+            }
+
+        }
+
+        public void SetPassphrase(string passphrase)
+        {
+
+            ArgumentException.ThrowIfNullOrEmpty(passphrase);
+
+            _passphrase = passphrase;
+
+        }
+
+        public void BlockReads()
+        {
+
+            _readEntered.Reset();
+
+            _releaseReads.Reset();
+
+        }
+
+        public void ReleaseReads() => _releaseReads.Set();
+
+    }
+
+    public enum StartupRecoveryFailureMode : byte
+    {
+
+        ReturnedFailure = 1,
+
+        ThrownFailure = 2,
+
+        Cancellation = 3,
+
+    }
+
+    public enum ExpectedIdentityEvidence : byte
+    {
+
+        Missing = 1,
+
+        Malformed = 2,
+
+        Ambiguous = 3,
+
+        Mismatch = 4,
+
+    }
+
+    public enum LockedStartupTopology : byte
+    {
+
+        DirectRootSymlink = 1,
+
+        AncestorSymlink = 2,
+
+        NonDirectoryAncestor = 3,
+
+        InaccessibleAncestor = 4,
 
     }
 
@@ -1005,6 +3426,8 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
 
         public bool IsReady { get; private set; }
+
+        public Exception? Failure { get; private set; }
 
         public bool ProbeAdoptionAtMarkReady { get; set; }
 
@@ -1043,6 +3466,9 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public void MarkFailed(Exception exception)
         {
+
+            Failure = exception;
+
         }
 
     }

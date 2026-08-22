@@ -2,13 +2,22 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -100,6 +109,393 @@ public sealed class CovenantResetBootstrapBarrierTests
                 $"{gated} starts at {index}, ahead of durable-operation recovery at {reconciler}.");
 
         }
+
+    }
+
+    [Fact]
+    public void The_lock_first_startup_graph_is_resolvable_and_the_hosted_alias_uses_the_same_singleton()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+
+        ServiceCollection services = [];
+
+        _ = services.AddArcanumApiServices(configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        InstallationResetMaintenanceLockAccessor accessor = provider
+            .GetRequiredService<InstallationResetMaintenanceLockAccessor>();
+
+        Assert.Same(
+            accessor,
+            provider.GetRequiredService<IInstallationResetMaintenanceLockAccessor>());
+
+        Assert.IsType<InstallationResetStartupRecovery>(
+            provider.GetRequiredService<IInstallationResetStartupRecovery>());
+
+        GrimoireDatabaseHostedService host = provider
+            .GetRequiredService<GrimoireDatabaseHostedService>();
+
+        ServiceDescriptor hostedAlias = Assert.Single(
+            services,
+            descriptor => descriptor.ServiceType == typeof(IHostedService)
+                && string.Equals(
+                    HostedFactoryName(descriptor),
+                    nameof(GrimoireDatabaseHostedService),
+                    StringComparison.Ordinal));
+
+        Assert.Same(
+            host,
+            hostedAlias.ImplementationFactory!(provider));
+
+    }
+
+    [Fact]
+    public void The_Covenant_feature_publisher_starts_immediately_after_lock_first_identity_verification()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+
+        ServiceCollection services = [];
+
+        _ = services.AddArcanumApiServices(configuration);
+
+        List<string> hosted =
+        [
+            .. services
+                .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
+                .Select(static descriptor =>
+                    descriptor.ImplementationType?.Name
+                    ?? descriptor.ImplementationInstance?.GetType().Name
+                    ?? HostedFactoryName(descriptor)),
+        ];
+
+        int grimoire = hosted.IndexOf(nameof(GrimoireDatabaseHostedService));
+
+        int publisher = hosted.IndexOf(nameof(CovenantFeatureConfigurationPublisher));
+
+        Assert.True(grimoire >= 0, "The lock-first Grimoire host is not registered.");
+
+        Assert.Equal(grimoire + 1, publisher);
+
+    }
+
+    [Fact]
+    public async Task Production_hosted_order_keeps_Covenant_default_closed_when_lock_first_admission_fails()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Features:Covenant"] = bool.TrueString,
+            })
+            .Build();
+
+        string testRoot = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            $"feature-order-{Guid.NewGuid():N}");
+
+        string guardedRoot = Path.Combine(testRoot, "arcanum");
+
+        Directory.CreateDirectory(testRoot);
+
+        try
+        {
+
+            ServiceCollection services = [];
+
+            _ = services.AddArcanumApiServices(configuration);
+
+            services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
+                new FixedArcanumSettingsMonitor(
+                    new ArcanumSettings
+                    {
+                        Features = new FeatureSettings
+                        {
+                            Covenant = true,
+                        },
+                    }));
+
+            services.AddSingleton(
+                sp => new GrimoireDatabaseHostedService(
+                    sp.GetRequiredService<IServiceScopeFactory>(),
+                    sp.GetRequiredService<ISecretStore>(),
+                    sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                    guardedRoot,
+                    new InstallationResetMaintenanceLockAccessor(),
+                    new RejectingStartupRecovery()));
+
+            using ServiceProvider provider = services.BuildServiceProvider();
+
+            List<string> relevantOrder =
+            [
+                .. services
+                    .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
+                    .Select(static descriptor =>
+                        descriptor.ImplementationType?.Name
+                        ?? descriptor.ImplementationInstance?.GetType().Name
+                        ?? HostedFactoryName(descriptor))
+                    .Where(static name => name is
+                        nameof(GrimoireDatabaseHostedService)
+                        or nameof(CovenantFeatureConfigurationPublisher)),
+            ];
+
+            Exception? startupFailure = null;
+
+            foreach (string serviceName in relevantOrder)
+            {
+
+                try
+                {
+
+                    if (serviceName is nameof(GrimoireDatabaseHostedService))
+                    {
+
+                        await provider
+                            .GetRequiredService<GrimoireDatabaseHostedService>()
+                            .StartAsync(CancellationToken.None);
+
+                    }
+                    else
+                    {
+
+                        await provider
+                            .GetRequiredService<CovenantFeatureConfigurationPublisher>()
+                            .StartAsync(CancellationToken.None);
+
+                    }
+
+                }
+                catch (Exception exception)
+                {
+
+                    startupFailure = exception;
+
+                    break;
+
+                }
+
+            }
+
+            Assert.IsType<InvalidOperationException>(startupFailure);
+
+            CovenantAvailability availability = provider
+                .GetRequiredService<CovenantAvailability>();
+
+            Assert.False(availability.Current.FeatureEnabled);
+
+        }
+        finally
+        {
+
+            if (Directory.Exists(testRoot))
+            {
+
+                Directory.Delete(testRoot, recursive: true);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public void The_pid_file_starts_immediately_after_verified_Covenant_feature_publication()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+
+        ServiceCollection services = [];
+
+        _ = services.AddArcanumApiServices(configuration);
+
+        List<string> hosted =
+        [
+            .. services
+                .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
+                .Select(static descriptor =>
+                    descriptor.ImplementationType?.Name
+                    ?? descriptor.ImplementationInstance?.GetType().Name
+                    ?? HostedFactoryName(descriptor)),
+        ];
+
+        int publisher = hosted.IndexOf(nameof(CovenantFeatureConfigurationPublisher));
+
+        int pidFile = hosted.IndexOf(nameof(PidFileService));
+
+        Assert.True(publisher >= 0, "The verified Covenant feature publisher is not registered.");
+
+        Assert.Equal(publisher + 1, pidFile);
+
+    }
+
+    [Fact]
+    public void Every_application_hosted_service_after_pid_is_recovery_aware()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+
+        ServiceCollection services = [];
+
+        _ = services.AddArcanumApiServices(configuration);
+
+        ServiceDescriptor[] hosted =
+        [
+            .. services.Where(static descriptor =>
+                descriptor.ServiceType == typeof(IHostedService)),
+        ];
+
+        int pid = Array.FindIndex(hosted, static descriptor =>
+            string.Equals(
+                descriptor.ImplementationType?.Name
+                ?? descriptor.ImplementationInstance?.GetType().Name
+                ?? HostedFactoryName(descriptor),
+                nameof(PidFileService),
+                StringComparison.Ordinal));
+
+        Assert.True(pid >= 0, "The PID hosted service is not registered.");
+
+        foreach (ServiceDescriptor descriptor in hosted[(pid + 1)..])
+        {
+
+            Type? implementation = descriptor.ImplementationFactory?
+                .GetType()
+                .GenericTypeArguments
+                .ElementAtOrDefault(1);
+
+            Assert.NotNull(implementation);
+
+            Assert.True(
+                implementation!.IsGenericType
+                && implementation.GetGenericTypeDefinition()
+                    == typeof(InstallationResetRecoveryAwareHostedService<>),
+                $"{implementation.Name} is not recovery-aware.");
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Recovery_aware_hosted_service_never_starts_or_stops_a_known_writer_in_recovery_mode()
+    {
+
+        InstallationResetApiAdmission admission = new();
+
+        admission.PublishRecovery(new ActiveInstallationReset(
+            InstallationResetScope.Global,
+            WorkspaceRoot: null,
+            PlanId: "background-plan",
+            OperationId: Guid.Parse("59595959-5959-4959-8959-595959595959"),
+            Phase: InstallationResetPhase.Prepared,
+            DataHandoff: InstallationResetDataHandoff.HostFactoryErasure,
+            OnlineDataCompletionDurable: false));
+
+        RecordingHostedWriter writer = new();
+
+        InstallationResetRecoveryAwareHostedService<RecordingHostedWriter> guarded =
+            new(writer, admission);
+
+        await guarded.StartAsync(CancellationToken.None);
+
+        await guarded.StopAsync(CancellationToken.None);
+
+        Assert.Equal(0, writer.StartCalls);
+
+        Assert.Equal(0, writer.StopCalls);
+
+    }
+
+    [Fact]
+    public async Task Recovery_aware_hosted_service_preserves_normal_start_and_stop_lifetime()
+    {
+
+        RecordingHostedWriter writer = new();
+
+        InstallationResetRecoveryAwareHostedService<RecordingHostedWriter> guarded =
+            new(writer, admission: null);
+
+        await guarded.StartAsync(CancellationToken.None);
+
+        await guarded.StopAsync(CancellationToken.None);
+
+        Assert.Equal(1, writer.StartCalls);
+
+        Assert.Equal(1, writer.StopCalls);
+
+    }
+
+    [Fact]
+    public async Task Recovery_aware_hosted_service_remains_stoppable_when_container_disposal_precedes_host_stop()
+    {
+
+        RecordingHostedWriter writer = new();
+
+        InstallationResetRecoveryAwareHostedService<RecordingHostedWriter> guarded =
+            new(writer, admission: null);
+
+        await guarded.StartAsync(CancellationToken.None);
+
+        guarded.Dispose();
+
+        await guarded.StopAsync(CancellationToken.None);
+
+        Assert.Equal(1, writer.StartCalls);
+
+        Assert.Equal(1, writer.StopCalls);
+
+    }
+
+    [Fact]
+    public void Serve_defers_every_guarded_root_write_to_the_lock_first_post_topology_lifecycle()
+    {
+
+        IReadOnlyList<ProductionSource> sources = ProductionSourceInventory.Sources();
+
+        ProductionSource serve = Assert.Single(
+            sources,
+            static source => source.IsExactOwner(
+                "src/RetroDownfall.Arcanum.Cli/Commands/ServeCommand.cs"));
+
+        int hostStart = serve.Text.IndexOf(
+            "await app.StartAsync(",
+            StringComparison.Ordinal);
+
+        Assert.True(hostStart >= 0, "Serve no longer starts the composed host.");
+
+        string beforeHostStart = serve.Text[..hostStart];
+
+        Assert.DoesNotContain(
+            "ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(",
+            beforeHostStart,
+            StringComparison.Ordinal);
+
+        int configuredAction = beforeHostStart.IndexOf(
+            "ConfigurePostTopologyStartupAction(() =>",
+            StringComparison.Ordinal);
+
+        int deferredRedirect = beforeHostStart.IndexOf(
+            "RedirectConsoleToBootstrapLog()",
+            StringComparison.Ordinal);
+
+        int deferredAcknowledgement = beforeHostStart.IndexOf(
+            "ListenAnySecurityPolicy.PersistAcknowledgement()",
+            StringComparison.Ordinal);
+
+        Assert.InRange(configuredAction, 0, deferredRedirect - 1);
+
+        Assert.InRange(deferredRedirect, configuredAction + 1, deferredAcknowledgement - 1);
+
+        ProductionSource bootstrapComposition = Assert.Single(
+            sources,
+            static source => source.Names(
+                "ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync"));
+
+        Assert.True(
+            bootstrapComposition.IsExactOwner(
+                "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs"),
+            bootstrapComposition.RelativePath);
 
     }
 
@@ -225,9 +621,93 @@ public sealed class CovenantResetBootstrapBarrierTests
     /// hosted service registered as <c>sp =&gt; sp.GetRequiredService&lt;T&gt;()</c> is still named
     /// rather than reported as unknown and silently skipped by the ordering assertions.
     /// </summary>
-    private static string HostedFactoryName(ServiceDescriptor descriptor) =>
-        descriptor.ImplementationFactory?.GetType().GenericTypeArguments is [_, Type implementation]
-            ? implementation.Name
-            : "<unknown>";
+    private static string HostedFactoryName(ServiceDescriptor descriptor)
+    {
+
+        if (descriptor.ImplementationFactory?.GetType().GenericTypeArguments is not [_, Type implementation])
+        {
+
+            return "<unknown>";
+
+        }
+
+        return implementation.IsGenericType
+            && implementation.GetGenericTypeDefinition()
+                == typeof(InstallationResetRecoveryAwareHostedService<>)
+            ? implementation.GetGenericArguments()[0].Name
+            : implementation.Name;
+
+    }
+
+    private sealed class RejectingStartupRecovery : IInstallationResetStartupRecovery
+    {
+
+        public Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<InstallationResetStartupRecoveryState>.Success(
+                new InstallationResetStartupRecoveryState(
+                    new ActiveInstallationReset(
+                        InstallationResetScope.Workspace,
+                        WorkspaceRoot: "/blocked",
+                        PlanId: "blocked-plan"),
+                    ExpectedInstallationId: null,
+                    IsLegacyV1: false)));
+
+    }
+
+    private sealed class FixedArcanumSettingsMonitor(
+        ArcanumSettings settings)
+        : IOptionsMonitor<ArcanumSettings>
+    {
+
+        public ArcanumSettings CurrentValue => settings;
+
+        public ArcanumSettings Get(string? name) => settings;
+
+        public IDisposable OnChange(
+            Action<ArcanumSettings, string?> listener) =>
+            NoopDisposable.Instance;
+
+        private sealed class NoopDisposable : IDisposable
+        {
+
+            internal static NoopDisposable Instance { get; } = new();
+
+            public void Dispose()
+            {
+
+            }
+
+        }
+
+    }
+
+    private sealed class RecordingHostedWriter : IHostedService
+    {
+
+        public int StartCalls { get; private set; }
+
+        public int StopCalls { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+
+            StartCalls++;
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+
+            StopCalls++;
+
+            return Task.CompletedTask;
+
+        }
+
+    }
 
 }

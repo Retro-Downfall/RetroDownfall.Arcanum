@@ -190,7 +190,7 @@ public sealed class FileBatchApiClient(
         try
         {
 
-            string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+            string? apiKey = await PeekApiKeyAsync().ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(apiKey))
             {
@@ -323,7 +323,7 @@ public sealed class FileBatchApiClient(
         try
         {
 
-            string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+            string? apiKey = await PeekApiKeyAsync().ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(apiKey))
             {
@@ -569,6 +569,17 @@ public sealed class FileBatchApiClient(
             && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
                 : null;
+
+    private async Task<string?> PeekApiKeyAsync()
+    {
+
+        SecretStoreReadResult result = await secretStore
+            .PeekApiKeyReadResultAsync()
+            .ConfigureAwait(false);
+
+        return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
+
+    }
 
     private static Error MissingApiKey() =>
         new(

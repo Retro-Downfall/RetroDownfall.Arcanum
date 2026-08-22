@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -427,6 +429,51 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         Assert.Equal(original, output.ToArray());
     }
 
+    [Fact]
+    public async Task Inspection_loads_a_cold_key_without_persistent_credential_mutation()
+    {
+
+        string encodedKey = Convert.ToBase64String(
+            Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray());
+
+        string path = Path.Combine(_root, "pure-inspection");
+
+        using (FileEncryptionKeyProvider writerKeys = new(
+                   new MigrationSensitiveSecretStore(encodedKey)))
+        {
+
+            EncryptedBlobStore writer = new(
+                writerKeys,
+                new EncryptedBlobStoreOptions { ChunkSize = 32 });
+
+            _ = await writer.WriteAsync(
+                path,
+                new MemoryStream(Encoding.UTF8.GetBytes("diagnostic payload")),
+                EncryptedBlobPurpose.UploadedFile);
+
+        }
+
+        MigrationSensitiveSecretStore diagnosticSecrets = new(encodedKey);
+
+        using FileEncryptionKeyProvider diagnosticKeys = new(diagnosticSecrets);
+
+        EncryptedBlobStore inspector = new(
+            diagnosticKeys,
+            new EncryptedBlobStoreOptions { ChunkSize = 32 });
+
+        EncryptedBlobDescriptor descriptor = await inspector.InspectAsync(
+            path,
+            EncryptedBlobPurpose.UploadedFile,
+            verifyAllChunks: true);
+
+        Assert.Equal("diagnostic payload".Length, descriptor.PlaintextLength);
+
+        Assert.Equal(0, diagnosticSecrets.PersistentMutationCount);
+
+        Assert.Equal(1, diagnosticSecrets.PeekCount);
+
+    }
+
     private static EncryptedBlobStore CreateStore(int chunkSize, byte[]? key = null)
     {
         byte[] actualKey = key ?? Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
@@ -457,5 +504,48 @@ public sealed class EncryptedBlobStoreTests : IDisposable
 
             return ValueTask.FromResult(_material);
         }
+    }
+
+    private sealed class MigrationSensitiveSecretStore(string encodedKey) : ISecretStore
+    {
+
+        public int PersistentMutationCount { get; private set; }
+
+        public int PeekCount { get; private set; }
+
+        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Missing());
+
+        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() =>
+            Task.FromResult<string?>(null);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
+            Task.CompletedTask;
+
+        public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync()
+        {
+
+            PersistentMutationCount++;
+
+            return Task.FromResult(SecretStoreReadResult.Ok(encodedKey));
+
+        }
+
+        public Task<SecretStoreReadResult> PeekFileEncryptionSecretReadResultAsync()
+        {
+
+            PeekCount++;
+
+            return Task.FromResult(SecretStoreReadResult.Ok(encodedKey));
+
+        }
+
+        public Task SaveFileEncryptionSecretAsync(string encryptionSecret) =>
+            Task.CompletedTask;
+
     }
 }

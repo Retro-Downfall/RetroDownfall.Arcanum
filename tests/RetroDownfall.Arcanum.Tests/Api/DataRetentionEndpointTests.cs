@@ -38,6 +38,10 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -918,6 +922,189 @@ public sealed class DataRetentionEndpointTests
 
     }
 
+    [SkippableFact]
+    public async Task Factory_reset_handoff_publishes_before_apply_and_records_before_response()
+    {
+
+        RequireSqlCipher();
+
+        List<string> events = [];
+
+        Guid requestedOperationId = Guid.Parse(
+            "61616161-6161-4161-8161-616161616161");
+
+        FakeDataRetentionService service = new()
+        {
+            ApplyHandler = request =>
+            {
+                events.Add("apply");
+
+                return new DataRetentionApplyResult(
+                    Guid.Parse("62626262-6262-4262-8262-626262626262"),
+                    "data-plan",
+                    RowsDeleted: 4,
+                    FilesDeleted: 3,
+                    EstimatedBytesDeleted: 2,
+                    DerivedRecordsDeleted: 1,
+                    Reconciled: true,
+                    Blockers: [],
+                    Conflicts: [],
+                    RequestedOperationId: request.RequestedOperationId);
+            },
+        };
+
+        RecordingHostHandoffCoordinator coordinator = new(events);
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(
+            service,
+            coordinator: coordinator);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset",
+            JsonContent(
+                CreateFactoryRequest(requestedOperationId),
+                ArcanumJsonContext.Default.FactoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(["begin", "apply", "record"], events);
+
+        Assert.Equal(requestedOperationId, coordinator.RecordedResult?.RequestedOperationId);
+
+        Assert.NotEqual(
+            requestedOperationId,
+            coordinator.RecordedResult?.OperationId);
+
+    }
+
+    [SkippableFact]
+    public async Task Factory_reset_handoff_retires_only_exact_pre_effect_plan_changed()
+    {
+
+        RequireSqlCipher();
+
+        List<string> events = [];
+
+        Guid requestedOperationId = Guid.Parse(
+            "63636363-6363-4363-8363-636363636363");
+
+        FakeDataRetentionService service = new()
+        {
+            ApplyHandler = _ =>
+            {
+                events.Add("apply");
+
+                return Result<DataRetentionApplyResult>.Failure(new Error(
+                    ErrorCodes.Data.PlanChanged,
+                    "changed"));
+            },
+        };
+
+        RecordingHostHandoffCoordinator coordinator = new(events);
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(
+            service,
+            coordinator: coordinator);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset",
+            JsonContent(
+                CreateFactoryRequest(requestedOperationId),
+                ArcanumJsonContext.Default.FactoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        Assert.Equal(["begin", "apply", "retire"], events);
+
+    }
+
+    [SkippableFact]
+    public async Task Factory_reset_handoff_retains_evidence_for_every_other_apply_failure()
+    {
+
+        RequireSqlCipher();
+
+        List<string> events = [];
+
+        Guid requestedOperationId = Guid.Parse(
+            "64646464-6464-4464-8464-646464646464");
+
+        FakeDataRetentionService service = new()
+        {
+            ApplyHandler = _ =>
+            {
+                events.Add("apply");
+
+                return Result<DataRetentionApplyResult>.Failure(new Error(
+                    ErrorCodes.Data.ReconciliationFailed,
+                    "uncertain"));
+            },
+        };
+
+        RecordingHostHandoffCoordinator coordinator = new(events);
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(
+            service,
+            coordinator: coordinator);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset",
+            JsonContent(
+                CreateFactoryRequest(requestedOperationId),
+                ArcanumJsonContext.Default.FactoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        Assert.Equal(["begin", "apply"], events);
+
+    }
+
+    [SkippableFact]
+    public async Task Factory_reset_handoff_rejects_a_mismatched_binding_before_publication_or_apply()
+    {
+
+        RequireSqlCipher();
+
+        List<string> events = [];
+
+        FakeDataRetentionService service = new();
+
+        RecordingHostHandoffCoordinator coordinator = new(events);
+
+        Guid requestedOperationId = Guid.Parse(
+            "65656565-6565-4565-8565-656565656565");
+
+        FactoryResetRequest request = CreateFactoryRequest(requestedOperationId) with
+        {
+            ExpectedPlanId = "different-data-plan",
+        };
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(
+            service,
+            coordinator: coordinator);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset",
+            JsonContent(
+                request,
+                ArcanumJsonContext.Default.FactoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Empty(events);
+
+        Assert.Equal(0, service.ApplyCallCount);
+
+    }
+
     [SkippableTheory]
 
     [InlineData(InstallationResetDataScope.Global, DataRetentionOperation.FactoryReset)]
@@ -1533,7 +1720,8 @@ public sealed class DataRetentionEndpointTests
 
     private static ArcanumWebApplicationFactory CreateFactory(
         FakeDataRetentionService service,
-        ResponseWriteProbe? responseWrite = null)
+        ResponseWriteProbe? responseWrite = null,
+        IInstallationResetHostHandoffCoordinator? coordinator = null)
     {
 
         ArcanumWebApplicationFactory factory = new();
@@ -1554,6 +1742,16 @@ public sealed class DataRetentionEndpointTests
 
             });
 
+            if (coordinator is not null)
+            {
+
+                services.RemoveAll<IInstallationResetHostHandoffCoordinator>();
+
+                services.AddScoped<IInstallationResetHostHandoffCoordinator>(
+                    _ => coordinator);
+
+            }
+
             if (responseWrite is not null)
             {
 
@@ -1565,6 +1763,31 @@ public sealed class DataRetentionEndpointTests
         };
 
         return factory;
+
+    }
+
+    private static FactoryResetRequest CreateFactoryRequest(
+        Guid requestedOperationId)
+    {
+
+        InstallationResetAcceptedBinding binding = new(
+            "binding",
+            ["/selected"],
+            ["/excluded"],
+            [],
+            ["credential"],
+            ["data-plan"]);
+
+        return new FactoryResetRequest(
+            "factory-reset",
+            ExpectedPlanId: "data-plan",
+            RequestedOperationId: requestedOperationId,
+            InstallationResetHandoff: new InstallationResetHostHandoff(
+                requestedOperationId,
+                "installation-plan",
+                InstallationResetScope.Global,
+                Workspace: null,
+                binding));
 
     }
 
@@ -1760,6 +1983,53 @@ public sealed class DataRetentionEndpointTests
             return Task.FromResult(
                 ApplyHandler?.Invoke(request)
                 ?? Result<DataRetentionApplyResult>.Success(Applied));
+
+        }
+
+    }
+
+    private sealed class RecordingHostHandoffCoordinator(List<string> events)
+        : IInstallationResetHostHandoffCoordinator
+    {
+
+        public DataRetentionApplyResult? RecordedResult { get; private set; }
+
+        public Task<Result> BeginOrRecoverAsync(
+            InstallationResetHostHandoff handoff,
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default)
+        {
+
+            events.Add("begin");
+
+            return Task.FromResult(Result.Success());
+
+        }
+
+        public Task<Result> RecordOnlineCompletionAsync(
+            InstallationResetHostHandoff handoff,
+            DataRetentionApplyResult result,
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default)
+        {
+
+            RecordedResult = result;
+
+            events.Add("record");
+
+            return Task.FromResult(Result.Success());
+
+        }
+
+        public Task<Result> RetirePreEffectAsync(
+            InstallationResetHostHandoff handoff,
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default)
+        {
+
+            events.Add("retire");
+
+            return Task.FromResult(Result.Success());
 
         }
 

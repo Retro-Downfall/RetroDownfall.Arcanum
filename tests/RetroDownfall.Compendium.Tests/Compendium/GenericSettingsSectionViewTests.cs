@@ -26,7 +26,8 @@ public sealed class GenericSettingsSectionViewTests
             store,
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
         GenericSettingsSectionView view = new()
         {
@@ -51,7 +52,8 @@ public sealed class GenericSettingsSectionViewTests
             store,
             new NoopDialogService(),
             dispatcher,
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
         GenericSettingsSectionView view = new()
         {
@@ -98,7 +100,8 @@ public sealed class GenericSettingsSectionViewTests
                 store,
                 new NoopDialogService(),
                 new SynchronousUiDispatcher(),
-                NullLogger<ConfigurationViewModel>.Instance);
+                NullLogger<ConfigurationViewModel>.Instance,
+                ImmediateArcanumClientMutationBoundary.Instance);
 
             GenericSettingsSectionView view = new()
             {
@@ -135,7 +138,8 @@ public sealed class GenericSettingsSectionViewTests
             store,
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
         GenericSettingsSectionView view = new()
         {
@@ -179,7 +183,8 @@ public sealed class GenericSettingsSectionViewTests
             store,
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
         GenericSettingsSectionView view = new()
         {

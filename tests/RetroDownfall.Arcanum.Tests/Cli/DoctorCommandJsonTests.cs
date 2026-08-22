@@ -158,11 +158,17 @@ public sealed class DoctorCommandJsonTests : IDisposable
     private sealed class NullSecretStore : ISecretStore
     {
 
-        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("Doctor must use Peek for the master key.");
 
-        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() => Task.FromResult(SecretStoreReadResult.Missing());
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("Doctor must use Peek for the master key.");
 
-        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Missing());
+
+        public Task SaveApiKeyAsync(string apiKey) =>
+            throw new InvalidOperationException("Doctor must not persist the master key.");
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 

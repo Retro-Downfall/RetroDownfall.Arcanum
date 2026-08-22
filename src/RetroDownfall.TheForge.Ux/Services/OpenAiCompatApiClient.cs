@@ -33,11 +33,14 @@ public sealed class OpenAiCompatApiClient
 
     private readonly ILogger<OpenAiCompatApiClient> _logger;
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     public OpenAiCompatApiClient(
         IHttpClientFactory httpClientFactory,
         IOptionsMonitor<TheForgeSettings> settingsMonitor,
         ITheForgeApiKeyProvider apiKeyProvider,
-        ILogger<OpenAiCompatApiClient> logger)
+        ILogger<OpenAiCompatApiClient> logger,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         _httpClientFactory = httpClientFactory;
@@ -47,6 +50,8 @@ public sealed class OpenAiCompatApiClient
         _apiKeyProvider = apiKeyProvider;
 
         _logger = logger;
+
+        _mutationRunner = mutationRunner;
 
     }
 
@@ -175,77 +180,89 @@ public sealed class OpenAiCompatApiClient
         string destinationPath,
         CancellationToken cancellationToken)
     {
-        string? temporaryPath = null;
-
         try
         {
 
-            using HttpClient client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
-
-            using HttpRequestMessage request = new(HttpMethod.Get, path);
-
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!response.IsSuccessStatusCode)
-            {
-
-                byte[]? bodyBytes = await BoundedHttpContentReader
-                    .TryReadAsync(response.Content, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-
-                return bodyBytes is null
-                    ? ResponseTooLarge<bool>()
-                    : FailFromBody<bool>(
-                        Encoding.UTF8.GetString(bodyBytes),
-                        path,
-                        (int)response.StatusCode,
-                        response.ReasonPhrase);
-
-            }
-
-            await using Stream network = await response.Content
-                .ReadAsStreamAsync(cancellationToken)
-                .ConfigureAwait(false);
-
             string fullDestinationPath = Path.GetFullPath(destinationPath);
 
-            string directory = Path.GetDirectoryName(fullDestinationPath)
-                ?? throw new IOException("The download destination has no parent directory.");
+            OpenAiResult<bool>? operationResult = null;
 
-            Directory.CreateDirectory(directory);
+            await _mutationRunner
+                .RunAsync(
+                    fullDestinationPath,
+                    async admittedCancellationToken =>
+                    {
 
-            temporaryPath = Path.Combine(
-                directory,
-                $".{Path.GetFileName(fullDestinationPath)}.{Guid.NewGuid():N}.download");
+                        using HttpClient client = await CreateClientAsync(admittedCancellationToken)
+                            .ConfigureAwait(false);
 
-            await using (FileStream file = new(
-                             temporaryPath,
-                             FileMode.CreateNew,
-                             FileAccess.Write,
-                             FileShare.None,
-                             bufferSize: 81920,
-                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
+                        using HttpRequestMessage request = new(HttpMethod.Get, path);
 
-                await network.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+                        using HttpResponseMessage response = await client
+                            .SendAsync(
+                                request,
+                                HttpCompletionOption.ResponseHeadersRead,
+                                admittedCancellationToken)
+                            .ConfigureAwait(false);
 
-                await file.FlushAsync(cancellationToken).ConfigureAwait(false);
+                        if (!response.IsSuccessStatusCode)
+                        {
 
-            }
+                            byte[]? bodyBytes = await BoundedHttpContentReader
+                                .TryReadAsync(
+                                    response.Content,
+                                    cancellationToken: admittedCancellationToken)
+                                .ConfigureAwait(false);
 
-            File.Move(temporaryPath, fullDestinationPath, overwrite: true);
+                            operationResult = bodyBytes is null
+                                ? ResponseTooLarge<bool>()
+                                : FailFromBody<bool>(
+                                    Encoding.UTF8.GetString(bodyBytes),
+                                    path,
+                                    (int)response.StatusCode,
+                                    response.ReasonPhrase);
 
-            temporaryPath = null;
+                            return;
 
-            return OpenAiResult<bool>.Ok(true);
+                        }
+
+                        await using Stream network = await response.Content
+                            .ReadAsStreamAsync(admittedCancellationToken)
+                            .ConfigureAwait(false);
+
+                        await WriteDownloadAsync(
+                                network,
+                                fullDestinationPath,
+                                admittedCancellationToken)
+                            .ConfigureAwait(false);
+
+                        operationResult = OpenAiResult<bool>.Ok(true);
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return operationResult
+                ?? OpenAiResult<bool>.Fail(
+                    "Files.WriteFailed",
+                    "The download did not produce a result.");
 
         }
         catch (ArcanumClientConfigurationException ex)
         {
 
             _logger.LogError(ex, "OpenAI download GET {Path} aborted: {Code}.", path, ex.Code);
+
+            return OpenAiResult<bool>.Fail(ex.Code, ex.Message);
+
+        }
+        catch (TheForgeLocalMutationRefusedException ex)
+        {
+
+            _logger.LogWarning(
+                ex,
+                "OpenAI download GET {Path} was refused by the client-mutation boundary.",
+                path);
 
             return OpenAiResult<bool>.Fail(ex.Code, ex.Message);
 
@@ -282,10 +299,50 @@ public sealed class OpenAiCompatApiClient
             return OpenAiResult<bool>.Fail("Files.WriteFailed", ex.Message);
 
         }
+    }
+
+    private static async Task WriteDownloadAsync(
+        Stream network,
+        string fullDestinationPath,
+        CancellationToken cancellationToken)
+    {
+
+        string directory = Path.GetDirectoryName(fullDestinationPath)
+            ?? throw new IOException("The download destination has no parent directory.");
+
+        Directory.CreateDirectory(directory);
+
+        string temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(fullDestinationPath)}.{Guid.NewGuid():N}.download");
+
+        try
+        {
+
+            await using (FileStream file = new(
+                             temporaryPath,
+                             FileMode.CreateNew,
+                             FileAccess.Write,
+                             FileShare.None,
+                             bufferSize: 81920,
+                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+
+                await network.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+
+                await file.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+            File.Move(temporaryPath, fullDestinationPath, overwrite: true);
+
+            temporaryPath = string.Empty;
+
+        }
         finally
         {
 
-            if (temporaryPath is not null)
+            if (!string.IsNullOrEmpty(temporaryPath))
             {
 
                 try

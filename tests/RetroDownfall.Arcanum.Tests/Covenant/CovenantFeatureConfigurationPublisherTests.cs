@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -44,6 +45,45 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         Assert.True(availability.Current.Generation > before);
 
         Assert.Equal(CovenantHealthTransition.FeatureConfiguration, availability.Current.LastHealthTransition);
+
+    }
+
+    [Fact]
+    public void Startup_after_schema_publication_preserves_the_installed_schema_snapshot()
+    {
+
+        CovenantAvailability availability = new();
+
+        _ = availability.PublishSchema(
+            new GrimoireSchemaInstallResult(
+                HealthyTier(GrimoireSchemaTransactionTier.Core, "core-installed"),
+                HealthyTier(GrimoireSchemaTransactionTier.CovenantCanonical, "canonical-installed"),
+                HealthyTier(GrimoireSchemaTransactionTier.CovenantAccelerator, "accelerator-installed")),
+            CovenantHealthTransition.Bootstrap);
+
+        TestOptionsMonitor monitor = new(Settings(covenant: true));
+
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor);
+
+        publisher.Start();
+
+        CovenantAvailabilitySnapshot snapshot = availability.Current;
+
+        Assert.True(snapshot.FeatureEnabled);
+
+        Assert.Equal(CovenantCapabilityState.Healthy, snapshot.Canonical);
+
+        Assert.Equal(7, snapshot.CanonicalSchemaVersion);
+
+        Assert.Equal("canonical-installed", snapshot.CanonicalInstalledFingerprint);
+
+        Assert.Equal(CovenantCapabilityState.Healthy, snapshot.Accelerator);
+
+        Assert.Equal(7, snapshot.AcceleratorSchemaVersion);
+
+        Assert.Equal("accelerator-installed", snapshot.AcceleratorInstalledFingerprint);
+
+        Assert.Equal(CovenantHealthTransition.FeatureConfiguration, snapshot.LastHealthTransition);
 
     }
 
@@ -145,6 +185,17 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
     private static ArcanumSettings Settings(bool covenant) =>
         new() { Features = new FeatureSettings { Covenant = covenant } };
+
+    private static GrimoireSchemaTierInstallResult HealthyTier(
+        GrimoireSchemaTransactionTier tier,
+        string installedFingerprint) =>
+        new(
+            tier,
+            SchemaVersion: 7,
+            GrimoireSchemaTierHealth.Healthy,
+            SourceDefinitionFingerprint: "source-definition",
+            InstalledCatalogFingerprint: installedFingerprint,
+            DiagnosticCode: null);
 
     private sealed class TestOptionsMonitor(ArcanumSettings initial) : IOptionsMonitor<ArcanumSettings>
     {

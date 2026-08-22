@@ -173,12 +173,20 @@ public sealed class CliResourceCatalogSpellPagingTests
 
         public IReadOnlyList<string> GetRecentIds(string resourceKind) => [];
 
-        public void Remember(string resourceKind, string id)
+        public Task RememberAsync(
+            string resourceKind,
+            string id,
+            Func<CancellationToken, Task<Result<bool>>> revalidateAsync,
+            CancellationToken cancellationToken = default)
         {
 
             _ = resourceKind;
 
             _ = id;
+
+            _ = revalidateAsync;
+
+            return Task.CompletedTask;
 
         }
 

@@ -324,7 +324,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         Assert.Null(cleared.Cost.Pricing.DefaultPricing.ReasoningPer1M);
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ConfigurationWriteResult writeResult = await store.WriteAsync(cleared, CancellationToken.None);
 
@@ -393,7 +393,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             "REASONING_PROVIDER_API_KEY",
             builtProvider.CredentialEnvironmentVariable);
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
 
@@ -492,7 +492,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             1m,
             built.Cost.Pricing.ModelPricing["reasoner"].InputPer1M);
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
 
@@ -558,13 +558,14 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     private static ConfigurationViewModel CreateViewModel()
     {
 
-        ArcanumConfigurationStore store = new();
+        ArcanumConfigurationStore store = new(enableWatcher: true);
 
         return new ConfigurationViewModel(
             store,
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
     }
 

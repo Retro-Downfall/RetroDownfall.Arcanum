@@ -17,6 +17,16 @@ public interface IProviderCredentialStore
         string providerName,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reads a stored provider credential without migrating, repairing, or persisting credential
+    /// state. The default preserves compatibility for stores whose ordinary read is already pure;
+    /// stores whose ordinary read can mutate state must override it.
+    /// </summary>
+    Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
+        string providerName,
+        CancellationToken cancellationToken = default) =>
+        GetApiKeyReadResultAsync(providerName, cancellationToken);
+
     Task SaveApiKeyAsync(
         string providerName,
         string apiKey,

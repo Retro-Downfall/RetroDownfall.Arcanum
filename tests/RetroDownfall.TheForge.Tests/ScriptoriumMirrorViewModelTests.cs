@@ -175,7 +175,8 @@ public class ScriptoriumMirrorViewModelTests
             new NullConfirmationDialogService(),
             new NullArtifactFileDialogService(),
             new NullTextInputDialogService(),
-            new FakeWhispersService());
+            new FakeWhispersService(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     private static PromptDetailDto SamplePrompt(Guid id, string version, string template) =>
         new(

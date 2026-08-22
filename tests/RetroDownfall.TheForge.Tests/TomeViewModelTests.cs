@@ -448,7 +448,8 @@ public class TomeViewModelTests
             navigation,
             new FoundryFloorViewModel(new NullLogService()),
             new FakeClipboardService(),
-            new ScriptedConfirmationDialogService(confirm: true));
+            new ScriptedConfirmationDialogService(confirm: true),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
         await viewModel.LoadAsync(CancellationToken.None);
 
@@ -762,7 +763,8 @@ public class TomeViewModelTests
             new NavigationService(),
             foundryFloor ?? new FoundryFloorViewModel(new NullLogService()),
             clipboard ?? new FakeClipboardService(),
-            confirmation ?? new ScriptedConfirmationDialogService(confirm: true));
+            confirmation ?? new ScriptedConfirmationDialogService(confirm: true),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     private static SessionDetailDto NewSession(string title = "Session", Guid? id = null) =>
         new(

@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -283,6 +284,31 @@ public class CampaignManagementFlowTests
     }
 
     [Fact]
+    public async Task ExportCampaignCommand_ClientMutationRefusal_DoesNotFetchServerExport()
+    {
+
+        FakeCampaignManagementDataSource management = new();
+
+        string path = Path.Combine(
+            RetroDownfall.Arcanum.Core.Storage.ArcanumPaths.GrimoireDirectory,
+            "campaign-export.json");
+
+        CampaignNodeViewModel node = NewCampaignNode(
+            NewCampaignDto("Autumnfall"),
+            management,
+            new FakeCampaignDialogService(),
+            fileDialog: new ControllableFileDialog(path),
+            mutationRunner: new RefusingTheForgeLocalMutationRunner());
+
+        await node.ExportCampaignCommand!.ExecuteAsync(null);
+
+        Assert.False(management.ExportCalled);
+
+        Assert.False(File.Exists(path));
+
+    }
+
+    [Fact]
     public async Task ImportCampaignCommand_ReadsJsonAndCallsImportWithStrategy()
     {
 
@@ -327,6 +353,7 @@ public class CampaignManagementFlowTests
                 new FakeConfirmationDialogService(),
                 new ControllableFileDialog(path),
                 whispers,
+                ImmediateTheForgeLocalMutationRunner.Instance,
                 static _ => Task.CompletedTask);
 
             await node.ImportCampaignCommand!.ExecuteAsync(null);
@@ -446,7 +473,8 @@ public class CampaignManagementFlowTests
         FakeCampaignDialogService dialog,
         FakeConfirmationDialogService? confirmation = null,
         ControllableFileDialog? fileDialog = null,
-        Func<CancellationToken, Task>? refreshCampaigns = null) =>
+        Func<CancellationToken, Task>? refreshCampaigns = null,
+        ITheForgeLocalMutationRunner? mutationRunner = null) =>
         new(
             campaign,
             new NullAtelierDataSource(),
@@ -460,6 +488,7 @@ public class CampaignManagementFlowTests
             confirmation ?? new FakeConfirmationDialogService(),
             fileDialog ?? new ControllableFileDialog(null),
             new RecordingWhispers(),
+            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance,
             refreshCampaigns ?? (static _ => Task.CompletedTask));
 
     private static CampaignDto NewCampaignDto(string name) =>

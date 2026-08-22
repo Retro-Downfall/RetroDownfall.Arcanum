@@ -284,7 +284,8 @@ public class ProvingGroundsSuiteViewModelTests
             whispers ?? new FakeWhispersService(),
             confirmationDialog ?? new NullConfirmationDialogService(),
             store,
-            fileDialog ?? new NullArtifactFileDialogService());
+            fileDialog ?? new NullArtifactFileDialogService(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     /// <summary>
     /// Hands back a path under a directory that does not exist, so the write throws the way a

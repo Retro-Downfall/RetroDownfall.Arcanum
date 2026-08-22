@@ -11,10 +11,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 ///
 /// <para>It deliberately does not use <c>ILongRunningOperationStore</c>. That store rides the EF
 /// <c>ArcanumDbContext</c>, whose connection interceptor demands a passphrase that only
-/// <c>IGrimoireCliInitialization.EnsureInitializedAsync</c> installs — and that initializer resolves
-/// the master key, installs schema, and can perform a KDF upgrade. A read-only diagnostic must not
-/// do any of that, so it opens its own read-only connection through <see cref="GrimoireProbe"/> and
-/// counts rows.</para>
+/// <c>IGrimoireCliInitialization.RunExclusiveWithBootstrapAsync{T}</c> installs — and that exclusive
+/// boundary resolves the master key, installs schema, and can perform a KDF upgrade. A read-only
+/// diagnostic must not do any of that, so it opens its own read-only connection through
+/// <see cref="GrimoireProbe"/> and counts rows.</para>
 /// </summary>
 internal static class DurableOperationCounts
 {

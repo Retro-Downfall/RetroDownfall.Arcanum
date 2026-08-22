@@ -13,19 +13,26 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
     /// <summary>Settings filename under <c>~/.config/arcanum/</c>.</summary>
     public const string FileName = "the-forge.json";
 
-    /// <summary>Pre-rename filename; moved to <see cref="FileName"/> on first launch when present.</summary>
+    /// <summary>Pre-rename filename; read as a compatibility fallback when <see cref="FileName"/> is absent.</summary>
     public const string LegacyFileName = "forge.json";
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     private readonly ILogger<TheForgeSettingsStore>? _logger;
 
-    public TheForgeSettingsStore(string settingsPath, ILogger<TheForgeSettingsStore>? logger = null)
+    public TheForgeSettingsStore(
+        string settingsPath,
+        ITheForgeLocalMutationRunner mutationRunner,
+        ILogger<TheForgeSettingsStore>? logger = null)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(settingsPath);
 
         SettingsPath = settingsPath;
+
+        _mutationRunner = mutationRunner ?? throw new ArgumentNullException(nameof(mutationRunner));
 
         _logger = logger;
 
@@ -33,58 +40,7 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
 
     public string SettingsPath { get; }
 
-    /// <summary>
-    /// If <paramref name="settingsPath"/> is missing and <c>forge.json</c> exists beside it, renames
-    /// the legacy file into place. Returns true when a rename occurred.
-    /// </summary>
-    public static bool TryMigrateLegacyFile(string settingsPath)
-    {
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(settingsPath);
-
-        if (File.Exists(settingsPath))
-        {
-
-            return false;
-
-        }
-
-        string? directory = Path.GetDirectoryName(settingsPath);
-
-        if (string.IsNullOrEmpty(directory))
-        {
-
-            return false;
-
-        }
-
-        string legacyPath = Path.Combine(directory, LegacyFileName);
-
-        if (!File.Exists(legacyPath))
-        {
-
-            return false;
-
-        }
-
-        try
-        {
-
-            Directory.CreateDirectory(directory);
-
-            File.Move(legacyPath, settingsPath);
-
-            return true;
-
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-
-            return false;
-
-        }
-
-    }
+    internal ITheForgeLocalMutationRunner MutationRunner => _mutationRunner;
 
     public async Task<TheForgeSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -103,7 +59,14 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         try
         {
 
-            await SaveCoreAsync(settings, cancellationToken).ConfigureAwait(false);
+            await _mutationRunner
+                .RunAsync(
+                    SettingsPath,
+                    admittedCancellationToken => SaveCoreAsync(
+                        settings,
+                        admittedCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         }
         finally
@@ -125,11 +88,23 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         try
         {
 
-            TheForgeSettings current = await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
+            await _mutationRunner
+                .RunAsync(
+                    SettingsPath,
+                    async admittedCancellationToken =>
+                    {
 
-            TheForgeSettings updated = patch(current);
+                        TheForgeSettings current = await LoadCoreAsync(admittedCancellationToken)
+                            .ConfigureAwait(false);
 
-            await SaveCoreAsync(updated, cancellationToken).ConfigureAwait(false);
+                        TheForgeSettings updated = patch(current);
+
+                        await SaveCoreAsync(updated, admittedCancellationToken)
+                            .ConfigureAwait(false);
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         }
         finally
@@ -144,7 +119,9 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
     private async Task<TheForgeSettings> LoadCoreAsync(CancellationToken cancellationToken)
     {
 
-        if (!File.Exists(SettingsPath))
+        string readPath = ReadPath();
+
+        if (!File.Exists(readPath))
         {
 
             return new TheForgeSettings();
@@ -155,7 +132,7 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         {
 
             await using FileStream stream = new(
-                SettingsPath,
+                readPath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.Read,
@@ -172,11 +149,29 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
 
-            _logger?.LogWarning(ex, "Corrupt or unreadable the-forge.json at {Path}; using defaults.", SettingsPath);
+            _logger?.LogWarning(ex, "Corrupt or unreadable The Forge settings at {Path}; using defaults.", readPath);
 
             return new TheForgeSettings();
 
         }
+
+    }
+
+    private string ReadPath()
+    {
+
+        if (File.Exists(SettingsPath))
+        {
+
+            return SettingsPath;
+
+        }
+
+        string? directory = Path.GetDirectoryName(SettingsPath);
+
+        return string.IsNullOrEmpty(directory)
+            ? SettingsPath
+            : Path.Combine(directory, LegacyFileName);
 
     }
 

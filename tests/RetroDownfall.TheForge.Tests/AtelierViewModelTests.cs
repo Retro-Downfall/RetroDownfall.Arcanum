@@ -335,7 +335,8 @@ public class AtelierViewModelTests
             new NullArtifactFileDialogService(),
             whispers ?? new FakeWhispersService(),
             foundryFloor ?? new FoundryFloorViewModel(new NullLogService()),
-            new ConnectedArcanumConnection());
+            new ConnectedArcanumConnection(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     }
 

@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
@@ -466,18 +468,22 @@ public sealed class BackupCommandTests
     }
 
     [Theory]
-    [InlineData("help")]
-    [InlineData("dry-run")]
-    [InlineData("create")]
-    [InlineData("inspect")]
-    [InlineData("list")]
-    public void Backup_commands_never_initialize_or_mutate_the_live_grimoire(string operation)
+    [InlineData("help", 0)]
+    [InlineData("dry-run", 1)]
+    [InlineData("create", 1)]
+    [InlineData("inspect", 0)]
+    [InlineData("list", 0)]
+    public void Only_plan_and_create_use_the_exclusive_grimoire_operation(
+        string operation,
+        int expectedExclusiveCalls)
     {
 
-        ThrowingGrimoireInitialization initialization = new();
+        FakeBackupService backup = new();
+
+        RecordingGrimoireInitialization initialization = new(backup, refuse: false);
 
         ServiceCollection services = CreateServices(
-            new FakeBackupService(),
+            backup,
             new FakeBackupPassphraseReader("backup secret".ToCharArray()),
             initialization);
 
@@ -495,7 +501,59 @@ public sealed class BackupCommandTests
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
-        Assert.Equal(0, initialization.Calls);
+        Assert.Equal(expectedExclusiveCalls, initialization.Calls);
+
+        Assert.Equal(0, initialization.BootstrapCalls);
+
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Plan_and_create_refusal_never_reach_backup_storage(bool dryRun)
+    {
+
+        FakeBackupService backup = new();
+
+        RecordingGrimoireInitialization initialization = new(backup, refuse: true);
+
+        ServiceCollection services = CreateServices(
+            backup,
+            new FakeBackupPassphraseReader("backup secret".ToCharArray()),
+            initialization);
+
+        string[] arguments = dryRun
+            ? ["backup", "create", "--dry-run"]
+            : ["backup", "create"];
+
+        CliTestResult result = CliTestHarness.Run(services, arguments);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Equal(1, initialization.Calls);
+
+        Assert.Equal(0, initialization.BootstrapCalls);
+
+        Assert.Equal(0, backup.PlanCalls);
+
+        Assert.Equal(0, backup.CreateCalls);
+
+    }
+
+    [Fact]
+    public void Backup_create_resolves_storage_only_inside_the_exclusive_runner()
+    {
+
+        ProductionSource source = Assert.Single(
+            ProductionSourceInventory.Sources(),
+            static candidate => candidate.IsExactOwner(
+                "src/RetroDownfall.Arcanum.Cli/Commands/BackupCommands.cs"));
+
+        Assert.False(source.Names("IBackupService backupService"));
+
+        Assert.True(source.Names(".RunExclusiveAsync("));
+
+        Assert.False(source.Names(".RunExclusiveWithBootstrapAsync("));
 
     }
 
@@ -711,7 +769,7 @@ public sealed class BackupCommandTests
         services.RemoveAll<IGrimoireCliInitialization>();
 
         services.AddSingleton<IGrimoireCliInitialization>(
-            initialization ?? new ThrowingGrimoireInitialization());
+            initialization ?? new RecordingGrimoireInitialization(backup, refuse: false));
 
         return services;
 
@@ -823,22 +881,51 @@ public sealed class BackupCommandTests
 
     }
 
-    private sealed class ThrowingGrimoireInitialization : IGrimoireCliInitialization
+    private sealed class RecordingGrimoireInitialization(
+        IBackupService backupService,
+        bool refuse) : IGrimoireCliInitialization, IServiceProvider
     {
 
         public int Calls { get; private set; }
 
-        public Task EnsureInitializedAsync(CancellationToken cancellationToken)
+        public int BootstrapCalls { get; private set; }
+
+        public Task<T> RunExclusiveAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken)
         {
 
             cancellationToken.ThrowIfCancellationRequested();
 
             Calls++;
 
-            throw new InvalidOperationException(
-                "Backup commands must not initialize the live Grimoire.");
+            if (refuse)
+            {
+
+                throw new InvalidOperationException(
+                    "Exclusive backup ownership was refused.");
+
+            }
+
+            return operation(this, cancellationToken);
 
         }
+
+        public Task<T> RunExclusiveWithBootstrapAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken)
+        {
+
+            BootstrapCalls++;
+
+            return RunExclusiveAsync(operation, cancellationToken);
+
+        }
+
+        public object? GetService(Type serviceType) =>
+            serviceType == typeof(IBackupService)
+                ? backupService
+                : null;
 
     }
 

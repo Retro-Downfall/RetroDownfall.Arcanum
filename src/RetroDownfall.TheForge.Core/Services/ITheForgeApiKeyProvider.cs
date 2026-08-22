@@ -14,7 +14,7 @@ public interface ITheForgeApiKeyProvider
     Task<string?> GetApiKeyAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// Stores a user-pasted key into the OS credential store and updates the in-memory cache.
+    /// Uses a user-pasted key for the process lifetime without modifying persistent credential state.
     /// </summary>
     Task PersistPastedKeyAsync(string apiKey, CancellationToken cancellationToken);
 

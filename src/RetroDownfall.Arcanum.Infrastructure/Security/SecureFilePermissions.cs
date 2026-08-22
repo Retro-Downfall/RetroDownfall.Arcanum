@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -20,7 +21,7 @@ public readonly record struct SensitivePathPosture(
 /// <summary>
 /// Applies owner-only permissions on sensitive Arcanum paths at creation time.
 /// </summary>
-public static class SecureFilePermissions
+public static partial class SecureFilePermissions
 {
 
     private static readonly UnixFileMode OwnerOnlyFileMode =
@@ -162,37 +163,60 @@ public static class SecureFilePermissions
         new DirectoryInfo(path).Create(security);
     }
 
-    internal static bool TryEnsureOwnerOnlyDirectoryExistsStrict(string directoryPath)
+    internal static bool TryEnsureOwnerOnlyDirectoryExistsStrict(
+        string directoryPath,
+        bool logFailure = true)
     {
 
         try
         {
             Directory.CreateDirectory(directoryPath);
 
-            if (OperatingSystem.IsWindows())
+            try
             {
-                TryApplyWindowsOwnerOnlyDirectoryAcl(directoryPath);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    TryApplyWindowsOwnerOnlyDirectoryAcl(directoryPath, logFailure);
+                }
+                else
+                {
+                    File.SetUnixFileMode(directoryPath, OwnerOnlyDirectoryMode);
+                }
+
             }
-            else
+            catch (Exception ex)
             {
-                File.SetUnixFileMode(directoryPath, OwnerOnlyDirectoryMode);
+                if (logFailure)
+                {
+                    Serilog.Log.Warning(
+                        ex,
+                        "Failed to apply owner-only permissions to {Path}; verifying its existing posture.",
+                        directoryPath);
+                }
+
             }
 
             return VerifyOwnerOnly(directoryPath, isDirectory: true);
         }
         catch (Exception ex)
         {
-            Serilog.Log.Warning(
-                ex,
-                "Failed to strictly apply owner-only permissions to {Path}.",
-                directoryPath);
+            if (logFailure)
+            {
+                Serilog.Log.Warning(
+                    ex,
+                    "Failed to strictly apply owner-only permissions to {Path}.",
+                    directoryPath);
+            }
 
             return false;
         }
 
     }
 
-    internal static bool TryApplyOwnerOnlyFileStrict(string path)
+    internal static bool TryApplyOwnerOnlyFileStrict(
+        string path,
+        bool logFailure = true)
     {
 
         try
@@ -202,23 +226,42 @@ public static class SecureFilePermissions
                 return false;
             }
 
-            if (OperatingSystem.IsWindows())
+            try
             {
-                TryApplyWindowsOwnerOnlyFileAcl(path);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    TryApplyWindowsOwnerOnlyFileAcl(path, logFailure);
+                }
+                else
+                {
+                    File.SetUnixFileMode(path, OwnerOnlyFileMode);
+                }
+
             }
-            else
+            catch (Exception ex)
             {
-                File.SetUnixFileMode(path, OwnerOnlyFileMode);
+                if (logFailure)
+                {
+                    Serilog.Log.Warning(
+                        ex,
+                        "Failed to apply owner-only permissions to {Path}; verifying its existing posture.",
+                        path);
+                }
+
             }
 
             return VerifyOwnerOnly(path, isDirectory: false);
         }
         catch (Exception ex)
         {
-            Serilog.Log.Warning(
-                ex,
-                "Failed to strictly apply owner-only permissions to {Path}.",
-                path);
+            if (logFailure)
+            {
+                Serilog.Log.Warning(
+                    ex,
+                    "Failed to strictly apply owner-only permissions to {Path}.",
+                    path);
+            }
 
             return false;
         }
@@ -237,16 +280,64 @@ public static class SecureFilePermissions
 
         if (!OperatingSystem.IsWindows())
         {
-            UnixFileMode expected = isDirectory
-                ? OwnerOnlyDirectoryMode
-                : OwnerOnlyFileMode;
 
-            return File.GetUnixFileMode(path) == expected;
+            return FileHandleIdentityInterop.TryGetUnixOwnerUserId(
+                    path,
+                    out uint ownerUserId)
+                && UnixOwnerOnlyPostureMatches(
+                    File.GetUnixFileMode(path),
+                    ownerUserId,
+                    GetEffectiveUserId(),
+                    isDirectory);
         }
 
         return VerifyWindowsOwnerOnly(path, isDirectory);
 
     }
+
+    internal static bool HasOwnerOnlyPosture(string path, bool isDirectory)
+    {
+
+        try
+        {
+
+            return VerifyOwnerOnly(path, isDirectory);
+
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or PlatformNotSupportedException)
+        {
+
+            return false;
+
+        }
+
+    }
+
+    internal static bool UnixOwnerOnlyPostureMatches(
+        UnixFileMode mode,
+        uint ownerUserId,
+        uint effectiveUserId,
+        bool isDirectory)
+    {
+
+        UnixFileMode expected = isDirectory
+            ? OwnerOnlyDirectoryMode
+            : OwnerOnlyFileMode;
+
+        return mode == expected
+            && ownerUserId == effectiveUserId;
+
+    }
+
+    [UnsupportedOSPlatform("windows")]
+    private static uint GetEffectiveUserId() => GetEffectiveUserIdNative();
+
+    [LibraryImport("libc", EntryPoint = "geteuid")]
+    [UnsupportedOSPlatform("windows")]
+    private static partial uint GetEffectiveUserIdNative();
 
     [SupportedOSPlatform("windows")]
     private static bool VerifyWindowsOwnerOnly(string path, bool isDirectory)
@@ -749,7 +840,9 @@ public static class SecureFilePermissions
     }
 
     [SupportedOSPlatform("windows")]
-    private static void TryApplyWindowsOwnerOnlyFileAcl(string path)
+    private static void TryApplyWindowsOwnerOnlyFileAcl(
+        string path,
+        bool logFailure = true)
     {
 
         try
@@ -784,14 +877,19 @@ public static class SecureFilePermissions
         catch (Exception ex)
         {
 
-            Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
+            if (logFailure)
+            {
+                Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
+            }
 
         }
 
     }
 
     [SupportedOSPlatform("windows")]
-    private static void TryApplyWindowsOwnerOnlyDirectoryAcl(string path)
+    private static void TryApplyWindowsOwnerOnlyDirectoryAcl(
+        string path,
+        bool logFailure = true)
     {
 
         try
@@ -828,7 +926,10 @@ public static class SecureFilePermissions
         catch (Exception ex)
         {
 
-            Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
+            if (logFailure)
+            {
+                Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
+            }
 
         }
 

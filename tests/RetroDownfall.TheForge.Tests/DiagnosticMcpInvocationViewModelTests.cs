@@ -358,7 +358,8 @@ public sealed class DiagnosticMcpInvocationViewModelTests
             new FakeWhispersService(),
             confirmation ?? new ConfirmingDialogService(confirm: true),
             fileDialog ?? new NullArtifactFileDialogService(),
-            textInput ?? new FixedAnswerTextInput(null));
+            textInput ?? new FixedAnswerTextInput(null),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
     private sealed class FakeArsenalDataSource : IArsenalDataSource
     {

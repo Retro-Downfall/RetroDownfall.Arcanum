@@ -140,13 +140,14 @@ public sealed class CancelCommandTests : IDisposable
     private static ConfigurationViewModel CreateViewModel()
     {
 
-        ArcanumConfigurationStore store = new();
+        ArcanumConfigurationStore store = new(enableWatcher: true);
 
         return new ConfigurationViewModel(
             store,
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
     }
 

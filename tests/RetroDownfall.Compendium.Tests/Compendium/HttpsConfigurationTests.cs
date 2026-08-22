@@ -1,7 +1,9 @@
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Compendium.Ux.Services;
 using RetroDownfall.Compendium.Ux.ViewModels;
 using Xunit;
@@ -31,6 +33,23 @@ public sealed class HttpsConfigurationTests : IDisposable
         _tempRoot = _home.Root;
 
         Environment.SetEnvironmentVariable(CertificatePasswordVariable, null);
+
+    }
+
+    [Fact]
+    public async Task GenerateAsync_refuses_without_creating_the_certificate_root()
+    {
+
+        Error error = new(ErrorCodes.Data.FileLocked, "blocked for test");
+
+        LocalCertificateGenerator generator = new(new RefusingBoundary(error));
+
+        InvalidOperationException thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => generator.GenerateAsync());
+
+        Assert.Contains(ErrorCodes.Data.FileLocked, thrown.Message, StringComparison.Ordinal);
+
+        Assert.False(Directory.Exists(ArcanumPaths.CertificatesDirectory));
 
     }
 
@@ -129,7 +148,9 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         HostSectionViewModel host = new();
 
-        host.AttachServices(new LocalCertificateGenerator(), new NoopDialogService());
+        host.AttachServices(
+            new LocalCertificateGenerator(ImmediateArcanumClientMutationBoundary.Instance),
+            new NoopDialogService());
 
         host.LoadFrom(new HostSettings { Https = new HttpsSettings { Port = 8443 } });
 
@@ -157,7 +178,9 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         HostSectionViewModel host = new();
 
-        host.AttachServices(new LocalCertificateGenerator(), new NoopDialogService());
+        host.AttachServices(
+            new LocalCertificateGenerator(ImmediateArcanumClientMutationBoundary.Instance),
+            new NoopDialogService());
 
         host.LoadFrom(new HostSettings { Https = new HttpsSettings { Port = 0 } });
 
@@ -180,7 +203,7 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         LocalCertificateResult certificate = generator.Generate(ArcanumPaths.CertificatesDirectory, DateTimeOffset.UtcNow);
 
-        ArcanumConfigurationStore store = new();
+        ArcanumConfigurationStore store = new(enableWatcher: true);
 
         ArcanumSettings settings = new()
         {
@@ -253,6 +276,21 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         public Task<bool> ShowConfirmAsync(string title, string message, string accept = "Yes", string cancel = "No")
             => Task.FromResult(true);
+
+    }
+
+    private sealed class RefusingBoundary(Error error) : IArcanumClientMutationBoundary
+    {
+
+        public Task<ArcanumClientMutationResult<T>> RunAsync<T>(
+            Func<T> mutation,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(ArcanumClientMutationResult<T>.Blocked(error));
+
+        public Task<ArcanumClientMutationResult<T>> RunAsync<T>(
+            Func<CancellationToken, Task<T>> mutation,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(ArcanumClientMutationResult<T>.Blocked(error));
 
     }
 

@@ -1,6 +1,64 @@
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
+
+internal enum ArcanumMaintenanceLockAcquisitionDisposition : byte
+{
+
+    Unsafe,
+
+    Contended,
+
+    Acquired,
+
+}
+
+internal readonly record struct ArcanumMaintenanceLockAcquisitionResult
+{
+
+    private ArcanumMaintenanceLockAcquisitionResult(
+        ArcanumMaintenanceLockAcquisitionDisposition disposition,
+        ArcanumMaintenanceLock? maintenanceLock)
+    {
+
+        Disposition = disposition;
+
+        Lock = maintenanceLock;
+
+    }
+
+    internal ArcanumMaintenanceLockAcquisitionDisposition Disposition { get; }
+
+    internal ArcanumMaintenanceLock? Lock { get; }
+
+    internal static ArcanumMaintenanceLockAcquisitionResult Acquired(
+        ArcanumMaintenanceLock maintenanceLock) =>
+        new(
+            ArcanumMaintenanceLockAcquisitionDisposition.Acquired,
+            maintenanceLock);
+
+    internal static ArcanumMaintenanceLockAcquisitionResult Contended() =>
+        new(
+            ArcanumMaintenanceLockAcquisitionDisposition.Contended,
+            maintenanceLock: null);
+
+    internal static ArcanumMaintenanceLockAcquisitionResult Unsafe() =>
+        new(
+            ArcanumMaintenanceLockAcquisitionDisposition.Unsafe,
+            maintenanceLock: null);
+
+    internal ArcanumMaintenanceLock BorrowAcquiredLock() =>
+        Disposition is ArcanumMaintenanceLockAcquisitionDisposition.Acquired
+        && Lock is { } acquired
+            ? acquired
+            : throw new InvalidOperationException(
+                "This maintenance-lock outcome does not carry an acquired handle.");
+
+}
 
 /// <summary>
 /// The dedicated exclusive maintenance mode a restore must hold before it may touch installation
@@ -17,14 +75,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 internal sealed class ArcanumMaintenanceLock : IDisposable
 {
 
-    private FileStream? _stream;
+    private RetainedExclusiveFileLock? _lock;
 
-    private ArcanumMaintenanceLock(string path, FileStream stream)
+    private ArcanumMaintenanceLock(
+        string path,
+        RetainedExclusiveFileLock maintenanceLock)
     {
 
         Path = path;
 
-        _stream = stream;
+        _lock = maintenanceLock;
 
     }
 
@@ -54,75 +114,43 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
     }
 
     /// <summary>
-    /// Takes the lock, or returns <see langword="null"/> when another live process holds it.
+    /// Compatibility wrapper that takes the lock, or returns <see langword="null"/> when acquisition
+    /// is either genuinely contended or cannot be attempted safely. Callers that need to distinguish
+    /// those cases must use <see cref="AcquireDetailed(string)"/>.
     /// </summary>
     public static ArcanumMaintenanceLock? TryAcquire(string guardedDirectory)
+        => AcquireDetailed(guardedDirectory).Lock;
+
+    /// <summary>
+    /// Attempts one exclusive acquisition and preserves whether a verified sharing violation caused
+    /// contention or whether topology, identity, permission, or other I/O evidence was unsafe.
+    /// </summary>
+    internal static ArcanumMaintenanceLockAcquisitionResult AcquireDetailed(
+        string guardedDirectory)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
         string path = LockPathFor(guardedDirectory);
 
-        string root = System.IO.Path.GetDirectoryName(path)!;
+        RetainedExclusiveFileLockAcquisitionResult acquired =
+            RetainedExclusiveFileLock.Acquire(path);
 
-        try
+        return acquired.Disposition switch
         {
-
-            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(root);
-
-            FileStream stream = new(
-                path,
-                new FileStreamOptions
-                {
-
-                    Mode = FileMode.OpenOrCreate,
-
-                    Access = FileAccess.ReadWrite,
-
-                    Share = FileShare.None,
-
-                    Options = FileOptions.WriteThrough,
-
-                });
-
-            try
-            {
-
-                stream.SetLength(0);
-
-                using StreamWriter writer = new(stream, leaveOpen: true);
-
-                writer.Write(
-                    $"{System.Environment.MachineName}:{System.Environment.ProcessId}");
-
-                writer.Flush();
-
-                stream.Flush(flushToDisk: true);
-
-            }
-            catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException)
-            {
-
-                // A readable-but-unwritable lock file is still an exclusive claim: keep the handle.
-
-            }
-
-            SecureFilePermissions.ApplyOwnerOnlyFile(path);
-
-            return new ArcanumMaintenanceLock(path, stream);
-
-        }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException)
-        {
-
-            return null;
-
-        }
+            RetainedExclusiveFileLockAcquisitionDisposition.Acquired
+                when acquired.Lock is { } held =>
+                ArcanumMaintenanceLockAcquisitionResult.Acquired(
+                    new ArcanumMaintenanceLock(path, held)),
+            RetainedExclusiveFileLockAcquisitionDisposition.Contended =>
+                ArcanumMaintenanceLockAcquisitionResult.Contended(),
+            _ => ArcanumMaintenanceLockAcquisitionResult.Unsafe(),
+        };
 
     }
+
+    internal static bool IsVerifiedSharingViolation(IOException exception)
+        => RetainedExclusiveFileLock.IsVerifiedSharingViolation(exception);
 
     /// <summary>
     /// Verifies that this live, undisposed instance is the lock guarding
@@ -132,7 +160,7 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
     /// Answers the question from evidence this object already carries: the canonical lock path for
     /// the directory the caller names, compared against the path this handle was opened on, plus
     /// whether that handle is still open. It must never probe.
-    /// <see cref="IsHeld(string)"/> and <see cref="TryAcquire(string)"/> answer their own questions
+    /// <see cref="CannotAcquireSafely(string)"/> and <see cref="TryAcquire(string)"/> answer their own questions
     /// by opening the lock file, which creates it, truncates it, and rewrites its owner stamp as a
     /// side effect. An assertion that mutates the filesystem is not an assertion, and probing here
     /// would additionally be self-defeating within this process: the probe would contend with the
@@ -147,41 +175,39 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
-        ObjectDisposedException.ThrowIf(_stream is null, this);
+        RetainedExclusiveFileLock? held = _lock;
 
-        StringComparison comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
+        ObjectDisposedException.ThrowIf(held is null, this);
 
-        if (!string.Equals(LockPathFor(guardedDirectory), Path, comparison))
-        {
-
-            throw new InvalidOperationException(
-                "The maintenance lock supplied for this operation guards a different installation "
-                + "directory, so the caller does not hold the lock it claims to hold.");
-
-        }
+        held.AssertHeldAt(LockPathFor(guardedDirectory), this);
 
     }
 
-    /// <summary>Reports whether some other process currently holds the lock.</summary>
-    public static bool IsHeld(string guardedDirectory)
+    /// <summary>
+    /// Reports whether this process cannot safely acquire the lock, whether because another owner
+    /// holds it or because the lock topology or permissions cannot be admitted.
+    /// </summary>
+    public static bool CannotAcquireSafely(string guardedDirectory)
     {
 
-        using ArcanumMaintenanceLock? probe = TryAcquire(guardedDirectory);
+        ArcanumMaintenanceLockAcquisitionResult acquired =
+            AcquireDetailed(guardedDirectory);
 
-        return probe is null;
+        using ArcanumMaintenanceLock? probe = acquired.Lock;
+
+        return acquired.Disposition
+            is not ArcanumMaintenanceLockAcquisitionDisposition.Acquired;
 
     }
 
     public void Dispose()
     {
 
-        FileStream? stream = _stream;
+        RetainedExclusiveFileLock? held = _lock;
 
-        _stream = null;
+        _lock = null;
 
-        if (stream is null)
+        if (held is null)
         {
 
             return;
@@ -196,18 +222,7 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
         // installation's only maintenance lock. A file nothing holds is already not a lock, which is
         // why leaving it costs nothing and why no unlink can be made safe (there is no portable
         // compare-inode-and-unlink to close the window with).
-        try
-        {
-
-            stream.Dispose();
-
-        }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException)
-        {
-
-        }
+        held.Dispose();
 
     }
 

@@ -18,6 +18,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Dictionary<string, FileEncryptionKeyMaterial>? _keys;
     private string? _activeKeyId;
+    private bool _keysLoadedByPeek;
 
     /// <summary>
     /// Material dropped from the ring that a reader may still hold, zeroized only at disposal.
@@ -65,7 +66,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_keys is null)
+            if (_keys is null || _keysLoadedByPeek)
             {
                 await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -86,9 +87,35 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_keys is null)
+            if (_keys is null || _keysLoadedByPeek)
             {
                 await LoadExistingCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (TryFindKey(keyId, out FileEncryptionKeyMaterial? material))
+            {
+                return material!;
+            }
+
+            throw UnknownKey(keyId);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async ValueTask<FileEncryptionKeyMaterial> PeekForReadAsync(
+        string keyId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyId);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_keys is null)
+            {
+                await LoadExistingCoreAsync(cancellationToken, peek: true).ConfigureAwait(false);
             }
 
             if (TryFindKey(keyId, out FileEncryptionKeyMaterial? material))
@@ -110,7 +137,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_keys is null)
+            if (_keys is null || _keysLoadedByPeek)
             {
                 await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -143,6 +170,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
 
             _keys = updated;
             _activeKeyId = next.KeyId;
+            _keysLoadedByPeek = false;
             return next;
         }
         finally
@@ -159,7 +187,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_keys is null)
+            if (_keys is null || _keysLoadedByPeek)
             {
                 await LoadExistingCoreAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -179,6 +207,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
             _ = updated.Remove(retired!.KeyId);
             await PersistAsync(updated, _activeKeyId!).ConfigureAwait(false);
             _keys = updated;
+            _keysLoadedByPeek = false;
             _retired.Add(retired);
         }
         finally
@@ -193,7 +222,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_keys is null)
+            if (_keys is null || _keysLoadedByPeek)
             {
                 await LoadExistingCoreAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -219,6 +248,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         if (result.Status != SecretStoreReadStatus.Missing)
         {
             Load(result.Value);
+            _keysLoadedByPeek = false;
             return;
         }
 
@@ -243,11 +273,13 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
                 throw;
             }
 
-            _keys = new Dictionary<string, FileEncryptionKeyMaterial>(StringComparer.Ordinal)
-            {
-                [material.KeyId] = material,
-            };
-            _activeKeyId = material.KeyId;
+            ReplaceLoadedKeys(
+                new Dictionary<string, FileEncryptionKeyMaterial>(StringComparer.Ordinal)
+                {
+                    [material.KeyId] = material,
+                },
+                material.KeyId);
+            _keysLoadedByPeek = false;
         }
         finally
         {
@@ -256,11 +288,16 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
     }
 
     private async Task LoadExistingCoreAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool peek = false)
     {
-        SecretStoreReadResult result = await _secretStore
-            .GetFileEncryptionSecretReadResultAsync()
-            .ConfigureAwait(false);
+        SecretStoreReadResult result = peek
+            ? await _secretStore
+                .PeekFileEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false)
+            : await _secretStore
+                .GetFileEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false);
         if (result.Status == SecretStoreReadStatus.Missing)
         {
             throw new EncryptedBlobKeyException(MissingRecoveryMessage);
@@ -272,6 +309,8 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         }
 
         Load(result.Value);
+
+        _keysLoadedByPeek = peek;
     }
 
     private void Load(string? encoded)
@@ -283,11 +322,25 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         }
 
         FileEncryptionKeyMaterial material = Decode(encoded);
-        _keys = new Dictionary<string, FileEncryptionKeyMaterial>(StringComparer.Ordinal)
+        ReplaceLoadedKeys(
+            new Dictionary<string, FileEncryptionKeyMaterial>(StringComparer.Ordinal)
+            {
+                [material.KeyId] = material,
+            },
+            material.KeyId);
+    }
+
+    private void ReplaceLoadedKeys(
+        Dictionary<string, FileEncryptionKeyMaterial> loaded,
+        string activeKeyId)
+    {
+        if (_keys is not null)
         {
-            [material.KeyId] = material,
-        };
-        _activeKeyId = material.KeyId;
+            _retired.AddRange(_keys.Values);
+        }
+
+        _keys = loaded;
+        _activeKeyId = activeKeyId;
     }
 
     // The canonical key-ring encoding is LF-delimited (see BackupSecretRewrapper). A ring persisted
@@ -351,8 +404,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
             throw;
         }
 
-        _keys = loaded;
-        _activeKeyId = active;
+        ReplaceLoadedKeys(loaded, active);
     }
 
     private async Task PersistAsync(

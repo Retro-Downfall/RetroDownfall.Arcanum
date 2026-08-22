@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Api.Models;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Hosting;
@@ -38,7 +39,8 @@ internal static class ServerLifecycleEndpoints
                 value: ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
 
         })
-        .WithName("QuitServer");
+        .WithName("QuitServer")
+        .WithMetadata(InstallationResetRecoveryApiRouteMetadata.QuitServer);
 
         return apiGroup;
 

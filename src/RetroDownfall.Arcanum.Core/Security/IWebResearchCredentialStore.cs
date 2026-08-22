@@ -10,6 +10,15 @@ public interface IWebResearchCredentialStore
     Task<SecretStoreReadResult> GetPerplexityApiKeyReadResultAsync(
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reads the Perplexity credential without migrating, repairing, or persisting credential
+    /// state. The default preserves compatibility for stores whose ordinary read is already pure;
+    /// stores whose ordinary read can mutate state must override it.
+    /// </summary>
+    Task<SecretStoreReadResult> PeekPerplexityApiKeyReadResultAsync(
+        CancellationToken cancellationToken = default) =>
+        GetPerplexityApiKeyReadResultAsync(cancellationToken);
+
     Task SavePerplexityApiKeyAsync(
         string apiKey,
         CancellationToken cancellationToken = default);

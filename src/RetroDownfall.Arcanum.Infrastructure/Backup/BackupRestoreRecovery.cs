@@ -735,19 +735,19 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         string liveRoot)
     {
 
-        if (!string.Equals(
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(journal.LiveRoot)),
-                liveRoot,
-                OperatingSystem.IsWindows()
-                    ? StringComparison.OrdinalIgnoreCase
-                    : StringComparison.Ordinal))
+        Result validation = BackupRestoreJournal.ValidateForRecovery(
+            stagingRoot,
+            liveRoot,
+            journal);
+
+        if (validation.IsFailure)
         {
 
             return new BackupRestoreRecoveryReport(
                 stagingRoot,
                 BackupRestoreRecoveryOutcome.ReconciliationRequired,
                 journal.Phase,
-                "The journal describes a different installation root and was left untouched.");
+                "The legacy restore journal could not be admitted safely and was left untouched.");
 
         }
 

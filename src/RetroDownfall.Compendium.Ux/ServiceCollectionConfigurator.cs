@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Compendium.Ux.Services;
@@ -20,9 +21,16 @@ internal static class ServiceCollectionConfigurator
 
         services.AddLogging(builder => builder.AddDebug());
 
-        services.AddArcanumConfigurationPresets();
+        services.AddArcanumClientMutationCoordination();
+
+        services.AddArcanumConfigurationPresets(
+            static (sp, inner) => new CompendiumConfigurationPresetService(
+                inner,
+                sp.GetRequiredService<IArcanumClientMutationBoundary>()));
 
         services.AddSingleton<IArcanumConfigurationStore, ArcanumConfigurationStore>();
+
+        services.AddSingleton<LocalCertificateGenerator>();
 
         services.AddSingleton<IMainWindowProvider, MainWindowProvider>();
 

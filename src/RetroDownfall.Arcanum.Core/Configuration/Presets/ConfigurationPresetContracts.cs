@@ -37,6 +37,13 @@ public interface IConfigurationPresetPersistence
     Task<Result<ConfigurationPresetSnapshot>> ReadAsync(
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reads the exact persisted preset snapshot without recovering or otherwise mutating a
+    /// prepared transaction. Implementations fail closed when recovery is required.
+    /// </summary>
+    Task<Result<ConfigurationPresetSnapshot>> PeekAsync(
+        CancellationToken cancellationToken = default);
+
     Task<Result<ConfigurationPresetCommitResult>> ApplyAsync(
         ConfigurationPresetCommitRequest request,
         CancellationToken cancellationToken = default);

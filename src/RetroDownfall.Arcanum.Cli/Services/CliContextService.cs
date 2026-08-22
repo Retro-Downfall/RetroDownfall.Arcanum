@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -57,20 +58,27 @@ public interface ICliContextService
         string identifier,
         CancellationToken cancellationToken);
 
-    CliContextMutationResult Clear(CliContextScope scope);
+    Task<CliContextMutationResult> ClearAsync(
+        CliContextScope scope,
+        CancellationToken cancellationToken);
 
     Task<CliContextStatusPayload> GetCurrentAsync(
         bool noContext,
         CancellationToken cancellationToken);
 
+    Task<CliContextValidation> ValidateAsync(
+        bool noContext,
+        CancellationToken cancellationToken);
+
 }
 
-public sealed class CliContextService(
+internal sealed class CliContextService(
     ICliContextStore store,
+    ICliContextExclusiveWriter contextWriter,
     ICliResourceCatalog resources,
     ArcanumApiClient apiClient,
     IOptions<ArcanumSettings> settings,
-    CliSessionManager sessionManager) : ICliContextService
+    IArcanumClientMutationBoundary mutationBoundary) : ICliContextService
 {
 
     public async Task<CliContextMutationResult> SelectAsync(
@@ -86,8 +94,6 @@ public sealed class CliContextService(
                 "A context identifier is required.");
 
         }
-
-        CliContextDocument document = store.Load();
 
         switch (scope)
         {
@@ -105,16 +111,17 @@ public sealed class CliContextService(
 
                 }
 
-                document = document with
-                {
-                    CampaignId = campaignValue!.Id,
-                    CampaignName = campaignValue.Name,
-                };
+                CampaignDto selectedCampaign = campaignValue!;
 
-                store.Save(document);
-
-                return CliContextMutationResult.Success(
-                    $"Using campaign {campaignValue.Name} ({campaignValue.Id:D}).");
+                return await MutateAsync(
+                        (current, token) => RevalidateCampaignSelectionAsync(
+                            current,
+                            selectedCampaign,
+                            token),
+                        saved =>
+                            $"Using campaign {saved.CampaignName} ({selectedCampaign.Id:D}).",
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             case CliContextScope.Workspace:
 
@@ -131,16 +138,15 @@ public sealed class CliContextService(
 
                 WorkspaceInfo selectedWorkspace = workspaceValue!;
 
-                document = document with
-                {
-                    WorkspaceId = selectedWorkspace.Id,
-                    WorkspacePath = selectedWorkspace.Path.Trim(),
-                };
-
-                store.Save(document);
-
-                return CliContextMutationResult.Success(
-                    $"Using workspace {selectedWorkspace.Name} ({selectedWorkspace.Path}).");
+                return await MutateAsync(
+                        (current, token) => RevalidateWorkspaceSelectionAsync(
+                            current,
+                            selectedWorkspace,
+                            token),
+                        saved =>
+                            $"Using workspace {selectedWorkspace.Name} ({saved.WorkspacePath}).",
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             case CliContextScope.Model:
 
@@ -155,12 +161,16 @@ public sealed class CliContextService(
 
                 }
 
-                document = document with { Model = modelValue!.Model };
+                ModelInfoDto selectedModel = modelValue!;
 
-                store.Save(document);
-
-                return CliContextMutationResult.Success(
-                    $"Using model {modelValue.Model}.");
+                return await MutateAsync(
+                        (current, token) => RevalidateModelSelectionAsync(
+                            current,
+                            selectedModel,
+                            token),
+                        _ => $"Using model {selectedModel.Model}.",
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             case CliContextScope.Session:
 
@@ -175,20 +185,27 @@ public sealed class CliContextService(
 
                 }
 
-                document = document with { SessionId = sessionValue!.Id };
+                SessionSummaryDto selectedSession = sessionValue!;
 
-                store.Save(document);
+                return await MutateAsync(
+                        (current, token) => RevalidateSessionSelectionAsync(
+                            current,
+                            selectedSession,
+                            token),
+                        saved =>
+                        {
 
-                sessionManager.SaveSessionId(sessionValue.Id, quiet: true);
+                            string mismatch =
+                                saved.CampaignId is { } campaignId
+                                && selectedSession.CampaignId != campaignId
+                                    ? " Warning: the selected session belongs to another campaign."
+                                    : string.Empty;
 
-                string mismatch =
-                    document.CampaignId is { } campaignId
-                    && sessionValue.CampaignId != campaignId
-                        ? " Warning: the selected session belongs to another campaign."
-                        : string.Empty;
+                            return $"Using session {selectedSession.Id:D}.{mismatch}";
 
-                return CliContextMutationResult.Success(
-                    $"Using session {sessionValue.Id:D}.{mismatch}");
+                        },
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             default:
 
@@ -199,45 +216,271 @@ public sealed class CliContextService(
 
     }
 
-    public CliContextMutationResult Clear(CliContextScope scope)
+    public Task<CliContextMutationResult> ClearAsync(
+        CliContextScope scope,
+        CancellationToken cancellationToken)
     {
-
-        CliContextDocument document = store.Load();
-
-        document = scope switch
-        {
-            CliContextScope.All => CliContextDocument.Empty,
-            CliContextScope.Campaign => document with
-            {
-                CampaignId = null,
-                CampaignName = null,
-            },
-            CliContextScope.Workspace => document with
-            {
-                WorkspaceId = null,
-                WorkspacePath = null,
-            },
-            CliContextScope.Model => document with { Model = null },
-            CliContextScope.Session => document with { SessionId = null },
-            _ => document,
-        };
-
-        store.Save(document);
-
-        if (scope is CliContextScope.All or CliContextScope.Session)
-        {
-
-            sessionManager.ClearSession(quiet: true);
-
-        }
 
         string label = scope == CliContextScope.All
             ? "all saved context"
             : $"saved {scope.ToString().ToLowerInvariant()} context";
 
-        return CliContextMutationResult.Success($"Cleared {label}.");
+        return MutateAsync(
+            document => scope switch
+            {
+                CliContextScope.All => CliContextDocument.Empty,
+                CliContextScope.Campaign => document with
+                {
+                    CampaignId = null,
+                    CampaignName = null,
+                },
+                CliContextScope.Workspace => document with
+                {
+                    WorkspaceId = null,
+                    WorkspacePath = null,
+                },
+                CliContextScope.Model => document with { Model = null },
+                CliContextScope.Session => document with { SessionId = null },
+                _ => document,
+            },
+            _ => $"Cleared {label}.",
+            cancellationToken);
 
     }
+
+    private async Task<CliContextMutationResult> MutateAsync(
+        Func<CliContextDocument, CliContextDocument> mutation,
+        Func<CliContextDocument, string> successMessage,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(mutation);
+
+        return await MutateAsync(
+                (current, _) => Task.FromResult(
+                    Result<CliContextDocument>.Success(mutation(current))),
+                successMessage,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private async Task<CliContextMutationResult> MutateAsync(
+        Func<
+            CliContextDocument,
+            CancellationToken,
+            Task<Result<CliContextDocument>>> prepareAsync,
+        Func<CliContextDocument, string> successMessage,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(prepareAsync);
+
+        ArgumentNullException.ThrowIfNull(successMessage);
+
+        try
+        {
+
+            ArcanumClientMutationResult<Result<CliContextDocument>> result =
+                await mutationBoundary
+                    .RunAsync(
+                        async token =>
+                        {
+
+                            Result<CliContextDocument> prepared =
+                                await prepareAsync(store.Load(), token)
+                                    .ConfigureAwait(false);
+
+                            if (prepared.IsFailure)
+                            {
+
+                                return prepared;
+
+                            }
+
+                            contextWriter.SaveUnderExclusive(prepared.Value);
+
+                            return prepared;
+
+                        },
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (!result.IsCompleted)
+            {
+
+                return CliContextMutationResult.Failure(result.Error.Message);
+
+            }
+
+            return result.Value.IsSuccess
+                ? CliContextMutationResult.Success(
+                    successMessage(result.Value.Value))
+                : CliContextMutationResult.Failure(
+                    result.Value.Error.Message);
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+
+            return CliContextMutationResult.Failure(
+                "The saved CLI context could not be changed safely.");
+
+        }
+
+    }
+
+    private async Task<Result<CliContextDocument>> RevalidateCampaignSelectionAsync(
+        CliContextDocument current,
+        CampaignDto selected,
+        CancellationToken cancellationToken)
+    {
+
+        (bool loaded, CampaignDto[] campaigns) = await GetCampaignsAsync(
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!loaded)
+        {
+
+            return RevalidationUnavailable("campaign");
+
+        }
+
+        CampaignDto? refreshed = campaigns.FirstOrDefault(
+            candidate => candidate.Id == selected.Id
+                && candidate.CreatedAt == selected.CreatedAt);
+
+        return refreshed is null
+            ? RevalidationMissing("campaign", selected.Id.ToString("D"))
+            : Result<CliContextDocument>.Success(
+                current with
+                {
+                    CampaignId = refreshed.Id,
+                    CampaignName = refreshed.Name,
+                });
+
+    }
+
+    private async Task<Result<CliContextDocument>> RevalidateWorkspaceSelectionAsync(
+        CliContextDocument current,
+        WorkspaceInfo selected,
+        CancellationToken cancellationToken)
+    {
+
+        Result<WorkspaceInfo[]> workspaces = await apiClient
+            .GetWorkspacesAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (workspaces.IsFailure)
+        {
+
+            return Result<CliContextDocument>.Failure(workspaces.Error);
+
+        }
+
+        WorkspaceInfo? refreshed = workspaces.Value.FirstOrDefault(
+            candidate => string.Equals(
+                    candidate.Id,
+                    selected.Id,
+                    StringComparison.Ordinal)
+                && candidate.RegisteredAt == selected.RegisteredAt);
+
+        return refreshed is null
+            ? RevalidationMissing("workspace", selected.Id)
+            : Result<CliContextDocument>.Success(
+                current with
+                {
+                    WorkspaceId = refreshed.Id,
+                    WorkspacePath = refreshed.Path.Trim(),
+                });
+
+    }
+
+    private async Task<Result<CliContextDocument>> RevalidateModelSelectionAsync(
+        CliContextDocument current,
+        ModelInfoDto selected,
+        CancellationToken cancellationToken)
+    {
+
+        Result<ModelInfoDto[]> models = await apiClient
+            .GetModelsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (models.IsFailure)
+        {
+
+            return Result<CliContextDocument>.Failure(models.Error);
+
+        }
+
+        ModelInfoDto? refreshed = models.Value.FirstOrDefault(
+            candidate => string.Equals(
+                    candidate.Model,
+                    selected.Model,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    candidate.ProviderName,
+                    selected.ProviderName,
+                    StringComparison.OrdinalIgnoreCase));
+
+        return refreshed is null
+            ? RevalidationMissing("model", selected.Model)
+            : Result<CliContextDocument>.Success(
+                current with { Model = refreshed.Model });
+
+    }
+
+    private async Task<Result<CliContextDocument>> RevalidateSessionSelectionAsync(
+        CliContextDocument current,
+        SessionSummaryDto selected,
+        CancellationToken cancellationToken)
+    {
+
+        Result<SessionDetailDto> session = await apiClient
+            .GetSessionAsync(selected.Id, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (session.IsFailure)
+        {
+
+            return Result<CliContextDocument>.Failure(session.Error);
+
+        }
+
+        SessionDetailDto refreshed = session.Value;
+
+        if (refreshed.Id != selected.Id
+            || refreshed.CampaignId != selected.CampaignId
+            || refreshed.CreatedAt != selected.CreatedAt)
+        {
+
+            return RevalidationMissing(
+                "session",
+                selected.Id.ToString("D"));
+
+        }
+
+        return Result<CliContextDocument>.Success(
+            current with { SessionId = refreshed.Id });
+
+    }
+
+    private static Result<CliContextDocument> RevalidationUnavailable(
+        string resourceKind) =>
+        Result<CliContextDocument>.Failure(
+            new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                $"The selected {resourceKind} could not be revalidated on the current host. Retry the selection."));
+
+    private static Result<CliContextDocument> RevalidationMissing(
+        string resourceKind,
+        string identifier) =>
+        Result<CliContextDocument>.Failure(
+            new Error(
+                ErrorCodes.Data.NotFound,
+                $"The selected {resourceKind} {identifier} is no longer available on the current host. Retry the selection."));
 
     public async Task<CliContextStatusPayload> GetCurrentAsync(
         bool noContext,
@@ -281,16 +524,26 @@ public sealed class CliContextService(
 
     }
 
-    internal async Task<CliContextValidation> ValidateAsync(
+    public async Task<CliContextValidation> ValidateAsync(
         bool noContext,
         CancellationToken cancellationToken)
     {
 
-        CliContextDocument active = noContext
+        CliContextDocument persisted = noContext
             ? CliContextDocument.Empty
             : store.Load();
 
+        CliContextDocument active = persisted;
+
         List<string> warnings = [];
+
+        bool staleCampaign = false;
+
+        bool staleWorkspace = false;
+
+        bool staleModel = false;
+
+        bool staleSession = false;
 
         (bool campaignsLoaded, CampaignDto[] campaigns) = await GetCampaignsAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -306,8 +559,7 @@ public sealed class CliContextService(
             if (campaignsLoaded && activeCampaign is null)
             {
 
-                warnings.Add(
-                    $"Saved campaign {activeCampaignId:D} is stale and was cleared.");
+                staleCampaign = true;
 
                 active = active with
                 {
@@ -337,8 +589,7 @@ public sealed class CliContextService(
             if (activeWorkspace is null)
             {
 
-                warnings.Add(
-                    $"Saved workspace {active.WorkspaceId} is stale and was cleared.");
+                staleWorkspace = true;
 
                 active = active with
                 {
@@ -363,16 +614,13 @@ public sealed class CliContextService(
                     StringComparison.OrdinalIgnoreCase)))
         {
 
-            warnings.Add(
-                $"Saved model {active.Model} is no longer configured and was cleared.");
+            staleModel = true;
 
             active = active with { Model = null };
 
         }
 
         SessionDetailDto? session = null;
-
-        bool staleSessionCleared = false;
 
         if (active.SessionId is { } sessionId)
         {
@@ -390,28 +638,116 @@ public sealed class CliContextService(
             else if (IsNotFound(sessionResult.Error))
             {
 
-                warnings.Add(
-                    $"Saved session {sessionId:D} is stale and was cleared.");
+                staleSession = true;
 
                 active = active with { SessionId = null };
-
-                staleSessionCleared = true;
 
             }
 
         }
-
-        if (!noContext && active != store.Load())
+        if (!noContext
+            && (staleCampaign || staleWorkspace || staleModel || staleSession))
         {
 
-            store.Save(active);
+            try
+            {
 
-        }
+                ArcanumClientMutationResult<Result<StaleCleanupOutcome>> cleanup =
+                    await mutationBoundary
+                        .RunAsync(
+                            token => RevalidateStaleCleanupAsync(
+                                persisted,
+                                staleCampaign,
+                                staleWorkspace,
+                                staleModel,
+                                staleSession,
+                                token),
+                            cancellationToken)
+                        .ConfigureAwait(false);
 
-        if (staleSessionCleared)
-        {
+                if (cleanup.IsCompleted && cleanup.Value.IsSuccess)
+                {
 
-            sessionManager.ClearSession(quiet: true);
+                    StaleCleanupOutcome outcome = cleanup.Value.Value;
+
+                    active = outcome.Document;
+
+                    if (outcome.Campaigns is not null)
+                    {
+
+                        campaigns = outcome.Campaigns;
+
+                        activeCampaign = active.CampaignId is { } campaignId
+                            ? campaigns.FirstOrDefault(
+                                candidate => candidate.Id == campaignId)
+                            : null;
+
+                    }
+
+                    if (outcome.Workspaces is not null)
+                    {
+
+                        workspaces = Result<WorkspaceInfo[]>.Success(
+                            outcome.Workspaces);
+
+                        activeWorkspace = active.WorkspaceId is { } workspaceId
+                            ? outcome.Workspaces.FirstOrDefault(
+                                candidate => string.Equals(
+                                    candidate.Id,
+                                    workspaceId,
+                                    StringComparison.Ordinal))
+                            : null;
+
+                    }
+
+                    if (outcome.SessionWasRevalidated)
+                    {
+
+                        session = outcome.Session;
+
+                    }
+
+                    AddStaleCleanupWarnings(
+                        warnings,
+                        persisted,
+                        outcome.CampaignCleared,
+                        outcome.WorkspaceCleared,
+                        outcome.ModelCleared,
+                        outcome.SessionCleared,
+                        error: null);
+
+                }
+                else
+                {
+
+                    AddStaleCleanupWarnings(
+                        warnings,
+                        persisted,
+                        staleCampaign,
+                        staleWorkspace,
+                        staleModel,
+                        staleSession,
+                        cleanup.IsCompleted
+                            ? cleanup.Value.Error.Message
+                            : cleanup.Error.Message);
+
+                }
+
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+
+                AddStaleCleanupWarnings(
+                    warnings,
+                    persisted,
+                    staleCampaign,
+                    staleWorkspace,
+                    staleModel,
+                    staleSession,
+                    "the saved CLI context could not be changed safely");
+
+            }
 
         }
 
@@ -438,6 +774,288 @@ public sealed class CliContextService(
             detectedWorkspace,
             [.. campaigns],
             [.. warnings]);
+
+    }
+
+    private async Task<Result<StaleCleanupOutcome>> RevalidateStaleCleanupAsync(
+        CliContextDocument persisted,
+        bool staleCampaign,
+        bool staleWorkspace,
+        bool staleModel,
+        bool staleSession,
+        CancellationToken cancellationToken)
+    {
+
+        CliContextDocument current = store.Load();
+
+        CliContextDocument updated = current;
+
+        CampaignDto[]? refreshedCampaigns = null;
+
+        WorkspaceInfo[]? refreshedWorkspaces = null;
+
+        SessionDetailDto? refreshedSession = null;
+
+        bool sessionWasRevalidated = false;
+
+        bool campaignCleared = false;
+
+        bool workspaceCleared = false;
+
+        bool modelCleared = false;
+
+        bool sessionCleared = false;
+
+        if (staleCampaign
+            && current.CampaignId == persisted.CampaignId)
+        {
+
+            (bool loaded, CampaignDto[] campaigns) = await GetCampaignsAsync(
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!loaded)
+            {
+
+                return StaleCleanupUnavailable("campaign");
+
+            }
+
+            refreshedCampaigns = campaigns;
+
+            CampaignDto? refreshed = campaigns.FirstOrDefault(
+                candidate => candidate.Id == current.CampaignId);
+
+            if (refreshed is null)
+            {
+
+                updated = updated with
+                {
+                    CampaignId = null,
+                    CampaignName = null,
+                };
+
+                campaignCleared = true;
+
+            }
+            else
+            {
+
+                updated = updated with { CampaignName = refreshed.Name };
+
+            }
+
+        }
+
+        if (staleWorkspace
+            && string.Equals(
+                current.WorkspaceId,
+                persisted.WorkspaceId,
+                StringComparison.Ordinal))
+        {
+
+            Result<WorkspaceInfo[]> workspaces = await apiClient
+                .GetWorkspacesAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (workspaces.IsFailure)
+            {
+
+                return Result<StaleCleanupOutcome>.Failure(workspaces.Error);
+
+            }
+
+            refreshedWorkspaces = workspaces.Value;
+
+            WorkspaceInfo? refreshed = workspaces.Value.FirstOrDefault(
+                candidate => string.Equals(
+                    candidate.Id,
+                    current.WorkspaceId,
+                    StringComparison.Ordinal));
+
+            if (refreshed is null)
+            {
+
+                updated = updated with
+                {
+                    WorkspaceId = null,
+                    WorkspacePath = null,
+                };
+
+                workspaceCleared = true;
+
+            }
+            else
+            {
+
+                updated = updated with
+                {
+                    WorkspacePath = refreshed.Path.Trim(),
+                };
+
+            }
+
+        }
+
+        if (staleModel
+            && string.Equals(
+                current.Model,
+                persisted.Model,
+                StringComparison.Ordinal))
+        {
+
+            Result<ModelInfoDto[]> models = await apiClient
+                .GetModelsAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (models.IsFailure)
+            {
+
+                return Result<StaleCleanupOutcome>.Failure(models.Error);
+
+            }
+
+            ModelInfoDto? refreshed = models.Value.FirstOrDefault(
+                candidate => string.Equals(
+                    candidate.Model,
+                    current.Model,
+                    StringComparison.OrdinalIgnoreCase));
+
+            if (refreshed is null)
+            {
+
+                updated = updated with { Model = null };
+
+                modelCleared = true;
+
+            }
+            else
+            {
+
+                updated = updated with { Model = refreshed.Model };
+
+            }
+
+        }
+
+        if (staleSession
+            && current.SessionId == persisted.SessionId
+            && current.SessionId is { } sessionId)
+        {
+
+            Result<SessionDetailDto> sessionResult = await apiClient
+                .GetSessionAsync(sessionId, cancellationToken)
+                .ConfigureAwait(false);
+
+            sessionWasRevalidated = true;
+
+            if (sessionResult.IsSuccess)
+            {
+
+                refreshedSession = sessionResult.Value;
+
+            }
+            else if (IsNotFound(sessionResult.Error))
+            {
+
+                updated = updated with { SessionId = null };
+
+                sessionCleared = true;
+
+            }
+            else
+            {
+
+                return Result<StaleCleanupOutcome>.Failure(
+                    sessionResult.Error);
+
+            }
+
+        }
+
+        if (updated != current)
+        {
+
+            contextWriter.SaveUnderExclusive(updated);
+
+        }
+
+        return Result<StaleCleanupOutcome>.Success(
+            new StaleCleanupOutcome(
+                updated,
+                refreshedCampaigns,
+                refreshedWorkspaces,
+                refreshedSession,
+                sessionWasRevalidated,
+                campaignCleared,
+                workspaceCleared,
+                modelCleared,
+                sessionCleared));
+
+    }
+
+    private static Result<StaleCleanupOutcome> StaleCleanupUnavailable(
+        string resourceKind) =>
+        Result<StaleCleanupOutcome>.Failure(
+            new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                $"The saved {resourceKind} could not be revalidated on the current host."));
+
+    private sealed record StaleCleanupOutcome(
+        CliContextDocument Document,
+        CampaignDto[]? Campaigns,
+        WorkspaceInfo[]? Workspaces,
+        SessionDetailDto? Session,
+        bool SessionWasRevalidated,
+        bool CampaignCleared,
+        bool WorkspaceCleared,
+        bool ModelCleared,
+        bool SessionCleared);
+
+    private static void AddStaleCleanupWarnings(
+        List<string> warnings,
+        CliContextDocument persisted,
+        bool staleCampaign,
+        bool staleWorkspace,
+        bool staleModel,
+        bool staleSession,
+        string? error)
+    {
+
+        string suffix = error is null
+            ? " and was cleared."
+            : $", but could not be cleared from saved context: {error}";
+
+        if (staleCampaign && persisted.CampaignId is { } campaignId)
+        {
+
+            warnings.Add($"Saved campaign {campaignId:D} is stale{suffix}");
+
+        }
+
+        if (staleWorkspace && persisted.WorkspaceId is { } workspaceId)
+        {
+
+            warnings.Add($"Saved workspace {workspaceId} is stale{suffix}");
+
+        }
+
+        if (staleModel && persisted.Model is { } model)
+        {
+
+            warnings.Add(
+                error is null
+                    ? $"Saved model {model} is no longer configured and was cleared."
+                    : $"Saved model {model} is no longer configured{suffix}");
+
+        }
+
+        if (staleSession && persisted.SessionId is { } sessionId)
+        {
+
+            warnings.Add($"Saved session {sessionId:D} is stale{suffix}");
+
+        }
 
     }
 

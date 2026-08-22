@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Models;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Diff;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -805,6 +806,36 @@ public class SpellEditorViewModelTests
     }
 
     [Fact]
+    public async Task ExportAsync_ClientMutationRefusal_DoesNotFetchServerExport()
+    {
+
+        FakeSpellEditorDataSource dataSource = new()
+        {
+            Spell = NewSpellDetail("mend-armor"),
+            ExportResult = new SpellExportDto(null, "# mend-armor", []),
+        };
+
+        string path = Path.Combine(
+            RetroDownfall.Arcanum.Core.Storage.ArcanumPaths.GrimoireDirectory,
+            "spell-export.json");
+
+        SpellEditorViewModel viewModel = NewViewModel(
+            "mend-armor",
+            dataSource,
+            fileDialog: new ControllableFileDialog(path),
+            mutationRunner: new RefusingTheForgeLocalMutationRunner());
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.ExportAsync(CancellationToken.None);
+
+        Assert.Equal(0, dataSource.ExportCallCount);
+
+        Assert.False(File.Exists(path));
+
+    }
+
+    [Fact]
     public async Task DeleteAsync_WhenConfirmationCancelled_IsNoOp()
     {
 
@@ -1043,7 +1074,8 @@ public class SpellEditorViewModelTests
         IConfirmationDialogService? confirmation = null,
         IArtifactFileDialogService? fileDialog = null,
         ITextInputDialogService? textInput = null,
-        IWhispersService? whispers = null) =>
+        IWhispersService? whispers = null,
+        ITheForgeLocalMutationRunner? mutationRunner = null) =>
         new(
             spellName,
             dataSource,
@@ -1053,6 +1085,7 @@ public class SpellEditorViewModelTests
             fileDialog ?? new NullArtifactFileDialogService(),
             textInput ?? new NullTextInputDialogService(),
             whispers ?? new FakeWhispersService(),
+            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance,
             workspace);
 
     private static SpellDetail NewSpellDetail(

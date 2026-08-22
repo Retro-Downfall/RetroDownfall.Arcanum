@@ -103,7 +103,10 @@ public class ComparisonRunStoreTests
         try
         {
 
-            ComparisonRunStore store = new(path, maxRuns: 2);
+            ComparisonRunStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance,
+                maxRuns: 2);
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
 

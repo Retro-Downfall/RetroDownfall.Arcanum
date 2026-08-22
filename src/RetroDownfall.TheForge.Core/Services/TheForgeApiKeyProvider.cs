@@ -15,14 +15,15 @@ public delegate Task<string?> ApiKeyPastePrompt(CancellationToken cancellationTo
 /// <summary>
 /// Default <see cref="ITheForgeApiKeyProvider"/>: resolves via <see cref="ApiKeyResolver"/> once and
 /// caches a successful key in memory for the process lifetime. Optionally prompts for a paste when empty.
-/// A missing key does not permanently suppress future resolution — only an explicit user decline skips
-/// re-prompting until <see cref="ClearPasteDecline"/> or <see cref="PersistPastedKeyAsync"/>.
+/// Pasted keys remain in process memory only. A missing key does not permanently suppress future
+/// resolution — only an explicit user decline skips re-prompting until <see cref="ClearPasteDecline"/>
+/// or <see cref="PersistPastedKeyAsync"/>.
 /// </summary>
 public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 {
 
     public const string SessionOnlyPersistWarning =
-        "API key accepted for this session but could not be persisted to the OS credential store.";
+        "API key accepted for this session and was not persisted to the OS credential store.";
 
     private readonly ApiKeyResolver _resolver;
 
@@ -106,23 +107,7 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 
                         string trimmed = pasted.Trim();
 
-                        try
-                        {
-
-                            await _resolver.PersistAsync(_settings.CurrentValue, trimmed, cancellationToken)
-                                .ConfigureAwait(false);
-
-                            _isSessionOnlyKey = false;
-
-                        }
-                        catch (InvalidOperationException ex)
-                        {
-
-                            _logger.LogWarning(ex, SessionOnlyPersistWarning);
-
-                            _isSessionOnlyKey = true;
-
-                        }
+                        _isSessionOnlyKey = true;
 
                         key = trimmed;
 
@@ -190,22 +175,7 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 
             string trimmed = apiKey.Trim();
 
-            try
-            {
-
-                await _resolver.PersistAsync(_settings.CurrentValue, trimmed, cancellationToken).ConfigureAwait(false);
-
-                _isSessionOnlyKey = false;
-
-            }
-            catch (InvalidOperationException ex)
-            {
-
-                _logger.LogWarning(ex, SessionOnlyPersistWarning);
-
-                _isSessionOnlyKey = true;
-
-            }
+            _isSessionOnlyKey = true;
 
             _cached = trimmed;
 

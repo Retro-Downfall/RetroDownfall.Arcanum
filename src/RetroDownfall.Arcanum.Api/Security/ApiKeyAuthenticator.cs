@@ -140,7 +140,13 @@ public sealed class ApiKeyAuthenticator(
 
         }
 
-        string? expected = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        SecretStoreReadResult expectedRead = await secretStore
+            .PeekApiKeyReadResultAsync()
+            .ConfigureAwait(false);
+
+        string? expected = expectedRead.Status == SecretStoreReadStatus.Ok
+            ? expectedRead.Value
+            : null;
 
         if (expected is null)
         {

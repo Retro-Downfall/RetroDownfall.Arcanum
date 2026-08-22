@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -43,6 +44,8 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
     private readonly IArcanumConnection _connection;
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     private int _campaignCount;
 
     [ObservableProperty]
@@ -64,7 +67,8 @@ public sealed partial class AtelierViewModel : ViewModelBase
         IArtifactFileDialogService fileDialog,
         IWhispersService whispers,
         FoundryFloorViewModel foundryFloor,
-        IArcanumConnection connection)
+        IArcanumConnection connection,
+        ITheForgeLocalMutationRunner mutationRunner)
     {
 
         _dataSource = dataSource;
@@ -92,6 +96,8 @@ public sealed partial class AtelierViewModel : ViewModelBase
         _foundryFloor = foundryFloor;
 
         _connection = connection;
+
+        _mutationRunner = mutationRunner;
 
         Title = "The Atelier";
 
@@ -376,6 +382,7 @@ public sealed partial class AtelierViewModel : ViewModelBase
             _confirmation,
             _fileDialog,
             _whispers,
+            _mutationRunner,
             async refreshCt =>
             {
 

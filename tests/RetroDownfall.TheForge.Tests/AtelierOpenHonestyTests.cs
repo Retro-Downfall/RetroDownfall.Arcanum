@@ -60,6 +60,7 @@ public class AtelierOpenHonestyTests
             new NullConfirmationDialogService(),
             new NullArtifactFileDialogService(),
             new FakeWhispersService(),
+            ImmediateTheForgeLocalMutationRunner.Instance,
             static _ => Task.CompletedTask);
 
         Assert.True(node.HasPrimaryCommand);

@@ -12,7 +12,7 @@ public sealed class EncryptedBlobDiagnostics(
         CancellationToken cancellationToken = default)
     {
         SecretStoreReadResult secret = await secretStore
-            .GetFileEncryptionSecretReadResultAsync()
+            .PeekFileEncryptionSecretReadResultAsync()
             .ConfigureAwait(false);
         FileEncryptionSecretStatus secretStatus = secret.Status switch
         {

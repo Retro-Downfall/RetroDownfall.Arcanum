@@ -158,6 +158,62 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
     }
 
     /// <summary>
+    /// Resolves a provider credential without promoting its encrypted mirror into OS storage. A
+    /// failed OS read is not interchangeable with absence: its hidden value may supersede the
+    /// mirror, so the peek fails closed rather than returning a potentially stale credential.
+    /// </summary>
+    public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
+        string providerName,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        string account = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName);
+
+        SemaphoreSlim gate = Gate(account);
+
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+
+            OsCredentialStoreResult os = _osStore.TryGet(
+                ArcanumCredentialIdentity.Service,
+                account);
+
+            if (os.Status == OsCredentialStoreStatus.Ok
+                && !string.IsNullOrWhiteSpace(os.Value))
+            {
+
+                return SecretStoreReadResult.Ok(os.Value);
+
+            }
+
+            if (os.Status == OsCredentialStoreStatus.Failed)
+            {
+
+                return SecretStoreReadResult.Corrupted(
+                    $"OS key storage failed while peeking at provider account {account}. "
+                    + (os.Message ?? "Restore the credential before retrying."));
+
+            }
+
+            return await ReadMirrorAsync(providerName, cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            _ = gate.Release();
+
+        }
+
+    }
+
+    /// <summary>
     /// Presence/status only: the resolved credential is discarded inside this method so callers that
     /// need a yes/no answer never take a reference to the secret.
     /// </summary>

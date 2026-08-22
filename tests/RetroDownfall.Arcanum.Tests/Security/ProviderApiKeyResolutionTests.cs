@@ -135,10 +135,12 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
 
         const string Secret = "stored-health-secret-material";
 
+        RecordingResolver resolver = new(Secret);
+
         HealthComponentDto component = await ArcanumHealthChecker.BuildProvidersComponentAsync(
             Settings(),
             new AlwaysHealthyTracker(),
-            new RecordingResolver(Secret),
+            resolver,
             CancellationToken.None);
 
         Assert.Equal(HealthStatus.Healthy, component.Status);
@@ -152,22 +154,32 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
 
         Assert.DoesNotContain(Secret, component.Detail, StringComparison.Ordinal);
 
+        Assert.Empty(resolver.ResolvedProviders);
+
+        Assert.Equal(["alpha"], resolver.PeekedProviders);
+
     }
 
     [Fact]
     public async Task Health_report_reports_no_credential_when_none_is_stored_or_referenced()
     {
 
+        RecordingResolver resolver = new(null);
+
         HealthComponentDto component = await ArcanumHealthChecker.BuildProvidersComponentAsync(
             Settings(),
             new AlwaysHealthyTracker(),
-            new RecordingResolver(null),
+            resolver,
             CancellationToken.None);
 
         Assert.Contains(
             "0/1 provider credentials",
             component.Detail,
             StringComparison.OrdinalIgnoreCase);
+
+        Assert.Empty(resolver.ResolvedProviders);
+
+        Assert.Equal(["alpha"], resolver.PeekedProviders);
 
     }
 
@@ -202,7 +214,11 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
 
         private readonly List<string> _resolved = [];
 
+        private readonly List<string> _peeked = [];
+
         public IReadOnlyList<string> ResolvedProviders => _resolved;
+
+        public IReadOnlyList<string> PeekedProviders => _peeked;
 
         public Task<string?> ResolveAsync(
             ProviderSettings provider,
@@ -210,6 +226,17 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
         {
 
             _resolved.Add(provider.Name);
+
+            return Task.FromResult(apiKey);
+
+        }
+
+        public Task<string?> PeekAsync(
+            ProviderSettings provider,
+            CancellationToken cancellationToken = default)
+        {
+
+            _peeked.Add(provider.Name);
 
             return Task.FromResult(apiKey);
 

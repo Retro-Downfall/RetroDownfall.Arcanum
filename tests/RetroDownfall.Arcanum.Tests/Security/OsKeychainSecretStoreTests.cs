@@ -224,6 +224,129 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task PeekApiKey_NotFoundOsCredential_ReturnsMirrorWithoutMigratingOrChangingFiles()
+    {
+
+        using DataProtectionSecretStore legacy = CreateDataProtectionStore();
+
+        await legacy.SaveApiKeyAsync("peek-master-key");
+
+        string[] before = SnapshotFileTree();
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using OsKeychainSecretStore store = CreateStore(os, legacy);
+
+        ISecretStore contract = store;
+
+        SecretStoreReadResult first = await contract.PeekApiKeyReadResultAsync();
+
+        SecretStoreReadResult second = await contract.PeekApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, first.Status);
+
+        Assert.Equal("peek-master-key", first.Value);
+
+        Assert.Equal(first, second);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+    }
+
+    [Fact]
+    public async Task PeekApiKey_FailedOsRead_RejectsAnOtherwiseValidMirrorWithoutMutation()
+    {
+
+        using DataProtectionSecretStore legacy = CreateDataProtectionStore();
+
+        await legacy.SaveApiKeyAsync("possibly-superseded-key");
+
+        string[] before = SnapshotFileTree();
+
+        RecordingOsCredentialStore os = new(
+            OsCredentialStoreResult.Failed("test ambiguous read"));
+
+        using OsKeychainSecretStore store = CreateStore(os, legacy);
+
+        SecretStoreReadResult result = await ((ISecretStore)store)
+            .PeekApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+    }
+
+    [Fact]
+    public async Task PeekApiKey_MissingAndCorruptMirrorsRemainPureAndFailClosed()
+    {
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using OsKeychainSecretStore store = CreateStore(os);
+
+        string[] missingBefore = SnapshotFileTree();
+
+        SecretStoreReadResult missing = await ((ISecretStore)store)
+            .PeekApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Missing, missing.Status);
+
+        Assert.Equal(missingBefore, SnapshotFileTree());
+
+        Directory.CreateDirectory(Path.GetDirectoryName(ArcanumPaths.ApiKeyStoreFile)!);
+
+        await File.WriteAllBytesAsync(ArcanumPaths.ApiKeyStoreFile, [1, 2, 3, 4]);
+
+        string[] corruptBefore = SnapshotFileTree();
+
+        SecretStoreReadResult corrupt = await ((ISecretStore)store)
+            .PeekApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, corrupt.Status);
+
+        Assert.Equal(corruptBefore, SnapshotFileTree());
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+    }
+
+    [Fact]
+    public async Task PeekApiKey_WhitespaceMirror_RemainsMissingLikeTheOrdinaryRead()
+    {
+
+        using DataProtectionSecretStore legacy = CreateDataProtectionStore();
+
+        await legacy.SaveApiKeyAsync("   ");
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using OsKeychainSecretStore store = CreateStore(os, legacy);
+
+        SecretStoreReadResult result = await ((ISecretStore)store)
+            .PeekApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Missing, result.Status);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+    }
+
+    [Fact]
     public async Task FileEncryptionSecret_ReportsCorruptWhenTheOsReadFails()
     {
 
@@ -274,6 +397,98 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
         Assert.Equal(secret, loaded.Value);
         Assert.Equal(secret, direct.Value);
+    }
+
+    [Fact]
+    public async Task PeekFileEncryptionSecret_NotFoundOsCredential_ReturnsMirrorWithoutMigration()
+    {
+
+        using DataProtectionSecretStore dataProtection = CreateDataProtectionStore();
+
+        string secret = Convert.ToBase64String(
+            System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+
+        await dataProtection.SaveFileEncryptionSecretAsync(secret);
+
+        string[] before = SnapshotFileTree();
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using OsKeychainSecretStore store = CreateStore(os, dataProtection);
+
+        ISecretStore contract = store;
+
+        SecretStoreReadResult first = await contract
+            .PeekFileEncryptionSecretReadResultAsync();
+
+        SecretStoreReadResult second = await contract
+            .PeekFileEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, first.Status);
+
+        Assert.Equal(secret, first.Value);
+
+        Assert.Equal(first, second);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+    }
+
+    [Fact]
+    public async Task PeekFileEncryptionSecret_FailedOsRead_RejectsMirrorWithoutMutation()
+    {
+
+        using DataProtectionSecretStore dataProtection = CreateDataProtectionStore();
+
+        await dataProtection.SaveFileEncryptionSecretAsync("possibly-superseded-file-key");
+
+        string[] before = SnapshotFileTree();
+
+        RecordingOsCredentialStore os = new(
+            OsCredentialStoreResult.Failed("test ambiguous read"));
+
+        using OsKeychainSecretStore store = CreateStore(os, dataProtection);
+
+        SecretStoreReadResult result = await ((ISecretStore)store)
+            .PeekFileEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+    }
+
+    [Fact]
+    public async Task PeekFileEncryptionSecret_WhitespaceMirror_RemainsMissingLikeTheOrdinaryRead()
+    {
+
+        using DataProtectionSecretStore dataProtection = CreateDataProtectionStore();
+
+        await dataProtection.SaveFileEncryptionSecretAsync("   ");
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using OsKeychainSecretStore store = CreateStore(os, dataProtection);
+
+        SecretStoreReadResult result = await ((ISecretStore)store)
+            .PeekFileEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Missing, result.Status);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
     }
 
     // The keychain write owns its own invalidation: the security.dat mirror is best-effort and its
@@ -378,6 +593,49 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
 
         global::System.Environment.SetEnvironmentVariable(name, value);
+
+    }
+
+    private string[] SnapshotFileTree() => Directory
+        .EnumerateFiles(_storeDir, "*", SearchOption.AllDirectories)
+        .Order(StringComparer.Ordinal)
+        .Select(path =>
+            Path.GetRelativePath(_storeDir, path)
+            + "|"
+            + File.GetLastWriteTimeUtc(path).Ticks
+            + "|"
+            + Convert.ToBase64String(File.ReadAllBytes(path)))
+        .ToArray();
+
+    private sealed class RecordingOsCredentialStore(OsCredentialStoreResult readResult)
+        : IOsCredentialStore
+    {
+
+        public bool IsAvailable => readResult.Status != OsCredentialStoreStatus.Unavailable;
+
+        public int SetCallCount { get; private set; }
+
+        public int DeleteCallCount { get; private set; }
+
+        public OsCredentialStoreResult TryGet(string service, string account) => readResult;
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+
+            SetCallCount++;
+
+            return OsCredentialStoreResult.Ok(secret);
+
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account)
+        {
+
+            DeleteCallCount++;
+
+            return OsCredentialStoreResult.Ok(string.Empty);
+
+        }
 
     }
 

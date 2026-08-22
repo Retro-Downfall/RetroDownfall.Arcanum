@@ -750,7 +750,8 @@ public sealed class BackupService : IBackupService
         _codec.InspectAsync(archivePath, recoveryPassphrase, cancellationToken);
 
     /// <summary>
-    /// Verifies an archive, decrypting it into this installation rather than beside the archive.
+    /// Verifies an archive, decrypting it into one owner-only OS temporary root rather than beside
+    /// the archive or inside the installation.
     /// </summary>
     /// <remarks>
     /// The operator names the archive, so its directory is theirs, not ours: a USB stick, a synced
@@ -758,17 +759,42 @@ public sealed class BackupService : IBackupService
     /// none of that may land there — nor can it, on media that cannot hold owner-only permissions,
     /// where the attempt reported a sound archive as malformed. Restore already keeps its staging
     /// local for the same reason; this gives verification, which has no destination of its own, the
-    /// same footing.
+    /// same footing. The per-run root is outside the guarded installation topology so an archive-only
+    /// verification cannot recreate that topology during reset, and identity-owned cleanup removes
+    /// the root after codec cleanup has removed its children.
     /// </remarks>
-    public Task<BackupVerifyResult> VerifyAsync(
+    public async Task<BackupVerifyResult> VerifyAsync(
         string archivePath,
         ReadOnlyMemory<char> recoveryPassphrase,
-        CancellationToken cancellationToken = default) =>
-        _codec.VerifyAsync(
-            archivePath,
-            recoveryPassphrase,
-            _paths.BackupsDirectory,
-            cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+
+        string scratchPath = Path.Combine(
+            Path.GetFullPath(Path.GetTempPath()),
+            "arcanum-backup-verify-" + Guid.NewGuid().ToString("N"));
+
+        OwnedTemporaryDirectory scratch = OwnedTemporaryDirectory.Create(scratchPath);
+
+        try
+        {
+
+            return await _codec
+                .VerifyAsync(
+                    archivePath,
+                    recoveryPassphrase,
+                    scratch.Path,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            _ = scratch.TryDelete();
+
+        }
+
+    }
 
     public async Task<IReadOnlyList<BackupListItem>> ListAsync(
         string? directory,

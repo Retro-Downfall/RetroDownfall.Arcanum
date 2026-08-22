@@ -19,7 +19,10 @@ public class TrialSuiteStoreTests
         try
         {
 
-            TrialSuiteStore store = new(path, maxRunsPerSuite: 2);
+            TrialSuiteStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance,
+                maxRunsPerSuite: 2);
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
 

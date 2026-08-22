@@ -167,9 +167,9 @@ public sealed class WorkspaceCommandTests
 
         Assert.Equal(0, result.ExitCode);
 
-        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(3, handler.Requests.Count);
 
-        Assert.Equal("/api/workspaces/ws-demo", handler.Requests[1].RequestUri!.AbsolutePath);
+        Assert.Equal("/api/workspaces/ws-demo", handler.Requests[^1].RequestUri!.AbsolutePath);
 
     }
 

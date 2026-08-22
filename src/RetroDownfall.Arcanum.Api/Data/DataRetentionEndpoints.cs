@@ -10,6 +10,8 @@ using Microsoft.AspNetCore.Http;
 
 using Microsoft.AspNetCore.Routing;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Api.Security;
@@ -23,6 +25,14 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 namespace RetroDownfall.Arcanum.Api.Data;
 
@@ -413,6 +423,37 @@ internal static class DataRetentionEndpoints
 
                 }
 
+                if (confirmedRequest.InstallationResetHandoff is { } handoff)
+                {
+
+                    Result validated = ValidateInstallationResetHandoff(
+                        confirmedRequest,
+                        handoff,
+                        httpContext.RequestServices
+                            .GetService<InstallationResetApiAdmission>()?
+                            .ActiveRecovery);
+
+                    if (validated.IsFailure)
+                    {
+
+                        return Failure(
+                            httpContext,
+                            validated.Error,
+                            ResolveStatusCode(validated.Error.Code),
+                            ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+                    }
+
+                    return await ApplyInstallationResetHandoffAsync(
+                            service,
+                            confirmedRequest,
+                            handoff,
+                            httpContext,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
+
                 return await Apply(
                         service,
                         new DataRetentionApplyRequest(
@@ -426,9 +467,184 @@ internal static class DataRetentionEndpoints
 
             })
             .WithName("FactoryResetDataRetention")
+            .WithMetadata(InstallationResetRecoveryApiRouteMetadata.FactoryReset)
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
 
         return apiGroup;
+
+    }
+
+    private static async Task<IResult> ApplyInstallationResetHandoffAsync(
+        IDataRetentionService service,
+        FactoryResetRequest request,
+        InstallationResetHostHandoff handoff,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+
+        IInstallationResetMaintenanceLockAccessor accessor = httpContext.RequestServices
+            .GetRequiredService<IInstallationResetMaintenanceLockAccessor>();
+
+        Result<ArcanumMaintenanceLock> borrowed = accessor.BorrowHeldLock(
+            ArcanumPaths.GrimoireDirectory);
+
+        if (borrowed.IsFailure)
+        {
+
+            return Failure(
+                httpContext,
+                borrowed.Error,
+                ResolveStatusCode(borrowed.Error.Code),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+        }
+
+        IInstallationResetHostHandoffCoordinator coordinator = httpContext.RequestServices
+            .GetRequiredService<IInstallationResetHostHandoffCoordinator>();
+
+        Result begun = await coordinator
+            .BeginOrRecoverAsync(handoff, borrowed.Value, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (begun.IsFailure)
+        {
+
+            return Failure(
+                httpContext,
+                begun.Error,
+                ResolveStatusCode(begun.Error.Code),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+        }
+
+        DataRetentionApplyRequest applyRequest = new(
+            new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+            request.ExpectedPlanId,
+            request.RequestedOperationId);
+
+        Result<DataRetentionApplyResult> applied = await service
+            .ApplyAsync(applyRequest, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (applied.IsFailure)
+        {
+
+            if (string.Equals(
+                    applied.Error.Code,
+                    ErrorCodes.Data.PlanChanged,
+                    StringComparison.Ordinal))
+            {
+
+                Result retired = await coordinator
+                    .RetirePreEffectAsync(
+                        handoff,
+                        borrowed.Value,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                if (retired.IsFailure)
+                {
+
+                    return Failure(
+                        httpContext,
+                        retired.Error,
+                        ResolveStatusCode(retired.Error.Code),
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+                }
+
+            }
+
+            return Failure(
+                httpContext,
+                applied.Error,
+                ResolveStatusCode(applied.Error.Code),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+        }
+
+        Result recorded = await coordinator
+            .RecordOnlineCompletionAsync(
+                handoff,
+                applied.Value,
+                borrowed.Value,
+                CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return recorded.IsSuccess
+            ? Success(
+                httpContext,
+                applied.Value,
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult)
+            : Failure(
+                httpContext,
+                recorded.Error,
+                ResolveStatusCode(recorded.Error.Code),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+    }
+
+    private static Result ValidateInstallationResetHandoff(
+        FactoryResetRequest request,
+        InstallationResetHostHandoff handoff,
+        InstallationResetRecoveryApiIdentity? activeRecovery)
+    {
+
+        InstallationResetAcceptedBinding? binding = handoff.AcceptedBinding;
+
+        bool scopeValid = handoff.Scope switch
+        {
+            InstallationResetScope.Global => handoff.Workspace is null,
+            InstallationResetScope.All => handoff.Workspace is { } workspace
+                && workspace.CampaignId != Guid.Empty
+                && !string.IsNullOrWhiteSpace(workspace.WorkspaceRoot),
+            _ => false,
+        };
+
+        bool bindingValid = binding is not null
+            && !string.IsNullOrWhiteSpace(binding.BindingId)
+            && binding.SelectedRoots is not null
+            && binding.ExcludedRoots is not null
+            && binding.PreservedBackups is not null
+            && binding.CredentialAccounts is not null
+            && binding.DataPlanIds is { Length: 1 }
+            && !string.IsNullOrWhiteSpace(binding.DataPlanIds[0])
+            && binding.SelectedRoots.All(static value => !string.IsNullOrWhiteSpace(value))
+            && binding.ExcludedRoots.All(static value => !string.IsNullOrWhiteSpace(value))
+            && binding.CredentialAccounts.All(static value => !string.IsNullOrWhiteSpace(value))
+            && binding.PreservedBackups.All(static value =>
+                value is not null
+                && !string.IsNullOrWhiteSpace(value.CanonicalPath)
+                && value.Identity is not null
+                && !string.IsNullOrWhiteSpace(value.Identity.Value)
+                && value.Identity.Length >= 0
+                && value.Identity.HardLinkCount > 0);
+
+        bool requestValid = request.RequestedOperationId is { } requestedOperationId
+            && requestedOperationId != Guid.Empty
+            && requestedOperationId == handoff.RequestedOperationId
+            && !string.IsNullOrWhiteSpace(request.ExpectedPlanId)
+            && !string.IsNullOrWhiteSpace(handoff.InstallationPlanId)
+            && bindingValid
+            && string.Equals(
+                request.ExpectedPlanId,
+                binding!.DataPlanIds[0],
+                StringComparison.Ordinal)
+            && scopeValid;
+
+        bool recoveryValid = activeRecovery is null
+            || activeRecovery.Scope == handoff.Scope
+                && activeRecovery.OperationId == handoff.RequestedOperationId
+                && string.Equals(
+                    activeRecovery.InstallationPlanId,
+                    handoff.InstallationPlanId,
+                    StringComparison.Ordinal);
+
+        return requestValid && recoveryValid
+            ? Result.Success()
+            : Result.Failure(new Error(
+                ErrorCodes.Data.InvalidRequest,
+                "The installation reset host handoff does not match the confirmed reset binding."));
 
     }
 

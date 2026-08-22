@@ -10,7 +10,9 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -45,6 +47,71 @@ public sealed class CommandCenterReasoningTests
         Assert.DoesNotContain("think", entries[2].Text, StringComparison.Ordinal);
         Assert.False(state.ThinkingActive);
         Assert.All(entries, static entry => Assert.False(entry.Streaming));
+    }
+
+    [Theory]
+    [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
+    [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
+    public async Task Session_bound_persistence_refusal_warns_without_failing_the_remote_turn(
+        byte dispositionValue)
+    {
+
+        Guid prior = Guid.Parse(
+            "22222222-3333-4444-5555-666666666666");
+
+        Guid remote = Guid.Parse(
+            "23232323-3434-4545-5656-676767676767");
+
+        NoopLastSessionStore store = new(
+            (ArcanumClientMutationDisposition)dispositionValue);
+
+        CommandCenterChatRunner runner = CreateRunner(
+            new StaticNdjsonHandler(
+                SerializeFrames(
+                    new IntelligenceEvent(
+                        IntelligenceEventType.SessionBound,
+                        "Session bound",
+                        remote.ToString("D")),
+                    new IntelligenceEvent(
+                        IntelligenceEventType.Token,
+                        string.Empty,
+                        "successful answer"),
+                    new IntelligenceEvent(
+                        IntelligenceEventType.Result,
+                        "successful answer",
+                        "successful answer"))),
+            store);
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(prior, "Prior", "Active", 1);
+
+        Channel<CommandCenterUiUpdate> updates =
+            Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync(
+            "question",
+            state,
+            updates.Writer,
+            CancellationToken.None);
+
+        Assert.Equal(prior, state.SessionId);
+
+        Assert.Contains(
+            "successful answer",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Warning:",
+            state.Log.RenderPlainText(),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "Turn failed",
+            state.Log.RenderPlainText(),
+            StringComparison.OrdinalIgnoreCase);
+
     }
 
     [Fact]
@@ -326,12 +393,14 @@ public sealed class CommandCenterReasoningTests
                 JsonSerializer.Serialize(frame, ArcanumJsonContext.Default.IntelligenceEvent)))
         + "\n";
 
-    private static CommandCenterChatRunner CreateRunner(HttpMessageHandler handler)
+    private static CommandCenterChatRunner CreateRunner(
+        HttpMessageHandler handler,
+        ILastSessionStore? lastSessionStore = null)
     {
         ArcanumApiClient client = new(new FakeHttpClientFactory(handler), new FakeSecretStore());
         SessionWorkspaceService workspace = new(
             client,
-            new NoopLastSessionStore(),
+            lastSessionStore ?? new NoopLastSessionStore(),
             NullLogger<SessionWorkspaceService>.Instance);
         CommandCenterHardModalArbiter arbiter = new();
         return new CommandCenterChatRunner(
@@ -366,12 +435,44 @@ public sealed class CommandCenterReasoningTests
         public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
     }
 
-    private sealed class NoopLastSessionStore : ILastSessionStore
+    private sealed class NoopLastSessionStore(
+        ArcanumClientMutationDisposition? refusalDisposition = null) :
+        ILastSessionStore
     {
         public Guid? GetLastSessionId() => null;
 
-        public void SaveSessionId(Guid id)
+        public Task<ArcanumClientMutationResult<CliContextDocument>>
+            SaveSessionIdAsync(
+                Guid id,
+                Func<Guid, CancellationToken, Task<Result<bool>>> revalidateAsync,
+                CancellationToken cancellationToken)
         {
+
+            _ = revalidateAsync;
+
+            if (refusalDisposition is { } disposition)
+            {
+
+                Error error = disposition is
+                    ArcanumClientMutationDisposition.Blocked
+                    ? new Error(
+                        ErrorCodes.Data.ResetInProgress,
+                        "An installation maintenance operation is active.")
+                    : new Error(
+                        ErrorCodes.Data.ControlPathUnavailable,
+                        "Client mutation admission could not be validated safely.");
+
+                return Task.FromResult(
+                    disposition is ArcanumClientMutationDisposition.Blocked
+                        ? ArcanumClientMutationResult<CliContextDocument>.Blocked(error)
+                        : ArcanumClientMutationResult<CliContextDocument>.Unsafe(error));
+
+            }
+
+            return Task.FromResult(
+                ArcanumClientMutationResult<CliContextDocument>.Completed(
+                    CliContextDocument.Empty with { SessionId = id }));
+
         }
     }
 

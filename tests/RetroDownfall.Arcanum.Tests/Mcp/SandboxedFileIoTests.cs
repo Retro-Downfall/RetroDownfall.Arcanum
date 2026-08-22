@@ -308,6 +308,26 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_does_not_treat_a_short_destination_as_a_preamble()
+    {
+
+        string target = Path.Combine(_workspace.Root, "short.txt");
+
+        await File.WriteAllBytesAsync(target, [0xEF]);
+
+        (bool success, _) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            target,
+            "replacement",
+            CancellationToken.None);
+
+        Assert.True(success);
+
+        Assert.Equal("replacement"u8.ToArray(), await File.ReadAllBytesAsync(target));
+
+    }
+
     [SkippableFact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_existing_hard_link()
     {

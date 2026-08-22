@@ -871,13 +871,16 @@ public sealed class FileBatchCommandTests
     {
 
         public Task<string?> GetApiKeyAsync() =>
-            Task.FromResult<string?>(apiKey);
+            throw new InvalidOperationException("File and batch clients must use Peek.");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("File and batch clients must use Peek.");
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
             Task.FromResult(SecretStoreReadResult.Ok(apiKey));
 
         public Task SaveApiKeyAsync(string key) =>
-            Task.CompletedTask;
+            throw new InvalidOperationException("File and batch clients must not persist credentials.");
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() =>
             Task.FromResult<string?>(null);

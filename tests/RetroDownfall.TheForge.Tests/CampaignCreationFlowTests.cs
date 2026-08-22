@@ -241,6 +241,7 @@ public class CampaignCreationFlowTests
             new NullConfirmationForCampaignCreation(),
             new NullFileDialogForCampaignCreation(),
             new FakeWhispersService(),
+            ImmediateTheForgeLocalMutationRunner.Instance,
             static _ => Task.CompletedTask);
 
     }

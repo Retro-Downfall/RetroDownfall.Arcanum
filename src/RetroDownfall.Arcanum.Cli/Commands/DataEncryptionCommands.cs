@@ -5,19 +5,26 @@ using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
-public sealed class DataEncryptionCommands(
-    IGrimoireCliInitialization initialization,
-    IServiceScopeFactory scopeFactory)
+public sealed class DataEncryptionCommands(IGrimoireCliInitialization initialization)
 {
     public async Task<int> Status(CancellationToken cancellationToken)
     {
-        await initialization.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-        IBlobEncryptionLifecycleService lifecycle =
-            scope.ServiceProvider.GetRequiredService<IBlobEncryptionLifecycleService>();
-        BlobEncryptionStatus status = await lifecycle
-            .GetStatusAsync(cancellationToken)
+        BlobEncryptionStatus status = await initialization
+            .RunExclusiveWithBootstrapAsync(
+                async (services, token) =>
+                {
+
+                    IBlobEncryptionLifecycleService lifecycle = services
+                        .GetRequiredService<IBlobEncryptionLifecycleService>();
+
+                    return await lifecycle
+                        .GetStatusAsync(token)
+                        .ConfigureAwait(false);
+
+                },
+                cancellationToken)
             .ConfigureAwait(false);
+
         Table table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("State");
         table.AddColumn("Files");
@@ -71,12 +78,20 @@ public sealed class DataEncryptionCommands(
         Func<IBlobEncryptionLifecycleService, CancellationToken, Task<BlobEncryptionOperationResult>> run,
         CancellationToken cancellationToken)
     {
-        await initialization.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-        IBlobEncryptionLifecycleService lifecycle =
-            scope.ServiceProvider.GetRequiredService<IBlobEncryptionLifecycleService>();
-        BlobEncryptionOperationResult result = await run(lifecycle, cancellationToken)
+        BlobEncryptionOperationResult result = await initialization
+            .RunExclusiveWithBootstrapAsync(
+                async (services, token) =>
+                {
+
+                    IBlobEncryptionLifecycleService lifecycle = services
+                        .GetRequiredService<IBlobEncryptionLifecycleService>();
+
+                    return await run(lifecycle, token).ConfigureAwait(false);
+
+                },
+                cancellationToken)
             .ConfigureAwait(false);
+
         AnsiConsole.MarkupLine(
             $"Processed [cyan]{result.ProcessedFiles}[/] files / [cyan]{result.ProcessedBytes}[/] bytes; "
             + $"remaining [yellow]{result.RemainingFiles}[/] files / [yellow]{result.RemainingBytes}[/] bytes; "

@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 
@@ -269,10 +271,10 @@ public sealed class RemoveStalePidRepair : IDoctorRepair
 
 /// <summary>
 /// Whether another process holds the exclusive installation-maintenance lock a restore takes.
-/// Strictly read-only, unlike <c>ArcanumMaintenanceLock.IsHeld</c>, which acquires the lock to
-/// answer — creating the file as a side effect. A diagnostic must not create the artifact it reports
-/// on, so this opens the existing file without <c>FileMode.OpenOrCreate</c> and treats a sharing
-/// violation as "held".
+/// Strictly read-only, unlike <c>ArcanumMaintenanceLock.CannotAcquireSafely</c>, which attempts an
+/// acquisition and therefore creates the lock file as a side effect when the topology is admissible.
+/// A diagnostic must not create the artifact it reports on, so this opens the existing file without
+/// <c>FileMode.OpenOrCreate</c> and treats a sharing violation as "held".
 /// </summary>
 public sealed class MaintenanceLockCheck : IDoctorCheck
 {
@@ -288,62 +290,136 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
     public bool RequiresNetwork => false;
 
     public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
+        => Task.FromResult(Inspect(ArcanumPaths.GrimoireDirectory));
+
+    internal static DoctorFinding Inspect(string guardedRoot)
     {
 
-        string path = ArcanumMaintenanceLock.LockPathFor(ArcanumPaths.GrimoireDirectory);
+        string path = ArcanumMaintenanceLock.LockPathFor(guardedRoot);
 
-        if (!File.Exists(path))
+        string parent = Path.GetDirectoryName(path)!;
+
+        Result<NoFollowPathTopologyKind> parentTopology =
+            NoFollowPathTopology.Classify(parent);
+
+        if (parentTopology.IsSuccess
+            && parentTopology.Value is NoFollowPathTopologyKind.Absent)
         {
 
-            return Task.FromResult(new DoctorFinding(
+            return new DoctorFinding(
                 DoctorOutcome.Healthy,
-                "No maintenance lock file is present."));
+                "No maintenance lock file is present.");
+
+        }
+
+        if (parentTopology.IsFailure
+            || parentTopology.Value is not NoFollowPathTopologyKind.Directory
+            || !SecureFilePermissions.HasOwnerOnlyPosture(parent, isDirectory: true))
+        {
+
+            return UnsafeFinding();
+
+        }
+
+        Result<NoFollowPathTopologyKind> leafTopology =
+            NoFollowPathTopology.Classify(path);
+
+        if (leafTopology.IsSuccess
+            && leafTopology.Value is NoFollowPathTopologyKind.Absent)
+        {
+
+            return new DoctorFinding(
+                DoctorOutcome.Healthy,
+                "No maintenance lock file is present.");
+
+        }
+
+        if (leafTopology.IsFailure
+            || leafTopology.Value is not NoFollowPathTopologyKind.RegularFile
+            || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                path,
+                out FileHandleMetadata named)
+            || named.Kind is not FileSystemObjectKind.RegularFile
+            || named.HardLinkCount != 1
+            || !SecureFilePermissions.HasOwnerOnlyPosture(path, isDirectory: false))
+        {
+
+            return UnsafeFinding();
 
         }
 
         try
         {
 
-            using FileStream _ = new(
+            using FileStream stream = new(
                 path,
                 new FileStreamOptions
                 {
 
                     Mode = FileMode.Open,
 
-                    Access = FileAccess.Read,
+                    Access = FileAccess.ReadWrite,
 
                     Share = FileShare.None,
 
                 });
 
+            if (!FileHandleIdentityInterop.TryGetHandleMetadata(
+                    stream.SafeFileHandle,
+                    out FileHandleMetadata opened)
+                || opened.Kind is not FileSystemObjectKind.RegularFile
+                || opened.HardLinkCount != 1
+                || !FileHandleIdentity.IdentitiesMatch(
+                    named.Identity,
+                    opened.Identity)
+                || (!OperatingSystem.IsWindows()
+                    && (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                            path,
+                            out FileHandleMetadata namedAfterOpen)
+                        || namedAfterOpen.Kind is not FileSystemObjectKind.RegularFile
+                        || namedAfterOpen.HardLinkCount != 1
+                        || !FileHandleIdentity.IdentitiesMatch(
+                            opened.Identity,
+                            namedAfterOpen.Identity))))
+            {
+
+                return UnsafeFinding();
+
+            }
+
             // The file exists but nothing holds it. That is not a fault: the lock is advisory and a
             // leftover file never wedges recovery, by design.
-            return Task.FromResult(new DoctorFinding(
+            return new DoctorFinding(
                 DoctorOutcome.Healthy,
-                "A maintenance lock file exists but no process holds it; it will be reused as-is."));
+                "A maintenance lock file exists but no process holds it; it will be reused as-is.");
 
         }
-        catch (IOException)
+        catch (IOException exception)
         {
 
-            return Task.FromResult(new DoctorFinding(
-                DoctorOutcome.Degraded,
-                "Another process holds the installation maintenance lock. A running host or an "
-                + "in-flight 'arcanum backup restore' will hold it; wait for it to finish before "
-                + "changing installation state."));
+            return ArcanumMaintenanceLock.IsVerifiedSharingViolation(exception)
+                ? new DoctorFinding(
+                    DoctorOutcome.Degraded,
+                    "Another process holds the installation maintenance lock. A running host, an "
+                    + "in-flight 'arcanum backup restore', or an installation reset will hold it; "
+                    + "wait for it to finish before "
+                    + "changing installation state.")
+                : UnsafeFinding();
 
         }
         catch (UnauthorizedAccessException)
         {
 
-            return Task.FromResult(new DoctorFinding(
-                DoctorOutcome.Degraded,
-                "The maintenance lock file could not be opened. Check the permissions on the Arcanum directory."));
+            return UnsafeFinding();
 
         }
 
     }
+
+    private static DoctorFinding UnsafeFinding() =>
+        new(
+            DoctorOutcome.Degraded,
+            "The maintenance lock topology, identity, or owner-only permissions could not be inspected safely. Check the Arcanum installation path and its permissions.");
 
 }
 

@@ -2,7 +2,13 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
+using RetroDownfall.Arcanum.Core.Desktop;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -134,6 +140,8 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
         int continuationCalls = 0;
 
+        FakeStartupProbe probe = new(active: null);
+
         int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
             ["data", "factory-reset", "--global", "--dry-run"],
             () =>
@@ -143,24 +151,38 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
                 return Task.FromResult(17);
 
-            });
+            },
+            probe);
 
         Assert.Equal(17, exitCode);
 
         Assert.Equal(1, continuationCalls);
 
+        Assert.Equal(1, probe.ActiveReadCount);
+
     }
 
+    public static TheoryData<string[]> NormalInvocationShapes =>
+        new()
+        {
+            { Array.Empty<string>() },
+            { ["--arcanum-deep-link", "eyJ0eXBlIjoic2Vzc2lvbiJ9"] },
+            { ["center"] },
+            { ["key", "status"] },
+            { ["doctor"] },
+            { ["config", "validate"] },
+            { ["preset", "list"] },
+            { ["backup", "list"] },
+            { ["data", "encryption", "status"] },
+            { ["session", "list"] },
+            { ["run", "prompt"] },
+            { ["run", "data", "factory-reset", "--global", "--apply"] },
+        };
+
     [Theory]
-
-    [InlineData("run", "prompt")]
-
-    [InlineData("run", "data", "factory-reset", "--global", "--apply")]
-
-    [InlineData("serve")]
-
-    public async Task Program_blocks_run_and_serve_before_configuration_when_reset_is_active(
-        params string[] args)
+    [MemberData(nameof(NormalInvocationShapes))]
+    public async Task Program_blocks_every_normal_invocation_before_configuration_when_reset_is_active(
+        string[] args)
     {
 
         FakeStartupProbe probe = new(
@@ -197,7 +219,7 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     [InlineData(InstallationResetScope.All)]
 
-    public async Task Program_admits_serve_for_proof_free_prepared_host_handoff(
+    public async Task Program_delegates_serve_to_the_lock_first_host_for_prepared_handoffs(
         InstallationResetScope scope)
     {
 
@@ -221,7 +243,7 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
         Assert.Equal(1, continuationCalls);
 
-        Assert.Equal(1, probe.ActiveReadCount);
+        Assert.Equal(0, probe.ActiveReadCount);
 
     }
 
@@ -253,7 +275,7 @@ public sealed class InstallationFactoryResetArgvPreflightTests
     }
 
     [Fact]
-    public async Task Program_blocks_serve_for_legacy_proof_complete_later_and_workspace_states()
+    public async Task Program_delegates_every_serve_state_to_the_lock_first_host()
     {
 
         ActiveInstallationReset recoverable =
@@ -302,16 +324,123 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
                     continuationCalls++;
 
-                    return Task.FromResult(0);
+                    return Task.FromResult(37);
 
                 },
                 probe);
 
-            Assert.Equal((int)CliExitCode.GenericError, exitCode);
+            Assert.Equal(37, exitCode);
 
-            Assert.Equal(0, continuationCalls);
+            Assert.Equal(1, continuationCalls);
+
+            Assert.Equal(0, probe.ActiveReadCount);
 
         }
+
+    }
+
+    [Fact]
+    public async Task Program_serve_reaches_locked_recovery_when_the_public_probe_would_reject_one_ahead()
+    {
+
+        FakeStartupProbe probe = new(
+            new Error(
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                "Injected one-envelope-ahead public-probe refusal."));
+
+        int continuationCalls = 0;
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            ["serve"],
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(41);
+
+            },
+            probe);
+
+        Assert.Equal(41, exitCode);
+
+        Assert.Equal(1, continuationCalls);
+
+        Assert.Equal(0, probe.ActiveReadCount);
+
+    }
+
+    [Theory]
+    [InlineData("run", "prompt")]
+    [InlineData("data", "factory-reset", "--global", "--apply")]
+    public async Task Program_keeps_the_exact_public_probe_for_run_and_reset_resume(
+        params string[] args)
+    {
+
+        FakeStartupProbe probe = new(
+            new Error(
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                "Injected exact public-probe refusal."));
+
+        int continuationCalls = 0;
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            args,
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(0);
+
+            },
+            probe);
+
+        Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+        Assert.Equal(0, continuationCalls);
+
+        Assert.Equal(1, probe.ActiveReadCount);
+
+    }
+
+    [Fact]
+    public async Task Program_run_continues_on_a_genuinely_fresh_absent_profile_parent_without_creating_it()
+    {
+
+        string retainedParent = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            $"missing-profile-{Guid.NewGuid():N}");
+
+        string guardedRoot = Path.Combine(retainedParent, "arcanum");
+
+        InstallationStartupProbe probe = new(
+            guardedRoot,
+            Path.Combine(guardedRoot, "arcanum.json"),
+            Path.Combine(guardedRoot, "arcanum.db"),
+            Path.Combine(guardedRoot, "security.dat"),
+            new InMemoryOsCredentialStore());
+
+        int continuationCalls = 0;
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            ["run", "prompt"],
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(43);
+
+            },
+            probe);
+
+        Assert.Equal(43, exitCode);
+
+        Assert.Equal(1, continuationCalls);
+
+        Assert.False(Directory.Exists(retainedParent));
 
     }
 
@@ -343,6 +472,82 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(23, exitCode);
 
         Assert.Equal(0, probe.ActiveReadCount);
+
+    }
+
+    [Fact]
+
+    public async Task Program_blocks_a_private_deep_link_with_trailing_help_during_an_active_reset()
+    {
+
+        ApplicationDeepLink deepLink = new(
+            ApplicationDeepLink.CurrentSchemaVersion,
+            DesktopApplication.CommandCenter,
+            ApplicationResourceKind.None,
+            InitialView: ApplicationInitialView.CommandCenter);
+
+        string payload = ApplicationDeepLinkCodec.Encode(deepLink);
+
+        FakeStartupProbe probe = new(
+            new ActiveInstallationReset(
+                InstallationResetScope.Global,
+                WorkspaceRoot: null,
+                PlanId: "active-plan"));
+
+        int continuationCalls = 0;
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            [ApplicationDeepLinkCodec.ArgumentName, payload, "--help"],
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(0);
+
+            },
+            probe);
+
+        Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+        Assert.Equal(0, continuationCalls);
+
+        Assert.Equal(1, probe.ActiveReadCount);
+
+    }
+
+    [Theory]
+    [InlineData("prompt", "create", "sample", "--version", "1")]
+    [InlineData("spell", "version", "activate", "sample", "--version", "2")]
+    public async Task Program_does_not_treat_a_subcommand_version_option_as_root_version(
+        params string[] args)
+    {
+
+        FakeStartupProbe probe = new(
+            new ActiveInstallationReset(
+                InstallationResetScope.Global,
+                WorkspaceRoot: null,
+                PlanId: "active-plan"));
+
+        int continuationCalls = 0;
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            args,
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(0);
+
+            },
+            probe);
+
+        Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+        Assert.Equal(0, continuationCalls);
+
+        Assert.Equal(1, probe.ActiveReadCount);
 
     }
 
@@ -383,6 +588,8 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
         Assert.Equal(expectedAdmission ? 1 : 0, continuationCalls);
 
+        Assert.Equal(1, probe.ActiveReadCount);
+
     }
 
     private static string[] Split(string commandLine) =>
@@ -401,9 +608,24 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             DataHandoff: InstallationResetDataHandoff.HostFactoryErasure,
             OnlineDataCompletionDurable: false);
 
-    private sealed class FakeStartupProbe(
-        ActiveInstallationReset? active) : IInstallationStartupProbe
+    private sealed class FakeStartupProbe : IInstallationStartupProbe
     {
+
+        private readonly Result<ActiveInstallationReset?> _active;
+
+        public FakeStartupProbe(ActiveInstallationReset? active)
+        {
+
+            _active = Result<ActiveInstallationReset?>.Success(active);
+
+        }
+
+        public FakeStartupProbe(Error error)
+        {
+
+            _active = Result<ActiveInstallationReset?>.Failure(error);
+
+        }
 
         public int ActiveReadCount { get; private set; }
 
@@ -413,8 +635,7 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
             ActiveReadCount++;
 
-            return Task.FromResult(
-                Result<ActiveInstallationReset?>.Success(active));
+            return Task.FromResult(_active);
 
         }
 

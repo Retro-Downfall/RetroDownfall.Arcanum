@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
+using RetroDownfall.TheForge.Core.IO;
 using RetroDownfall.TheForge.Core.Models.Trials;
 using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.TheForge.Core.Services;
@@ -20,6 +22,8 @@ public sealed partial class ProvingGroundsViewModel
     private readonly ITrialSuiteStore _suiteStore;
 
     private readonly IArtifactFileDialogService _fileDialog;
+
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
 
     private TrialSuiteStoreDocument _suiteDocument;
 
@@ -154,7 +158,12 @@ public sealed partial class ProvingGroundsViewModel
 
         suites.Add(suite);
 
-        await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true);
+        if (!await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         SelectedSuite = Suites.FirstOrDefault(s => s.Id == suite.Id);
 
@@ -192,7 +201,12 @@ public sealed partial class ProvingGroundsViewModel
 
         List<TrialSuiteRecord> suites = _suiteDocument.Suites.Where(s => s.Id != id).ToList();
 
-        await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true);
+        if (!await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         SelectedSuite = null;
 
@@ -240,7 +254,12 @@ public sealed partial class ProvingGroundsViewModel
 
         List<TrialSuiteRecord> suites = _suiteDocument.Suites.Select(s => s.Id == updated.Id ? updated : s).ToList();
 
-        await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true);
+        if (!await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         SelectedSuite = Suites.FirstOrDefault(s => s.Id == updated.Id);
 
@@ -310,7 +329,12 @@ public sealed partial class ProvingGroundsViewModel
 
         List<TrialSuiteRecord> suites = _suiteDocument.Suites.Select(s => s.Id == updated.Id ? updated : s).ToList();
 
-        await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true);
+        if (!await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         SelectedSuite = Suites.FirstOrDefault(s => s.Id == updated.Id);
 
@@ -345,8 +369,19 @@ public sealed partial class ProvingGroundsViewModel
         try
         {
 
-            writeError = await ArtifactImportExportHelper
-                .WriteJsonAsync(path, SelectedSuite, TheForgeTrialSuitesJsonContext.Default.TrialSuiteRecord, cancellationToken)
+            writeError = null;
+
+            await _mutationRunner
+                .RunAsync(
+                    path,
+                    admittedCancellationToken => ArtifactImportExportHelper
+                        .WriteJsonAlreadyAdmittedAsync(
+                            path,
+                            SelectedSuite
+                                ?? throw new TheForgeStoreChangedException(_suiteStore.StorePath),
+                            TheForgeTrialSuitesJsonContext.Default.TrialSuiteRecord,
+                            admittedCancellationToken),
+                    cancellationToken)
                 .ConfigureAwait(true);
 
         }
@@ -356,6 +391,12 @@ public sealed partial class ProvingGroundsViewModel
             SuiteStatusText = "Suite export cancelled.";
 
             return;
+
+        }
+        catch (Exception ex)
+        {
+
+            writeError = ex.Message;
 
         }
 
@@ -418,7 +459,12 @@ public sealed partial class ProvingGroundsViewModel
 
         suites.Add(suite);
 
-        await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true);
+        if (!await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true))
+        {
+
+            return;
+
+        }
 
         SelectedSuite = Suites.FirstOrDefault(s => s.Id == suite.Id);
 
@@ -459,62 +505,137 @@ public sealed partial class ProvingGroundsViewModel
 
         Stopwatch suiteWatch = Stopwatch.StartNew();
 
+        Guid[] requestedItemIds = items.Select(static item => item.Id).ToArray();
+
+        TrialSuiteRunRecord? completedRun = null;
+
+        bool suiteDeleted = false;
+
         try
         {
 
-            foreach (TrialSuiteItemRecord item in items)
-            {
+            _suiteDocument = await _suiteStore
+                .UpdatePreparedAsync(
+                    async (document, admittedCancellationToken) =>
+                    {
 
-                runToken.ThrowIfCancellationRequested();
+                        TrialSuiteRecord current = document.Suites.FirstOrDefault(s => s.Id == suite.Id)
+                            ?? throw new TheForgeStoreChangedException(_suiteStore.StorePath);
 
-                Stopwatch itemWatch = Stopwatch.StartNew();
+                        List<TrialSuiteItemRecord> currentItems = [];
 
-                DataSourceResult<TrialResult> outcome = await _dataSource.RunAsync(item.Trial, runToken).ConfigureAwait(true);
+                        foreach (Guid itemId in requestedItemIds)
+                        {
 
-                itemWatch.Stop();
+                            TrialSuiteItemRecord item = current.Trials.FirstOrDefault(t => t.Id == itemId)
+                                ?? throw new TheForgeStoreChangedException(_suiteStore.StorePath);
 
-                if (!outcome.Success || outcome.Data is null)
-                {
+                            currentItems.Add(item);
 
-                    results.Add(new TrialSuiteRunResultRecord(
-                        item.Id,
-                        false,
-                        string.Empty,
-                        [],
-                        null,
-                        null,
-                        null,
-                        itemWatch.ElapsedMilliseconds,
-                        outcome.ErrorMessage ?? "Trial run failed."));
+                        }
 
-                    continue;
+                        foreach (TrialSuiteItemRecord item in currentItems)
+                        {
 
-                }
+                            admittedCancellationToken.ThrowIfCancellationRequested();
 
-                TrialResult trialResult = outcome.Data;
+                            Stopwatch itemWatch = Stopwatch.StartNew();
 
-                results.Add(new TrialSuiteRunResultRecord(
-                    item.Id,
-                    trialResult.Passed,
-                    trialResult.Output,
-                    trialResult.Verdicts,
-                    trialResult.Usage?.PromptTokens,
-                    trialResult.Usage?.CompletionTokens,
-                    trialResult.Usage?.TotalTokens,
-                    itemWatch.ElapsedMilliseconds,
-                    null));
+                            DataSourceResult<TrialResult> outcome = await _dataSource
+                                .RunAsync(item.Trial, admittedCancellationToken)
+                                .ConfigureAwait(true);
 
-                LastResult = trialResult;
+                            itemWatch.Stop();
 
-            }
+                            if (!outcome.Success || outcome.Data is null)
+                            {
 
-            suiteWatch.Stop();
+                                results.Add(new TrialSuiteRunResultRecord(
+                                    item.Id,
+                                    false,
+                                    string.Empty,
+                                    [],
+                                    null,
+                                    null,
+                                    null,
+                                    itemWatch.ElapsedMilliseconds,
+                                    outcome.ErrorMessage ?? "Trial run failed."));
 
-            // Re-read the suite the run started from: the operator can keep authoring while a run is
-            // in flight, so anything captured before the awaits above is a stale snapshot.
-            TrialSuiteRecord? current = _suiteDocument.Suites.FirstOrDefault(s => s.Id == suite.Id);
+                                continue;
 
-            if (current is null)
+                            }
+
+                            TrialResult trialResult = outcome.Data;
+
+                            results.Add(new TrialSuiteRunResultRecord(
+                                item.Id,
+                                trialResult.Passed,
+                                trialResult.Output,
+                                trialResult.Verdicts,
+                                trialResult.Usage?.PromptTokens,
+                                trialResult.Usage?.CompletionTokens,
+                                trialResult.Usage?.TotalTokens,
+                                itemWatch.ElapsedMilliseconds,
+                                null));
+
+                            LastResult = trialResult;
+
+                        }
+
+                        suiteWatch.Stop();
+
+                        TrialSuiteRunRecord run = new(
+                            Guid.NewGuid(),
+                            suite.Id,
+                            started,
+                            DateTimeOffset.UtcNow,
+                            Model,
+                            null,
+                            $"items={currentItems.Count}; elapsedMs={suiteWatch.ElapsedMilliseconds}",
+                            results);
+
+                        completedRun = run;
+
+                        return run;
+
+                    },
+                    (document, run) =>
+                    {
+
+                        TrialSuiteRecord? current = document.Suites.FirstOrDefault(s => s.Id == suite.Id);
+
+                        if (current is null)
+                        {
+
+                            suiteDeleted = true;
+
+                            return document;
+
+                        }
+
+                        TrialSuiteRecord updated = current with
+                        {
+                            Runs = current.Runs.Prepend(run).ToList(),
+                            UpdatedAt = DateTimeOffset.UtcNow,
+                        };
+
+                        IReadOnlyList<TrialSuiteRecord> suites = document.Suites
+                            .Select(s => s.Id == updated.Id ? updated : s)
+                            .ToArray();
+
+                        return new TrialSuiteStoreDocument(
+                            TrialSuiteStore.CurrentSchemaVersion,
+                            document.CreatedAt,
+                            DateTimeOffset.UtcNow,
+                            suites);
+
+                    },
+                    runToken)
+                .ConfigureAwait(true);
+
+            ApplySuiteDocument();
+
+            if (suiteDeleted)
             {
 
                 StatusText = $"Suite “{suite.Name}” was deleted during the run; results were not saved.";
@@ -525,31 +646,9 @@ public sealed partial class ProvingGroundsViewModel
 
             }
 
-            TrialSuiteRunRecord run = new(
-                Guid.NewGuid(),
-                suite.Id,
-                started,
-                DateTimeOffset.UtcNow,
-                Model,
-                null,
-                $"items={items.Count}; elapsedMs={suiteWatch.ElapsedMilliseconds}",
-                results);
+            SelectedSuite = Suites.FirstOrDefault(s => s.Id == suite.Id);
 
-            List<TrialSuiteRunRecord> runs = current.Runs.Prepend(run).ToList();
-
-            TrialSuiteRecord updated = current with
-            {
-                Runs = runs,
-                UpdatedAt = DateTimeOffset.UtcNow,
-            };
-
-            List<TrialSuiteRecord> suites = _suiteDocument.Suites.Select(s => s.Id == updated.Id ? updated : s).ToList();
-
-            await PersistSuitesAsync(suites, cancellationToken).ConfigureAwait(true);
-
-            SelectedSuite = Suites.FirstOrDefault(s => s.Id == updated.Id);
-
-            SelectedSuiteRun = SelectedSuiteRuns.FirstOrDefault(r => r.Id == run.Id);
+            SelectedSuiteRun = SelectedSuiteRuns.FirstOrDefault(r => r.Id == completedRun?.Id);
 
             int passed = results.Count(static r => r.Passed);
 
@@ -566,6 +665,18 @@ public sealed partial class ProvingGroundsViewModel
             StatusText = "Suite run cancelled.";
 
         }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+            SuiteStatusText = "Suite run was not saved.";
+
+            _foundryFloor.AppendLine($"Trial suite run blocked: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Suite run was not saved.");
+
+        }
         finally
         {
 
@@ -575,20 +686,53 @@ public sealed partial class ProvingGroundsViewModel
 
     }
 
-    private async Task PersistSuitesAsync(IReadOnlyList<TrialSuiteRecord> suites, CancellationToken cancellationToken)
+    private async Task<bool> PersistSuitesAsync(
+        IReadOnlyList<TrialSuiteRecord> suites,
+        CancellationToken cancellationToken)
     {
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        TrialSuiteStoreDocument baseline = _suiteDocument;
 
-        TrialSuiteStoreDocument document = new(
-            TrialSuiteStore.CurrentSchemaVersion,
-            _suiteDocument.CreatedAt == default ? now : _suiteDocument.CreatedAt,
-            now,
-            suites);
+        try
+        {
 
-        await _suiteStore.SaveAsync(document, cancellationToken).ConfigureAwait(true);
+            _suiteDocument = await _suiteStore
+                .UpdateAsync(
+                    (current, _) => Task.FromResult(
+                        new TrialSuiteStoreDocument(
+                            TrialSuiteStore.CurrentSchemaVersion,
+                            current.CreatedAt,
+                            DateTimeOffset.UtcNow,
+                            MergeSuiteChanges(baseline.Suites, suites, current.Suites))),
+                    cancellationToken)
+                .ConfigureAwait(true);
 
-        _suiteDocument = await _suiteStore.LoadAsync(cancellationToken).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            LastError = ex.Message;
+
+            SuiteStatusText = "Suite changes were not saved.";
+
+            _foundryFloor.AppendLine($"Trial suite save blocked: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Suite changes were not saved.");
+
+            return false;
+
+        }
+
+        ApplySuiteDocument();
+
+        return true;
+
+    }
+
+    private void ApplySuiteDocument()
+    {
+
+        Guid? selectedSuiteId = SelectedSuite?.Id;
 
         Suites.Clear();
 
@@ -599,8 +743,89 @@ public sealed partial class ProvingGroundsViewModel
 
         }
 
+        SelectedSuite = selectedSuiteId.HasValue
+            ? Suites.FirstOrDefault(s => s.Id == selectedSuiteId.Value)
+            : null;
+
         OnPropertyChanged(nameof(SuitePassRateSummary));
 
     }
+
+    private static IReadOnlyList<TrialSuiteRecord> MergeSuiteChanges(
+        IReadOnlyList<TrialSuiteRecord> baseline,
+        IReadOnlyList<TrialSuiteRecord> desired,
+        IReadOnlyList<TrialSuiteRecord> current)
+    {
+
+        Dictionary<Guid, TrialSuiteRecord> baselineById = baseline.ToDictionary(static s => s.Id);
+
+        Dictionary<Guid, TrialSuiteRecord> desiredById = desired.ToDictionary(static s => s.Id);
+
+        List<TrialSuiteRecord> merged = current.ToList();
+
+        foreach (TrialSuiteRecord original in baseline)
+        {
+
+            TrialSuiteRecord? latest = merged.FirstOrDefault(s => s.Id == original.Id);
+
+            if (!desiredById.TryGetValue(original.Id, out TrialSuiteRecord? replacement))
+            {
+
+                if (latest is not null && !SuiteContentEquals(latest, original))
+                {
+
+                    throw new TheForgeStoreChangedException("trial-suites.json");
+
+                }
+
+                merged.RemoveAll(s => s.Id == original.Id);
+
+                continue;
+
+            }
+
+            if (SuiteContentEquals(original, replacement))
+            {
+
+                continue;
+
+            }
+
+            if (latest is null || !SuiteContentEquals(latest, original))
+            {
+
+                throw new TheForgeStoreChangedException("trial-suites.json");
+
+            }
+
+            int index = merged.FindIndex(s => s.Id == original.Id);
+
+            merged[index] = replacement;
+
+        }
+
+        foreach (TrialSuiteRecord addition in desired.Where(s => !baselineById.ContainsKey(s.Id)))
+        {
+
+            if (merged.Any(s => s.Id == addition.Id))
+            {
+
+                throw new TheForgeStoreChangedException("trial-suites.json");
+
+            }
+
+            merged.Add(addition);
+
+        }
+
+        return merged;
+
+    }
+
+    private static bool SuiteContentEquals(TrialSuiteRecord left, TrialSuiteRecord right) =>
+        string.Equals(
+            JsonSerializer.Serialize(left, TheForgeTrialSuitesJsonContext.Default.TrialSuiteRecord),
+            JsonSerializer.Serialize(right, TheForgeTrialSuitesJsonContext.Default.TrialSuiteRecord),
+            StringComparison.Ordinal);
 
 }

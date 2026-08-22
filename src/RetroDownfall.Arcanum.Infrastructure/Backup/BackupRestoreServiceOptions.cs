@@ -52,6 +52,12 @@ internal sealed class BackupRestoreServiceOptions
     internal Action<BackupRestorePhase>? BeforePhaseForTests { get; init; }
 
     /// <summary>
+    /// Invoked immediately before the first restore-owned filesystem mutation, after coordination
+    /// evidence has been published.
+    /// </summary>
+    internal Action? BeforeFirstRestoreMutationForTests { get; init; }
+
+    /// <summary>
     /// Invoked with each machine-local entry name before it is moved across the swap; throwing
     /// simulates the commit failing partway through preserving, which no phase hook can reach.
     /// </summary>

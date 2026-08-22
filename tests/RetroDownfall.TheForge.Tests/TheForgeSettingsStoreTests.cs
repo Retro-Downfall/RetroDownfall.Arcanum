@@ -16,7 +16,9 @@ public class TheForgeSettingsStoreTests
         try
         {
 
-            TheForgeSettingsStore store = new(path);
+            TheForgeSettingsStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
             await store.SaveAsync(new TheForgeSettings
             {
@@ -59,7 +61,9 @@ public class TheForgeSettingsStoreTests
 
             await File.WriteAllTextAsync(path, "{ not-valid-json");
 
-            TheForgeSettingsStore store = new(path);
+            TheForgeSettingsStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
             TheForgeSettings loaded = await store.LoadAsync();
 
@@ -92,7 +96,9 @@ public class TheForgeSettingsStoreTests
         try
         {
 
-            TheForgeSettingsStore store = new(path);
+            TheForgeSettingsStore store = new(
+                path,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
             await store.SaveAsync(new TheForgeSettings { LayoutState = "abc" });
 
@@ -111,7 +117,7 @@ public class TheForgeSettingsStoreTests
     }
 
     [Fact]
-    public void TryMigrateLegacyFile_RenamesForgeJsonWhenTheForgeJsonAbsent()
+    public async Task Load_uses_legacy_settings_without_renaming_or_rewriting_them()
     {
 
         string dir = Path.Combine(Path.GetTempPath(), $"forge-migrate-{Guid.NewGuid():N}");
@@ -125,15 +131,19 @@ public class TheForgeSettingsStoreTests
         try
         {
 
-            File.WriteAllText(legacy, "{\"theme\":\"dark\"}");
+            await File.WriteAllTextAsync(legacy, "{\"theme\":\"dark\"}");
 
-            Assert.True(TheForgeSettingsStore.TryMigrateLegacyFile(modern));
+            TheForgeSettingsStore store = new(
+                modern,
+                ImmediateTheForgeLocalMutationRunner.Instance);
 
-            Assert.False(File.Exists(legacy));
+            TheForgeSettings loaded = await store.LoadAsync();
 
-            Assert.True(File.Exists(modern));
+            Assert.Equal("dark", loaded.Theme);
 
-            Assert.False(TheForgeSettingsStore.TryMigrateLegacyFile(modern));
+            Assert.True(File.Exists(legacy));
+
+            Assert.False(File.Exists(modern));
 
         }
         finally

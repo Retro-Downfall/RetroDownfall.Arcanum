@@ -228,7 +228,8 @@ public sealed class DeepLinkStartupTests
             new InMemoryConfigurationStore(),
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
     private sealed class InMemoryConfigurationStore : IArcanumConfigurationStore
     {

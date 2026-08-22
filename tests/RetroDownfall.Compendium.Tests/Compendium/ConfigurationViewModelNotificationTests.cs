@@ -111,7 +111,8 @@ public sealed class ConfigurationViewModelNotificationTests
             new FakeConfigurationStore(static () => new ArcanumSettings()),
             new NoopDialogService(),
             new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance);
+            NullLogger<ConfigurationViewModel>.Instance,
+            ImmediateArcanumClientMutationBoundary.Instance);
 
         for (int attempt = 0; attempt < 100; attempt++)
         {

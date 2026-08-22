@@ -42,4 +42,17 @@ internal sealed class InMemoryDiagnosticMcpFixtureStore : IDiagnosticMcpFixtureS
 
     }
 
+    public async Task<DiagnosticMcpFixtureStoreDocument> UpdateAsync(
+        Func<DiagnosticMcpFixtureStoreDocument, CancellationToken, Task<DiagnosticMcpFixtureStoreDocument>> update,
+        CancellationToken cancellationToken = default)
+    {
+
+        DiagnosticMcpFixtureStoreDocument document = await update(_document, cancellationToken);
+
+        await SaveAsync(document, cancellationToken);
+
+        return _document;
+
+    }
+
 }

@@ -35,7 +35,7 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     private HostSettings _snapshot = new();
 
-    private Func<LocalCertificateResult>? _certificateGenerator;
+    private Func<CancellationToken, Task<LocalCertificateResult>>? _certificateGenerator;
 
     private IDialogService? _dialogService;
 
@@ -55,12 +55,12 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         ArgumentNullException.ThrowIfNull(certificateGenerator);
 
-        AttachServices(certificateGenerator.Generate, dialogService);
+        AttachServices(certificateGenerator.GenerateAsync, dialogService);
 
     }
 
     internal void AttachServices(
-        Func<LocalCertificateResult> certificateGenerator,
+        Func<CancellationToken, Task<LocalCertificateResult>> certificateGenerator,
         IDialogService dialogService)
     {
 
@@ -152,16 +152,14 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         }
 
-        Func<LocalCertificateResult> generate = _certificateGenerator;
+        Func<CancellationToken, Task<LocalCertificateResult>> generate = _certificateGenerator;
 
         LocalCertificateResult result;
 
         try
         {
 
-            result = await Task
-                .Run(generate)
-                .ConfigureAwait(true);
+            result = await generate(CancellationToken.None).ConfigureAwait(true);
 
         }
         catch (Exception ex)

@@ -15,16 +15,24 @@ public sealed class DiagnosticMcpFixtureStore : IDiagnosticMcpFixtureStore
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     private readonly ILogger<DiagnosticMcpFixtureStore>? _logger;
 
     private readonly int _maxFixtures;
 
-    public DiagnosticMcpFixtureStore(string storePath, int maxFixtures = DefaultMaxFixtures, ILogger<DiagnosticMcpFixtureStore>? logger = null)
+    public DiagnosticMcpFixtureStore(
+        string storePath,
+        ITheForgeLocalMutationRunner mutationRunner,
+        int maxFixtures = DefaultMaxFixtures,
+        ILogger<DiagnosticMcpFixtureStore>? logger = null)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(storePath);
 
         StorePath = storePath;
+
+        _mutationRunner = mutationRunner ?? throw new ArgumentNullException(nameof(mutationRunner));
 
         _maxFixtures = Math.Max(1, maxFixtures);
 
@@ -34,36 +42,26 @@ public sealed class DiagnosticMcpFixtureStore : IDiagnosticMcpFixtureStore
 
     public string StorePath { get; }
 
+    internal ITheForgeLocalMutationRunner MutationRunner => _mutationRunner;
+
     public async Task<DiagnosticMcpFixtureStoreDocument> LoadAsync(CancellationToken cancellationToken = default)
     {
 
         try
         {
 
-            DiagnosticMcpFixtureStoreDocument? document = await TheForgeAtomicJsonFile
-                .ReadAsync(StorePath, TheForgeDiagnosticMcpFixturesJsonContext.Default.DiagnosticMcpFixtureStoreDocument, cancellationToken)
+            (DiagnosticMcpFixtureStoreDocument document, _) = await LoadVersionedAsync(cancellationToken)
                 .ConfigureAwait(false);
-
-            if (document is null)
-            {
-
-                DateTimeOffset now = DateTimeOffset.UtcNow;
-
-                return new DiagnosticMcpFixtureStoreDocument(CurrentSchemaVersion, now, now, []);
-
-            }
 
             return document;
 
         }
-        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
 
             _logger?.LogWarning(ex, "Corrupt or unreadable diagnostic MCP fixtures file at {Path}; using empty document.", StorePath);
 
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-
-            return new DiagnosticMcpFixtureStoreDocument(CurrentSchemaVersion, now, now, []);
+            return CreateEmptyDocument();
 
         }
 
@@ -74,39 +72,156 @@ public sealed class DiagnosticMcpFixtureStore : IDiagnosticMcpFixtureStore
 
         ArgumentNullException.ThrowIfNull(document);
 
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        TheForgeFileVersion expected = await TheForgeVersionedJsonFile
+            .CaptureVersionAsync(StorePath, cancellationToken)
+            .ConfigureAwait(false);
 
-        try
+        await _mutationRunner
+            .RunAsync(
+                StorePath,
+                async admittedCancellationToken =>
+                {
+
+                    await _writeLock.WaitAsync(admittedCancellationToken).ConfigureAwait(false);
+
+                    try
+                    {
+
+                        await TheForgeVersionedJsonFile
+                            .EnsureUnchangedAsync(StorePath, expected, admittedCancellationToken)
+                            .ConfigureAwait(false);
+
+                        await SaveCoreAsync(document, admittedCancellationToken).ConfigureAwait(false);
+
+                    }
+                    finally
+                    {
+
+                        _writeLock.Release();
+
+                    }
+
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    public async Task<DiagnosticMcpFixtureStoreDocument> UpdateAsync(
+        Func<DiagnosticMcpFixtureStoreDocument, CancellationToken, Task<DiagnosticMcpFixtureStoreDocument>> update,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(update);
+
+        DiagnosticMcpFixtureStoreDocument? saved = null;
+
+        await _mutationRunner
+            .RunAsync(
+                StorePath,
+                async admittedCancellationToken =>
+                {
+
+                    await _writeLock.WaitAsync(admittedCancellationToken).ConfigureAwait(false);
+
+                    try
+                    {
+
+                        (DiagnosticMcpFixtureStoreDocument current, TheForgeFileVersion version) =
+                            await LoadVersionedAsync(admittedCancellationToken).ConfigureAwait(false);
+
+                        DiagnosticMcpFixtureStoreDocument proposed = await update(current, admittedCancellationToken)
+                            .ConfigureAwait(false);
+
+                        ArgumentNullException.ThrowIfNull(proposed);
+
+                        await TheForgeVersionedJsonFile
+                            .EnsureUnchangedAsync(StorePath, version, admittedCancellationToken)
+                            .ConfigureAwait(false);
+
+                        saved = await SaveCoreAsync(proposed, admittedCancellationToken).ConfigureAwait(false);
+
+                    }
+                    finally
+                    {
+
+                        _writeLock.Release();
+
+                    }
+
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return saved ?? throw new InvalidOperationException("The diagnostic fixture update did not complete.");
+
+    }
+
+    private async Task<DiagnosticMcpFixtureStoreDocument> SaveCoreAsync(
+        DiagnosticMcpFixtureStoreDocument document,
+        CancellationToken cancellationToken)
+    {
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // User-managed-by-name: dedupe by Name (keep newest), then cap by recency.
+        IReadOnlyList<DiagnosticMcpFixtureRecord> fixtures = document.Fixtures
+            .GroupBy(static f => f.Name, StringComparer.Ordinal)
+            .Select(static g => g.OrderByDescending(static f => f.UpdatedAt).First())
+            .OrderByDescending(static f => f.UpdatedAt)
+            .Take(_maxFixtures)
+            .ToArray();
+
+        DiagnosticMcpFixtureStoreDocument capped = document with
+        {
+            SchemaVersion = CurrentSchemaVersion,
+            UpdatedAt = now,
+            Fixtures = fixtures,
+        };
+
+        await TheForgeAtomicJsonFile
+            .WriteAsync(
+                StorePath,
+                capped,
+                TheForgeDiagnosticMcpFixturesJsonContext.Default.DiagnosticMcpFixtureStoreDocument,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return capped;
+
+    }
+
+    private async Task<(DiagnosticMcpFixtureStoreDocument Document, TheForgeFileVersion Version)> LoadVersionedAsync(
+        CancellationToken cancellationToken)
+    {
+
+        TheForgeVersionedJsonRead<DiagnosticMcpFixtureStoreDocument> read = await TheForgeVersionedJsonFile
+            .ReadAsync(
+                StorePath,
+                TheForgeDiagnosticMcpFixturesJsonContext.Default.DiagnosticMcpFixtureStoreDocument,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (read.JsonError is not null)
         {
 
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-
-            // User-managed-by-name: dedupe by Name (keep newest), then cap by recency.
-            IReadOnlyList<DiagnosticMcpFixtureRecord> fixtures = document.Fixtures
-                .GroupBy(static f => f.Name, StringComparer.Ordinal)
-                .Select(static g => g.OrderByDescending(static f => f.UpdatedAt).First())
-                .OrderByDescending(static f => f.UpdatedAt)
-                .Take(_maxFixtures)
-                .ToArray();
-
-            DiagnosticMcpFixtureStoreDocument capped = document with
-            {
-                SchemaVersion = CurrentSchemaVersion,
-                UpdatedAt = now,
-                Fixtures = fixtures,
-            };
-
-            await TheForgeAtomicJsonFile
-                .WriteAsync(StorePath, capped, TheForgeDiagnosticMcpFixturesJsonContext.Default.DiagnosticMcpFixtureStoreDocument, cancellationToken)
-                .ConfigureAwait(false);
+            _logger?.LogWarning(
+                read.JsonError,
+                "Corrupt or unreadable diagnostic MCP fixtures file at {Path}; using empty document.",
+                StorePath);
 
         }
-        finally
-        {
 
-            _writeLock.Release();
+        return (read.Value ?? CreateEmptyDocument(), read.Version);
 
-        }
+    }
+
+    private static DiagnosticMcpFixtureStoreDocument CreateEmptyDocument()
+    {
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        return new DiagnosticMcpFixtureStoreDocument(CurrentSchemaVersion, now, now, []);
 
     }
 

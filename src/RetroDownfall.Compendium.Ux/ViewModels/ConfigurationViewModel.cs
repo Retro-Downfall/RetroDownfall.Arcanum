@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Compendium.Ux.Models;
 using RetroDownfall.Compendium.Ux.Services;
 
@@ -88,6 +89,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         IDialogService dialogService,
         IUiDispatcher uiDispatcher,
         ILogger<ConfigurationViewModel> logger,
+        IArcanumClientMutationBoundary mutationBoundary,
         LocalCertificateGenerator? certificateGenerator = null,
         IConfigurationPresetService? presetService = null,
         IFamiliarProbeClient? probeClient = null)
@@ -104,9 +106,14 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         // Initialize view models with dialog service for confirmation dialogs
         Providers = new ProvidersSectionViewModel(dialogService, probeClient);
         Daemon = new DaemonSectionViewModel(dialogService);
-        Host.AttachServices(certificateGenerator ?? new LocalCertificateGenerator(), dialogService);
+        Host.AttachServices(
+            certificateGenerator ?? new LocalCertificateGenerator(mutationBoundary),
+            dialogService);
 
-        Presets = new PresetsSectionViewModel(this, presetService, uiDispatcher);
+        Presets = new PresetsSectionViewModel(
+            this,
+            presetService,
+            uiDispatcher);
 
         SaveCommand = new AsyncRelayCommand(
             SaveAsync,

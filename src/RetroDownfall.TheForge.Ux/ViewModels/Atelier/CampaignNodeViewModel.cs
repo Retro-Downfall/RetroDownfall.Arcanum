@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -40,6 +41,8 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
     private readonly IWhispersService _whispers;
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     private readonly Func<CancellationToken, Task> _refreshCampaigns;
 
     private CampaignDto _campaign;
@@ -57,6 +60,7 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
         IConfirmationDialogService confirmation,
         IArtifactFileDialogService fileDialog,
         IWhispersService whispers,
+        ITheForgeLocalMutationRunner mutationRunner,
         Func<CancellationToken, Task> refreshCampaigns)
     {
 
@@ -83,6 +87,8 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
         _fileDialog = fileDialog;
 
         _whispers = whispers;
+
+        _mutationRunner = mutationRunner;
 
         _refreshCampaigns = refreshCampaigns;
 
@@ -173,8 +179,8 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
         {
 
             string detail = CampaignsRootNodeViewModel.FormatCampaignError(
-                result.ErrorCode,
-                result.ErrorMessage,
+                result?.ErrorCode,
+                result?.ErrorMessage,
                 "Failed to update campaign.");
 
             LastError = detail;
@@ -244,8 +250,8 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
         {
 
             string detail = CampaignsRootNodeViewModel.FormatCampaignError(
-                result.ErrorCode,
-                result.ErrorMessage,
+                result?.ErrorCode,
+                result?.ErrorMessage,
                 "Failed to unregister campaign.");
 
             LastError = detail;
@@ -284,31 +290,49 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
         }
 
-        DataSourceResult<CampaignExportDto> result = await _management
-            .ExportAsync(_campaign.Id, cancellationToken)
-            .ConfigureAwait(true);
+        DataSourceResult<CampaignExportDto>? result = null;
 
-        if (!result.Success || result.Data is null)
+        string? writeError = null;
+
+        try
         {
 
-            string detail = CampaignsRootNodeViewModel.FormatCampaignError(
-                result.ErrorCode,
-                result.ErrorMessage,
-                "Failed to export campaign.");
+            await _mutationRunner
+                .RunAsync(
+                    path,
+                    async admittedCancellationToken =>
+                    {
 
-            LastError = detail;
+                        result = await _management
+                            .ExportAsync(_campaign.Id, admittedCancellationToken)
+                            .ConfigureAwait(true);
 
-            _foundryFloor.AppendLine($"Campaign export failed: {detail}");
+                        if (!result.Success || result.Data is null)
+                        {
 
-            _whispers.Show(WhisperSeverity.Error, "Campaign export failed.");
+                            return;
 
-            return;
+                        }
+
+                        await ArtifactImportExportHelper
+                            .WriteJsonAlreadyAdmittedAsync(
+                                path,
+                                result.Data,
+                                TheForgeJsonContext.Default.CampaignExportDto,
+                                admittedCancellationToken)
+                            .ConfigureAwait(true);
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(true);
 
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
 
-        string? writeError = await ArtifactImportExportHelper
-            .WriteJsonAsync(path, result.Data, TheForgeJsonContext.Default.CampaignExportDto, cancellationToken)
-            .ConfigureAwait(true);
+            writeError = ex.Message;
+
+        }
 
         if (writeError is not null)
         {
@@ -316,6 +340,24 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
             LastError = writeError;
 
             _foundryFloor.AppendLine($"Campaign export write error: {writeError}");
+
+            _whispers.Show(WhisperSeverity.Error, "Campaign export failed.");
+
+            return;
+
+        }
+
+        if (result is null || !result.Success || result.Data is null)
+        {
+
+            string detail = CampaignsRootNodeViewModel.FormatCampaignError(
+                result?.ErrorCode,
+                result?.ErrorMessage,
+                "Failed to export campaign.");
+
+            LastError = detail;
+
+            _foundryFloor.AppendLine($"Campaign export failed: {detail}");
 
             _whispers.Show(WhisperSeverity.Error, "Campaign export failed.");
 

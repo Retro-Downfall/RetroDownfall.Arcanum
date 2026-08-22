@@ -100,6 +100,43 @@ public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, ID
         }
     }
 
+    /// <summary>
+    /// Resolves the Perplexity credential without promoting its encrypted fallback into OS storage.
+    /// A failed OS read fails closed because the hidden credential may supersede the fallback.
+    /// </summary>
+    public async Task<SecretStoreReadResult> PeekPerplexityApiKeyReadResultAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            OsCredentialStoreResult os = _osStore.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.PerplexityApiKeyAccount);
+
+            if (os.Status == OsCredentialStoreStatus.Ok
+                && !string.IsNullOrWhiteSpace(os.Value))
+            {
+                return SecretStoreReadResult.Ok(os.Value);
+            }
+
+            if (os.Status == OsCredentialStoreStatus.Failed)
+            {
+                return SecretStoreReadResult.Corrupted(
+                    "OS key storage failed while peeking at the Perplexity provider credential. "
+                    + (os.Message ?? "Restore the credential before retrying."));
+            }
+
+            return await ReadFallbackAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task SavePerplexityApiKeyAsync(
         string apiKey,
         CancellationToken cancellationToken = default)

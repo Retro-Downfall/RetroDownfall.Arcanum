@@ -116,7 +116,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Operation.InvalidState or ErrorCodes.Codex.PathNotContained =>
                 StatusCodes.Status400BadRequest,
 
-            ErrorCodes.Perception.InvalidPath =>
+            ErrorCodes.Perception.InvalidPath or ErrorCodes.Perception.InvalidSnapshot =>
                 StatusCodes.Status400BadRequest,
 
             ErrorCodes.Perception.PathNotAllowed =>

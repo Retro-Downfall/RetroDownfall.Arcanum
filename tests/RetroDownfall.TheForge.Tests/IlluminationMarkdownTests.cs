@@ -306,7 +306,8 @@ public class SpellEditorMarkdownViewModeTests
             new NullConfirmationDialogService(),
             new NullArtifactFileDialogService(),
             new NullTextInputDialogService(),
-            new FakeWhispersService());
+            new FakeWhispersService(),
+            ImmediateTheForgeLocalMutationRunner.Instance);
 
         Assert.Equal(MarkdownViewMode.Source, vm.ViewMode);
 

@@ -53,7 +53,8 @@ internal enum BackupRestoreJournalRecoveryOutcome : byte
 
 internal sealed record BackupRestoreJournalRecoveryState(
     BackupRestoreJournalRecoveryOutcome Outcome,
-    BackupRestoreJournalPublication? Publication);
+    BackupRestoreJournalPublication? Publication,
+    Guid? OperationId = null);
 
 /// <summary>
 /// The OS-secret anti-rollback anchor and the durable journal transitions it serializes.
@@ -366,6 +367,46 @@ internal sealed class BackupRestoreJournalAnchorStore(
 
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
+        return Classify(
+            profileNamespace,
+            candidateStagingRoots,
+            advanceOneAhead: true);
+
+    }
+
+    /// <summary>
+    /// Classifies the same authenticated evidence as <see cref="Recover"/> without advancing the
+    /// anchor in the one-ahead crash window.
+    /// </summary>
+    internal Result<Guid?> InspectActiveOperationId(
+        BackupRestoreProfileNamespace profileNamespace,
+        IReadOnlyList<string> candidateStagingRoots)
+    {
+
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        ArgumentNullException.ThrowIfNull(candidateStagingRoots);
+
+        Result<BackupRestoreJournalRecoveryState> classified = Classify(
+            profileNamespace,
+            candidateStagingRoots,
+            advanceOneAhead: false);
+
+        return classified.IsFailure
+            ? Result<Guid?>.Failure(classified.Error)
+            : classified.Value.Outcome
+                is BackupRestoreJournalRecoveryOutcome.Authenticated
+                ? classified.Value.OperationId
+                : null;
+
+    }
+
+    private Result<BackupRestoreJournalRecoveryState> Classify(
+        BackupRestoreProfileNamespace profileNamespace,
+        IReadOnlyList<string> candidateStagingRoots,
+        bool advanceOneAhead)
+    {
+
         Result<BackupRestoreJournalAnchorV1?> anchorRead = TryReadAnchor(profileNamespace);
 
         if (anchorRead.IsFailure)
@@ -531,7 +572,8 @@ internal sealed class BackupRestoreJournalAnchorStore(
                     read.Value,
                     digest.Value,
                     payload.Value,
-                    anchor));
+                    anchor),
+                located.Value.OperationId);
 
         }
 
@@ -541,6 +583,16 @@ internal sealed class BackupRestoreJournalAnchorStore(
         if (read.Value.Revision == checked(anchor.Revision + 1)
             && read.Value.PreviousEnvelopeDigest == anchor.EnvelopeDigest)
         {
+
+            if (!advanceOneAhead)
+            {
+
+                return new BackupRestoreJournalRecoveryState(
+                    BackupRestoreJournalRecoveryOutcome.Authenticated,
+                    Publication: null,
+                    located.Value.OperationId);
+
+            }
 
             BackupRestoreJournalAnchorV1 closed = anchor with
             {
@@ -573,7 +625,8 @@ internal sealed class BackupRestoreJournalAnchorStore(
                         read.Value,
                         digest.Value,
                         payload.Value,
-                        closed));
+                        closed),
+                    located.Value.OperationId);
 
         }
 

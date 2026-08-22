@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
@@ -58,7 +59,8 @@ internal sealed class SetupCommand(
     IProviderApiKeyResolver apiKeyResolver,
     ISetupPrompt prompt,
     IConsoleDispatcher console,
-    ICliInvocationContext invocationContext) : ISetupCommand
+    ICliInvocationContext invocationContext,
+    IGrimoireCliInitialization initialization) : ISetupCommand
 {
 
     private const string OpenAiTemplate = "openai";
@@ -155,8 +157,11 @@ internal sealed class SetupCommand(
 
         }
 
-        SetupCommitOutcome outcome = await committer
-            .CommitAsync(context, draft, plan, cancellationToken)
+        SetupCommitOutcome outcome = await CommitUnderExclusiveAsync(
+                context,
+                draft,
+                plan,
+                cancellationToken)
             .ConfigureAwait(false);
 
         Report(
@@ -958,8 +963,11 @@ internal sealed class SetupCommand(
         CancellationToken cancellationToken)
     {
 
-        SetupCommitOutcome outcome = await committer
-            .CommitAsync(context, draft, plan, cancellationToken)
+        SetupCommitOutcome outcome = await CommitUnderExclusiveAsync(
+                context,
+                draft,
+                plan,
+                cancellationToken)
             .ConfigureAwait(false);
 
         capture(outcome);
@@ -967,6 +975,15 @@ internal sealed class SetupCommand(
         return SetupNavigation.Advance;
 
     }
+
+    private Task<SetupCommitOutcome> CommitUnderExclusiveAsync(
+        SetupPlanContext context,
+        SetupDraft draft,
+        SetupPlan plan,
+        CancellationToken cancellationToken) =>
+        initialization.RunExclusiveAsync(
+            (_, token) => committer.CommitAsync(context, draft, plan, token),
+            cancellationToken);
 
     /// <summary>
     /// Validates with the credential the provider will actually receive: the value being entered
@@ -985,7 +1002,7 @@ internal sealed class SetupCommand(
             SetupCredentialAction.Store => draft.ProviderCredentialValue,
             SetupCredentialAction.Clear => null,
             _ => await apiKeyResolver
-                .ResolveAsync(
+                .PeekAsync(
                     new ProviderSettings
                     {
 

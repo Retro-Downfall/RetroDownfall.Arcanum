@@ -41,6 +41,25 @@ public sealed class FileEncryptionKeyProviderTests
     }
 
     [Fact]
+    public async Task Ordinary_bootstrap_after_a_peek_still_runs_the_migration_capable_read()
+    {
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
+        using FileEncryptionKeyProvider provider = new(secrets);
+        using FileEncryptionKeyMaterial expected = FileEncryptionKeyMaterial.Create(
+            Convert.FromBase64String(secret));
+
+        _ = await provider.PeekForReadAsync(expected.KeyId);
+
+        Assert.Equal(0, secrets.ReadCount);
+        Assert.Equal(1, secrets.PeekCount);
+
+        _ = await provider.GetForWriteAsync();
+
+        Assert.Equal(1, secrets.ReadCount);
+    }
+
+    [Fact]
     public async Task Corrupt_protected_secret_never_generates_a_replacement()
     {
         RecordingSecretStore secrets = new(
@@ -173,6 +192,10 @@ public sealed class FileEncryptionKeyProviderTests
     {
         public int SaveCount { get; private set; }
 
+        public int ReadCount { get; private set; }
+
+        public int PeekCount { get; private set; }
+
         public string? SavedSecret { get; private set; }
 
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
@@ -190,6 +213,20 @@ public sealed class FileEncryptionKeyProviderTests
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync()
         {
+            ReadCount++;
+
+            if (SavedSecret is not null)
+            {
+                return Task.FromResult(SecretStoreReadResult.Ok(SavedSecret));
+            }
+
+            return Task.FromResult(readResult);
+        }
+
+        public Task<SecretStoreReadResult> PeekFileEncryptionSecretReadResultAsync()
+        {
+            PeekCount++;
+
             if (SavedSecret is not null)
             {
                 return Task.FromResult(SecretStoreReadResult.Ok(SavedSecret));

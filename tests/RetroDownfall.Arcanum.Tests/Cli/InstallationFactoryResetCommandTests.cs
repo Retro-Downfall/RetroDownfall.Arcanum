@@ -1267,31 +1267,17 @@ public sealed class InstallationFactoryResetCommandTests
 
         }
 
-        public Task<Result<InstallationResetOnlineDataHandoff>> PrepareAsync(
+        public Result<InstallationResetHostHandoff> CreateHostHandoff(
             InstallationResetApplyRequest request,
-            InstallationResetPlan confirmedPlan,
-            CancellationToken cancellationToken = default) =>
+            InstallationResetPlan confirmedPlan) =>
             throw new InvalidOperationException(
                 "The command must prepare through the apply boundary.");
 
-        public Task<Result<InstallationResetOnlineDataHandoff?>> ReadAsync(
+        public Task<Result<InstallationResetHostHandoff?>> ReadAsync(
             InstallationResetApplyRequest request,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException(
                 "The command must resume through the apply boundary.");
-
-        public Task<Result> RecordCompletedAsync(
-            InstallationResetOnlineDataHandoff handoff,
-            DataRetentionApplyResult result,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException(
-                "The command must record completion through the apply boundary.");
-
-        public Task<Result> RetirePreEffectAsync(
-            InstallationResetOnlineDataHandoff handoff,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException(
-                "The command must retire through the apply boundary.");
 
     }
 
@@ -1327,6 +1313,19 @@ public sealed class InstallationFactoryResetCommandTests
 
         public Task<Result<InstallationResetResult>> ApplyAsync(
             InstallationResetApplyRequest request,
+            CancellationToken cancellationToken)
+        {
+
+            Requests.Add(request);
+
+            return service.ApplyAsync(request, cancellationToken);
+
+        }
+
+        public Task<Result<InstallationResetResult>> ApplyAsync(
+            InstallationResetApplyRequest request,
+            InstallationResetHostHandoff? hostHandoff,
+            bool onlineCompletionDurable,
             CancellationToken cancellationToken)
         {
 

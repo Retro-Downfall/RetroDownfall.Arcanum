@@ -29,11 +29,18 @@ public interface ICliContextStore
 
     CliContextDocument Load();
 
-    void Save(CliContextDocument document);
+}
+
+internal interface ICliContextExclusiveWriter
+{
+
+    void SaveUnderExclusive(CliContextDocument document);
 
 }
 
-public sealed class CliContextStore : ICliContextStore
+public sealed class CliContextStore :
+    ICliContextStore,
+    ICliContextExclusiveWriter
 {
 
     private readonly string _filePath;
@@ -96,7 +103,15 @@ public sealed class CliContextStore : ICliContextStore
 
     }
 
-    public void Save(CliContextDocument document)
+    void ICliContextExclusiveWriter.SaveUnderExclusive(
+        CliContextDocument document)
+    {
+
+        SaveCore(document);
+
+    }
+
+    private void SaveCore(CliContextDocument document)
     {
 
         ArgumentNullException.ThrowIfNull(document);

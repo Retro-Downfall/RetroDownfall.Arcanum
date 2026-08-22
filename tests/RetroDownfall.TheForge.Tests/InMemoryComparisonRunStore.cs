@@ -38,4 +38,17 @@ internal sealed class InMemoryComparisonRunStore : IComparisonRunStore
 
     }
 
+    public async Task<ComparisonStoreDocument> UpdateAsync(
+        Func<ComparisonStoreDocument, CancellationToken, Task<ComparisonStoreDocument>> update,
+        CancellationToken cancellationToken = default)
+    {
+
+        ComparisonStoreDocument document = await update(_document, cancellationToken);
+
+        await SaveAsync(document, cancellationToken);
+
+        return _document;
+
+    }
+
 }

@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
@@ -39,6 +40,8 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
     private readonly ITextInputDialogService _textInputDialog;
 
     private readonly IWhispersService _whispers;
+
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
 
     private string _persistedActiveBody = string.Empty;
 
@@ -179,6 +182,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         IArtifactFileDialogService fileDialog,
         ITextInputDialogService textInputDialog,
         IWhispersService whispers,
+        ITheForgeLocalMutationRunner mutationRunner,
         string? workspace = null)
     {
 
@@ -200,11 +204,14 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         _whispers = whispers;
 
+        _mutationRunner = mutationRunner;
+
         Title = $"Spell: {spellName}";
 
         DocumentTooltip = Workspace;
 
         Trace = new InferenceTraceViewModel(
+            mutationRunner,
             openSpellCastPreview: () => StatusText = "Use Cast for assembled-context preview (no general dry-run API).");
 
     }
@@ -699,8 +706,38 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         try
         {
 
-            SpellExportDto? export = await _dataSource
-                .ExportAsync(SpellName, Workspace, cancellationToken)
+            SpellExportDto? export = null;
+
+            await _mutationRunner
+                .RunAsync(
+                    path,
+                    async admittedCancellationToken =>
+                    {
+
+                        export = await _dataSource
+                            .ExportAsync(
+                                SpellName,
+                                Workspace,
+                                admittedCancellationToken)
+                            .ConfigureAwait(true);
+
+                        if (export is null)
+                        {
+
+                            return;
+
+                        }
+
+                        await ArtifactImportExportHelper
+                            .WriteJsonAlreadyAdmittedAsync(
+                                path,
+                                export,
+                                TheForgeJsonContext.Default.SpellExportDto,
+                                admittedCancellationToken)
+                            .ConfigureAwait(true);
+
+                    },
+                    cancellationToken)
                 .ConfigureAwait(true);
 
             if (export is null)
@@ -717,10 +754,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 return;
 
             }
-
-            string json = JsonSerializer.Serialize(export, TheForgeJsonContext.Default.SpellExportDto);
-
-            await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(true);
 
             StatusText = "Exported.";
 

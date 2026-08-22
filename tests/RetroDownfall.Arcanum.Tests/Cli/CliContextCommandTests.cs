@@ -213,12 +213,15 @@ public sealed class CliContextCommandTests
 
         }
 
-        public CliContextMutationResult Clear(CliContextScope scope)
+        public Task<CliContextMutationResult> ClearAsync(
+            CliContextScope scope,
+            CancellationToken cancellationToken)
         {
 
             ClearedScope = scope;
 
-            return CliContextMutationResult.Success("Context cleared.");
+            return Task.FromResult(
+                CliContextMutationResult.Success("Context cleared."));
 
         }
 
@@ -232,6 +235,20 @@ public sealed class CliContextCommandTests
             return Task.FromResult(Status);
 
         }
+
+        public Task<CliContextValidation> ValidateAsync(
+            bool noContext,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                new CliContextValidation(
+                    CliContextDocument.Empty,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    [],
+                    []));
 
     }
 

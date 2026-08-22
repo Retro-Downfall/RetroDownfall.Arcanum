@@ -120,6 +120,82 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Peek_returns_fallback_without_promoting_or_changing_files()
+    {
+        using (WebResearchCredentialStore writer = CreateStore(new UnavailableStore()))
+        {
+            await writer.SavePerplexityApiKeyAsync("peek-web-secret");
+        }
+
+        string[] before = SnapshotFileTree();
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+        using WebResearchCredentialStore store = CreateStore(os);
+        IWebResearchCredentialStore contract = store;
+
+        SecretStoreReadResult first =
+            await contract.PeekPerplexityApiKeyReadResultAsync();
+        SecretStoreReadResult second =
+            await contract.PeekPerplexityApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, first.Status);
+        Assert.Equal("peek-web-secret", first.Value);
+        Assert.Equal(first, second);
+        Assert.Equal(0, os.SetCallCount);
+        Assert.Equal(0, os.DeleteCallCount);
+        Assert.Equal(before, SnapshotFileTree());
+    }
+
+    [Fact]
+    public async Task Peek_fails_closed_when_os_read_is_ambiguous_even_with_valid_fallback()
+    {
+        using (WebResearchCredentialStore writer = CreateStore(new UnavailableStore()))
+        {
+            await writer.SavePerplexityApiKeyAsync("possibly-superseded-web-secret");
+        }
+
+        string[] before = SnapshotFileTree();
+        RecordingOsCredentialStore os = new(
+            OsCredentialStoreResult.Failed("test ambiguous read"));
+        using WebResearchCredentialStore store = CreateStore(os);
+
+        SecretStoreReadResult result = await ((IWebResearchCredentialStore)store)
+            .PeekPerplexityApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+        Assert.Null(result.Value);
+        Assert.Equal(0, os.SetCallCount);
+        Assert.Equal(0, os.DeleteCallCount);
+        Assert.Equal(before, SnapshotFileTree());
+    }
+
+    [Fact]
+    public async Task Peek_reports_missing_and_corrupt_fallbacks_without_writing_state()
+    {
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+        using WebResearchCredentialStore store = CreateStore(os);
+        string[] missingBefore = SnapshotFileTree();
+
+        SecretStoreReadResult missing = await ((IWebResearchCredentialStore)store)
+            .PeekPerplexityApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Missing, missing.Status);
+        Assert.Equal(missingBefore, SnapshotFileTree());
+
+        string path = ArcanumPaths.PerplexityApiKeyStoreFile;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
+        string[] corruptBefore = SnapshotFileTree();
+
+        SecretStoreReadResult corrupt = await ((IWebResearchCredentialStore)store)
+            .PeekPerplexityApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, corrupt.Status);
+        Assert.Equal(corruptBefore, SnapshotFileTree());
+        Assert.Equal(0, os.SetCallCount);
+        Assert.Equal(0, os.DeleteCallCount);
+    }
+
+    [Fact]
     public async Task Delete_removes_os_and_fallback_copies()
     {
         InMemoryOsCredentialStore os = new();
@@ -247,6 +323,43 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
         _originalEnvironment[name] =
             global::System.Environment.GetEnvironmentVariable(name);
         global::System.Environment.SetEnvironmentVariable(name, value);
+    }
+
+    private string[] SnapshotFileTree() => Directory
+        .EnumerateFiles(_testHome, "*", SearchOption.AllDirectories)
+        .Order(StringComparer.Ordinal)
+        .Select(path =>
+            Path.GetRelativePath(_testHome, path)
+            + "|"
+            + File.GetLastWriteTimeUtc(path).Ticks
+            + "|"
+            + Convert.ToBase64String(File.ReadAllBytes(path)))
+        .ToArray();
+
+    private sealed class RecordingOsCredentialStore(OsCredentialStoreResult readResult)
+        : IOsCredentialStore
+    {
+        public bool IsAvailable => readResult.Status != OsCredentialStoreStatus.Unavailable;
+
+        public int SetCallCount { get; private set; }
+
+        public int DeleteCallCount { get; private set; }
+
+        public OsCredentialStoreResult TryGet(string service, string account) => readResult;
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+            SetCallCount++;
+
+            return OsCredentialStoreResult.Ok(secret);
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account)
+        {
+            DeleteCallCount++;
+
+            return OsCredentialStoreResult.Ok(string.Empty);
+        }
     }
 
     /// <summary>

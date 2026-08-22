@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
+
 namespace RetroDownfall.Compendium.Ux.Services;
 
 public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
@@ -56,8 +58,14 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     private bool _disposed;
 
-    public ArcanumConfigurationStore()
-        : this(enableWatcher: true)
+    public ArcanumConfigurationStore(IArcanumClientMutationBoundary mutationBoundary)
+        : this(
+            enableWatcher: true,
+            transactionRunner: (operation, cancellationToken) =>
+                RunClientMutationAsync(
+                    mutationBoundary,
+                    operation,
+                    cancellationToken))
     {
 
     }
@@ -88,15 +96,6 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         _transactionRunner = transactionRunner
             ?? RunConfigurationTransactionAsync;
-
-        // Best-effort on purpose. A configuration directory that cannot be created or restricted — a
-        // home restored with another uid's ownership, a container/host uid mismatch over a bind mount,
-        // a read-only or mode-less volume — is a real problem, but throwing out of the constructor
-        // aborts DI composition before any window exists. Compendium logs only to the debugger, so the
-        // operator would get no window, no dialog and nothing on disk, and every fail-closed surface
-        // the editor owns (LoadFailed, the SaveBar repair state, the corrupt-config dialog) lives
-        // behind that window. The save path re-attempts the same work and reports what it could not do.
-        _ = SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExists(_directory, out _);
 
         if (!enableWatcher)
         {
@@ -592,6 +591,32 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         ArcanumConfigurationTransaction.RunAsync(
             operation,
             cancellationToken);
+
+    private static async Task<ConfigurationWriteResult> RunClientMutationAsync(
+        IArcanumClientMutationBoundary mutationBoundary,
+        Func<Task<ConfigurationWriteResult>> operation,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(mutationBoundary);
+
+        ArcanumClientMutationResult<ConfigurationWriteResult> admitted =
+            await mutationBoundary
+                .RunAsync(
+                    admittedCancellationToken => RunConfigurationTransactionAsync(
+                        operation,
+                        admittedCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        return admitted.IsCompleted
+            ? admitted.Value
+            : new ConfigurationWriteResult(
+                false,
+                [],
+                $"{admitted.Error.Code}: {admitted.Error.Message}");
+
+    }
 
     private async Task<ConfigurationWriteResult?> RejectChangedConfigurationAsync(
         string expectedFingerprint,

@@ -12,4 +12,8 @@ public interface IDiagnosticMcpFixtureStore
 
     Task SaveAsync(DiagnosticMcpFixtureStoreDocument document, CancellationToken cancellationToken = default);
 
+    Task<DiagnosticMcpFixtureStoreDocument> UpdateAsync(
+        Func<DiagnosticMcpFixtureStoreDocument, CancellationToken, Task<DiagnosticMcpFixtureStoreDocument>> update,
+        CancellationToken cancellationToken = default);
+
 }

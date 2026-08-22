@@ -46,6 +46,8 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
     private readonly INavigationService _navigation;
 
+    private readonly ITheForgeLocalMutationRunner _mutationRunner;
+
     private CancellationTokenSource? _runCts;
 
     private bool _disposed;
@@ -84,6 +86,7 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
         IConfirmationDialogService confirmationDialog,
         IArtifactFileDialogService fileDialog,
         INavigationService navigation,
+        ITheForgeLocalMutationRunner mutationRunner,
         IInferenceTraceStore? traceStore = null)
     {
 
@@ -101,7 +104,12 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         _navigation = navigation;
 
-        Trace = new InferenceTraceViewModel(traceStore, fileDialog);
+        _mutationRunner = mutationRunner;
+
+        Trace = new InferenceTraceViewModel(
+            mutationRunner,
+            traceStore,
+            fileDialog);
 
         Title = "Comparison Workbench";
 
@@ -206,9 +214,35 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await _runStore
-            .SaveAsync(new ComparisonStoreDocument(ComparisonRunStore.CurrentSchemaVersion, now, now, []), cancellationToken)
-            .ConfigureAwait(true);
+        try
+        {
+
+            await _runStore
+                .UpdateAsync(
+                    (document, _) => Task.FromResult(
+                        new ComparisonStoreDocument(
+                            ComparisonRunStore.CurrentSchemaVersion,
+                            document.CreatedAt,
+                            now,
+                            [])),
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = "Comparison history was not cleared.";
+
+            _foundryFloor.AppendLine($"Comparison history clear blocked: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Comparison history clear blocked.");
+
+            return;
+
+        }
 
         History.Clear();
 
@@ -273,52 +307,78 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         List<ComparisonVariantResultRecord> persistedVariants = [];
 
+        ComparisonRunRecord? completedRun = null;
+
         try
         {
 
-            _pricing ??= await _dataSource.GetPricingAsync(runToken).ConfigureAwait(true);
+            await _runStore
+                .UpdateAsync(
+                    async (document, admittedCancellationToken) =>
+                    {
 
-            foreach (ComparisonVariantDraftViewModel variant in Variants.ToArray())
-            {
+                        _pricing ??= await _dataSource
+                            .GetPricingAsync(admittedCancellationToken)
+                            .ConfigureAwait(true);
 
-                runToken.ThrowIfCancellationRequested();
+                        foreach (ComparisonVariantDraftViewModel variant in Variants.ToArray())
+                        {
 
-                ComparisonVariantResultViewModel result = await RunVariantAsync(variant, runToken).ConfigureAwait(true);
+                            admittedCancellationToken.ThrowIfCancellationRequested();
 
-                Results.Add(result);
+                            ComparisonVariantResultViewModel result = await RunVariantAsync(
+                                    variant,
+                                    admittedCancellationToken)
+                                .ConfigureAwait(true);
 
-                persistedVariants.Add(result.ToRecord());
+                            Results.Add(result);
 
-            }
+                            persistedVariants.Add(result.ToRecord());
 
-            if (Results.Count > 0)
-            {
+                        }
 
-                LeftResult = Results[0];
+                        if (Results.Count > 0)
+                        {
 
-            }
+                            LeftResult = Results[0];
 
-            if (Results.Count > 1)
-            {
+                        }
 
-                RightResult = Results[1];
+                        if (Results.Count > 1)
+                        {
 
-            }
+                            RightResult = Results[1];
 
-            await RefreshDiffAsync(runToken).ConfigureAwait(true);
+                        }
 
-            ComparisonRunRecord run = new(
-                runId,
-                startedAt,
-                DateTimeOffset.UtcNow,
-                "comparison",
-                null,
-                Truncate(SharedInput, 240),
-                persistedVariants);
+                        await RefreshDiffAsync(admittedCancellationToken).ConfigureAwait(true);
 
-            await PersistRunAsync(run, runToken).ConfigureAwait(true);
+                        ComparisonRunRecord run = new(
+                            runId,
+                            startedAt,
+                            DateTimeOffset.UtcNow,
+                            "comparison",
+                            null,
+                            Truncate(SharedInput, 240),
+                            persistedVariants);
 
-            History.Insert(0, run);
+                        completedRun = run;
+
+                        List<ComparisonRunRecord> runs = [run, .. document.Runs];
+
+                        return new ComparisonStoreDocument(
+                            ComparisonRunStore.CurrentSchemaVersion,
+                            document.CreatedAt,
+                            DateTimeOffset.UtcNow,
+                            runs);
+
+                    },
+                    runToken)
+                .ConfigureAwait(true);
+
+            History.Insert(
+                0,
+                completedRun ?? throw new InvalidOperationException("The comparison run did not complete."));
 
             StatusText = $"Compared {Results.Count} variant(s).";
 
@@ -435,19 +495,29 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         }
 
-        ComparisonRunRecord run = SelectedHistoryRun
-            ?? new ComparisonRunRecord(
-                Guid.NewGuid(),
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow,
-                "comparison",
-                null,
-                Truncate(SharedInput, 240),
-                Results.Select(static r => r.ToRecord()).ToArray());
+        if (!await TryWriteExportAsync(
+                path,
+                () =>
+                {
 
-        string json = JsonSerializer.Serialize(run, TheForgeComparisonsJsonContext.Default.ComparisonRunRecord);
+                    ComparisonRunRecord run = SelectedHistoryRun
+                        ?? new ComparisonRunRecord(
+                            Guid.NewGuid(),
+                            DateTimeOffset.UtcNow,
+                            DateTimeOffset.UtcNow,
+                            "comparison",
+                            null,
+                            Truncate(SharedInput, 240),
+                            Results.Select(static r => r.ToRecord()).ToArray());
 
-        if (!await TryWriteExportAsync(path, json, "JSON", cancellationToken).ConfigureAwait(true))
+                    return JsonSerializer.Serialize(
+                        run,
+                        TheForgeComparisonsJsonContext.Default.ComparisonRunRecord);
+
+                },
+                "JSON",
+                cancellationToken)
+            .ConfigureAwait(true))
         {
 
             return;
@@ -472,6 +542,121 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
             return;
 
         }
+
+        if (!await TryWriteExportAsync(
+                path,
+                BuildMarkdownExport,
+                "Markdown",
+                cancellationToken)
+            .ConfigureAwait(true))
+        {
+
+            return;
+
+        }
+
+        StatusText = "Comparison exported (Markdown).";
+
+    }
+
+    [RelayCommand]
+    public async Task ExportCsvAsync(CancellationToken cancellationToken)
+    {
+
+        string? path = await _fileDialog
+            .PickSaveJsonPathAsync($"comparison-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.csv", cancellationToken)
+            .ConfigureAwait(true);
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+
+            return;
+
+        }
+
+        if (!await TryWriteExportAsync(
+                path,
+                BuildCsvExport,
+                "CSV",
+                cancellationToken)
+            .ConfigureAwait(true))
+        {
+
+            return;
+
+        }
+
+        StatusText = "Comparison exported (CSV).";
+
+    }
+
+    /// <summary>
+    /// Writes an export to the operator's chosen path. A destination that turns out to be unwritable
+    /// is reported like every other command failure rather than escaping the command.
+    /// </summary>
+    private async Task<bool> TryWriteExportAsync(
+        string path,
+        string contents,
+        string format,
+        CancellationToken cancellationToken) =>
+        await TryWriteExportAsync(
+                path,
+                () => contents,
+                format,
+                cancellationToken)
+            .ConfigureAwait(true);
+
+    private async Task<bool> TryWriteExportAsync(
+        string path,
+        Func<string> contentsFactory,
+        string format,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await _mutationRunner
+                .RunAsync(
+                    path,
+                    admittedCancellationToken => File.WriteAllTextAsync(
+                        path,
+                        contentsFactory(),
+                        Encoding.UTF8,
+                        admittedCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(true);
+
+            return true;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            StatusText = "Comparison export cancelled.";
+
+            return false;
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+            StatusText = $"Comparison export failed ({format}).";
+
+            _foundryFloor.AppendLine($"Comparison Workbench export error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Comparison export failed.");
+
+            return false;
+
+        }
+
+    }
+
+    private string BuildMarkdownExport()
+    {
 
         StringBuilder sb = new();
 
@@ -510,31 +695,12 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         }
 
-        if (!await TryWriteExportAsync(path, sb.ToString(), "Markdown", cancellationToken).ConfigureAwait(true))
-        {
-
-            return;
-
-        }
-
-        StatusText = "Comparison exported (Markdown).";
+        return sb.ToString();
 
     }
 
-    [RelayCommand]
-    public async Task ExportCsvAsync(CancellationToken cancellationToken)
+    private string BuildCsvExport()
     {
-
-        string? path = await _fileDialog
-            .PickSaveJsonPathAsync($"comparison-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.csv", cancellationToken)
-            .ConfigureAwait(true);
-
-        if (string.IsNullOrWhiteSpace(path))
-        {
-
-            return;
-
-        }
 
         StringBuilder sb = new();
 
@@ -559,58 +725,7 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         }
 
-        if (!await TryWriteExportAsync(path, sb.ToString(), "CSV", cancellationToken).ConfigureAwait(true))
-        {
-
-            return;
-
-        }
-
-        StatusText = "Comparison exported (CSV).";
-
-    }
-
-    /// <summary>
-    /// Writes an export to the operator's chosen path. A destination that turns out to be unwritable
-    /// is reported like every other command failure rather than escaping the command.
-    /// </summary>
-    private async Task<bool> TryWriteExportAsync(
-        string path,
-        string contents,
-        string format,
-        CancellationToken cancellationToken)
-    {
-
-        try
-        {
-
-            await File.WriteAllTextAsync(path, contents, Encoding.UTF8, cancellationToken).ConfigureAwait(true);
-
-            return true;
-
-        }
-        catch (OperationCanceledException)
-        {
-
-            StatusText = "Comparison export cancelled.";
-
-            return false;
-
-        }
-        catch (Exception ex)
-        {
-
-            LastError = ex.Message;
-
-            StatusText = $"Comparison export failed ({format}).";
-
-            _foundryFloor.AppendLine($"Comparison Workbench export error: {ex.Message}");
-
-            _whispers.Show(WhisperSeverity.Error, "Comparison export failed.");
-
-            return false;
-
-        }
+        return sb.ToString();
 
     }
 
@@ -768,23 +883,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                 maxOutputTokens,
                 cancellationToken),
         };
-
-    }
-
-    private async Task PersistRunAsync(ComparisonRunRecord run, CancellationToken cancellationToken)
-    {
-
-        ComparisonStoreDocument document = await _runStore.LoadAsync(cancellationToken).ConfigureAwait(true);
-
-        List<ComparisonRunRecord> runs = [run, .. document.Runs];
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        await _runStore
-            .SaveAsync(
-                new ComparisonStoreDocument(ComparisonRunStore.CurrentSchemaVersion, document.CreatedAt, now, runs),
-                cancellationToken)
-            .ConfigureAwait(true);
 
     }
 

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
@@ -47,11 +48,18 @@ internal static class ServiceCollectionConfigurator
 
         ServiceCollection services = new();
 
+        services.AddArcanumClientMutationCoordination();
+
+        services.AddSingleton<ITheForgeLocalMutationRunner, TheForgeLocalMutationRunner>();
+
         string settingsPath = Path.Combine(ArcanumPaths.GrimoireDirectory, TheForgeSettingsStore.FileName);
 
-        _ = TheForgeSettingsStore.TryMigrateLegacyFile(settingsPath);
+        string legacySettingsPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            TheForgeSettingsStore.LegacyFileName);
 
         IConfiguration configuration = new ConfigurationBuilder()
+            .AddJsonFile(legacySettingsPath, optional: true, reloadOnChange: true)
             .AddJsonFile(settingsPath, optional: true, reloadOnChange: true)
             .Build();
 
@@ -61,6 +69,7 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<ITheForgeSettingsStore>(sp => new TheForgeSettingsStore(
             settingsPath,
+            sp.GetRequiredService<ITheForgeLocalMutationRunner>(),
             sp.GetService<ILogger<TheForgeSettingsStore>>()));
 
         string trialSuitesPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "the-forge-trial-suites.json");
@@ -71,6 +80,7 @@ internal static class ServiceCollectionConfigurator
 
             return new TrialSuiteStore(
                 trialSuitesPath,
+                sp.GetRequiredService<ITheForgeLocalMutationRunner>(),
                 settings.MaxTrialSuiteRunHistory <= 0 ? TrialSuiteStore.DefaultMaxRunsPerSuite : settings.MaxTrialSuiteRunHistory,
                 sp.GetService<ILogger<TrialSuiteStore>>());
         });
@@ -83,6 +93,7 @@ internal static class ServiceCollectionConfigurator
 
             return new ComparisonRunStore(
                 comparisonsPath,
+                sp.GetRequiredService<ITheForgeLocalMutationRunner>(),
                 settings.MaxComparisonRunHistory <= 0 ? ComparisonRunStore.DefaultMaxRuns : settings.MaxComparisonRunHistory,
                 sp.GetService<ILogger<ComparisonRunStore>>());
         });
@@ -95,6 +106,7 @@ internal static class ServiceCollectionConfigurator
 
             return new InferenceTraceStore(
                 inferenceTracesPath,
+                sp.GetRequiredService<ITheForgeLocalMutationRunner>(),
                 settings.MaxInferenceTraceHistory <= 0 ? InferenceTraceStore.DefaultMaxTraces : settings.MaxInferenceTraceHistory,
                 sp.GetService<ILogger<InferenceTraceStore>>());
         });
@@ -109,6 +121,7 @@ internal static class ServiceCollectionConfigurator
 
             return new DiagnosticMcpFixtureStore(
                 diagnosticMcpFixturesPath,
+                sp.GetRequiredService<ITheForgeLocalMutationRunner>(),
                 settings.MaxDiagnosticMcpFixtures <= 0 ? DiagnosticMcpFixtureStore.DefaultMaxFixtures : settings.MaxDiagnosticMcpFixtures,
                 sp.GetService<ILogger<DiagnosticMcpFixtureStore>>());
         });

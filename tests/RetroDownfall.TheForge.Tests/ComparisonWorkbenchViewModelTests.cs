@@ -1,8 +1,12 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Core.Models.Comparisons;
+using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
@@ -196,10 +200,64 @@ public class ComparisonWorkbenchViewModelTests
 
     }
 
+    [Fact]
+    public async Task ExportJson_SnapshotsCurrentInputAfterMutationAdmission()
+    {
+
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"comparison-admitted-export-{Guid.NewGuid():N}.json");
+
+        ComparisonWorkbenchViewModel? vm = null;
+
+        try
+        {
+
+            vm = Create(
+                new FakeComparisonDataSource(),
+                new FixedPathFileDialogService(path),
+                mutationRunner: new BeforeMutationTheForgeLocalMutationRunner(
+                    () => vm!.SharedInput = "after-admission"));
+
+            vm.SharedInput = "before-admission";
+
+            vm.Results.Add(new ComparisonVariantResultViewModel
+            {
+                VariantId = Guid.NewGuid(),
+                Label = "one",
+                Output = "answer",
+            });
+
+            await vm.ExportJsonCommand.ExecuteAsync(null);
+
+            ComparisonRunRecord? written = JsonSerializer.Deserialize(
+                await File.ReadAllTextAsync(path),
+                TheForgeComparisonsJsonContext.Default.ComparisonRunRecord);
+
+            Assert.Equal("after-admission", written!.InputPreview);
+
+        }
+        finally
+        {
+
+            vm?.Dispose();
+
+            if (File.Exists(path))
+            {
+
+                File.Delete(path);
+
+            }
+
+        }
+
+    }
+
     private static ComparisonWorkbenchViewModel Create(
         IComparisonWorkbenchDataSource dataSource,
         IArtifactFileDialogService? fileDialog = null,
-        FakeWhispersService? whispers = null) =>
+        FakeWhispersService? whispers = null,
+        ITheForgeLocalMutationRunner? mutationRunner = null) =>
         new(
             dataSource,
             new InMemoryComparisonRunStore(),
@@ -208,6 +266,7 @@ public class ComparisonWorkbenchViewModelTests
             new NullConfirmationDialogService(),
             fileDialog ?? new NullArtifactFileDialogService(),
             new NavigationService(),
+            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance,
             new InMemoryInferenceTraceStore());
 
     /// <summary>
@@ -234,6 +293,33 @@ public class ComparisonWorkbenchViewModelTests
 
         public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult<string?>(UnwritablePath(suggestedFileName));
+
+    }
+
+    private sealed class FixedPathFileDialogService(string path) : IArtifactFileDialogService
+    {
+
+        public Task<string?> PickSaveJsonPathAsync(
+            string suggestedFileName,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(path);
+
+        public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickSaveCsvPathAsync(
+            string suggestedFileName,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(path);
+
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickSaveAnyPathAsync(
+            string suggestedFileName,
+            string? defaultExtension,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(path);
 
     }
 

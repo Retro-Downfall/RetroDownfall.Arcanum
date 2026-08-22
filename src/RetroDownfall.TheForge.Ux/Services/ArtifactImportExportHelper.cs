@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.Services;
@@ -29,6 +30,7 @@ public static class ArtifactImportExportHelper
     /// still propagates, because callers report a cancelled export differently from a failed one.
     /// </summary>
     public static async Task<string?> WriteJsonAsync<T>(
+        ITheForgeLocalMutationRunner mutationRunner,
         string path,
         T value,
         JsonTypeInfo<T> typeInfo,
@@ -38,9 +40,16 @@ public static class ArtifactImportExportHelper
         try
         {
 
-            string json = JsonSerializer.Serialize(value, typeInfo);
-
-            await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(true);
+            await mutationRunner
+                .RunAsync(
+                    path,
+                    admittedCancellationToken => WriteJsonAlreadyAdmittedAsync(
+                        path,
+                        value,
+                        typeInfo,
+                        admittedCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(true);
 
             return null;
 
@@ -51,6 +60,19 @@ public static class ArtifactImportExportHelper
             return ex.Message;
 
         }
+
+    }
+
+    internal static Task WriteJsonAlreadyAdmittedAsync<T>(
+        string path,
+        T value,
+        JsonTypeInfo<T> typeInfo,
+        CancellationToken cancellationToken)
+    {
+
+        string json = JsonSerializer.Serialize(value, typeInfo);
+
+        return File.WriteAllTextAsync(path, json, cancellationToken);
 
     }
 

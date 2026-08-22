@@ -97,7 +97,11 @@ public interface IRecentResourceStore
 {
     IReadOnlyList<string> GetRecentIds(string resourceKind);
 
-    void Remember(string resourceKind, string id);
+    Task RememberAsync(
+        string resourceKind,
+        string id,
+        Func<CancellationToken, Task<Result<bool>>> revalidateAsync,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -186,7 +190,11 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
                 if (picked.Status == ResourcePickerStatus.Selected && picked.Value is not null)
                 {
-                    return RememberAndSelect(request.ResourceKind, picked.Value, request.Descriptor);
+                    return await RememberAndSelectAsync(
+                            request,
+                            picked.Value,
+                            cancellationToken)
+                        .ConfigureAwait(false);
                 }
 
                 if (picked.Status != ResourcePickerStatus.NextPage)
@@ -233,7 +241,11 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
         if (matches.ExactIds.Count == 1)
         {
-            return RememberAndSelect(request.ResourceKind, matches.ExactIds.Samples[0], descriptor);
+            return await RememberAndSelectAsync(
+                    request,
+                    matches.ExactIds.Samples[0],
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         if (matches.ExactIds.Count > 1)
@@ -248,7 +260,11 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
         if (matches.ExactNames.Count == 1)
         {
-            return RememberAndSelect(request.ResourceKind, matches.ExactNames.Samples[0], descriptor);
+            return await RememberAndSelectAsync(
+                    request,
+                    matches.ExactNames.Samples[0],
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         if (matches.ExactNames.Count > 1)
@@ -263,7 +279,11 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
         if (matches.Prefixes.Count == 1)
         {
-            return RememberAndSelect(request.ResourceKind, matches.Prefixes.Samples[0], descriptor);
+            return await RememberAndSelectAsync(
+                    request,
+                    matches.Prefixes.Samples[0],
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         if (matches.Prefixes.Count > 1)
@@ -368,13 +388,45 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
         return Result<string?>.Success(nextToken);
     }
 
-    private ResourceSelectionResult<T> RememberAndSelect(
-        string resourceKind,
+    private async Task<ResourceSelectionResult<T>> RememberAndSelectAsync(
+        ResourceSelectionRequest<T> request,
         T value,
-        ResourceDescriptor<T> descriptor)
+        CancellationToken cancellationToken)
     {
-        recentStore.Remember(resourceKind, descriptor.GetId(value));
+
+        string id = request.Descriptor.GetId(value);
+
+        await recentStore
+            .RememberAsync(
+                request.ResourceKind,
+                id,
+                token => RevalidateExactIdAsync(
+                    request,
+                    id,
+                    token),
+                cancellationToken)
+            .ConfigureAwait(false);
+
         return ResourceSelectionResult<T>.Selected(value);
+
+    }
+
+    private static async Task<Result<bool>> RevalidateExactIdAsync(
+        ResourceSelectionRequest<T> request,
+        string id,
+        CancellationToken cancellationToken)
+    {
+
+        Result<ResourceScan> current = await ScanAsync(
+                request,
+                id,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return current.IsSuccess
+            ? Result<bool>.Success(current.Value.ExactIds.Count > 0)
+            : Result<bool>.Failure(current.Error);
+
     }
 
     private static ResourceSelectionResult<T> Ambiguous(
@@ -433,7 +485,11 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
                 if (picked.Status == ResourcePickerStatus.Selected && picked.Value is not null)
                 {
-                    return RememberAndSelect(request.ResourceKind, picked.Value, request.Descriptor);
+                    return await RememberAndSelectAsync(
+                            request,
+                            picked.Value,
+                            cancellationToken)
+                        .ConfigureAwait(false);
                 }
 
                 if (picked.Status != ResourcePickerStatus.NextPage)

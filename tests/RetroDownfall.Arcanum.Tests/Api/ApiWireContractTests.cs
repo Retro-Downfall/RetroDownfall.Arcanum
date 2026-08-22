@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -250,6 +251,56 @@ public sealed class ApiWireContractTests
     }
 
     [SkippableFact]
+    public async Task PostPerceptionChronosync_persists_the_host_owned_baseline_and_returns_the_delta()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string workspace = Path.Combine(
+            _factory.TempHome,
+            "chronosync-wire-" + Guid.NewGuid().ToString("N"));
+
+        PatternSnapshot baseline = new(
+            DomainType.SoftwareEngineering,
+            workspace,
+            ["alpha"]);
+
+        using HttpResponseMessage first = await PostChronosyncAsync(client, baseline);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        PatternSnapshot updated = baseline with
+        {
+
+            Threads = ["alpha", "beta"],
+
+        };
+
+        using HttpResponseMessage second = await PostChronosyncAsync(client, updated);
+
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        ApiResponse<ChronosyncReport>? envelope = JsonSerializer.Deserialize(
+            await second.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseChronosyncReport);
+
+        Assert.NotNull(envelope);
+
+        Assert.True(envelope.IsSuccess);
+
+        ChronosyncReport report = Assert.IsType<ChronosyncReport>(envelope.Data);
+
+        Assert.NotNull(report.PreviousSnapshotTime);
+
+        Assert.Equal(["beta"], report.NewThreads);
+
+        Assert.Empty(report.MissingThreads);
+
+    }
+
+    [SkippableFact]
     public async Task GetPerceptionLook_OutsideAllowedRoots_DoesNotLeakDirectoryExistence()
     {
 
@@ -331,6 +382,24 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         return body.Error!.Value.Code;
+
+    }
+
+    private static Task<HttpResponseMessage> PostChronosyncAsync(
+        HttpClient client,
+        PatternSnapshot snapshot)
+    {
+
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+            snapshot,
+            ArcanumJsonContext.Default.PatternSnapshot);
+
+        ByteArrayContent content = new(payload);
+
+        content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        return client.PostAsync("/api/perception/chronosync", content);
 
     }
 

@@ -62,7 +62,7 @@ public sealed class ProviderReachabilityCheck(
             cancellationToken.ThrowIfCancellationRequested();
 
             string? apiKey = await apiKeyResolver
-                .ResolveAsync(provider, cancellationToken)
+                .PeekAsync(provider, cancellationToken)
                 .ConfigureAwait(false);
 
             SetupConnectivityResult result = await probe
@@ -209,7 +209,7 @@ public sealed class WebResearchCredentialCheck(
         }
 
         SecretStoreReadResult stored = await credentialStore
-            .GetPerplexityApiKeyReadResultAsync(cancellationToken)
+            .PeekPerplexityApiKeyReadResultAsync(cancellationToken)
             .ConfigureAwait(false);
 
         return stored.Status switch

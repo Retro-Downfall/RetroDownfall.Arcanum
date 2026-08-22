@@ -326,6 +326,9 @@ public static class ErrorCodes
         /// <summary>The requested directory could not be resolved, or does not exist.</summary>
         public const string InvalidPath = "Perception.InvalidPath";
 
+        /// <summary>A caller-supplied pattern snapshot violates its bounded semantic contract.</summary>
+        public const string InvalidSnapshot = "Perception.InvalidSnapshot";
+
         /// <summary>
         /// The directory resolved outside <c>Arcanum:Security:PerceptionWorkspaceRoots</c>. Distinct
         /// from <see cref="InvalidPath"/> on purpose: the deny answer is returned before any existence
