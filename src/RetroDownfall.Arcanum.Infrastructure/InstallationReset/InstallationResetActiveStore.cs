@@ -42,7 +42,9 @@ internal sealed record InstallationResetActiveRecord(
     InstallationResetCredentialResult[] CredentialResults,
     string? LastErrorCode,
     InstallationResetDataHandoff? DataHandoff = null,
-    InstallationResetOnlineDataCompletion? OnlineDataCompletion = null);
+    InstallationResetOnlineDataCompletion? OnlineDataCompletion = null,
+    [property: JsonIgnore]
+    FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -1742,6 +1744,8 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || next.DataHandoff != current.DataHandoff
             || current.OnlineDataCompletion is not null
                 && next.OnlineDataCompletion != current.OnlineDataCompletion
+            || current.FullInstallationResetRemediationClaim
+                != next.FullInstallationResetRemediationClaim
             || !CredentialsAreMonotonic(current.CredentialResults, next.CredentialResults))
         {
 
@@ -1841,7 +1845,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         && expected.DataHandoff == actual.DataHandoff
         && expected.OnlineDataCompletion == actual.OnlineDataCompletion
         && expected.HostToolsMarkerPairReset is null
-        && actual.HostToolsMarkerPairReset is null;
+        && actual.HostToolsMarkerPairReset is null
+        && expected.FullInstallationResetRemediationClaim
+            == actual.FullInstallationResetRemediationClaim;
 
     private static bool SameLegacyRecord(
         InstallationResetActiveRecord expected,

@@ -7,6 +7,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -470,7 +471,9 @@ internal static class BackupCovenantRestoreReconciler
 
         _ = command.Parameters.AddWithValue(
             "$taintVersion",
-            joined.Value.TaintTimeMasterVersion is { } version ? version : DBNull.Value);
+            joined.Value.TaintTimeMasterVersion is { } version
+                ? HostProcessToolsTaintVersionStorage.Encode(version)
+                : DBNull.Value);
 
         _ = command.Parameters.AddWithValue(
             "$taintFingerprint",

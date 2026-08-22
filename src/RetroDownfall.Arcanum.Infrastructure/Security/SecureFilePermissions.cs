@@ -2,6 +2,9 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
+
+using Microsoft.Win32.SafeHandles;
+
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -316,6 +319,55 @@ public static partial class SecureFilePermissions
 
     }
 
+    internal static bool HasOwnerControlledFileHandlePosture(
+        SafeFileHandle handle,
+        string path,
+        FileHandleIdentity openedIdentity)
+    {
+
+        try
+        {
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                return FileHandleIdentityInterop.TryGetUnixHandleAccessMetadata(
+                        handle,
+                        out UnixFileMode mode,
+                        out uint ownerUserId)
+                    && UnixOwnerControlledReadableFilePostureMatches(
+                        mode,
+                        ownerUserId,
+                        GetEffectiveUserId());
+
+            }
+
+            return VerifyWindowsOwnerOnly(path, isDirectory: false)
+                && FileHandleIdentityInterop.TryGetPathMetadataNoFollowIgnoringTestSeam(
+                    path,
+                    out FileHandleMetadata current)
+                && FileHandleIdentity.IdentitiesMatch(
+                    openedIdentity,
+                    current.Identity);
+
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or System.Security.SecurityException
+                or IdentityNotMappedException
+                or InvalidOperationException
+                or ArgumentException
+                or NotSupportedException)
+        {
+
+            return false;
+
+        }
+
+    }
+
     internal static bool UnixOwnerOnlyPostureMatches(
         UnixFileMode mode,
         uint ownerUserId,
@@ -329,6 +381,21 @@ public static partial class SecureFilePermissions
 
         return mode == expected
             && ownerUserId == effectiveUserId;
+
+    }
+
+    internal static bool UnixOwnerControlledReadableFilePostureMatches(
+        UnixFileMode mode,
+        uint ownerUserId,
+        uint effectiveUserId)
+    {
+
+        const UnixFileMode allowed =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        return ownerUserId == effectiveUserId
+            && (mode & UnixFileMode.UserRead) != 0
+            && (mode & ~allowed) == 0;
 
     }
 

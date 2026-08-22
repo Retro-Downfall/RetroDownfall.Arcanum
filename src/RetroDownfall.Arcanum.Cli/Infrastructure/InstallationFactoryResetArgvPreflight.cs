@@ -11,6 +11,7 @@ internal sealed record InstallationFactoryResetPreflightResult(
     bool Apply,
     bool Force,
     bool Yes,
+    string? ExternalRemediationAttestationPath,
     string? Error);
 
 internal static class InstallationFactoryResetArgvPreflight
@@ -40,6 +41,7 @@ internal static class InstallationFactoryResetArgvPreflight
                 false,
                 false,
                 false,
+                null,
                 null);
 
         }
@@ -75,9 +77,20 @@ internal static class InstallationFactoryResetArgvPreflight
 
         bool yes = yesCount == 1;
 
+        (int attestationCount, string? attestationPath, bool malformedAttestation) =
+            ReadSingleValueOption(args, "--external-remediation-attestation");
+
         string? error = bypass
             ? null
-            : Validate(scopes, dryRunCount, applyCount, forceCount, yesCount);
+            : Validate(
+                scopes,
+                scope,
+                dryRunCount,
+                applyCount,
+                forceCount,
+                yesCount,
+                attestationCount,
+                malformedAttestation);
 
         return new InstallationFactoryResetPreflightResult(
             true,
@@ -88,6 +101,7 @@ internal static class InstallationFactoryResetArgvPreflight
             apply,
             force,
             yes,
+            attestationPath,
             error);
 
     }
@@ -105,10 +119,13 @@ internal static class InstallationFactoryResetArgvPreflight
 
     private static string? Validate(
         int scopes,
+        InstallationResetScope? scope,
         int dryRunCount,
         int applyCount,
         int forceCount,
-        int yesCount)
+        int yesCount,
+        int attestationCount,
+        bool malformedAttestation)
     {
 
         if (scopes != 1)
@@ -150,12 +167,87 @@ internal static class InstallationFactoryResetArgvPreflight
 
         }
 
+        if (attestationCount > 1 || malformedAttestation)
+        {
+
+            return "--external-remediation-attestation requires exactly one file path.";
+
+        }
+
+        if (attestationCount == 1
+            && (scope is not InstallationResetScope.All
+                || applyCount != 1
+                || dryRunCount != 0))
+        {
+
+            return "--external-remediation-attestation is valid only with --all --apply.";
+
+        }
+
         return null;
 
     }
 
     private static int Count(string[] args, string option) =>
         args.Count(argument => string.Equals(argument, option, StringComparison.Ordinal));
+
+    private static (int Count, string? Value, bool Malformed) ReadSingleValueOption(
+        string[] args,
+        string option)
+    {
+
+        int count = 0;
+
+        string? value = null;
+
+        bool malformed = false;
+
+        string prefix = option + "=";
+
+        for (int index = 0; index < args.Length; index++)
+        {
+
+            string argument = args[index];
+
+            if (string.Equals(argument, option, StringComparison.Ordinal))
+            {
+
+                count++;
+
+                if (index + 1 >= args.Length
+                    || args[index + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+
+                    malformed = true;
+
+                    continue;
+
+                }
+
+                value = args[++index];
+
+                malformed |= string.IsNullOrWhiteSpace(value);
+
+                continue;
+
+            }
+
+            if (argument.StartsWith(prefix, StringComparison.Ordinal))
+            {
+
+                count++;
+
+                value = argument[prefix.Length..];
+
+                malformed |= string.IsNullOrWhiteSpace(value);
+
+            }
+
+        }
+
+        return (count, value, malformed);
+
+    }
 
     private static int FindRootCommandIndex(string[] args)
     {

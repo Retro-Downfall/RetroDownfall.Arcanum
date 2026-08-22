@@ -1,3 +1,6 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
+using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -53,6 +56,33 @@ public sealed class HostProcessToolsMarkerStoreTests
         Assert.Equal(7u, read.Marker.TaintMasterKeyVersion);
 
         Assert.Equal(Fingerprint(3), read.Marker.TaintFingerprint);
+
+    }
+
+    [Fact]
+    public void A_legacy_marker_preserves_its_value_and_exact_stored_bytes_digest()
+    {
+
+        InMemoryOsCredentialStore credentials = new();
+
+        byte[] payload = LegacyMarkerPayload(uint.MaxValue);
+
+        _ = credentials.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.HostProcessToolsTaintAccount,
+            Convert.ToBase64String(payload));
+
+        HostProcessToolsMarkerReadResult read = new HostProcessToolsMarkerStore(credentials).Read();
+
+        Assert.Equal(HostProcessToolsMarkerReadStatus.Present, read.Status);
+
+        Assert.Equal((ulong)uint.MaxValue, read.Marker!.TaintMasterKeyVersion);
+
+        byte[] domain = Encoding.UTF8.GetBytes("Arcanum.HostProcessTools.Marker.v1\0");
+
+        Assert.Equal(
+            new CovenantDigest(SHA256.HashData([.. domain, .. payload])),
+            read.Marker.MarkerBytesDigest);
 
     }
 
@@ -133,6 +163,29 @@ public sealed class HostProcessToolsMarkerStoreTests
         }
 
         return new CovenantDigest(bytes);
+
+    }
+
+    private static byte[] LegacyMarkerPayload(uint taintMasterKeyVersion)
+    {
+
+        byte[] identity = Encoding.UTF8.GetBytes(Installation);
+
+        byte[] payload = new byte[182];
+
+        payload[0] = 1;
+
+        payload[1] = checked((byte)identity.Length);
+
+        identity.CopyTo(payload.AsSpan(2));
+
+        _ = Transition.TryWriteBytes(payload.AsSpan(130), bigEndian: true, out _);
+
+        BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(146), taintMasterKeyVersion);
+
+        Fingerprint(3).Bytes.CopyTo(payload.AsSpan(150));
+
+        return payload;
 
     }
 

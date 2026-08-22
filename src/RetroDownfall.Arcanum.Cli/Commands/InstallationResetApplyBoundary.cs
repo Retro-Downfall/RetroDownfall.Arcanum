@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -109,12 +111,17 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         InstallationResetPlan,
         Result<InstallationResetHostHandoff>> _createHostHandoff;
 
+    private readonly Func<
+        CancellationToken,
+        Task<Result<HostProcessToolsMarkerPairJoinResult>>> _readPair;
+
     public InstallationResetApplyBoundary(
         ArcanumApiClient apiClient,
         IInstallationResetLockedService resetService,
         IInstallationResetOnlineDataHandoff onlineDataHandoff,
         TimeProvider timeProvider,
-        InstallationMaintenanceCoordination maintenanceCoordination)
+        InstallationMaintenanceCoordination maintenanceCoordination,
+        IInstallationResetHostProcessToolsPairReader pairReader)
         : this(
             apiClient.QuitServerAsync,
             apiClient.FactoryResetDataAsync,
@@ -130,7 +137,8 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                     planId,
                     operationId,
                     cancellationToken),
-            onlineDataHandoff.CreateHostHandoff)
+            onlineDataHandoff.CreateHostHandoff,
+            pairReader.ReadAsync)
     {
 
     }
@@ -148,7 +156,10 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         Func<
             InstallationResetApplyRequest,
             InstallationResetPlan,
-            Result<InstallationResetHostHandoff>> createHostHandoff)
+            Result<InstallationResetHostHandoff>> createHostHandoff,
+        Func<
+            CancellationToken,
+            Task<Result<HostProcessToolsMarkerPairJoinResult>>> readPair)
     {
 
         _quitServer = quitServer;
@@ -166,6 +177,9 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         _createHostHandoff = createHostHandoff
             ?? throw new ArgumentNullException(nameof(createHostHandoff));
+
+        _readPair = readPair
+            ?? throw new ArgumentNullException(nameof(readPair));
 
     }
 
@@ -199,6 +213,81 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
     }
 
+    public async Task<Result<InstallationResetResult>> ApplyFullAsync(
+        FullInstallationResetRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (request is null
+            || request.Apply is null
+            || request.Apply.Request is null
+            || request.Apply.Request.Scope is not InstallationResetScope.All
+            || string.IsNullOrWhiteSpace(request.Apply.ExpectedPlanId)
+            || request.ExternalRemediation is null
+            || request.OperationId == Guid.Empty
+            || request.OperationId != request.ExternalRemediation.OperationId)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ExternalRemediationInvalid,
+                "The external remediation attestation could not be verified."));
+
+        }
+
+        Result<bool> shutdown = await _quitServer(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (shutdown.IsFailure
+            && !string.Equals(
+                shutdown.Error.Code,
+                ErrorCodes.Connection.Unreachable,
+                StringComparison.Ordinal)
+            && !string.Equals(
+                shutdown.Error.Code,
+                ErrorCodes.Security.MissingApiKey,
+                StringComparison.Ordinal))
+        {
+
+            return Result<InstallationResetResult>.Failure(shutdown.Error);
+
+        }
+
+        InstallationResetMaintenanceLockAttempt acquisition =
+            await AcquireMaintenanceLockAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+        using ArcanumMaintenanceLock? maintenanceLock = acquisition.Lock;
+
+        if (acquisition.Disposition
+            is ArcanumMaintenanceLockAcquisitionDisposition.Unsafe)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The Arcanum maintenance lock could not be acquired safely because its topology, identity, or owner-only permissions could not be validated."));
+
+        }
+
+        if (maintenanceLock is null)
+        {
+
+            return Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.FileLocked,
+                "The Arcanum maintenance lock remained unavailable after the shutdown handoff."));
+
+        }
+
+        return await _resetService
+            .ApplyFullUnderMaintenanceLockAsync(
+                request,
+                maintenanceLock,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
     public async Task<Result<InstallationResetResult>> ApplyAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken)
@@ -220,6 +309,16 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         if (request.Request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
+
+            Result cleanPair = await RequireCleanPairAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (cleanPair.IsFailure)
+            {
+
+                return Result<InstallationResetResult>.Failure(cleanPair.Error);
+
+            }
 
             if (hostHandoff is { } handoff)
             {
@@ -276,6 +375,16 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                     handoff: null,
                     cancellationToken)
                 .ConfigureAwait(false);
+
+        }
+
+        Result cleanPair = await RequireCleanPairAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (cleanPair.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(cleanPair.Error);
 
         }
 
@@ -386,6 +495,23 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         }
 
         return Result.Success();
+
+    }
+
+    private async Task<Result> RequireCleanPairAsync(
+        CancellationToken cancellationToken)
+    {
+
+        Result<HostProcessToolsMarkerPairJoinResult> pair = await _readPair(
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return pair.IsSuccess
+            && pair.Value.Disposition is HostProcessToolsMarkerPairDisposition.Clean
+                ? Result.Success()
+                : Result.Failure(new Error(
+                    ErrorCodes.Data.ExternalRemediationRequired,
+                    "The host-process-tools marker pair requires external remediation."));
 
     }
 

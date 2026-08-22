@@ -868,7 +868,7 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                     """
                     UPDATE covenant_authority_state
                     SET HostToolsStateCode = 3,
-                        TaintTimeMasterVersion = 1,
+                        TaintTimeMasterVersion = X'0000000000000001',
                         TaintFingerprint = zeroblob(32),
                         TransitionId = 'CCCCCCCC-DDDD-4EEE-8FFF-111111111111'
                     WHERE StateKey = 1;

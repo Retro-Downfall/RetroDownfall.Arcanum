@@ -327,6 +327,10 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IInstallationResetConfirmationPrompt, InstallationResetConfirmationPrompt>();
 
+        services.AddSingleton<
+            IFullInstallationResetAttestationFileReader,
+            FullInstallationResetAttestationFileReader>();
+
         services.AddScoped<IInstallationResetApplyBoundary, InstallationResetApplyBoundary>();
 
         services.AddScoped<IInstallationResetOnlinePlanValidator, InstallationResetOnlinePlanValidator>();

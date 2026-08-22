@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -14,6 +16,166 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class InstallationResetApplyBoundaryTests
 {
+
+    [Fact]
+
+    public async Task Full_apply_rejects_operation_mismatch_before_shutdown_lock_or_service()
+    {
+
+        FullInstallationResetRequest request = CreateFullRequest() with
+        {
+            OperationId = Guid.Parse("71717171-7171-4171-8171-717171717171"),
+        };
+
+        RecordingResetService service = new((_, _) =>
+            throw new InvalidOperationException("Ordinary apply must not run."));
+
+        InstallationResetApplyBoundary boundary = new(
+            _ => throw new InvalidOperationException("Shutdown must not run."),
+            (_, _) => throw new InvalidOperationException("Host reset must not run."),
+            service,
+            _ => throw new InvalidOperationException("Lock acquisition must not run."),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => throw new InvalidOperationException(
+                "Client coordination must not run."),
+            (_, _) => throw new InvalidOperationException(
+                "Host handoff must not be created."),
+            _ => throw new InvalidOperationException(
+                "Ordinary pair evidence must not be read."));
+
+        Result<InstallationResetResult> result = await boundary.ApplyFullAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, result.Error.Code);
+
+        Assert.Equal(0, service.ApplyCount);
+
+    }
+
+    [Fact]
+
+    public async Task Full_apply_rejects_a_non_all_scope_before_shutdown_lock_or_service()
+    {
+
+        FullInstallationResetRequest original = CreateFullRequest();
+
+        FullInstallationResetRequest request = original with
+        {
+            Apply = original.Apply with
+            {
+                Request = original.Apply.Request with
+                {
+                    Scope = InstallationResetScope.Global,
+                },
+            },
+        };
+
+        RecordingResetService service = new((_, _) =>
+            throw new InvalidOperationException("Ordinary apply must not run."));
+
+        InstallationResetApplyBoundary boundary = new(
+            _ => throw new InvalidOperationException("Shutdown must not run."),
+            (_, _) => throw new InvalidOperationException("Host reset must not run."),
+            service,
+            _ => throw new InvalidOperationException("Lock acquisition must not run."),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => throw new InvalidOperationException(
+                "Client coordination must not run."),
+            (_, _) => throw new InvalidOperationException(
+                "Host handoff must not be created."),
+            _ => throw new InvalidOperationException(
+                "Ordinary pair evidence must not be read."));
+
+        Result<InstallationResetResult> result = await boundary.ApplyFullAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, result.Error.Code);
+
+        Assert.Equal(0, service.ApplyCount);
+
+        Assert.Equal(0, service.FullApplyCount);
+
+    }
+
+    [Fact]
+
+    public async Task Full_apply_stops_the_host_and_calls_only_the_full_service_under_the_exact_lock()
+    {
+
+        List<string> events = [];
+
+        FullInstallationResetRequest request = CreateFullRequest();
+
+        RecordingLease lease = new();
+
+        RecordingResetService service = new((_, _) =>
+            throw new InvalidOperationException("Ordinary apply must not run."))
+        {
+            FullApply = (actual, heldInstallationLock, _) =>
+            {
+
+                events.Add("full");
+
+                Assert.Equal(request, actual);
+
+                Assert.Same(lease.MaintenanceLock, heldInstallationLock);
+
+                Assert.False(lease.IsDisposed);
+
+                return Task.FromResult(
+                    Result<InstallationResetResult>.Success(
+                        CreateResult(actual.Apply)));
+
+            },
+        };
+
+        InstallationResetApplyBoundary boundary = new(
+            _ =>
+            {
+
+                events.Add("quit");
+
+                return Task.FromResult(Result<bool>.Success(true));
+
+            },
+            (_, _) => throw new InvalidOperationException(
+                "The ordinary host reset must not run."),
+            service,
+            _ =>
+            {
+
+                events.Add("lock");
+
+                return Acquired(lease);
+
+            },
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => throw new InvalidOperationException(
+                "Client coordination must not run."),
+            (_, _) => throw new InvalidOperationException(
+                "Host handoff must not be created."),
+            _ => throw new InvalidOperationException(
+                "Ordinary pair evidence must not be read."));
+
+        Result<InstallationResetResult> result = await boundary.ApplyFullAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(["quit", "lock", "full"], events);
+
+        Assert.Equal(0, service.ApplyCount);
+
+        Assert.Equal(1, service.FullApplyCount);
+
+    }
 
     [Fact]
     public async Task Fresh_global_apply_sends_one_typed_host_handoff_then_continues_offline()
@@ -81,7 +243,8 @@ public sealed class InstallationResetApplyBoundaryTests
                         new RecordingClientCoordinationLease(events)));
 
             },
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
             new InstallationResetPlanRequest(
@@ -110,6 +273,83 @@ public sealed class InstallationResetApplyBoundaryTests
     }
 
     [Fact]
+    public async Task Fresh_global_apply_rechecks_the_live_pair_before_any_online_effect()
+    {
+
+        int shutdownCalls = 0;
+
+        int factoryCalls = 0;
+
+        int coordinationCalls = 0;
+
+        RecordingResetService service = new((_, _) =>
+            throw new InvalidOperationException("Offline apply must not run."));
+
+        InstallationResetApplyBoundary boundary = new(
+            _ =>
+            {
+
+                shutdownCalls++;
+
+                return Task.FromResult(Result<bool>.Success(true));
+
+            },
+            (_, _) =>
+            {
+
+                factoryCalls++;
+
+                return Task.FromResult(
+                    Result<DataRetentionApplyResult>.Failure(new Error(
+                        "Test.FactoryMustNotRun",
+                        "The online factory effect must not run.")));
+
+            },
+            service,
+            _ => throw new InvalidOperationException(
+                "Maintenance lock acquisition must not run."),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) =>
+            {
+
+                coordinationCalls++;
+
+                return Task.FromResult(
+                    Result<IInstallationResetClientCoordinationLease>.Success(
+                        new SilentClientCoordinationLease()));
+
+            },
+            CreateTestHostHandoff,
+            _ => Task.FromResult(
+                Result<HostProcessToolsMarkerPairJoinResult>.Success(
+                    new HostProcessToolsMarkerPairJoinResult(
+                        HostProcessToolsMarkerPairDisposition.MismatchBlocked,
+                        MatchedPair: null))));
+
+        Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
+            new InstallationResetPlanRequest(
+                InstallationResetScope.Global,
+                "/workspace"),
+            CreatePlan(InstallationResetScope.Global),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(
+            ErrorCodes.Data.ExternalRemediationRequired,
+            result.Error.Code);
+
+        Assert.Equal(0, factoryCalls);
+
+        Assert.Equal(0, shutdownCalls);
+
+        Assert.Equal(0, coordinationCalls);
+
+        Assert.Equal(0, service.ApplyCount);
+
+    }
+
+    [Fact]
     public async Task Fresh_global_plan_change_removes_the_client_blocker_without_offline_effect()
     {
 
@@ -130,7 +370,8 @@ public sealed class InstallationResetApplyBoundaryTests
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
             new InstallationResetPlanRequest(
@@ -193,7 +434,8 @@ public sealed class InstallationResetApplyBoundaryTests
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
             request,
@@ -256,7 +498,8 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
             new InstallationResetPlanRequest(
@@ -337,7 +580,8 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
             request,
@@ -393,7 +637,8 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
             request,
@@ -430,7 +675,8 @@ public sealed class InstallationResetApplyBoundaryTests
             _ => Acquired(lease),
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
             request,
@@ -472,7 +718,8 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
             CreateRequest(),
@@ -521,7 +768,8 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
             CreateRequest(),
@@ -567,7 +815,8 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff);
+            CreateTestHostHandoff,
+            ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
             CreateRequest(),
@@ -589,6 +838,20 @@ public sealed class InstallationResetApplyBoundaryTests
         RecordingLease lease) =>
         InstallationResetMaintenanceLockAttempt.Acquired(
             lease.MaintenanceLock);
+
+    private static Task<Result<HostProcessToolsMarkerPairJoinResult>>
+        ReadCleanPairAsync(CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(
+            Result<HostProcessToolsMarkerPairJoinResult>.Success(
+                new HostProcessToolsMarkerPairJoinResult(
+                    HostProcessToolsMarkerPairDisposition.Clean,
+                    MatchedPair: null)));
+
+    }
 
     private static Task<Result<IInstallationResetClientCoordinationLease>>
         SilentClientCoordination(
@@ -724,6 +987,42 @@ public sealed class InstallationResetApplyBoundaryTests
                 "/workspace"),
             "installation-plan-50");
 
+    private static FullInstallationResetRequest CreateFullRequest()
+    {
+
+        Guid operationId = Guid.Parse("70707070-7070-4070-8070-707070707070");
+
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            operationId,
+            InstallationId: Guid.Parse("72727272-7272-4272-8272-727272727272"),
+            HostToolsTransitionId: Guid.Parse("73737373-7373-4373-8373-737373737373"),
+            TaintMasterKeyVersion: ulong.MaxValue,
+            AuthorityFingerprint: Digest(0x10),
+            DatabaseMarkerDigest: Digest(0x20),
+            OsMarkerDigest: Digest(0x30),
+            RemediationActionDigest: Digest(0x40),
+            NonceBase64Url: "AAECAwQFBgcICQoLDA0ODw",
+            Issuer: "RetroDownfall.Remediation.v1",
+            IssuedAtUtc: new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero),
+            ExpiresAtUtc: new DateTimeOffset(2026, 8, 22, 13, 0, 0, TimeSpan.Zero),
+            SignatureBase64Url: new string('A', 86));
+
+        return new FullInstallationResetRequest(
+            operationId,
+            new InstallationResetApplyRequest(
+                new InstallationResetPlanRequest(
+                    InstallationResetScope.All,
+                    "/workspace"),
+                "installation-plan-50"),
+            attestation);
+
+    }
+
+    private static RetroDownfall.Arcanum.Core.Covenant.CovenantDigest Digest(
+        byte value) =>
+        new(Enumerable.Repeat(value, 32).ToArray());
+
     private static InstallationResetResult CreateResult(
         InstallationResetApplyRequest request) =>
         new(
@@ -753,6 +1052,14 @@ public sealed class InstallationResetApplyBoundaryTests
 
         public int ApplyCount { get; private set; }
 
+        public int FullApplyCount { get; private set; }
+
+        public Func<
+            FullInstallationResetRequest,
+            ArcanumMaintenanceLock,
+            CancellationToken,
+            Task<Result<InstallationResetResult>>>? FullApply { get; init; }
+
         public Task<Result<InstallationResetPlan>> PlanAsync(
             InstallationResetPlanRequest request,
             CancellationToken cancellationToken = default) =>
@@ -761,6 +1068,13 @@ public sealed class InstallationResetApplyBoundaryTests
 
         public Task<Result<InstallationResetResult>> ApplyAsync(
             InstallationResetApplyRequest request,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "The test reset service requires the held maintenance lock.")));
+
+        public Task<Result<InstallationResetResult>> ApplyFullAsync(
+            FullInstallationResetRequest request,
             CancellationToken cancellationToken = default)
             => Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
@@ -777,6 +1091,23 @@ public sealed class InstallationResetApplyBoundaryTests
             ApplyCount++;
 
             return apply(request, cancellationToken);
+
+        }
+
+        public Task<Result<InstallationResetResult>> ApplyFullUnderMaintenanceLockAsync(
+            FullInstallationResetRequest request,
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default)
+        {
+
+            ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+            FullApplyCount++;
+
+            return FullApply is null
+                ? throw new InvalidOperationException(
+                    "No full installation-reset behavior was configured.")
+                : FullApply(request, heldInstallationLock, cancellationToken);
 
         }
 

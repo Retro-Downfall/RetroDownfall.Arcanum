@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -72,6 +73,142 @@ public sealed class HostProcessToolsAuthorityStoreTests
 
         // The epoch does not move until the transition is proven complete.
         Assert.Equal(before.AuthorityEpoch, pending.AuthorityEpoch);
+
+    }
+
+    [Fact]
+    public async Task The_pending_commit_stores_and_reads_a_canonical_unsigned_taint_version()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        HostProcessToolsAuthorityStore store = new(database.Connection);
+
+        HostProcessToolsAuthorityRow clean = (await store.ReadAsync(CancellationToken.None)).Value;
+
+        Assert.True((await store.CommitPendingAsync(clean, Transition, CancellationToken.None)).IsSuccess);
+
+        await using SqliteCommand inspect = database.Connection.CreateCommand();
+
+        inspect.CommandText = "SELECT TaintTimeMasterVersion FROM covenant_authority_state WHERE StateKey = 1;";
+
+        byte[] stored = Assert.IsType<byte[]>(await inspect.ExecuteScalarAsync(CancellationToken.None));
+
+        Assert.Equal(8, stored.Length);
+
+        Assert.Equal((ulong)clean.CurrentMasterKeyVersion, BinaryPrimitives.ReadUInt64BigEndian(stored));
+
+        Result<HostProcessToolsAuthorityRow> read = await store.ReadAsync(CancellationToken.None);
+
+        Assert.True(read.IsSuccess);
+
+        Assert.Equal((ulong)clean.CurrentMasterKeyVersion, read.Value.TaintMasterKeyVersion);
+
+    }
+
+    [Fact]
+    public async Task A_legacy_positive_integer_taint_version_reads_across_the_full_signed_range()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        await using (SqliteCommand compatibility = database.Connection.CreateCommand())
+        {
+
+            compatibility.CommandText = "PRAGMA ignore_check_constraints = ON;";
+
+            _ = await compatibility.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        await using SqliteCommand legacy = database.Connection.CreateCommand();
+
+        legacy.CommandText = """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 3,
+                TransitionId = $transition,
+                TaintTimeMasterVersion = $taintVersion,
+                TaintFingerprint = $fingerprint
+            WHERE StateKey = 1;
+            """;
+
+        _ = legacy.Parameters.AddWithValue("$transition", Transition.ToString("D").ToUpperInvariant());
+
+        _ = legacy.Parameters.AddWithValue("$taintVersion", long.MaxValue);
+
+        _ = legacy.Parameters.AddWithValue("$fingerprint", Fingerprint().Bytes);
+
+        _ = await legacy.ExecuteNonQueryAsync(CancellationToken.None);
+
+        await using (SqliteCommand compatibility = database.Connection.CreateCommand())
+        {
+
+            compatibility.CommandText = "PRAGMA ignore_check_constraints = OFF;";
+
+            _ = await compatibility.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        Result<HostProcessToolsAuthorityRow> read = await new HostProcessToolsAuthorityStore(database.Connection)
+            .ReadAsync(CancellationToken.None);
+
+        Assert.True(read.IsSuccess);
+
+        Assert.Equal((ulong)long.MaxValue, read.Value.TaintMasterKeyVersion);
+
+    }
+
+    [Fact]
+    public async Task Fresh_schema_accepts_only_positive_eight_byte_taint_versions()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        await using SqliteCommand valid = database.Connection.CreateCommand();
+
+        valid.CommandText = """
+            UPDATE covenant_authority_state
+            SET HostToolsStateCode = 3,
+                TransitionId = $transition,
+                TaintTimeMasterVersion = X'FFFFFFFFFFFFFFFF',
+                TaintFingerprint = $fingerprint
+            WHERE StateKey = 1;
+            """;
+
+        _ = valid.Parameters.AddWithValue("$transition", Transition.ToString("D").ToUpperInvariant());
+
+        _ = valid.Parameters.AddWithValue("$fingerprint", Fingerprint().Bytes);
+
+        Assert.Equal(1, await valid.ExecuteNonQueryAsync(CancellationToken.None));
+
+        Result<HostProcessToolsAuthorityRow> read = await new HostProcessToolsAuthorityStore(database.Connection)
+            .ReadAsync(CancellationToken.None);
+
+        Assert.True(read.IsSuccess);
+
+        Assert.Equal(ulong.MaxValue, read.Value.TaintMasterKeyVersion);
+
+        foreach (string malformed in new[]
+        {
+            "X'0000000000000000'",
+            "X'01'",
+            "'0000000000000001'",
+            "1",
+        })
+        {
+
+            await using SqliteCommand damage = database.Connection.CreateCommand();
+
+            damage.CommandText = $"""
+                UPDATE covenant_authority_state
+                SET TaintTimeMasterVersion = {malformed}
+                WHERE StateKey = 1;
+                """;
+
+            _ = await Assert.ThrowsAsync<SqliteException>(
+                () => damage.ExecuteNonQueryAsync(CancellationToken.None));
+
+        }
 
     }
 

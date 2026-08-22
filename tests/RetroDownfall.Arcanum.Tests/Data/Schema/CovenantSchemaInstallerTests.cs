@@ -139,6 +139,48 @@ public sealed class CovenantSchemaInstallerTests
 
     }
 
+    [Fact]
+    public async Task Repeat_install_preserves_a_full_width_taint_version()
+    {
+
+        await using SqliteConnection connection = await OpenAsync();
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            Dimensions,
+            CancellationToken.None);
+
+        await using (SqliteCommand taint = connection.CreateCommand())
+        {
+
+            taint.CommandText = """
+                UPDATE covenant_authority_state
+                SET HostToolsStateCode = 3,
+                    TaintTimeMasterVersion = X'FFFFFFFFFFFFFFFF',
+                    TaintFingerprint = zeroblob(32),
+                    TransitionId = '11111111-2222-4333-8444-555555555555'
+                WHERE StateKey = 1;
+                """;
+
+            Assert.Equal(1, await taint.ExecuteNonQueryAsync(CancellationToken.None));
+
+        }
+
+        GrimoireSchemaInstallResult repeated = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            Dimensions,
+            CancellationToken.None);
+
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, repeated.Core.Health);
+
+        await using SqliteCommand inspect = connection.CreateCommand();
+
+        inspect.CommandText = "SELECT hex(TaintTimeMasterVersion) FROM covenant_authority_state WHERE StateKey = 1;";
+
+        Assert.Equal("FFFFFFFFFFFFFFFF", await inspect.ExecuteScalarAsync(CancellationToken.None));
+
+    }
+
     /// <summary>
     /// Canonical failure is confined to canonical. Core stays committed and healthy, the metadata
     /// table it created survives, and Covenant is simply unavailable for this process.

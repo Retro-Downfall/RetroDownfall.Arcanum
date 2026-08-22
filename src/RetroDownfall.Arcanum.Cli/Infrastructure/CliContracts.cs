@@ -1021,6 +1021,10 @@ internal static class CliFailureMapper
 
 [JsonSerializable(typeof(InstallationResetResult))]
 
+[JsonSerializable(typeof(FullInstallationResetExternalRemediationAttestation))]
+
+[JsonSerializable(typeof(FullInstallationResetRequest))]
+
 [JsonSerializable(typeof(CovenantEntryPayload))]
 
 [JsonSerializable(typeof(CovenantListPayload))]

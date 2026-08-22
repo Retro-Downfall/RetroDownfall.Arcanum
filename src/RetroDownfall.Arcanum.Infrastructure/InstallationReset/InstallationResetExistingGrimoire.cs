@@ -38,7 +38,8 @@ internal sealed class InstallationResetExistingGrimoire(
     ILoggerFactory loggerFactory)
     : IInstallationResetDataService,
       IInstallationResetWorkspaceResolver,
-      IInstallationResetDatabaseIdentityReader
+      IInstallationResetDatabaseIdentityReader,
+      IInstallationResetHostProcessToolsDatabaseEvidenceReader
 {
 
     private static readonly LongRunningOperationState[] RecoverableFactoryStates =
@@ -191,6 +192,47 @@ internal sealed class InstallationResetExistingGrimoire(
                         (SqliteConnection)context.Database.GetDbConnection(),
                         token)
                     .ConfigureAwait(false),
+            cancellationToken);
+
+    Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
+        IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadAsync(
+            CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            writable: false,
+            static async (_, _, context, token) =>
+            {
+
+                Result<HostProcessToolsAuthorityRow> row =
+                    await new HostProcessToolsAuthorityStore(
+                        (SqliteConnection)context.Database.GetDbConnection())
+                        .ReadAsync(token).ConfigureAwait(false);
+
+                if (row.IsFailure)
+                {
+
+                    return HostProcessToolsEvidenceUnavailable();
+
+                }
+
+                try
+                {
+
+                    return Result<HostProcessToolsDatabaseMarkerEvidence>.Success(
+                        row.Value.ToEvidence());
+
+                }
+                catch (Exception exception) when (
+                    exception is ArgumentException
+                        or FormatException
+                        or OverflowException
+                        or InvalidCastException)
+                {
+
+                    return HostProcessToolsEvidenceUnavailable();
+
+                }
+
+            },
             cancellationToken);
 
     private async Task<Result<T>> ExecuteAsync<T>(
@@ -844,6 +886,12 @@ internal sealed class InstallationResetExistingGrimoire(
         Result<T>.Failure(new Error(
             ErrorCodes.Data.InventoryUnavailable,
             "The existing Grimoire could not be opened without creating or repairing state."));
+
+    private static Result<HostProcessToolsDatabaseMarkerEvidence>
+        HostProcessToolsEvidenceUnavailable() =>
+        Result<HostProcessToolsDatabaseMarkerEvidence>.Failure(new Error(
+            ErrorCodes.Data.ExternalRemediationRequired,
+            "The host-process-tools database evidence is unavailable."));
 
     private static Result<DataRetentionApplyResult?> RecoveryFailure() =>
         Result<DataRetentionApplyResult?>.Failure(new Error(

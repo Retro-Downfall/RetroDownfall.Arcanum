@@ -600,11 +600,11 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """
         },
         {
-            "pending authority with an overflowing taint-time master version",
+            "pending authority with a zero taint-time master version",
             """
             UPDATE covenant_authority_state
             SET HostToolsStateCode = 2,
-                TaintTimeMasterVersion = 4294967296
+                TaintTimeMasterVersion = 0
             WHERE StateKey = 1;
             """
         },
@@ -1449,7 +1449,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
                     CurrentMasterKeyFingerprint = X'C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1',
                     RecoveryEnvelopeEpoch = 37,
                     HostToolsStateCode = 3,
-                    TaintTimeMasterVersion = 5,
+                    TaintTimeMasterVersion = X'0000000000000005',
                     TaintFingerprint = X'D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2D2',
                     TransitionId = '11111111-2222-4333-8444-555555555555'
                 WHERE StateKey = 1;

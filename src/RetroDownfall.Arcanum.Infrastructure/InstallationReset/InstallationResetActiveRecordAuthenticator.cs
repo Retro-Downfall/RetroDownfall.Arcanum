@@ -186,7 +186,8 @@ internal static class InstallationResetActiveRecordAuthenticator
             || revision is 0 or > MaxRevision
             || !previousEnvelopeDigest.IsValid
             || ValidateLocation(location).IsFailure
-            || ValidatePayload(payload).IsFailure)
+            || ValidatePayload(payload).IsFailure
+            || !MatchesInstallation(payload, installationId))
         {
 
             return Invalid<InstallationResetActiveEnvelopeV2>();
@@ -326,7 +327,8 @@ internal static class InstallationResetActiveRecordAuthenticator
             || revision is 0 or > MaxRevision
             || !previousEnvelopeDigest.IsValid
             || ValidateLocation(location).IsFailure
-            || ValidatePayload(payload).IsFailure)
+            || ValidatePayload(payload).IsFailure
+            || !MatchesInstallation(payload, installationId))
         {
 
             return InvalidResult();
@@ -523,7 +525,8 @@ internal static class InstallationResetActiveRecordAuthenticator
                 || payload.Scope != envelope.Scope
                 || !string.Equals(payload.PlanId, envelope.PlanId, StringComparison.Ordinal)
                 || payload.HostToolsMarkerPairReset is not null
-                || ValidatePayload(payload).IsFailure)
+                || ValidatePayload(payload).IsFailure
+                || !MatchesInstallation(payload, envelope.InstallationId))
             {
 
                 return Invalid<InstallationResetActivePayloadV2>();
@@ -817,6 +820,36 @@ internal static class InstallationResetActiveRecordAuthenticator
 
         }
 
+        if (payload.FullInstallationResetRemediationClaim is { } claim
+            && (claim.Version != 1
+                || claim.OperationId == Guid.Empty
+                || claim.OperationId != payload.OperationId
+                || claim.InstallationId == Guid.Empty
+                || !claim.AttestationDigest.IsValid
+                || !claim.NonceDigest.IsValid
+                || !claim.IssuerDigest.IsValid
+                || claim.AcceptedAtUtc == default
+                || claim.AcceptedAtUtc.Offset != TimeSpan.Zero
+                || claim.AcceptedAtUtc.Ticks % TimeSpan.TicksPerSecond != 0
+                || payload.Scope is not InstallationResetScope.All
+                || payload.Phase is not InstallationResetPhase.Prepared
+                || payload.PointOfNoReturn
+                || payload.RowsDeleted != 0
+                || payload.FilesDeleted != 0
+                || payload.EstimatedBytesDeleted != 0
+                || !payload.CredentialResults.IsEmpty
+                || payload.DataHandoff is not null
+                || payload.OnlineDataCompletion is not null
+                || !string.Equals(
+                    payload.LastErrorCode,
+                    ErrorCodes.Data.RecoveryRequired,
+                    StringComparison.Ordinal)))
+        {
+
+            return InvalidResult();
+
+        }
+
         if (payload.Workspace is { } workspace
             && (workspace.CampaignId == Guid.Empty
                 || string.IsNullOrWhiteSpace(workspace.WorkspaceRoot)))
@@ -883,6 +916,12 @@ internal static class InstallationResetActiveRecordAuthenticator
         return Result.Success();
 
     }
+
+    private static bool MatchesInstallation(
+        InstallationResetActivePayloadV2 payload,
+        Guid installationId) =>
+        payload.FullInstallationResetRemediationClaim is not { } claim
+        || claim.InstallationId == installationId;
 
     private static Result ValidateEnvelopeFields(InstallationResetActiveEnvelopeV2 envelope)
     {

@@ -38,6 +38,48 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     }
 
+    [Fact]
+
+    public void External_remediation_attestation_is_admitted_only_for_full_apply()
+    {
+
+        InstallationFactoryResetPreflightResult result =
+            InstallationFactoryResetArgvPreflight.Parse(
+                Split("data factory-reset --all --apply --external-remediation-attestation remediation.json"));
+
+        Assert.True(result.IsFactoryReset);
+
+        Assert.True(result.IsValid);
+
+        Assert.Equal("remediation.json", result.ExternalRemediationAttestationPath);
+
+    }
+
+    [Theory]
+
+    [InlineData("data factory-reset --global --apply --external-remediation-attestation remediation.json")]
+
+    [InlineData("data factory-reset --all --dry-run --external-remediation-attestation remediation.json")]
+
+    [InlineData("data factory-reset --all --apply --external-remediation-attestation")]
+
+    [InlineData("data factory-reset --all --apply --external-remediation-attestation one.json --external-remediation-attestation two.json")]
+
+    public void Invalid_external_remediation_attestation_shapes_are_rejected(
+        string commandLine)
+    {
+
+        InstallationFactoryResetPreflightResult result =
+            InstallationFactoryResetArgvPreflight.Parse(Split(commandLine));
+
+        Assert.True(result.IsFactoryReset);
+
+        Assert.False(result.IsValid);
+
+        Assert.False(string.IsNullOrWhiteSpace(result.Error));
+
+    }
+
     [Theory]
 
     [InlineData("data factory-reset --dry-run")]
@@ -159,6 +201,42 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(1, continuationCalls);
 
         Assert.Equal(1, probe.ActiveReadCount);
+
+    }
+
+    [Fact]
+
+    public async Task Program_defers_external_remediation_startup_lookup_until_after_decode()
+    {
+
+        int continuationCalls = 0;
+
+        FakeStartupProbe probe = new(active: null);
+
+        int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+            [
+                "data",
+                "factory-reset",
+                "--all",
+                "--apply",
+                "--external-remediation-attestation",
+                "/must-not-be-disclosed/remediation.json",
+            ],
+            () =>
+            {
+
+                continuationCalls++;
+
+                return Task.FromResult(17);
+
+            },
+            probe);
+
+        Assert.Equal(17, exitCode);
+
+        Assert.Equal(1, continuationCalls);
+
+        Assert.Equal(0, probe.ActiveReadCount);
 
     }
 

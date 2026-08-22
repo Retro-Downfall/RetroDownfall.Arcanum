@@ -24,6 +24,10 @@ internal interface IInstallationResetConfirmationPrompt
 internal interface IInstallationResetApplyBoundary
 {
 
+    Task<Result<InstallationResetResult>> ApplyFullAsync(
+        FullInstallationResetRequest request,
+        CancellationToken cancellationToken);
+
     Task<Result<InstallationResetResult>> ApplyAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken);
@@ -125,6 +129,7 @@ internal sealed class InstallationFactoryResetCommand(
     IInstallationResetApplyBoundary applyBoundary,
     IInstallationResetOnlinePlanValidator onlinePlanValidator,
     IInstallationResetOnlineDataHandoff onlineDataHandoff,
+    IFullInstallationResetAttestationFileReader attestationReader,
     CovenantExternalRetentionDisclosureWriter disclosureWriter)
 {
 
@@ -135,6 +140,7 @@ internal sealed class InstallationFactoryResetCommand(
         bool dryRun,
         bool apply,
         bool force,
+        string? externalRemediationAttestationPath,
         CancellationToken cancellationToken)
     {
 
@@ -153,6 +159,41 @@ internal sealed class InstallationFactoryResetCommand(
             return Fail(
                 validationError,
                 CliExitCode.ConfigurationError);
+
+        }
+
+        bool externalRemediationRequested =
+            externalRemediationAttestationPath is not null;
+
+        if (externalRemediationRequested && (!all || !apply))
+        {
+
+            return Fail(
+                "External remediation authorization is valid only with --all and --apply.",
+                CliExitCode.ConfigurationError);
+
+        }
+
+        FullInstallationResetExternalRemediationAttestation? externalRemediation = null;
+
+        if (externalRemediationRequested)
+        {
+
+            Result<FullInstallationResetExternalRemediationAttestation> read =
+                await attestationReader
+                    .ReadAsync(
+                        externalRemediationAttestationPath!,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (read.IsFailure)
+            {
+
+                return Fail(read.Error);
+
+            }
+
+            externalRemediation = read.Value;
 
         }
 
@@ -183,13 +224,56 @@ internal sealed class InstallationFactoryResetCommand(
 
             }
 
-            Result<InstallationResetResult> resumed = await applyBoundary
-                .ApplyAsync(
-                    new InstallationResetApplyRequest(request, active.PlanId),
-                    active.HostHandoff,
-                    active.OnlineDataCompletionDurable,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            if (active.RequiresExternalRemediationAttestation
+                && externalRemediation is null)
+            {
+
+                return Fail(new Error(
+                    ErrorCodes.Data.ExternalRemediationRequired,
+                    "External remediation is required for this installation reset."));
+
+            }
+
+            if (!active.RequiresExternalRemediationAttestation
+                && externalRemediation is not null)
+            {
+
+                return Fail(new Error(
+                    ErrorCodes.Data.ExternalRemediationInvalid,
+                    "The external remediation attestation could not be verified."));
+
+            }
+
+            if (externalRemediation is not null
+                && active.OperationId != externalRemediation.OperationId)
+            {
+
+                return Fail(new Error(
+                    ErrorCodes.Data.ExternalRemediationInvalid,
+                    "The external remediation attestation could not be verified."));
+
+            }
+
+            InstallationResetApplyRequest applyRequest = new(
+                request,
+                active.PlanId);
+
+            Result<InstallationResetResult> resumed = externalRemediation is null
+                ? await applyBoundary
+                    .ApplyAsync(
+                        applyRequest,
+                        active.HostHandoff,
+                        active.OnlineDataCompletionDurable,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : await applyBoundary
+                    .ApplyFullAsync(
+                        new FullInstallationResetRequest(
+                            externalRemediation.OperationId,
+                            applyRequest,
+                            externalRemediation),
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             if (resumed.IsFailure)
             {
@@ -277,6 +361,22 @@ internal sealed class InstallationFactoryResetCommand(
 
         }
 
+        InstallationResetIssueSummary? blocker = plan.Blockers.FirstOrDefault(
+            issue => externalRemediation is null
+                || !string.Equals(
+                    issue.Code,
+                    ErrorCodes.Data.ExternalRemediationRequired,
+                    StringComparison.Ordinal));
+
+        if (blocker is not null)
+        {
+
+            return Fail(new Error(
+                ErrorCodes.Data.Blocked,
+                blocker.Message));
+
+        }
+
         bool acknowledgedWithoutPrompt =
             invocationContext.Options.Yes && force;
 
@@ -320,12 +420,21 @@ internal sealed class InstallationFactoryResetCommand(
 
         }
 
-        Result<InstallationResetResult> applied = await applyBoundary
-            .ApplyFreshAsync(
-                request,
-                plan,
-                cancellationToken)
-            .ConfigureAwait(false);
+        Result<InstallationResetResult> applied = externalRemediation is null
+            ? await applyBoundary
+                .ApplyFreshAsync(
+                    request,
+                    plan,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : await applyBoundary
+                .ApplyFullAsync(
+                    new FullInstallationResetRequest(
+                        externalRemediation.OperationId,
+                        new InstallationResetApplyRequest(request, plan.PlanId),
+                        externalRemediation),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         if (applied.IsFailure)
         {
@@ -350,6 +459,24 @@ internal sealed class InstallationFactoryResetCommand(
             : (int)CliExitCode.GenericError;
 
     }
+
+    public Task<int> Execute(
+        bool workspace,
+        bool global,
+        bool all,
+        bool dryRun,
+        bool apply,
+        bool force,
+        CancellationToken cancellationToken) =>
+        Execute(
+            workspace,
+            global,
+            all,
+            dryRun,
+            apply,
+            force,
+            externalRemediationAttestationPath: null,
+            cancellationToken);
 
     private static string? ValidateShape(
         bool workspace,

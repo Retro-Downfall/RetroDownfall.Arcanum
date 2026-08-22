@@ -121,7 +121,7 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
                 reader.GetInt64(4),
                 (CovenantHostToolsState)reader.GetInt64(5),
                 reader.IsDBNull(6) ? null : Guid.Parse(reader.GetString(6)),
-                reader.IsDBNull(7) ? null : checked((uint)reader.GetInt64(7)),
+                ReadTaintVersion(reader.GetValue(7)),
                 taintFingerprint is null ? null : new CovenantDigest(taintFingerprint));
 
         }
@@ -182,7 +182,7 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
             UPDATE covenant_authority_state
             SET HostToolsStateCode = 2,
                 TransitionId = $transitionId,
-                TaintTimeMasterVersion = CurrentMasterKeyVersion,
+                TaintTimeMasterVersion = $taintVersion,
                 TaintFingerprint = CurrentMasterKeyFingerprint,
                 UpdatedAtUtc = $updatedAtUtc
             WHERE StateKey = 1
@@ -190,7 +190,16 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
               AND AuthorityEpoch = $expectedEpoch
               AND InstallationIdentity = $installationIdentity;
             """,
-            command => command.Parameters.AddWithValue("$transitionId", Format(transitionId)),
+            command =>
+            {
+
+                _ = command.Parameters.AddWithValue("$transitionId", Format(transitionId));
+
+                _ = command.Parameters.AddWithValue(
+                    "$taintVersion",
+                    HostProcessToolsTaintVersionStorage.Encode(expected.CurrentMasterKeyVersion));
+
+            },
             cancellationToken);
 
     }
@@ -308,6 +317,20 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         _ = exists.Parameters.AddWithValue("$name", table);
 
         return await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not (null or DBNull);
+
+    }
+
+    private static ulong? ReadTaintVersion(object value)
+    {
+
+        if (HostProcessToolsTaintVersionStorage.TryDecode(value, out ulong? version))
+        {
+
+            return version;
+
+        }
+
+        throw new InvalidCastException();
 
     }
 

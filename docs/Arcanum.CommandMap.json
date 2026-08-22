@@ -7241,6 +7241,15 @@
               "takesValue": false,
               "repeatable": false,
               "values": []
+            },
+            {
+              "name": "--external-remediation-attestation",
+              "aliases": [],
+              "description": "Read an externally signed full-reset remediation attestation from a file.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
             }
           ],
           "examples": [

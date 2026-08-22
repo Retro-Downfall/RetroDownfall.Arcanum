@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -32,7 +33,7 @@ internal sealed record CovenantAuthorityStateRow(
     string InstallationIdentity,
     long AuthorityEpoch,
     CovenantHostToolsState HostToolsState,
-    long? TaintTimeMasterVersion,
+    ulong? TaintTimeMasterVersion,
     byte[]? TaintFingerprint,
     string? TransitionId);
 
@@ -137,11 +138,20 @@ internal static class CovenantAuthorityStateJoiner
 
         }
 
+        if (!HostProcessToolsTaintVersionStorage.TryDecode(
+            reader.GetValue(3),
+            out ulong? taintTimeMasterVersion))
+        {
+
+            throw new InvalidDataException("The restored authority row carries a malformed taint version.");
+
+        }
+
         return new CovenantAuthorityStateRow(
             reader.GetString(0),
             reader.GetInt64(1),
             (CovenantHostToolsState)reader.GetInt32(2),
-            reader.IsDBNull(3) ? null : reader.GetInt64(3),
+            taintTimeMasterVersion,
             reader.IsDBNull(4) ? null : ReadBlob(reader, 4),
             reader.IsDBNull(5) ? null : reader.GetString(5));
 

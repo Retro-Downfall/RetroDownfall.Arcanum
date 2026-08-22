@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
@@ -91,6 +92,27 @@ public sealed class HostProcessToolsMarkerPairJoinerTests
         Assert.Equal(Installation, result.MatchedPair!.Database.InstallationIdentity);
 
         Assert.Equal(Transition, result.MatchedPair.OsMarker.TransitionId);
+
+    }
+
+    [Fact]
+    public void Taint_versions_that_differ_only_above_bit_thirty_two_do_not_match()
+    {
+
+        const ulong highVersion = 0x1_0000_0001;
+
+        HostProcessToolsDatabaseMarkerEvidence database = new(
+            Installation,
+            CovenantHostToolsState.HostToolsTainted,
+            Transition,
+            highVersion,
+            Fingerprint(7));
+
+        HostProcessToolsMarkerPairJoinResult result = _joiner.Join(
+            database,
+            OsMarker(taintMasterKeyVersion: 1));
+
+        Assert.Equal(HostProcessToolsMarkerPairDisposition.MismatchBlocked, result.Disposition);
 
     }
 
@@ -196,6 +218,32 @@ public sealed class HostProcessToolsMarkerPairJoinerTests
         Assert.Equal(3u, fields.TaintMasterKeyVersion);
 
         Assert.Equal(Fingerprint(11), fields.TaintFingerprint);
+
+    }
+
+    [Fact]
+    public void A_new_marker_payload_preserves_the_full_unsigned_taint_version()
+    {
+
+        const ulong taintVersion = ulong.MaxValue;
+
+        byte[] payload = HostProcessToolsMarkerPayload.Encode(
+            Installation,
+            Transition,
+            taintVersion,
+            Fingerprint(11));
+
+        Assert.Equal(2, payload[0]);
+
+        Assert.Equal(186, payload.Length);
+
+        Assert.Equal(
+            taintVersion,
+            BinaryPrimitives.ReadUInt64BigEndian(payload.AsSpan(146, 8)));
+
+        Assert.True(HostProcessToolsMarkerPayload.TryDecode(payload, out HostProcessToolsMarkerFields fields));
+
+        Assert.Equal(taintVersion, fields.TaintMasterKeyVersion);
 
     }
 
@@ -353,7 +401,7 @@ public sealed class HostProcessToolsMarkerPairJoinerTests
     private static HostProcessToolsOsMarkerEvidence OsMarker(
         string installationIdentity = Installation,
         Guid? transitionId = null,
-        uint taintMasterKeyVersion = 4,
+        ulong taintMasterKeyVersion = 4,
         byte fingerprintSeed = 7) =>
         new(
             installationIdentity,
@@ -366,7 +414,7 @@ public sealed class HostProcessToolsMarkerPairJoinerTests
     private static CovenantDigest MarkerBytes(
         string installationIdentity,
         Guid transitionId,
-        uint taintMasterKeyVersion,
+        ulong taintMasterKeyVersion,
         byte fingerprintSeed) =>
         HostProcessToolsMarkerPayload.DigestOf(HostProcessToolsMarkerPayload.Encode(
             installationIdentity,

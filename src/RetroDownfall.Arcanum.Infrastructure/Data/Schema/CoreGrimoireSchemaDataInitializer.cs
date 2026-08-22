@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -327,6 +328,15 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         }
 
+        if (!HostProcessToolsTaintVersionStorage.TryDecode(
+            reader.GetValue(6),
+            out ulong? taintTimeMasterVersion))
+        {
+
+            throw MalformedAuthorityState();
+
+        }
+
         return new AuthorityStateRow(
             reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
             reader.GetInt64(1),
@@ -334,7 +344,7 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             fingerprint,
             reader.GetInt64(4),
             reader.GetInt64(5),
-            reader.IsDBNull(6) ? null : reader.GetInt64(6),
+            taintTimeMasterVersion,
             reader.IsDBNull(7),
             reader.IsDBNull(8) ? null : reader.GetString(8));
 
@@ -608,7 +618,7 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         byte[] CurrentMasterKeyFingerprint,
         long RecoveryEnvelopeEpoch,
         long HostToolsStateCode,
-        long? TaintTimeMasterVersion,
+        ulong? TaintTimeMasterVersion,
         bool TaintFingerprintIsNull,
         string? TransitionId);
 

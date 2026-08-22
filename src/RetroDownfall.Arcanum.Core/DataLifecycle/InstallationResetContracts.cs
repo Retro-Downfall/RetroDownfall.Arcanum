@@ -1,5 +1,7 @@
 using System.Text.Json.Serialization;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Serialization;
@@ -91,6 +93,28 @@ public sealed record InstallationResetPlanRequest(
 public sealed record InstallationResetApplyRequest(
     [property: JsonRequired] InstallationResetPlanRequest Request,
     [property: JsonRequired] string ExpectedPlanId);
+
+public sealed record FullInstallationResetExternalRemediationAttestation(
+    byte Version,
+    Guid OperationId,
+    Guid InstallationId,
+    Guid HostToolsTransitionId,
+    ulong TaintMasterKeyVersion,
+    CovenantDigest AuthorityFingerprint,
+    CovenantDigest DatabaseMarkerDigest,
+    CovenantDigest OsMarkerDigest,
+    CovenantDigest RemediationActionDigest,
+    string NonceBase64Url,
+    string Issuer,
+    DateTimeOffset IssuedAtUtc,
+    DateTimeOffset ExpiresAtUtc,
+    string SignatureBase64Url);
+
+public sealed record FullInstallationResetRequest(
+    Guid OperationId,
+    [property: JsonRequired] InstallationResetApplyRequest Apply,
+    [property: JsonRequired]
+    FullInstallationResetExternalRemediationAttestation ExternalRemediation);
 
 public sealed record InstallationResetDataPlanRequest(
     [property: JsonRequired] InstallationResetDataScope Scope,
@@ -189,7 +213,8 @@ public sealed record ActiveInstallationReset(
     InstallationResetPhase Phase = InstallationResetPhase.Prepared,
     InstallationResetDataHandoff? DataHandoff = null,
     bool OnlineDataCompletionDurable = false,
-    InstallationResetHostHandoff? HostHandoff = null);
+    InstallationResetHostHandoff? HostHandoff = null,
+    bool RequiresExternalRemediationAttestation = false);
 
 public sealed record InstallationResetHostHandoff(
     [property: JsonRequired] Guid RequestedOperationId,
@@ -211,6 +236,10 @@ public interface IInstallationStartupProbe
 
 public interface IInstallationResetService
 {
+
+    Task<Result<InstallationResetResult>> ApplyFullAsync(
+        FullInstallationResetRequest request,
+        CancellationToken cancellationToken = default);
 
     Task<Result<InstallationResetPlan>> PlanAsync(
         InstallationResetPlanRequest request,

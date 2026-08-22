@@ -382,6 +382,100 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
     }
 
+    [Theory]
+    [InlineData("removed")]
+    [InlineData("version")]
+    [InlineData("operation")]
+    [InlineData("installation")]
+    [InlineData("attestation-digest")]
+    [InlineData("nonce-digest")]
+    [InlineData("issuer-digest")]
+    [InlineData("accepted-at")]
+    public async Task Advance_cannot_remove_or_substitute_an_authenticated_full_claim(
+        string mutation)
+    {
+
+        string guardedRoot = _workspace.CreateSubdir(
+            "arcanum-v2-claim-" + mutation);
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        RecordingCredentialStore credentials = new([]);
+
+        InstallationResetActiveStore store = new(guardedRoot, credentials);
+
+        Guid installationId = Guid.Parse(
+            "32111111-2222-4333-8444-555555555555");
+
+        Guid operationId = Guid.Parse(
+            "33111111-2222-4333-8444-555555555555");
+
+        FullInstallationResetRemediationClaimV1 claim = new(
+            Version: 1,
+            operationId,
+            installationId,
+            ClaimDigest(0x10),
+            ClaimDigest(0x20),
+            ClaimDigest(0x30),
+            new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero));
+
+        InstallationResetActiveRecord record = CreateRecord(
+            InstallationResetPhase.Prepared) with
+        {
+            OperationId = operationId,
+            Scope = InstallationResetScope.All,
+            Workspace = new DataRetentionWorkspaceBinding(
+                Guid.Parse("34111111-2222-4333-8444-555555555555"),
+                "/selected/workspace"),
+            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            FullInstallationResetRemediationClaim = claim,
+        };
+
+        InstallationResetActivePublication begun = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            record,
+            CancellationToken.None));
+
+        FullInstallationResetRemediationClaimV1? changed = mutation switch
+        {
+            "removed" => null,
+            "version" => claim with { Version = 2 },
+            "operation" => claim with { OperationId = Guid.NewGuid() },
+            "installation" => claim with { InstallationId = Guid.NewGuid() },
+            "attestation-digest" => claim with
+            {
+                AttestationDigest = ClaimDigest(0x40),
+            },
+            "nonce-digest" => claim with { NonceDigest = ClaimDigest(0x50) },
+            "issuer-digest" => claim with { IssuerDigest = ClaimDigest(0x60) },
+            "accepted-at" => claim with
+            {
+                AcceptedAtUtc = claim.AcceptedAtUtc.AddSeconds(1),
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation)),
+        };
+
+        Result<InstallationResetActivePublication> advanced = await store.AdvanceAsync(
+            heldLock,
+            begun,
+            record with { FullInstallationResetRemediationClaim = changed },
+            CancellationToken.None);
+
+        Assert.True(advanced.IsFailure);
+
+        InstallationResetActiveRecoveryState recovered = Value(
+            await store.RecoverAsync(heldLock, CancellationToken.None));
+
+        Assert.Equal(1UL, recovered.Publication!.Envelope.Revision);
+
+        Assert.Equal(
+            claim,
+            recovered.Publication.Payload.FullInstallationResetRemediationClaim);
+
+    }
+
     [Fact]
     public async Task Recovery_accepts_only_an_exact_anchor_envelope_pair_or_one_authenticated_envelope_ahead()
     {
@@ -1510,6 +1604,9 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             LastErrorCode: null);
 
     }
+
+    private static CovenantDigest ClaimDigest(byte value) =>
+        new(Enumerable.Repeat(value, 32).ToArray());
 
     private static void AssertOrdered(List<string> events, params string[] expected)
     {

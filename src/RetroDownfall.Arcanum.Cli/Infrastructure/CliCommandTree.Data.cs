@@ -292,6 +292,15 @@ internal static partial class CliCommandTree
 
         };
 
+        Option<string?> externalRemediationAttestation = new(
+            "--external-remediation-attestation")
+        {
+
+            Description =
+                "Read an externally signed full-reset remediation attestation from a file.",
+
+        };
+
         factoryReset.Add(workspaceReset);
 
         factoryReset.Add(globalReset);
@@ -304,6 +313,8 @@ internal static partial class CliCommandTree
 
         factoryReset.Add(factoryForce);
 
+        factoryReset.Add(externalRemediationAttestation);
+
         factoryReset.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
                 await serviceProvider
@@ -315,6 +326,7 @@ internal static partial class CliCommandTree
                         result.GetValue(factoryDryRun),
                         result.GetValue(factoryApply),
                         result.GetValue(factoryForce),
+                        result.GetValue(externalRemediationAttestation),
                         cancellationToken)
                     .ConfigureAwait(false));
 

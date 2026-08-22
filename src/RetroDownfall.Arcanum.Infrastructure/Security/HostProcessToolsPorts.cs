@@ -18,7 +18,7 @@ internal sealed record HostProcessToolsAuthorityRow(
     long RecoveryEnvelopeEpoch,
     CovenantHostToolsState State,
     Guid? TransitionId,
-    uint? TaintMasterKeyVersion,
+    ulong? TaintMasterKeyVersion,
     CovenantDigest? TaintFingerprint)
 {
 
@@ -134,7 +134,7 @@ internal interface IHostProcessToolsMarkerStore
     HostProcessToolsMarkerWriteStatus Write(
         string installationIdentity,
         Guid transitionId,
-        uint taintMasterKeyVersion,
+        ulong taintMasterKeyVersion,
         CovenantDigest taintFingerprint);
 
     bool CompareDelete(HostProcessToolsOsMarkerEvidence expected);

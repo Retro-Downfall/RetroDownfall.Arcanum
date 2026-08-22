@@ -74,6 +74,15 @@ internal static class Program
 
         }
 
+        if (preflight.ExternalRemediationAttestationPath is not null)
+        {
+
+            // The configured command securely decodes the signed operation before it performs
+            // its startup lookup. Reading active state here would invert that fail-closed order.
+            return await continuation().ConfigureAwait(false);
+
+        }
+
         bool resetResume = preflight.IsFactoryReset && preflight.Apply;
 
         startupProbe ??= InstallationStartupProbe.CreateDefault();

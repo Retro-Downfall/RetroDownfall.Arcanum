@@ -1,5 +1,7 @@
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -536,6 +538,79 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.Equal(writesBefore, credentials.WriteCount);
 
         Assert.Equal(deletesBefore, credentials.DeleteCount);
+
+    }
+
+    [Fact]
+    public async Task Authenticated_full_claim_projects_no_ordinary_host_handoff()
+    {
+
+        string root = _workspace.CreateSubdir("arcanum-full-claim");
+
+        RecordingCredentialStore credentials = new(
+            OsCredentialStoreResult.NotFound());
+
+        InstallationResetActiveStore activeStore = new(root, credentials);
+
+        Guid installationId = Guid.Parse(
+            "52525252-5252-4252-8252-525252525252");
+
+        InstallationResetActiveRecord original = CreateActiveRecord();
+
+        InstallationResetActiveRecord record = original with
+        {
+            DataHandoff = null,
+            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            FullInstallationResetRemediationClaim =
+                new FullInstallationResetRemediationClaimV1(
+                    Version: 1,
+                    original.OperationId,
+                    installationId,
+                    AttestationDigest: new CovenantDigest(
+                        Enumerable.Repeat((byte)0x11, 32).ToArray()),
+                    NonceDigest: new CovenantDigest(
+                        Enumerable.Repeat((byte)0x22, 32).ToArray()),
+                    IssuerDigest: new CovenantDigest(
+                        Enumerable.Repeat((byte)0x33, 32).ToArray()),
+                    AcceptedAtUtc: new DateTimeOffset(
+                        2026,
+                        8,
+                        22,
+                        12,
+                        0,
+                        0,
+                        TimeSpan.Zero)),
+        };
+
+        using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+                   ArcanumMaintenanceLock.TryAcquire(root)))
+        {
+
+            _ = Value(await activeStore.BeginAsync(
+                held,
+                installationId,
+                record,
+                CancellationToken.None));
+
+        }
+
+        InstallationStartupProbe probe = CreateProbe(root, credentials);
+
+        Result<ActiveInstallationReset?> result = await probe.ReadActiveResetAsync(
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        ActiveInstallationReset active = Assert.IsType<ActiveInstallationReset>(
+            result.Value);
+
+        Assert.Null(active.DataHandoff);
+
+        Assert.Null(active.HostHandoff);
+
+        Assert.False(active.OnlineDataCompletionDurable);
+
+        Assert.True(active.RequiresExternalRemediationAttestation);
 
     }
 

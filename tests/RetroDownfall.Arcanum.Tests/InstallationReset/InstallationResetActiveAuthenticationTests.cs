@@ -8,6 +8,8 @@ using System.Security.Cryptography;
 
 using System.Text;
 
+using System.Text.Json;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -485,6 +487,212 @@ public sealed class InstallationResetActiveAuthenticationTests : IDisposable
         Assert.Equal(
             "This installation-reset active evidence did not authenticate.",
             error.Message);
+
+    }
+
+    [Fact]
+
+    public void V2_payload_authenticates_the_content_free_external_remediation_claim()
+    {
+
+        // Mutations caught: placing the claim in the visible envelope, omitting it from the
+        // authenticated payload context, or silently discarding its replay-protection digests.
+        string claim =
+            "\"fullInstallationResetRemediationClaim\":{"
+            + "\"version\":1,"
+            + "\"operationId\":\"10213243-5465-7687-98a9-bacbdcedfe0f\","
+            + "\"installationId\":\"00112233-4455-6677-8899-aabbccddeeff\","
+            + "\"attestationDigest\":{\"bytes\":\"EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=\"},"
+            + "\"nonceDigest\":{\"bytes\":\"ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=\"},"
+            + "\"issuerDigest\":{\"bytes\":\"MDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk8=\"},"
+            + "\"acceptedAtUtc\":\"2026-08-22T12:00:00+00:00\"},";
+
+        string payloadJson = FixturePayloadJson.Replace(
+            "\"hostToolsMarkerPairReset\":null",
+            claim + "\"hostToolsMarkerPairReset\":null",
+            StringComparison.Ordinal).Replace(
+                "\"lastErrorCode\":null",
+                "\"lastErrorCode\":\"Data.RecoveryRequired\"",
+                StringComparison.Ordinal);
+
+        InstallationResetActiveEnvelopeV2 authenticated =
+            AuthenticatedFixtureEnvelope(payloadJson);
+
+        Result<InstallationResetActivePayloadV2> opened = OpenFixture(
+            FixtureKey(),
+            FixtureLocation(),
+            authenticated.InstallationId,
+            authenticated);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        string reencoded = JsonSerializer.Serialize(
+            opened.Value,
+            InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
+
+        Assert.Contains(
+            "\"fullInstallationResetRemediationClaim\"",
+            reencoded,
+            StringComparison.Ordinal);
+
+        InstallationResetActiveRecord record = opened.Value.ToRecord();
+
+        Assert.NotNull(record.FullInstallationResetRemediationClaim);
+
+        Assert.Equal(
+            record.FullInstallationResetRemediationClaim,
+            InstallationResetActivePayloadV2
+                .FromRecord(record)
+                .FullInstallationResetRemediationClaim);
+
+        Assert.DoesNotContain(
+            "fullInstallationResetRemediationClaim",
+            Encoding.UTF8.GetString(
+                InstallationResetActiveRecordAuthenticator.EncodeEnvelope(authenticated).Value),
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+
+    public void V2_external_remediation_claim_is_bounded_and_matches_both_envelope_identities()
+    {
+
+        InstallationResetActivePayloadV2 fixture = FixturePayload();
+
+        FullInstallationResetRemediationClaimV1 claim = new(
+            Version: 1,
+            fixture.OperationId,
+            Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"),
+            DigestRange(0x10),
+            DigestRange(0x20),
+            DigestRange(0x30),
+            new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero));
+
+        InstallationResetActivePayloadV2 claimed = fixture with
+        {
+            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            FullInstallationResetRemediationClaim = claim,
+        };
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.ValidatePayload(claimed).IsSuccess);
+
+        FullInstallationResetRemediationClaimV1[] invalidClaims =
+        [
+            claim with { Version = 2 },
+            claim with { OperationId = Guid.Empty },
+            claim with { OperationId = Guid.NewGuid() },
+            claim with { InstallationId = Guid.Empty },
+            claim with { AttestationDigest = default },
+            claim with { NonceDigest = default },
+            claim with { IssuerDigest = default },
+            claim with { AcceptedAtUtc = default },
+            claim with
+            {
+                AcceptedAtUtc = new DateTimeOffset(
+                    2026,
+                    8,
+                    22,
+                    12,
+                    0,
+                    0,
+                    TimeSpan.FromHours(1)),
+            },
+            claim with { AcceptedAtUtc = claim.AcceptedAtUtc.AddTicks(1) },
+        ];
+
+        Assert.All(
+            invalidClaims,
+            invalid => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    claimed with
+                    {
+                        FullInstallationResetRemediationClaim = invalid,
+                    }).IsFailure));
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.PreflightEnvelope(
+                FixtureLocation(),
+                claim.InstallationId,
+                revision: 1,
+                InstallationResetActiveRecordAuthenticator.ZeroDigest,
+                claimed).IsSuccess);
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.PreflightEnvelope(
+                FixtureLocation(),
+                Guid.NewGuid(),
+                revision: 1,
+                InstallationResetActiveRecordAuthenticator.ZeroDigest,
+            claimed).IsFailure);
+
+    }
+
+    [Fact]
+    public void V2_external_remediation_claim_requires_the_exact_pre_effect_checkpoint_shape()
+    {
+
+        InstallationResetActivePayloadV2 fixture = FixturePayload();
+
+        FullInstallationResetRemediationClaimV1 claim = new(
+            Version: 1,
+            fixture.OperationId,
+            Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"),
+            DigestRange(0x10),
+            DigestRange(0x20),
+            DigestRange(0x30),
+            new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero));
+
+        InstallationResetActivePayloadV2 claimed = fixture with
+        {
+            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            FullInstallationResetRemediationClaim = claim,
+        };
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.ValidatePayload(claimed).IsSuccess);
+
+        InstallationResetActivePayloadV2[] invalidShapes =
+        [
+            claimed with { Scope = InstallationResetScope.Global },
+            claimed with { Phase = InstallationResetPhase.DataResetComplete },
+            claimed with { PointOfNoReturn = true },
+            claimed with { RowsDeleted = 1 },
+            claimed with { FilesDeleted = 1 },
+            claimed with { EstimatedBytesDeleted = 1 },
+            claimed with
+            {
+                CredentialResults = ImmutableArray.Create(
+                    new InstallationResetActiveCredentialResultV2(
+                        "master-api-key",
+                        InstallationResetItemStatus.Pending,
+                        ErrorCode: null)),
+            },
+            claimed with
+            {
+                DataHandoff = InstallationResetDataHandoff.HostFactoryErasure,
+            },
+            claimed with
+            {
+                OnlineDataCompletion = new InstallationResetActiveOnlineCompletionV2(
+                    Guid.Parse("22222222-2222-4222-8222-222222222222"),
+                    claimed.OperationId,
+                    "data-plan",
+                    RowsDeleted: 0,
+                    FilesDeleted: 0,
+                    EstimatedBytesDeleted: 0,
+                    DerivedRecordsDeleted: 0),
+            },
+            claimed with { LastErrorCode = null },
+            claimed with { LastErrorCode = ErrorCodes.Data.Blocked },
+        ];
+
+        Assert.All(
+            invalidShapes,
+            invalid => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    invalid).IsFailure));
 
     }
 

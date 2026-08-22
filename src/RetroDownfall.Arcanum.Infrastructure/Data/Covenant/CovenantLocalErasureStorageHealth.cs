@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -1148,6 +1149,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         object taintFingerprintValue = reader.GetValue(25);
 
+        bool taintVersionIsValid = HostProcessToolsTaintVersionStorage.TryDecode(
+            taintTimeMasterVersionValue,
+            out ulong? taintTimeMasterVersion);
+
         if (reader.GetValue(0) is not byte[] generation
             || generation.Length != 16
             || new Guid(generation) == Guid.Empty
@@ -1196,8 +1201,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             || fullSweepRequired is not 0 and not 1
             || (rebuildTargetValue is not DBNull && rebuildTargetValue is not long)
             || (rebuildCursorValue is not DBNull && rebuildCursorValue is not long)
-            || (taintTimeMasterVersionValue is not DBNull
-                && taintTimeMasterVersionValue is not long)
+            || !taintVersionIsValid
             || (taintFingerprintValue is not DBNull && taintFingerprintValue is not byte[]))
         {
 
@@ -1230,10 +1234,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         long? rebuildCursor = rebuildCursorValue is DBNull
             ? null
             : (long)rebuildCursorValue;
-
-        long? taintTimeMasterVersion = taintTimeMasterVersionValue is DBNull
-            ? null
-            : (long)taintTimeMasterVersionValue;
 
         byte[]? taintFingerprint = taintFingerprintValue as byte[];
 
@@ -1323,14 +1323,14 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
     private static bool IsHostToolsTuple(
         CovenantHostToolsState state,
-        long? taintTimeMasterVersion,
+        ulong? taintTimeMasterVersion,
         byte[]? taintFingerprint,
         string? transitionId) =>
         state == CovenantHostToolsState.Clean
             ? taintTimeMasterVersion is null
                 && taintFingerprint is null
                 && transitionId is null
-            : taintTimeMasterVersion is > 0 and <= uint.MaxValue
+            : taintTimeMasterVersion > 0
                 && taintFingerprint is { Length: 32 }
                 && IsTransitionIdentity(transitionId);
 
@@ -1374,6 +1374,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         object taintFingerprintValue = reader.GetValue(8);
 
+        bool taintVersionIsValid = HostProcessToolsTaintVersionStorage.TryDecode(
+            taintTimeMasterVersionValue,
+            out ulong? taintTimeMasterVersion);
+
         if (reader.GetValue(0) is not string installationIdentity
             || string.IsNullOrWhiteSpace(installationIdentity)
             || installationIdentity.Length > 128
@@ -1389,8 +1393,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             || !TryReadLong(reader, 5, out long hostToolsStateCode)
             || !IsHostToolsStateCode(hostToolsStateCode)
             || (transitionValue is not DBNull && transitionValue is not string)
-            || (taintTimeMasterVersionValue is not DBNull
-                && taintTimeMasterVersionValue is not long)
+            || !taintVersionIsValid
             || (taintFingerprintValue is not DBNull && taintFingerprintValue is not byte[]))
         {
 
@@ -1401,10 +1404,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CovenantHostToolsState hostToolsState = (CovenantHostToolsState)hostToolsStateCode;
 
         string? transitionId = transitionValue is DBNull ? null : (string)transitionValue;
-
-        long? taintTimeMasterVersion = taintTimeMasterVersionValue is DBNull
-            ? null
-            : (long)taintTimeMasterVersionValue;
 
         byte[]? taintFingerprint = taintFingerprintValue as byte[];
 

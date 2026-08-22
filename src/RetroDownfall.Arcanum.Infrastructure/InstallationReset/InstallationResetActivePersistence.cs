@@ -85,6 +85,15 @@ internal sealed record InstallationResetActiveOnlineCompletionV2(
     long EstimatedBytesDeleted,
     long DerivedRecordsDeleted);
 
+internal sealed record FullInstallationResetRemediationClaimV1(
+    byte Version,
+    Guid OperationId,
+    Guid InstallationId,
+    CovenantDigest AttestationDigest,
+    CovenantDigest NonceDigest,
+    CovenantDigest IssuerDigest,
+    DateTimeOffset AcceptedAtUtc);
+
 internal sealed record InstallationResetActivePayloadV2(
     byte Version,
     Guid OperationId,
@@ -101,7 +110,9 @@ internal sealed record InstallationResetActivePayloadV2(
     string? LastErrorCode,
     InstallationResetDataHandoff? DataHandoff,
     InstallationResetActiveOnlineCompletionV2? OnlineDataCompletion,
-    JsonElement? HostToolsMarkerPairReset)
+    JsonElement? HostToolsMarkerPairReset,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null)
 {
 
     /// <summary>Projects mutable service state into a detached immutable persistence graph.</summary>
@@ -162,7 +173,9 @@ internal sealed record InstallationResetActivePayloadV2(
                     record.OnlineDataCompletion.FilesDeleted,
                     record.OnlineDataCompletion.EstimatedBytesDeleted,
                     record.OnlineDataCompletion.DerivedRecordsDeleted),
-            HostToolsMarkerPairReset: null);
+            HostToolsMarkerPairReset: null,
+            FullInstallationResetRemediationClaim:
+                record.FullInstallationResetRemediationClaim);
 
     }
 
@@ -228,7 +241,9 @@ internal sealed record InstallationResetActivePayloadV2(
                     OnlineDataCompletion.RowsDeleted,
                     OnlineDataCompletion.FilesDeleted,
                     OnlineDataCompletion.EstimatedBytesDeleted,
-                    OnlineDataCompletion.DerivedRecordsDeleted));
+                    OnlineDataCompletion.DerivedRecordsDeleted),
+            FullInstallationResetRemediationClaim:
+                FullInstallationResetRemediationClaim);
 
 }
 
@@ -244,6 +259,7 @@ internal sealed record InstallationResetActivePayloadV2(
 [JsonSerializable(typeof(InstallationResetActiveAcceptedBindingV2))]
 [JsonSerializable(typeof(InstallationResetActiveCredentialResultV2))]
 [JsonSerializable(typeof(InstallationResetActiveOnlineCompletionV2))]
+[JsonSerializable(typeof(FullInstallationResetRemediationClaimV1))]
 [JsonSerializable(typeof(InstallationResetActiveAnchorState))]
 [JsonSerializable(typeof(InstallationResetScope))]
 [JsonSerializable(typeof(InstallationResetPhase))]
