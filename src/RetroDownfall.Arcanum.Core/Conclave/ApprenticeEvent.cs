@@ -1,6 +1,6 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Conclave;
 
 /// <summary>
 /// In-process Chronicle event. <see cref="WizardEvent"/> is a pass-through carrier only;

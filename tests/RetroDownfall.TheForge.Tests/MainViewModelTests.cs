@@ -607,14 +607,14 @@ internal sealed class NullLogService : RetroDownfall.TheForge.Ux.Services.Servic
 internal sealed class NullWarTableDataSource : RetroDownfall.TheForge.Ux.ViewModels.WarTable.IWarTableDataSource
 {
 
-    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.ApprenticeSummaryDto>> ListApprenticesAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.ApprenticeSummaryDto>>([]);
+    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Conclave.ApprenticeSummaryDto>> ListApprenticesAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Conclave.ApprenticeSummaryDto>>([]);
 
-    public Task<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto?> GetApprenticeAsync(Guid id, CancellationToken cancellationToken) =>
-        Task.FromResult<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto?>(null);
+    public Task<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto?> GetApprenticeAsync(Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto?>(null);
 
-    public Task<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto?> CreateApprenticeAsync(RetroDownfall.Arcanum.Core.TheForge.CreateApprenticeRequest request, CancellationToken cancellationToken) =>
-        Task.FromResult<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto?>(null);
+    public Task<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto?> CreateApprenticeAsync(RetroDownfall.Arcanum.Core.Conclave.CreateApprenticeRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto?>(null);
 
     public Task<bool> StartAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(false);
 
@@ -624,14 +624,14 @@ internal sealed class NullWarTableDataSource : RetroDownfall.TheForge.Ux.ViewMod
 
     public Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(false);
 
-    public Task<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto?> ReweaveAsync(Guid id, RetroDownfall.Arcanum.Core.TheForge.ReweaveApprenticeRequest request, CancellationToken cancellationToken) =>
-        Task.FromResult<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto?>(null);
+    public Task<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto?> ReweaveAsync(Guid id, RetroDownfall.Arcanum.Core.Conclave.ReweaveApprenticeRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto?>(null);
 
-    public Task<bool> InterveneAsync(Guid id, RetroDownfall.Arcanum.Core.TheForge.InterveneApprenticeRequest request, CancellationToken cancellationToken) =>
+    public Task<bool> InterveneAsync(Guid id, RetroDownfall.Arcanum.Core.Conclave.InterveneApprenticeRequest request, CancellationToken cancellationToken) =>
         Task.FromResult(false);
 
-    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto>> GetLineageAsync(Guid id, CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.ApprenticeDetailDto>>([]);
+    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto>> GetLineageAsync(Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Conclave.ApprenticeDetailDto>>([]);
 
     public async IAsyncEnumerable<RetroDownfall.TheForge.Core.Chronicle.ChronicleFrame> StreamChronicleAsync(Guid id, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -670,8 +670,8 @@ internal sealed class NullAnvilDataSource : RetroDownfall.TheForge.Ux.ViewModels
     public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Wards.WardDto>> ListWardsAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Wards.WardDto>>([]);
 
-    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.ApprenticeSummaryDto>> ListApprenticesAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.ApprenticeSummaryDto>>([]);
+    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Conclave.ApprenticeSummaryDto>> ListApprenticesAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Conclave.ApprenticeSummaryDto>>([]);
 
     public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Mcp.McpServerInfo>> ListMcpServersAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Mcp.McpServerInfo>>([]);

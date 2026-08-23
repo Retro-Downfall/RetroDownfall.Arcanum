@@ -2,7 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.VisualTree;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 
 namespace RetroDownfall.TheForge.Ux.Views.WarTable;

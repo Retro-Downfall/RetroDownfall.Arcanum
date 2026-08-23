@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;

@@ -1,5 +1,5 @@
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.TheForge.Core.Chronicle;
 using RetroDownfall.TheForge.Core.Serialization;
 

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Serialization;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Conclave;
 
 namespace RetroDownfall.Arcanum.Tests.TheForge;
 

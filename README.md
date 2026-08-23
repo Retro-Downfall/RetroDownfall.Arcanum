@@ -199,7 +199,7 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Per-campaign execution sandbox | **Sanctum** | `/api/campaigns/{campaignId}/sanctum` |
 | High-risk gated tools | **Forbidden Arts** | `Arcanum:Security:Ward:ForbiddenArts` |
 | Autonomous sub-agent | **Apprentice** | `/api/apprentices` |
-| Multi-agent coordination network | **The Conclave** | `cast_sending` tool · `/api/apprentices/{id}/cast` · `arcanum conclave` |
+| Multi-agent coordination network | **The Conclave** | `cast_sending` tool · `/api/apprentices/{id}/cast` · `arcanum conclave` · `Core/Conclave/` |
 | Agent event stream | **Chronicle** | `/api/apprentices/{id}/chronicle` (SSE) |
 | A2A Agent Card | **Heraldry** | `GET /api/conclave/a2a/agent-card` |
 | A2A Task (inbound or outbound) | **Sending** (a.k.a. Delegated Quest) | `/api/conclave/a2a/*` · `POST /api/conclave/sendings` · `POST /api/conclave/sendings/{taskId}/continue` · `dispatch_sending` / `continue_sending` tools · `arcanum conclave dispatch|continue` |

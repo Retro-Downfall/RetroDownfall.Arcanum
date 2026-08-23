@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;

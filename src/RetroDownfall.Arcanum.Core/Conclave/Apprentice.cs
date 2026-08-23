@@ -1,6 +1,6 @@
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Conclave;
 
 public sealed class Apprentice
 {

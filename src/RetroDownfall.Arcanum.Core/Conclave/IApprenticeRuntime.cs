@@ -1,6 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Conclave;
 
 public interface IApprenticeRuntime
 {

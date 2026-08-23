@@ -1,4 +1,4 @@
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Conclave;
 
 namespace RetroDownfall.Arcanum.Tests.TheForge;
 

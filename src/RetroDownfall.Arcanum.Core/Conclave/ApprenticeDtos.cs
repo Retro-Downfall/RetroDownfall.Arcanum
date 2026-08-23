@@ -1,4 +1,4 @@
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Conclave;
 
 public sealed record CreateApprenticeRequest(
     string Name,
