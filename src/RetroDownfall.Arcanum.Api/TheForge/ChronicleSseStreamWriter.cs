@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Serialization;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;

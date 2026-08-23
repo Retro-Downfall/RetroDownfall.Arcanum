@@ -1,7 +1,7 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Serialization;
 
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Conclave;
 
 public static class ApprenticePlanParser
 {

@@ -5,7 +5,7 @@ namespace RetroDownfall.TheForge.Core.Chronicle;
 /// <summary>
 /// A tolerant, The Forge-local parse of one <c>GET /api/apprentices/{id}/chronicle</c> SSE frame.
 ///
-/// Deliberately NOT a deserialization of <c>RetroDownfall.Arcanum.Core.TheForge.ApprenticeEvent</c>:
+/// Deliberately NOT a deserialization of <c>RetroDownfall.Arcanum.Core.Conclave.ApprenticeEvent</c>:
 /// <c>ChronicleSseWriter.WritePassThroughEvent</c> flattens pass-through Master
 /// (<c>IntelligenceEvent</c>) fields directly onto the frame (<c>message</c>, <c>data</c>,
 /// <c>usage</c>, <c>toolCall</c>, <c>wardId</c>, <c>toolName</c>, <c>arguments</c>, <c>allowed</c>,

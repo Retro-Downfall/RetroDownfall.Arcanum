@@ -22,6 +22,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 
 using RetroDownfall.Arcanum.Core.Mcp;
 
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.TheForge;
 
 using RetroDownfall.Arcanum.Core.Workspaces;

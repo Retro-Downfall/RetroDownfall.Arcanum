@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Chronicle;

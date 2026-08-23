@@ -4,7 +4,7 @@ using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Conclave;
 
 #pragma warning disable 219, 612, 618
 #nullable disable
@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
         public static RuntimeEntityType Create(RuntimeModel model, RuntimeEntityType baseEntityType = null)
         {
             var runtimeEntityType = model.AddEntityType(
-                "RetroDownfall.Arcanum.Core.TheForge.Apprentice",
+                "RetroDownfall.Arcanum.Core.Conclave.Apprentice",
                 typeof(Apprentice),
                 baseEntityType,
                 propertyCount: 13,

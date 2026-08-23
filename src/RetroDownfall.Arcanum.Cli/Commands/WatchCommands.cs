@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Cli.UX;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.TheForge;
 
 using Spectre.Console;

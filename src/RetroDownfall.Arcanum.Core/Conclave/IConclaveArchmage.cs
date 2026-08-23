@@ -1,6 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Conclave;
 
 /// <summary>
 /// Request to cast a Sending - create a child Apprentice within The Conclave. When

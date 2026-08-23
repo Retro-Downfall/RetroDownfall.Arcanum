@@ -190,7 +190,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.ToTable("WorkspaceContexts", (string)null);
                 });
 
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.TheForge.Apprentice", b =>
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Conclave.Apprentice", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -388,7 +388,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.Navigation("Session");
                 });
 
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.TheForge.Apprentice", b =>
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Conclave.Apprentice", b =>
                 {
                     b.HasOne("RetroDownfall.Arcanum.Core.TheForge.Campaign", null)
                         .WithMany()

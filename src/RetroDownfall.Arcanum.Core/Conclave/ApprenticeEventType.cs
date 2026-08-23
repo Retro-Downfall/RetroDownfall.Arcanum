@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Conclave;
 
 [JsonConverter(typeof(JsonStringEnumConverter<ApprenticeEventType>))]
 public enum ApprenticeEventType

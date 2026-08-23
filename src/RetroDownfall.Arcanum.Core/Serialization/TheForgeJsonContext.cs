@@ -5,9 +5,9 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(string))]
-[JsonSerializable(typeof(TheForge.PlanStep))]
-[JsonSerializable(typeof(List<TheForge.PlanStep>))]
-[JsonSerializable(typeof(TheForge.ApprenticeCheckpoint))]
+[JsonSerializable(typeof(Conclave.PlanStep))]
+[JsonSerializable(typeof(List<Conclave.PlanStep>))]
+[JsonSerializable(typeof(Conclave.ApprenticeCheckpoint))]
 [JsonSerializable(typeof(TheForge.CampaignSettings))]
 [JsonSerializable(typeof(TheForge.SkillMetadata))]
 [JsonSerializable(typeof(TheForge.CampaignExportDto))]
