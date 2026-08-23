@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
-using RetroDownfall.Arcanum.Infrastructure.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.Tower;
 
@@ -52,6 +52,28 @@ public sealed class CampaignPathMarkerCodecTests
         CampaignPathMarkerContent content = Content();
 
         Assert.Equal(_codec.Encode(content).Value, _codec.Encode(content).Value);
+
+    }
+
+    /// <summary>
+    /// The exact bytes this codec produces for a fixed key and a fixed content, pinned as a literal.
+    /// </summary>
+    /// <remarks>
+    /// Determinism is already asserted above, but that assertion compares the codec against itself and
+    /// would hold just as well for a codec that had started writing different bytes. A marker already on
+    /// disk is compared byte for byte by restart recovery, so what matters is agreement with the past,
+    /// and only a literal captured outside the codec can express that.
+    /// </remarks>
+    [Fact]
+    public void An_encoded_marker_is_the_same_bytes_this_codec_has_always_written()
+    {
+
+        const string expected =
+            "417263616E756D2E43616D706169676E2E506174684D61726B65722E763100000000016F4F2B0E1F6D4F5F9D335F7F8E"
+            + "1A2B3C0000000000000007010203040506070811121314151617180020000102030405060708090A0B0C0D0E0F101112"
+            + "131415161718191A1B1C1D1E1F1B00A8A5108FB93E009B89003FBBD5520C7C122300EA7CC3A82C0502B00CDEED";
+
+        Assert.Equal(expected, Convert.ToHexString(_codec.Encode(Content()).Value));
 
     }
 

@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
 
-namespace RetroDownfall.Arcanum.Infrastructure.TheForge;
+namespace RetroDownfall.Arcanum.Infrastructure.Tower;
 
 /// <summary>
 /// The only Campaign marker encoder and parser in the process.

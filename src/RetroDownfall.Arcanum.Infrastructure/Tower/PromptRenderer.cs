@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Primitives;
 
-namespace RetroDownfall.Arcanum.Infrastructure.TheForge;
+namespace RetroDownfall.Arcanum.Infrastructure.Tower;
 
 public sealed partial class PromptRenderer
 {

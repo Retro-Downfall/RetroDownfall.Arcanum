@@ -68,7 +68,7 @@ using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
-using RetroDownfall.Arcanum.Infrastructure.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 
 namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 

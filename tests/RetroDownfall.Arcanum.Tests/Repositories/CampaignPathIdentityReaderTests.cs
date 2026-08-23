@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
-using RetroDownfall.Arcanum.Infrastructure.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
