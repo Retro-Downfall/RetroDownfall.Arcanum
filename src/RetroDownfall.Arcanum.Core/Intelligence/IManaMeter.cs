@@ -1,4 +1,4 @@
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 public interface IManaMeter
 {

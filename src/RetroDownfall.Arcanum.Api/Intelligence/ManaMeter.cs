@@ -1,9 +1,8 @@
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Core.TheForge;
 
-namespace RetroDownfall.Arcanum.Api.TheForge;
+namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed class ManaMeter : IManaMeter
 {

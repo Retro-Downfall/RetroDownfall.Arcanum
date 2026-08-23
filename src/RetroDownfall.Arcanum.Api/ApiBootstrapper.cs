@@ -38,6 +38,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -405,7 +406,7 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IToolResultMaterializer, ToolResultMaterializer>();
 
-        services.AddSingleton<IManaMeter, TheForge.ManaMeter>();
+        services.AddSingleton<IManaMeter, ManaMeter>();
 
         services.AddSingleton<TelemetryService>();
 
