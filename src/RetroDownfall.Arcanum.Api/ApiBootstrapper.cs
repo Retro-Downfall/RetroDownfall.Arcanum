@@ -13,7 +13,9 @@ using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Health;
 using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Api.Streaming;
-using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Api.Primitives;
+using RetroDownfall.Arcanum.Api.Conclave;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
@@ -1107,7 +1109,7 @@ public static class ApiBootstrapper
 
         apiGroup.MapSpellEndpoints();
 
-        apiGroup.MapSpellForgeEndpoints();
+        apiGroup.MapSpellAuthoringEndpoints();
 
         apiGroup.MapSpellExecutionEndpoints();
 

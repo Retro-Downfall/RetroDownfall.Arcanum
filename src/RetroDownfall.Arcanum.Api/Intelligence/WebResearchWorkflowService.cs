@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Models;
 
-using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Api.Tower;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 

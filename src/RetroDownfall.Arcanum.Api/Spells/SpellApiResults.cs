@@ -2,7 +2,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
-using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Api.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Spells;
 

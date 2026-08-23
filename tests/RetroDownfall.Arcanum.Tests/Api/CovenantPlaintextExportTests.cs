@@ -10,8 +10,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Api.Serialization;
-using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;

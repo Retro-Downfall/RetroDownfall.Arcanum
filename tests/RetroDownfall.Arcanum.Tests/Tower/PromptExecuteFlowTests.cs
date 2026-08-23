@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Intelligence;
-using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
