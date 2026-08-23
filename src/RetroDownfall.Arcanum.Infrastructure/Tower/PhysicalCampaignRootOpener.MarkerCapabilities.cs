@@ -8,7 +8,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-namespace RetroDownfall.Arcanum.Infrastructure.TheForge;
+namespace RetroDownfall.Arcanum.Infrastructure.Tower;
 
 internal sealed partial class PhysicalCampaignRootOpener
 {

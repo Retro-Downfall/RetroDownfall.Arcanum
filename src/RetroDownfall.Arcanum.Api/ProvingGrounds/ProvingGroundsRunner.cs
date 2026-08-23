@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
-using RetroDownfall.Arcanum.Infrastructure.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 
 namespace RetroDownfall.Arcanum.Api.ProvingGrounds;
 
