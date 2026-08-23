@@ -3,13 +3,13 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 /// <summary>
 /// Shared rendering for spell/prompt `execute` commands: writes the assistant response text to
 /// stdout, and (when present) a themed tool-call summary to stderr so piping stdout stays clean.
 /// </summary>
-internal static class TheForgeExecuteRendering
+internal static class ExecuteResultRendering
 {
 
     public static async Task WriteExecuteResultAsync(PromptResponseDto response, IThemePalette themePalette)

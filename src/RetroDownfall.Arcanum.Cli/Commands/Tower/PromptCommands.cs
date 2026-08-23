@@ -6,10 +6,10 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 /// <summary>
-/// The Forge prompt utilities (requires arcanum serve).
+/// Prompt utilities (requires arcanum serve).
 /// </summary>
 public sealed class PromptCommands(
     ArcanumApiClient apiClient,
@@ -557,7 +557,7 @@ public sealed class PromptCommands(
             return 1;
         }
 
-        await TheForgeExecuteRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
+        await ExecuteResultRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
 
         return 0;
 

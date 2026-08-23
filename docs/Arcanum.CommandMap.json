@@ -3502,7 +3502,7 @@
     {
       "path": "prompt",
       "name": "prompt",
-      "description": "The Forge prompt utilities (requires arcanum serve).",
+      "description": "Prompt utilities (requires arcanum serve).",
       "runnable": false,
       "aliases": [],
       "arguments": [],
@@ -4147,7 +4147,7 @@
     {
       "path": "apprentice",
       "name": "apprentice",
-      "description": "The Forge Apprentice orchestration (requires arcanum serve).",
+      "description": "Apprentice orchestration (requires arcanum serve).",
       "runnable": false,
       "aliases": [],
       "arguments": [],

@@ -9,7 +9,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 internal static class SpellCommandSupport
 {
@@ -50,7 +50,7 @@ internal static class SpellCommandSupport
 }
 
 /// <summary>
-/// The Forge spell utilities (requires arcanum serve).
+/// Spell utilities (requires arcanum serve).
 /// </summary>
 public sealed class SpellCommands(
     ArcanumApiClient apiClient,
@@ -535,7 +535,7 @@ public sealed class SpellCommands(
             return 1;
         }
 
-        await TheForgeExecuteRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
+        await ExecuteResultRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
 
         return 0;
 

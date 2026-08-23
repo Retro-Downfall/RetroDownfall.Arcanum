@@ -8,7 +8,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 internal static class CampaignCommandSupport
 {
@@ -122,7 +122,7 @@ internal static class CampaignCommandSupport
 }
 
 /// <summary>
-/// The Forge campaign registry (requires arcanum serve).
+/// Campaign registry (requires arcanum serve).
 /// </summary>
 public sealed class CampaignCommands(
     ArcanumApiClient apiClient,

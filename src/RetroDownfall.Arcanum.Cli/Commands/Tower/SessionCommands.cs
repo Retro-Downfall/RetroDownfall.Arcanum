@@ -16,7 +16,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 /// <summary>
 /// Complete session lifecycle management over the authenticated local API.

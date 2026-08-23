@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// <para>The console is created per write rather than cached because <see cref="Console.Error"/> is
 /// replaced during a run — by the test harness and by the JSON capture — and a cached writer would
 /// keep publishing to a stream that is no longer current. This mirrors
-/// <c>TheForgeExecuteRendering</c>, which already renders its stderr half this way.</para>
+/// <c>ExecuteResultRendering</c>, which already renders its stderr half this way.</para>
 /// </remarks>
 internal static class CliErrorOutput
 {
