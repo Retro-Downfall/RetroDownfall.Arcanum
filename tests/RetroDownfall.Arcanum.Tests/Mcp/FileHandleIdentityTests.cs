@@ -207,6 +207,147 @@ public sealed class FileHandleIdentityTests : IDisposable
 
     }
 
+    [Fact]
+    public void Relative_directory_open_stays_bound_to_the_retained_parent_after_path_substitution()
+    {
+
+        string container = Directory.CreateTempSubdirectory(
+            "arcanum-relative-directory-open-").FullName;
+
+        try
+        {
+
+            string originalRoot = Directory.CreateDirectory(
+                Path.Combine(container, "root")).FullName;
+
+            string originalMarkerDirectory = Directory.CreateDirectory(
+                Path.Combine(originalRoot, ".arcanum")).FullName;
+
+            string replacementRoot = Directory.CreateDirectory(
+                Path.Combine(container, "replacement")).FullName;
+
+            _ = Directory.CreateDirectory(
+                Path.Combine(replacementRoot, ".arcanum"));
+
+            Assert.True(FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                originalMarkerDirectory,
+                out FileHandleMetadata expected));
+
+            Assert.True(FileHandleIdentityInterop.TryOpenDirectoryMetadata(
+                originalRoot,
+                out SafeFileHandle retainedRoot,
+                out _));
+
+            using (retainedRoot)
+            {
+
+                Directory.Move(originalRoot, Path.Combine(container, "retained-root"));
+
+                Directory.Move(replacementRoot, originalRoot);
+
+                Assert.True(FileHandleIdentityInterop.TryOpenDirectoryMetadataRelative(
+                    retainedRoot,
+                    ".arcanum",
+                    requestReadControl: false,
+                    out SafeFileHandle opened,
+                    out FileHandleMetadata observed));
+
+                using (opened)
+                {
+
+                    Assert.Equal(expected.Identity, observed.Identity);
+
+                }
+
+            }
+
+        }
+        finally
+        {
+
+            Directory.Delete(container, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void Relative_file_open_stays_bound_to_the_retained_directory_after_path_substitution()
+    {
+
+        string container = Directory.CreateTempSubdirectory(
+            "arcanum-relative-file-open-").FullName;
+
+        try
+        {
+
+            string originalDirectory = Directory.CreateDirectory(
+                Path.Combine(container, "marker-directory")).FullName;
+
+            string markerLeaf = "campaign-root.marker";
+
+            string originalMarker = Path.Combine(originalDirectory, markerLeaf);
+
+            File.WriteAllText(originalMarker, "authentic marker bytes");
+
+            string replacementDirectory = Directory.CreateDirectory(
+                Path.Combine(container, "replacement")).FullName;
+
+            File.WriteAllText(
+                Path.Combine(replacementDirectory, markerLeaf),
+                "authentic marker bytes");
+
+            Assert.True(FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                originalMarker,
+                out FileHandleMetadata expected));
+
+            Assert.True(FileHandleIdentityInterop.TryOpenDirectoryMetadata(
+                originalDirectory,
+                out SafeFileHandle retainedDirectory,
+                out _));
+
+            using (retainedDirectory)
+            {
+
+                Directory.Move(
+                    originalDirectory,
+                    Path.Combine(container, "retained-marker-directory"));
+
+                Directory.Move(replacementDirectory, originalDirectory);
+
+                SecureFileOpenStatus status =
+                    FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(
+                        retainedDirectory,
+                        markerLeaf,
+                        out SafeFileHandle? opened);
+
+                Assert.Equal(SecureFileOpenStatus.Success, status);
+
+                Assert.NotNull(opened);
+
+                using (opened)
+                {
+
+                    Assert.True(FileHandleIdentityInterop.TryGetHandleMetadata(
+                        opened,
+                        out FileHandleMetadata observed));
+
+                    Assert.Equal(expected.Identity, observed.Identity);
+
+                }
+
+            }
+
+        }
+        finally
+        {
+
+            Directory.Delete(container, recursive: true);
+
+        }
+
+    }
+
     [SkippableFact]
     public void TryGetPathMetadata_hard_link_reports_multiple_links()
     {

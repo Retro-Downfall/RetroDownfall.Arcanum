@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -723,6 +725,37 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 /// </remarks>
 internal sealed class FakeCampaignPathMarkerLifecycle : ICampaignPathMarkerLifecycle
 {
+
+    public Task<Result<CampaignPathFullInstallationResetInventory>>
+        InventoryFullInstallationResetCleanupAsync(
+            Guid ownerOperationId,
+            Microsoft.Data.Sqlite.SqliteConnection liveCoreConnection,
+            CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Startup recovery never inventories full-reset roots.");
+
+    public Task<Result> RevalidateFullInstallationResetInventoryAsync(
+        CampaignPathFullInstallationResetInventory inventory,
+        Microsoft.Data.Sqlite.SqliteConnection liveCoreConnection,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Startup recovery never revalidates full-reset inventory.");
+
+    public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
+        PrepareFullInstallationResetCleanupAsync(
+            CampaignPathFullInstallationResetCleanupPreparation preparation,
+            CampaignPathFullInstallationResetCleanupReceipt? expectedReceipt,
+            HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority authority,
+            Microsoft.Data.Sqlite.SqliteConnection liveCoreConnection,
+            Microsoft.Data.Sqlite.SqliteTransaction liveCoreTransaction,
+            CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Startup recovery never prepares full-reset cleanup.");
+
+    public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
+        ReconcileFullInstallationResetCleanupAsync(
+            CampaignPathFullInstallationResetCleanupReceipt prepared,
+            HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority authority,
+            Microsoft.Data.Sqlite.SqliteConnection liveCoreConnection,
+            CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Startup recovery never reconciles full-reset cleanup.");
 
     internal int ReconcileCalls { get; private set; }
 

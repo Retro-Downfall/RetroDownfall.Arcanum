@@ -366,6 +366,24 @@ internal static partial class FileHandleIdentityInterop
 
         }
 
+        return TryGetHandleMetadataIgnoringTestSeam(handle, out metadata);
+
+    }
+
+    private static bool TryGetHandleMetadataIgnoringTestSeam(
+        SafeFileHandle handle,
+        out FileHandleMetadata metadata)
+    {
+
+        metadata = default;
+
+        if (handle is null || handle.IsInvalid || handle.IsClosed)
+        {
+
+            return false;
+
+        }
+
         if (OperatingSystem.IsWindows())
         {
 
@@ -528,7 +546,7 @@ internal static partial class FileHandleIdentityInterop
             }
 
             if (handle.IsInvalid
-                || !TryGetHandleMetadata(handle, out metadata)
+                || !TryGetHandleMetadataIgnoringTestSeam(handle, out metadata)
                 || metadata.Kind != FileSystemObjectKind.Directory)
             {
                 handle.Dispose();
@@ -550,6 +568,214 @@ internal static partial class FileHandleIdentityInterop
             metadata = default;
             return false;
         }
+    }
+
+    internal static bool TryOpenDirectoryMetadataRelative(
+        SafeFileHandle parentDirectory,
+        string leaf,
+        bool requestReadControl,
+        out SafeFileHandle handle,
+        out FileHandleMetadata metadata)
+    {
+
+        handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+
+        metadata = default;
+
+        if (parentDirectory is null
+            || parentDirectory.IsInvalid
+            || parentDirectory.IsClosed
+            || string.IsNullOrEmpty(leaf)
+            || leaf is "." or ".."
+            || leaf.IndexOfAny('/', '\\', '\0') >= 0)
+        {
+
+            return false;
+
+        }
+
+        bool parentReferenceAdded = false;
+
+        try
+        {
+
+            parentDirectory.DangerousAddRef(ref parentReferenceAdded);
+
+            if (OperatingSystem.IsWindows())
+            {
+
+                if (!TryOpenWindowsDirectoryRelative(
+                        parentDirectory,
+                        leaf,
+                        requestReadControl,
+                        out handle))
+                {
+
+                    return false;
+
+                }
+
+            }
+            else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            {
+
+                int parentDescriptor = parentDirectory.DangerousGetHandle().ToInt32();
+
+                if (parentDescriptor < 0)
+                {
+
+                    return false;
+
+                }
+
+                int flags = OperatingSystem.IsMacOS()
+                    ? MacOsOpenDirectory | MacOsOpenNoFollow | MacOsOpenCloseOnExec
+                    : LinuxOpenDirectory | LinuxOpenNoFollow | LinuxOpenCloseOnExec;
+
+                int fileDescriptor = OpenAtUnix(
+                    parentDescriptor,
+                    leaf,
+                    flags,
+                    mode: 0);
+
+                if (fileDescriptor < 0)
+                {
+
+                    return false;
+
+                }
+
+                handle.Dispose();
+
+                handle = new SafeFileHandle(
+                    new IntPtr(fileDescriptor),
+                    ownsHandle: true);
+
+            }
+            else
+            {
+
+                return false;
+
+            }
+
+            if (handle.IsInvalid
+                || !TryGetHandleMetadata(handle, out metadata)
+                || metadata.Kind is not FileSystemObjectKind.Directory)
+            {
+
+                handle.Dispose();
+
+                handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+
+                metadata = default;
+
+                return false;
+
+            }
+
+            return true;
+
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or ObjectDisposedException
+                or NotSupportedException)
+        {
+
+            handle.Dispose();
+
+            handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+
+            metadata = default;
+
+            return false;
+
+        }
+        finally
+        {
+
+            if (parentReferenceAdded)
+            {
+
+                parentDirectory.DangerousRelease();
+
+            }
+
+        }
+
+    }
+
+    private static unsafe bool TryOpenWindowsDirectoryRelative(
+        SafeFileHandle parentDirectory,
+        string leaf,
+        bool requestReadControl,
+        out SafeFileHandle handle)
+    {
+
+        handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+
+        fixed (char* leafBuffer = leaf)
+        {
+
+            UNICODE_STRING objectName = new()
+            {
+                Length = checked((ushort)(leaf.Length * sizeof(char))),
+                MaximumLength = checked((ushort)(leaf.Length * sizeof(char))),
+                Buffer = leafBuffer,
+            };
+
+            OBJECT_ATTRIBUTES objectAttributes = new()
+            {
+                Length = (uint)sizeof(OBJECT_ATTRIBUTES),
+                RootDirectory = parentDirectory.DangerousGetHandle(),
+                ObjectName = &objectName,
+                Attributes = ObjectAttributeCaseInsensitive,
+            };
+
+            IO_STATUS_BLOCK statusBlock = default;
+
+            uint desiredAccess = FileReadAttributes | FileTraverse;
+
+            if (requestReadControl)
+            {
+
+                desiredAccess |= ReadControl;
+
+            }
+
+            int status = NtOpenFile(
+                out IntPtr opened,
+                desiredAccess,
+                &objectAttributes,
+                &statusBlock,
+                (uint)(FileShare.Read | FileShare.Write | FileShare.Delete),
+                FileDirectoryFile | FileOpenReparsePoint);
+
+            if (status < 0 || opened == IntPtr.Zero || opened == new IntPtr(-1))
+            {
+
+                if (opened != IntPtr.Zero && opened != new IntPtr(-1))
+                {
+
+                    new SafeFileHandle(opened, ownsHandle: true).Dispose();
+
+                }
+
+                return false;
+
+            }
+
+            handle.Dispose();
+
+            handle = new SafeFileHandle(opened, ownsHandle: true);
+
+            return true;
+
+        }
+
     }
 
     internal static SecureFileOpenStatus TryOpenReadOnlyNoFollow(
@@ -641,6 +867,253 @@ internal static partial class FileHandleIdentityInterop
         handle = null;
 
         return SecureFileOpenStatus.Rejected;
+    }
+
+    internal static SecureFileOpenStatus TryOpenReadOnlyNoFollowRelative(
+        SafeFileHandle parentDirectory,
+        string leaf,
+        out SafeFileHandle? handle)
+    {
+
+        handle = null;
+
+        if (parentDirectory is null
+            || parentDirectory.IsInvalid
+            || parentDirectory.IsClosed
+            || string.IsNullOrEmpty(leaf)
+            || leaf is "." or ".."
+            || leaf.IndexOfAny('/', '\\', '\0') >= 0)
+        {
+
+            return SecureFileOpenStatus.Rejected;
+
+        }
+
+        bool parentReferenceAdded = false;
+
+        SafeFileHandle? opened = null;
+
+        try
+        {
+
+            parentDirectory.DangerousAddRef(ref parentReferenceAdded);
+
+            SecureFileOpenStatus status;
+
+            if (OperatingSystem.IsWindows())
+            {
+
+                status = TryOpenWindowsReadOnlyRelative(
+                    parentDirectory,
+                    leaf,
+                    out opened);
+
+            }
+            else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            {
+
+                int parentDescriptor = parentDirectory.DangerousGetHandle().ToInt32();
+
+                if (parentDescriptor < 0)
+                {
+
+                    return SecureFileOpenStatus.Rejected;
+
+                }
+
+                bool isMacOS = OperatingSystem.IsMacOS();
+
+                int flags = isMacOS
+                    ? MacOsOpenNoFollow
+                        | MacOsOpenNonBlocking
+                        | MacOsOpenCloseOnExec
+                    : LinuxOpenNoFollow
+                        | LinuxOpenNonBlocking
+                        | LinuxOpenCloseOnExec;
+
+                int fileDescriptor = OpenAtUnix(
+                    parentDescriptor,
+                    leaf,
+                    flags,
+                    mode: 0);
+
+                if (fileDescriptor < 0)
+                {
+
+                    int error = Marshal.GetLastPInvokeError();
+
+                    return MapUnixOpenError(error, isMacOS);
+
+                }
+
+                opened = new SafeFileHandle(
+                    new IntPtr(fileDescriptor),
+                    ownsHandle: true);
+
+                status = SecureFileOpenStatus.Success;
+
+            }
+            else
+            {
+
+                return SecureFileOpenStatus.Rejected;
+
+            }
+
+            if (status is not SecureFileOpenStatus.Success || opened is null)
+            {
+
+                opened?.Dispose();
+
+                return status;
+
+            }
+
+            if (opened.IsInvalid
+                || !TryGetHandleMetadataIgnoringTestSeam(
+                    opened,
+                    out FileHandleMetadata metadata))
+            {
+
+                opened.Dispose();
+
+                return SecureFileOpenStatus.IoError;
+
+            }
+
+            if (metadata.Kind is not FileSystemObjectKind.RegularFile)
+            {
+
+                opened.Dispose();
+
+                return SecureFileOpenStatus.Rejected;
+
+            }
+
+            handle = opened;
+
+            opened = null;
+
+            return SecureFileOpenStatus.Success;
+
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or ObjectDisposedException
+                or NotSupportedException)
+        {
+
+            return SecureFileOpenStatus.IoError;
+
+        }
+        finally
+        {
+
+            opened?.Dispose();
+
+            if (parentReferenceAdded)
+            {
+
+                parentDirectory.DangerousRelease();
+
+            }
+
+        }
+
+    }
+
+    private static SecureFileOpenStatus MapUnixOpenError(
+        int error,
+        bool isMacOS) =>
+        error switch
+        {
+            UnixErrorNoEntry or UnixErrorNotDirectory =>
+                SecureFileOpenStatus.NotFound,
+            UnixErrorPermissionDenied
+                or UnixErrorOperationNotPermitted =>
+                SecureFileOpenStatus.AccessDenied,
+            LinuxErrorTooManySymbolicLinks
+                when !isMacOS =>
+                SecureFileOpenStatus.Rejected,
+            MacOsErrorTooManySymbolicLinks
+                when isMacOS =>
+                SecureFileOpenStatus.Rejected,
+            _ => SecureFileOpenStatus.IoError,
+        };
+
+    private static unsafe SecureFileOpenStatus TryOpenWindowsReadOnlyRelative(
+        SafeFileHandle parentDirectory,
+        string leaf,
+        out SafeFileHandle? handle)
+    {
+
+        handle = null;
+
+        fixed (char* leafBuffer = leaf)
+        {
+
+            UNICODE_STRING objectName = new()
+            {
+                Length = checked((ushort)(leaf.Length * sizeof(char))),
+                MaximumLength = checked((ushort)(leaf.Length * sizeof(char))),
+                Buffer = leafBuffer,
+            };
+
+            OBJECT_ATTRIBUTES objectAttributes = new()
+            {
+                Length = (uint)sizeof(OBJECT_ATTRIBUTES),
+                RootDirectory = parentDirectory.DangerousGetHandle(),
+                ObjectName = &objectName,
+                Attributes = ObjectAttributeCaseInsensitive,
+            };
+
+            IO_STATUS_BLOCK statusBlock = default;
+
+            IntPtr opened = IntPtr.Zero;
+
+            int status = NtOpenFile(
+                out opened,
+                FileReadData | FileReadAttributes | Synchronize,
+                &objectAttributes,
+                &statusBlock,
+                (uint)(FileShare.Read | FileShare.Write | FileShare.Delete),
+                FileNonDirectoryFile | FileOpenReparsePoint);
+
+            if (status < 0 || opened == IntPtr.Zero || opened == new IntPtr(-1))
+            {
+
+                if (opened != IntPtr.Zero && opened != new IntPtr(-1))
+                {
+
+                    new SafeFileHandle(opened, ownsHandle: true).Dispose();
+
+                }
+
+                uint error = RtlNtStatusToDosError(status);
+
+                return error switch
+                {
+                    ErrorFileNotFound or ErrorPathNotFound =>
+                        SecureFileOpenStatus.NotFound,
+                    ErrorAccessDenied =>
+                        SecureFileOpenStatus.AccessDenied,
+                    ErrorStoppedOnSymlink
+                        or ErrorCantAccessFile
+                        or ErrorDirectory =>
+                        SecureFileOpenStatus.Rejected,
+                    _ => SecureFileOpenStatus.IoError,
+                };
+
+            }
+
+            handle = new SafeFileHandle(opened, ownsHandle: true);
+
+            return SecureFileOpenStatus.Success;
+
+        }
+
     }
 
     private static bool TryGetWindowsPathMetadata(
@@ -958,7 +1431,15 @@ internal static partial class FileHandleIdentityInterop
 
     private const uint FileReadAttributes = 0x0080;
 
+    private const uint FileReadData = 0x0001;
+
+    private const uint FileTraverse = 0x0020;
+
+    private const uint ReadControl = 0x00020000;
+
     private const uint GenericRead = 0x80000000;
+
+    private const uint Synchronize = 0x00100000;
 
     private const uint OpenExisting = 3;
 
@@ -970,11 +1451,25 @@ internal static partial class FileHandleIdentityInterop
 
     private const uint FileFlagOverlapped = 0x40000000;
 
+    private const uint FileDirectoryFile = 0x00000001;
+
+    private const uint FileNonDirectoryFile = 0x00000040;
+
+    private const uint FileOpenReparsePoint = 0x00200000;
+
+    private const uint ObjectAttributeCaseInsensitive = 0x00000040;
+
     private const int ErrorFileNotFound = 2;
 
     private const int ErrorPathNotFound = 3;
 
     private const int ErrorAccessDenied = 5;
+
+    private const uint ErrorDirectory = 267;
+
+    private const uint ErrorStoppedOnSymlink = 681;
+
+    private const uint ErrorCantAccessFile = 1920;
 
     private const int LinuxOpenDirectory = 0x00010000;
 
@@ -1040,6 +1535,46 @@ internal static partial class FileHandleIdentityInterop
 
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct UNICODE_STRING
+    {
+
+        public ushort Length;
+
+        public ushort MaximumLength;
+
+        public char* Buffer;
+
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct OBJECT_ATTRIBUTES
+    {
+
+        public uint Length;
+
+        public IntPtr RootDirectory;
+
+        public UNICODE_STRING* ObjectName;
+
+        public uint Attributes;
+
+        public IntPtr SecurityDescriptor;
+
+        public IntPtr SecurityQualityOfService;
+
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_STATUS_BLOCK
+    {
+
+        public IntPtr Status;
+
+        public nuint Information;
+
+    }
+
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetFileInformationByHandle(
@@ -1060,6 +1595,18 @@ internal static partial class FileHandleIdentityInterop
         uint dwFlagsAndAttributes,
         IntPtr hTemplateFile);
 
+    [LibraryImport("ntdll.dll")]
+    private static unsafe partial int NtOpenFile(
+        out IntPtr fileHandle,
+        uint desiredAccess,
+        OBJECT_ATTRIBUTES* objectAttributes,
+        IO_STATUS_BLOCK* ioStatusBlock,
+        uint shareAccess,
+        uint openOptions);
+
+    [LibraryImport("ntdll.dll")]
+    private static partial uint RtlNtStatusToDosError(int status);
+
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static unsafe partial int stat(string path, byte* buf);
 
@@ -1075,6 +1622,17 @@ internal static partial class FileHandleIdentityInterop
         SetLastError = true,
         StringMarshalling = StringMarshalling.Utf8)]
     private static partial int OpenUnix(
+        string path,
+        int flags,
+        uint mode);
+
+    [LibraryImport(
+        "libc",
+        EntryPoint = "openat",
+        SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int OpenAtUnix(
+        int directoryFileDescriptor,
         string path,
         int flags,
         uint mode);

@@ -27,6 +27,17 @@ internal interface ICampaignPathMarkerRootAuthorityFactory
         string canonicalDisplayPath,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Opens one Campaign root while requiring its marker directory to exist already.
+    /// </summary>
+    ValueTask<Result<CampaignPathMarkerRootAuthority>> OpenExistingAsync(
+        PhysicalCampaignRootOpener opener,
+        Guid campaignId,
+        long pathRevision,
+        CovenantDigest expectedPhysicalIdentityDigest,
+        string canonicalDisplayPath,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
@@ -190,6 +201,39 @@ internal sealed class CampaignPathMarkerRootAuthority : IAsyncDisposable
             long pathRevision,
             CovenantDigest expectedPhysicalIdentityDigest,
             string canonicalDisplayPath,
+            CancellationToken cancellationToken) =>
+            await OpenAsync(
+                opener,
+                campaignId,
+                pathRevision,
+                expectedPhysicalIdentityDigest,
+                canonicalDisplayPath,
+                requireExistingMarkerDirectory: false,
+                cancellationToken).ConfigureAwait(false);
+
+        public async ValueTask<Result<CampaignPathMarkerRootAuthority>> OpenExistingAsync(
+            PhysicalCampaignRootOpener opener,
+            Guid campaignId,
+            long pathRevision,
+            CovenantDigest expectedPhysicalIdentityDigest,
+            string canonicalDisplayPath,
+            CancellationToken cancellationToken) =>
+            await OpenAsync(
+                opener,
+                campaignId,
+                pathRevision,
+                expectedPhysicalIdentityDigest,
+                canonicalDisplayPath,
+                requireExistingMarkerDirectory: true,
+                cancellationToken).ConfigureAwait(false);
+
+        private static async ValueTask<Result<CampaignPathMarkerRootAuthority>> OpenAsync(
+            PhysicalCampaignRootOpener opener,
+            Guid campaignId,
+            long pathRevision,
+            CovenantDigest expectedPhysicalIdentityDigest,
+            string canonicalDisplayPath,
+            bool requireExistingMarkerDirectory,
             CancellationToken cancellationToken)
         {
 
@@ -205,12 +249,19 @@ internal sealed class CampaignPathMarkerRootAuthority : IAsyncDisposable
             }
 
             Result<PhysicalCampaignRootOpener.MarkerRootCapability> opened =
-                await opener.OpenForMarkerLifecycleAsync(
-                    campaignId,
-                    pathRevision,
-                    expectedPhysicalIdentityDigest,
-                    canonicalDisplayPath,
-                    cancellationToken);
+                await (requireExistingMarkerDirectory
+                    ? opener.OpenExistingForMarkerLifecycleAsync(
+                        campaignId,
+                        pathRevision,
+                        expectedPhysicalIdentityDigest,
+                        canonicalDisplayPath,
+                        cancellationToken)
+                    : opener.OpenForMarkerLifecycleAsync(
+                        campaignId,
+                        pathRevision,
+                        expectedPhysicalIdentityDigest,
+                        canonicalDisplayPath,
+                        cancellationToken));
 
             if (!opened.IsSuccess)
             {

@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -188,6 +189,225 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
 
         Assert.Null(unkeyed.IdentifyExact(_root));
         Assert.Empty(unkeyed.EnumerateAncestorIdentities(_root));
+
+    }
+
+    [Fact]
+    public async Task Existing_only_full_reset_open_does_not_create_a_missing_marker_directory()
+    {
+
+        string existingOnlyRoot = Directory.CreateDirectory(
+            Path.Combine(_root, "existing-only")).FullName;
+
+        CovenantDigest identity = _opener.IdentifyExact(existingOnlyRoot)!.Value;
+
+        Result<PhysicalCampaignRootOpener.MarkerRootCapability> refused =
+            await _opener.OpenExistingForMarkerLifecycleAsync(
+                Guid.NewGuid(),
+                1,
+                identity,
+                existingOnlyRoot,
+                CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+        Assert.False(Directory.Exists(Path.Combine(existingOnlyRoot, ".arcanum")));
+
+        Result<PhysicalCampaignRootOpener.MarkerRootCapability> ordinary =
+            await _opener.OpenForMarkerLifecycleAsync(
+                Guid.NewGuid(),
+                1,
+                identity,
+                existingOnlyRoot,
+                CancellationToken.None);
+
+        Assert.True(ordinary.IsSuccess);
+
+        await ordinary.Value.DisposeAsync();
+
+        Assert.True(Directory.Exists(Path.Combine(existingOnlyRoot, ".arcanum")));
+
+    }
+
+    [Fact]
+    public async Task Retained_root_does_not_adopt_a_substituted_marker_directory()
+    {
+
+        string root = Directory.CreateDirectory(
+            Path.Combine(_root, "root-substitution")).FullName;
+
+        string markerDirectory = Path.Combine(root, ".arcanum");
+
+        SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(markerDirectory);
+
+        string marker = Path.Combine(markerDirectory, "campaign-root.marker");
+
+        await File.WriteAllBytesAsync(
+            marker,
+            [0x41, 0x52, 0x43, 0x41, 0x4E, 0x55, 0x4D],
+            CancellationToken.None);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(marker);
+
+        string replacementRoot = Directory.CreateDirectory(
+            Path.Combine(_root, "root-replacement")).FullName;
+
+        string replacementMarkerDirectory = Path.Combine(replacementRoot, ".arcanum");
+
+        SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(replacementMarkerDirectory);
+
+        string replacementMarker = Path.Combine(
+            replacementMarkerDirectory,
+            "campaign-root.marker");
+
+        File.Copy(marker, replacementMarker);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(replacementMarker);
+
+        CovenantDigest identity = _opener.IdentifyExact(root)!.Value;
+
+        _opener.AfterRootHandleOpenedBeforeMarkerDirectoryOpenForTests = () =>
+        {
+
+            Directory.Move(root, Path.Combine(_root, "retained-root"));
+
+            Directory.Move(replacementRoot, root);
+
+        };
+
+        Result<PhysicalCampaignRootOpener.MarkerRootCapability> opened;
+
+        try
+        {
+
+            opened = await _opener.OpenExistingForMarkerLifecycleAsync(
+                Guid.NewGuid(),
+                1,
+                identity,
+                root,
+                CancellationToken.None);
+
+        }
+        finally
+        {
+
+            _opener.AfterRootHandleOpenedBeforeMarkerDirectoryOpenForTests = null;
+
+        }
+
+        if (opened.IsSuccess)
+        {
+
+            await opened.Value.DisposeAsync();
+
+        }
+
+        Assert.True(opened.IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Retained_marker_directory_does_not_adopt_copied_marker_after_name_substitution()
+    {
+
+        string root = Directory.CreateDirectory(
+            Path.Combine(_root, "marker-substitution")).FullName;
+
+        string markerDirectory = Path.Combine(root, ".arcanum");
+
+        SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(markerDirectory);
+
+        string marker = Path.Combine(markerDirectory, "campaign-root.marker");
+
+        await File.WriteAllBytesAsync(
+            marker,
+            [0x41, 0x52, 0x43, 0x41, 0x4E, 0x55, 0x4D],
+            CancellationToken.None);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(marker);
+
+        CovenantDigest identity = _opener.IdentifyExact(root)!.Value;
+
+        Result<PhysicalCampaignRootOpener.MarkerRootCapability> rootOpen =
+            await _opener.OpenExistingForMarkerLifecycleAsync(
+                Guid.NewGuid(),
+                1,
+                identity,
+                root,
+                CancellationToken.None);
+
+        Assert.True(rootOpen.IsSuccess);
+
+        await using PhysicalCampaignRootOpener.MarkerRootCapability capability = rootOpen.Value;
+
+        Result<PhysicalCampaignMarkerOpenResult> first =
+            await capability.OpenMarkerOrProveAbsentNoFollowAsync(CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+
+        PhysicalCampaignMarkerOpenResult.Opened firstOpened =
+            Assert.IsType<PhysicalCampaignMarkerOpenResult.Opened>(first.Value);
+
+        CovenantDigest expectedIdentity = firstOpened.Marker.PhysicalIdentityDigest;
+
+        await firstOpened.Marker.DisposeAsync();
+
+        string replacementMarkerDirectory = Path.Combine(
+            _root,
+            "marker-directory-replacement");
+
+        SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(replacementMarkerDirectory);
+
+        string replacementMarker = Path.Combine(
+            replacementMarkerDirectory,
+            "campaign-root.marker");
+
+        File.Copy(marker, replacementMarker);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(replacementMarker);
+
+        _opener.BeforeMarkerChildOpenForTests = () =>
+        {
+
+            Directory.Move(markerDirectory, Path.Combine(root, ".arcanum-retained"));
+
+            Directory.Move(replacementMarkerDirectory, markerDirectory);
+
+        };
+
+        Result<PhysicalCampaignMarkerOpenResult> reopened;
+
+        try
+        {
+
+            reopened = await capability.OpenMarkerOrProveAbsentNoFollowAsync(
+                CancellationToken.None);
+
+        }
+        finally
+        {
+
+            _opener.BeforeMarkerChildOpenForTests = null;
+
+        }
+
+        if (reopened.IsFailure)
+        {
+
+            return;
+
+        }
+
+        PhysicalCampaignMarkerOpenResult.Opened reopenedMarker =
+            Assert.IsType<PhysicalCampaignMarkerOpenResult.Opened>(reopened.Value);
+
+        await using (reopenedMarker.Marker)
+        {
+
+            Assert.Equal(
+                expectedIdentity,
+                reopenedMarker.Marker.PhysicalIdentityDigest);
+
+        }
 
     }
 

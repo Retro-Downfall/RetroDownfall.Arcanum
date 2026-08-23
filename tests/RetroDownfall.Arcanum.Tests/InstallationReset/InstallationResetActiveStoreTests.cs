@@ -1,3 +1,9 @@
+using System.Buffers.Text;
+
+using System.Collections.Immutable;
+
+using System.Runtime.InteropServices;
+
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -5,6 +11,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -137,6 +145,62 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Begin_maps_oversized_checkpoint_copy_failure_to_content_free_integrity()
+    {
+
+        // Mutation caught: allowing the bounded-copy ArgumentException to escape reveals the
+        // rejected projection shape instead of returning the store's content-free integrity error.
+        string guardedRoot = _workspace.CreateSubdir("checkpoint-oversized-copy");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("2b111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord record = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairJournaled);
+
+        HostToolsMarkerPairResetCheckpointV1 oneEntry = WithCampaignInventory(
+            record.HostToolsMarkerPairReset!);
+
+        record = record with
+        {
+            HostToolsMarkerPairReset = oneEntry with
+            {
+                CampaignInventory = Enumerable.Repeat(
+                        oneEntry.CampaignInventory[0],
+                        4097)
+                    .ToImmutableArray(),
+            },
+        };
+
+        Assert.Throws<ArgumentException>(() =>
+            InstallationResetActivePayloadV2.FromRecord(record));
+
+        Result<InstallationResetActivePublication> result = await store.BeginAsync(
+            heldLock,
+            installationId,
+            record,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+
+        Assert.Equal(
+            "The installation-reset active evidence did not authenticate.",
+            result.Error.Message);
+
+        Assert.False(File.Exists(store.ActivePath));
+
+    }
+
+    [Fact]
     public async Task Publication_cancellation_after_atomic_replace_finishes_the_bounded_checkpoint()
     {
 
@@ -229,6 +293,611 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.True((await store.RecoverAsync(
             heldLock,
             CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Advance_allows_only_null_to_pair_journaled_then_same_or_next_proven_pair_phase()
+    {
+
+        // Mutation caught: treating the typed checkpoint as an ordinary nullable payload member
+        // permits introduction after a skipped destructive effect, removal, or phase jumps.
+        string guardedRoot = _workspace.CreateSubdir("checkpoint-pair-phases");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        List<string> events = [];
+
+        RecordingCredentialStore credentials = new(events);
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            credentials,
+            new InstallationResetActiveFilePersistence(events.Add));
+
+        Guid installationId = Guid.Parse("11111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord initial = CreateCheckpointRecord(
+            installationId,
+            checkpointPhase: null);
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            initial,
+            CancellationToken.None));
+
+        InstallationResetActiveRecord skippedIntroduction = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
+            initial.OperationId);
+
+        Assert.True((await store.AdvanceAsync(
+            heldLock,
+            publication,
+            skippedIntroduction,
+            CancellationToken.None)).IsFailure);
+
+        InstallationResetActiveRecord journaled = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairJournaled,
+            initial.OperationId);
+
+        publication = Value(await store.AdvanceAsync(
+            heldLock,
+            publication,
+            journaled,
+            CancellationToken.None));
+
+        publication = Value(await store.AdvanceAsync(
+            heldLock,
+            publication,
+            journaled,
+            CancellationToken.None));
+
+        InstallationResetActiveRecord next = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
+            initial.OperationId);
+
+        publication = Value(await store.AdvanceAsync(
+            heldLock,
+            publication,
+            next,
+            CancellationToken.None));
+
+        InstallationResetActiveRecord skipped = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairAbsenceVerified,
+            initial.OperationId);
+
+        Assert.True((await store.AdvanceAsync(
+            heldLock,
+            publication,
+            skipped,
+            CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Advance_cannot_remove_regress_skip_or_substitute_restart_or_inventory_evidence()
+    {
+
+        // Mutation caught: record/reference equality or phase-only comparison lets a caller replace
+        // the restart proof or campaign inventory while retaining a valid checkpoint shape.
+        string guardedRoot = _workspace.CreateSubdir("checkpoint-immutable-evidence");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("21111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord journaled = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairJournaled);
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            journaled,
+            CancellationToken.None));
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint =
+            journaled.HostToolsMarkerPairReset!;
+
+        HostProcessToolsOsMarkerEvidence substitutedOs = new(
+            checkpoint.RestartProof.OsMarkerEvidence.InstallationIdentity,
+            checkpoint.RestartProof.OsMarkerEvidence.TransitionId,
+            checkpoint.RestartProof.OsMarkerEvidence.TaintMasterKeyVersion,
+            checkpoint.RestartProof.OsMarkerEvidence.TaintFingerprint,
+            checkpoint.RestartProof.OsMarkerEvidence.MarkerBytesDigest,
+            Digest(0xD1));
+
+        HostProcessToolsMatchedPair substitutedPair = new(
+            checkpoint.RestartProof.DatabaseMarkerEvidence,
+            substitutedOs);
+
+        HostToolsMarkerPairResetCheckpointV1 substitutedRestart = checkpoint with
+        {
+            RestartProof = checkpoint.RestartProof with
+            {
+                OsMarkerEvidence = substitutedOs,
+                PairEvidenceDigest = Value(
+                    FullInstallationResetMarkerPairResetDigests.PairEvidence(
+                        substitutedPair)),
+            },
+        };
+
+        ImmutableArray<CampaignMarkerInventoryEntryV1> substitutedInventory =
+        [
+            new CampaignMarkerInventoryEntryV1(
+                Guid.Parse("31111111-2222-4333-8444-555555555555"),
+                PriorPathRevision: 1,
+                Digest(0x12),
+                Digest(0x32),
+                Digest(0x52),
+                Digest(0x72)),
+        ];
+
+        CovenantDigest substitutedInventoryDigest = Value(
+            FullInstallationResetMarkerPairResetDigests.CampaignInventory(
+                substitutedInventory));
+
+        FullInstallationResetSignedAttestationProjectionV1 signed =
+            checkpoint.RestartProof.SignedAttestation;
+
+        HostToolsMarkerPairResetCheckpointV1 substitutedCampaigns = checkpoint with
+        {
+            CampaignInventory = substitutedInventory,
+            CampaignMarkerInventoryDigest = substitutedInventoryDigest,
+            OwnerEffectDigest = Value(
+                FullInstallationResetMarkerPairResetDigests.FullResetEffect(
+                    signed.OperationId,
+                    signed.InstallationId,
+                    signed.HostToolsTransitionId,
+                    signed.TaintMasterKeyVersion,
+                    signed.AuthorityFingerprint,
+                    signed.DatabaseMarkerDigest,
+                    signed.OsMarkerDigest,
+                    signed.RemediationActionDigest,
+                    substitutedInventoryDigest)),
+        };
+
+        InstallationResetActiveRecord[] invalid =
+        [
+            journaled with { HostToolsMarkerPairReset = null },
+            journaled with
+            {
+                HostToolsMarkerPairReset = checkpoint with
+                {
+                    Phase = HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted,
+                },
+            },
+            journaled with { HostToolsMarkerPairReset = substitutedRestart },
+            journaled with { HostToolsMarkerPairReset = substitutedCampaigns },
+        ];
+
+        foreach (InstallationResetActiveRecord candidate in invalid)
+        {
+            Assert.True((await store.AdvanceAsync(
+                heldLock,
+                publication,
+                candidate,
+                CancellationToken.None)).IsFailure);
+        }
+
+        InstallationResetActiveRecord databaseDeleted = journaled with
+        {
+            HostToolsMarkerPairReset = checkpoint with
+            {
+                Phase = HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
+            },
+        };
+
+        publication = Value(await store.AdvanceAsync(
+            heldLock,
+            publication,
+            databaseDeleted,
+            CancellationToken.None));
+
+        Assert.True((await store.AdvanceAsync(
+            heldLock,
+            publication,
+            journaled,
+            CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Advance_allows_pair_absent_null_receipt_to_exact_prepared_receipt()
+    {
+
+        // Mutation caught: requiring checkpoint equality after pair absence prevents the one
+        // durable publication that freezes the ordered cleanup intent vector before deletion.
+        string guardedRoot = _workspace.CreateSubdir("checkpoint-prepare-receipt");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("41111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord pairAbsent = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairAbsenceVerified);
+
+        ImmutableArray<Guid> intentIds =
+        [
+            Guid.Parse("51111111-2222-4333-8444-555555555555"),
+            Guid.Parse("61111111-2222-4333-8444-555555555555"),
+        ];
+
+        pairAbsent = pairAbsent with
+        {
+            HostToolsMarkerPairReset = WithCampaignInventory(
+                pairAbsent.HostToolsMarkerPairReset!,
+                intentIds.Length),
+        };
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            pairAbsent,
+            CancellationToken.None));
+
+        InstallationResetActiveRecord prepared = pairAbsent with
+        {
+            HostToolsMarkerPairReset = PreparedCheckpoint(
+                pairAbsent.HostToolsMarkerPairReset!,
+                intentIds),
+        };
+
+        publication = Value(await store.AdvanceAsync(
+            heldLock,
+            publication,
+            prepared,
+            CancellationToken.None));
+
+        Assert.Equal(
+            intentIds,
+            publication.Payload.HostToolsMarkerPairReset!.OrderedMarkerIntentIds);
+
+        Assert.Equal(0UL, publication.Payload.HostToolsMarkerPairReset.DeletedCount);
+
+        Assert.Equal(0UL, publication.Payload.HostToolsMarkerPairReset.OrphanCount);
+
+    }
+
+    [Fact]
+    public async Task Advance_allows_only_fixed_vector_prepared_zero_counts_then_one_terminal_count_publication()
+    {
+
+        // Mutation caught: allowing record equality or any all-present receipt transition permits
+        // vector substitution, repeated terminal publication, or a second zero-campaign receipt.
+        string guardedRoot = _workspace.CreateSubdir("checkpoint-terminal-receipt");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("71111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord pairAbsent = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairAbsenceVerified);
+
+        ImmutableArray<Guid> intentIds =
+        [
+            Guid.Parse("81111111-2222-4333-8444-555555555555"),
+            Guid.Parse("91111111-2222-4333-8444-555555555555"),
+        ];
+
+        pairAbsent = pairAbsent with
+        {
+            HostToolsMarkerPairReset = WithCampaignInventory(
+                pairAbsent.HostToolsMarkerPairReset!,
+                intentIds.Length),
+        };
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            pairAbsent,
+            CancellationToken.None));
+
+        HostToolsMarkerPairResetCheckpointV1 preparedCheckpoint = PreparedCheckpoint(
+            pairAbsent.HostToolsMarkerPairReset!,
+            intentIds);
+
+        InstallationResetActiveRecord prepared = pairAbsent with
+        {
+            HostToolsMarkerPairReset = preparedCheckpoint,
+        };
+
+        publication = Value(await store.AdvanceAsync(
+            heldLock,
+            publication,
+            prepared,
+            CancellationToken.None));
+
+        ImmutableArray<Guid> reordered = [intentIds[1], intentIds[0]];
+
+        InstallationResetActiveRecord substitutedVector = prepared with
+        {
+            HostToolsMarkerPairReset = preparedCheckpoint with
+            {
+                OrderedMarkerIntentIds = reordered,
+                MarkerIntentVectorDigest = Value(
+                    FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(
+                        reordered)),
+            },
+        };
+
+        Assert.True((await store.AdvanceAsync(
+            heldLock,
+            publication,
+            substitutedVector,
+            CancellationToken.None)).IsFailure);
+
+        InstallationResetActiveRecord terminal = prepared with
+        {
+            HostToolsMarkerPairReset = preparedCheckpoint with
+            {
+                DeletedCount = 1,
+                OrphanCount = 1,
+            },
+        };
+
+        publication = Value(await store.AdvanceAsync(
+            heldLock,
+            publication,
+            terminal,
+            CancellationToken.None));
+
+        Assert.True((await store.AdvanceAsync(
+            heldLock,
+            publication,
+            terminal,
+            CancellationToken.None)).IsFailure);
+
+        InstallationResetActiveRecord substitutedCounts = terminal with
+        {
+            HostToolsMarkerPairReset = terminal.HostToolsMarkerPairReset! with
+            {
+                DeletedCount = 2,
+                OrphanCount = 0,
+            },
+        };
+
+        Assert.True((await store.AdvanceAsync(
+            heldLock,
+            publication,
+            substitutedCounts,
+            CancellationToken.None)).IsFailure);
+
+        string zeroRoot = _workspace.CreateSubdir("checkpoint-zero-terminal");
+
+        using ArcanumMaintenanceLock zeroLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(zeroRoot));
+
+        InstallationResetActiveStore zeroStore = new(
+            zeroRoot,
+            new RecordingCredentialStore([]));
+
+        Guid zeroInstallationId = Guid.Parse("a1111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord zeroPairAbsent = CreateCheckpointRecord(
+            zeroInstallationId,
+            HostToolsMarkerPairResetPhase.PairAbsenceVerified);
+
+        InstallationResetActivePublication zeroPublication = Value(
+            await zeroStore.BeginAsync(
+                zeroLock,
+                zeroInstallationId,
+                zeroPairAbsent,
+                CancellationToken.None));
+
+        InstallationResetActiveRecord zeroTerminal = zeroPairAbsent with
+        {
+            HostToolsMarkerPairReset = PreparedCheckpoint(
+                zeroPairAbsent.HostToolsMarkerPairReset!,
+                []),
+        };
+
+        zeroPublication = Value(await zeroStore.AdvanceAsync(
+            zeroLock,
+            zeroPublication,
+            zeroTerminal,
+            CancellationToken.None));
+
+        Assert.True((await zeroStore.AdvanceAsync(
+            zeroLock,
+            zeroPublication,
+            zeroTerminal,
+            CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Recovery_round_trips_structurally_equal_immutable_checkpoint_vectors()
+    {
+
+        // Mutation caught: reference/record equality rejects recovered evidence, while retained
+        // ImmutableArray backing stores let callers rewrite a later recovery projection.
+        string guardedRoot = _workspace.CreateSubdir("checkpoint-structural-recovery");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("b1111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord pairAbsent = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairAbsenceVerified);
+
+        HostToolsMarkerPairResetCheckpointV1 withInventory = WithCampaignInventory(
+            pairAbsent.HostToolsMarkerPairReset!);
+
+        ImmutableArray<Guid> intents =
+        [
+            Guid.Parse("c1111111-2222-4333-8444-555555555555"),
+        ];
+
+        InstallationResetActiveRecord prepared = pairAbsent with
+        {
+            HostToolsMarkerPairReset = PreparedCheckpoint(withInventory, intents),
+        };
+
+        InstallationResetActivePublication published = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            prepared,
+            CancellationToken.None));
+
+        InstallationResetActiveRecoveryState recovered = Value(await store.RecoverAsync(
+            heldLock,
+            CancellationToken.None));
+
+        Assert.Equal(
+            InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
+            recovered.Outcome);
+
+        HostToolsMarkerPairResetCheckpointV1 expected =
+            published.Payload.HostToolsMarkerPairReset!;
+
+        HostToolsMarkerPairResetCheckpointV1 actual =
+            recovered.Publication!.Payload.HostToolsMarkerPairReset!;
+
+        Assert.NotSame(expected, actual);
+
+        Assert.Equal(expected.Phase, actual.Phase);
+
+        Assert.Equal(
+            expected.CampaignMarkerInventoryDigest,
+            actual.CampaignMarkerInventoryDigest);
+
+        Assert.Equal(expected.OwnerEffectDigest, actual.OwnerEffectDigest);
+
+        Assert.Equal(
+            expected.CampaignInventory.Select(static entry => entry.CampaignId),
+            actual.CampaignInventory.Select(static entry => entry.CampaignId));
+
+        Assert.Equal(expected.OrderedMarkerIntentIds, actual.OrderedMarkerIntentIds);
+
+        Assert.NotSame(
+            ImmutableCollectionsMarshal.AsArray(expected.CampaignInventory),
+            ImmutableCollectionsMarshal.AsArray(actual.CampaignInventory));
+
+        Assert.NotSame(
+            ImmutableCollectionsMarshal.AsArray(expected.OrderedMarkerIntentIds!.Value),
+            ImmutableCollectionsMarshal.AsArray(actual.OrderedMarkerIntentIds!.Value));
+
+    }
+
+    [Fact]
+    public async Task One_ahead_anchor_recovery_preserves_the_exact_typed_checkpoint()
+    {
+
+        // Mutation caught: one-ahead recovery that drops the checkpoint or compares nested
+        // evidence by reference cannot advance the anchor to the authenticated landed envelope.
+        string guardedRoot = _workspace.CreateSubdir("checkpoint-one-ahead");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        RecordingCredentialStore credentials = new([]);
+
+        InstallationResetActiveStore store = new(guardedRoot, credentials);
+
+        Guid installationId = Guid.Parse("e1111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord pairAbsent = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairAbsenceVerified);
+
+        ImmutableArray<Guid> intents =
+        [
+            Guid.Parse("f1111111-2222-4333-8444-555555555555"),
+        ];
+
+        InstallationResetActiveRecord prepared = pairAbsent with
+        {
+            HostToolsMarkerPairReset = PreparedCheckpoint(
+                WithCampaignInventory(pairAbsent.HostToolsMarkerPairReset!),
+                intents),
+        };
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            prepared,
+            CancellationToken.None));
+
+        InstallationResetActiveRecord terminal = prepared with
+        {
+            Version = 2,
+            HostToolsMarkerPairReset = prepared.HostToolsMarkerPairReset! with
+            {
+                DeletedCount = 1,
+                OrphanCount = 0,
+            },
+        };
+
+        BackupRestoreProfileNamespace profile = Value(
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(guardedRoot));
+
+        using InstallationResetActiveRecordKeyLease key = Value(
+            new InstallationResetActiveRecordKeyProvider(credentials)
+                .OpenExisting(profile));
+
+        InstallationResetActiveEnvelopeV2 ahead = Value(
+            InstallationResetActiveRecordAuthenticator.Seal(
+                key,
+                publication.Location,
+                installationId,
+                revision: 2,
+                publication.EnvelopeDigest,
+                InstallationResetActivePayloadV2.FromRecord(terminal)));
+
+        WriteEnvelope(store.ActivePath, ahead);
+
+        InstallationResetActiveRecoveryState recovered = Value(await store.RecoverAsync(
+            heldLock,
+            CancellationToken.None));
+
+        Assert.Equal(2UL, recovered.Publication!.Anchor.Revision);
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint =
+            recovered.Publication.Payload.HostToolsMarkerPairReset!;
+
+        Assert.Equal(terminal.HostToolsMarkerPairReset!.Phase, checkpoint.Phase);
+
+        Assert.Equal(
+            terminal.HostToolsMarkerPairReset.CampaignMarkerInventoryDigest,
+            checkpoint.CampaignMarkerInventoryDigest);
+
+        Assert.Equal(
+            terminal.HostToolsMarkerPairReset.OrderedMarkerIntentIds,
+            checkpoint.OrderedMarkerIntentIds);
+
+        Assert.Equal(1UL, checkpoint.DeletedCount);
+
+        Assert.Equal(0UL, checkpoint.OrphanCount);
 
     }
 
@@ -1602,6 +2271,204 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             EstimatedBytesDeleted: 0,
             CredentialResults: [],
             LastErrorCode: null);
+
+    }
+
+    private static InstallationResetActiveRecord CreateCheckpointRecord(
+        Guid installationId,
+        HostToolsMarkerPairResetPhase? checkpointPhase,
+        Guid? operationId = null)
+    {
+
+        Guid operation = operationId ?? Guid.NewGuid();
+
+        DateTimeOffset acceptedAtUtc = new(
+            2026,
+            8,
+            22,
+            12,
+            0,
+            0,
+            TimeSpan.Zero);
+
+        HostProcessToolsMatchedPair pair = CheckpointPair(installationId);
+
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            operation,
+            installationId,
+            pair.Database.TransitionId!.Value,
+            pair.Database.TaintMasterKeyVersion!.Value,
+            pair.Database.TaintFingerprint!.Value,
+            pair.Database.DatabaseMarkerDigest,
+            pair.OsMarker.MarkerBytesDigest,
+            new CovenantDigest(Convert.FromHexString(
+                "761e8536128080d5936070524da90a6558b8901ea46d93194646b413bb27a1d9")),
+            "oKGio6SlpqeoqaqrrK2urw",
+            "RetroDownfall.Remediation.v1",
+            acceptedAtUtc.AddMinutes(-5),
+            acceptedAtUtc.AddMinutes(55),
+            Base64Url.EncodeToString(Enumerable.Repeat((byte)0x44, 64).ToArray()));
+
+        CovenantDigest signedDigest = Value(
+            FullInstallationResetRemediationAttestationDigest.Calculate(attestation));
+
+        ImmutableArray<CampaignMarkerInventoryEntryV1> inventory = [];
+
+        CovenantDigest inventoryDigest = Value(
+            FullInstallationResetMarkerPairResetDigests.CampaignInventory(inventory));
+
+        CovenantDigest ownerEffect = Value(
+            FullInstallationResetMarkerPairResetDigests.FullResetEffect(
+                operation,
+                installationId,
+                attestation.HostToolsTransitionId,
+                attestation.TaintMasterKeyVersion,
+                attestation.AuthorityFingerprint,
+                attestation.DatabaseMarkerDigest,
+                attestation.OsMarkerDigest,
+                attestation.RemediationActionDigest,
+                inventoryDigest));
+
+        FullInstallationResetRemediationClaimV1 claim = new(
+            Version: 1,
+            operation,
+            installationId,
+            signedDigest,
+            Digest(0x91),
+            Digest(0xB1),
+            acceptedAtUtc);
+
+        HostToolsMarkerPairResetCheckpointV1? checkpoint = checkpointPhase is { } phase
+            ? new HostToolsMarkerPairResetCheckpointV1(
+                Version: 1,
+                phase,
+                new FullInstallationResetRestartProofV1(
+                    Version: 1,
+                    FullInstallationResetSignedAttestationProjectionV1.FromAttestation(
+                        attestation),
+                    acceptedAtUtc,
+                    signedDigest,
+                    pair.Database,
+                    pair.OsMarker,
+                    Value(FullInstallationResetMarkerPairResetDigests.PairEvidence(pair))),
+                inventory,
+                inventoryDigest,
+                ownerEffect,
+                MarkerIntentCount: null,
+                OrderedMarkerIntentIds: null,
+                MarkerIntentVectorDigest: null,
+                DeletedCount: null,
+                OrphanCount: null)
+            : null;
+
+        return CreateRecord(InstallationResetPhase.Prepared) with
+        {
+            OperationId = operation,
+            Scope = InstallationResetScope.All,
+            Workspace = new DataRetentionWorkspaceBinding(
+                Guid.Parse("12345678-1234-4234-8234-123456789abc"),
+                "/workspace"),
+            AcceptedBinding = new InstallationResetAcceptedBinding(
+                "binding",
+                [],
+                [],
+                [],
+                [],
+                []),
+            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            FullInstallationResetRemediationClaim = claim,
+            HostToolsMarkerPairReset = checkpoint,
+        };
+
+    }
+
+    private static HostProcessToolsMatchedPair CheckpointPair(Guid installationId)
+    {
+
+        Guid transition = Guid.Parse("ffeeddcc-bbaa-4988-b766-554433221100");
+
+        CovenantDigest fingerprint = Digest(0x11);
+
+        HostProcessToolsDatabaseMarkerEvidence database = new(
+            installationId.ToString("D"),
+            RetroDownfall.Arcanum.Core.Security.CovenantHostToolsState.HostToolsTainted,
+            transition,
+            0x0102030405060708,
+            fingerprint);
+
+        HostProcessToolsOsMarkerEvidence marker = new(
+            installationId.ToString("D"),
+            transition,
+            0x0102030405060708,
+            fingerprint,
+            Digest(0x31),
+            Digest(0x51));
+
+        return new HostProcessToolsMatchedPair(database, marker);
+
+    }
+
+    private static HostToolsMarkerPairResetCheckpointV1 PreparedCheckpoint(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint,
+        ImmutableArray<Guid> intentIds) =>
+        ReceiptCheckpoint(
+            WithCampaignInventory(checkpoint, intentIds.Length),
+            intentIds);
+
+    private static HostToolsMarkerPairResetCheckpointV1 ReceiptCheckpoint(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint,
+        ImmutableArray<Guid> intentIds) =>
+        checkpoint with
+        {
+            Phase = HostToolsMarkerPairResetPhase.PairAbsenceVerified,
+            MarkerIntentCount = checked((ulong)intentIds.Length),
+            OrderedMarkerIntentIds = intentIds,
+            MarkerIntentVectorDigest = Value(
+                FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(
+                    intentIds)),
+            DeletedCount = 0,
+            OrphanCount = 0,
+        };
+
+    private static HostToolsMarkerPairResetCheckpointV1 WithCampaignInventory(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint,
+        int count = 1)
+    {
+
+        ImmutableArray<CampaignMarkerInventoryEntryV1> inventory =
+            ImmutableArray.CreateRange(
+                Enumerable.Range(1, count).Select(static value =>
+                    new CampaignMarkerInventoryEntryV1(
+                        new Guid(value, 0, 0, new byte[8]),
+                        PriorPathRevision: value,
+                        Digest(checked((byte)(0x13 + value))),
+                        Digest(checked((byte)(0x33 + value))),
+                        Digest(checked((byte)(0x53 + value))),
+                        Digest(checked((byte)(0x73 + value))))));
+
+        CovenantDigest inventoryDigest = Value(
+            FullInstallationResetMarkerPairResetDigests.CampaignInventory(inventory));
+
+        FullInstallationResetSignedAttestationProjectionV1 signed =
+            checkpoint.RestartProof.SignedAttestation;
+
+        return checkpoint with
+        {
+            CampaignInventory = inventory,
+            CampaignMarkerInventoryDigest = inventoryDigest,
+            OwnerEffectDigest = Value(
+                FullInstallationResetMarkerPairResetDigests.FullResetEffect(
+                    signed.OperationId,
+                    signed.InstallationId,
+                    signed.HostToolsTransitionId,
+                    signed.TaintMasterKeyVersion,
+                    signed.AuthorityFingerprint,
+                    signed.DatabaseMarkerDigest,
+                    signed.OsMarkerDigest,
+                    signed.RemediationActionDigest,
+                    inventoryDigest)),
+        };
 
     }
 

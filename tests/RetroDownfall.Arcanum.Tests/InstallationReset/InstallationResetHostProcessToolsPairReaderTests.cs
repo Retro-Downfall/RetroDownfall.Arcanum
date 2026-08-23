@@ -207,7 +207,7 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader
     {
 
-        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadAsync(
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken = default)
         {
 
@@ -226,7 +226,7 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader
     {
 
-        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadAsync(
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException(secret);
 
@@ -239,7 +239,7 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader
     {
 
-        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadAsync(
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken = default)
         {
 

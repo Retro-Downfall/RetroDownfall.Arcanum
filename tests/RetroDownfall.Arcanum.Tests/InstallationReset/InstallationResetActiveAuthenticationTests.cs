@@ -6,6 +6,8 @@ using System.Collections.Immutable;
 
 using System.Security.Cryptography;
 
+using System.Runtime.InteropServices;
+
 using System.Text;
 
 using System.Text.Json;
@@ -15,6 +17,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -462,31 +466,702 @@ public sealed class InstallationResetActiveAuthenticationTests : IDisposable
     }
 
     [Fact]
-    public void V2_payload_rejects_a_nonnull_reserved_host_tools_marker_pair()
+    public void V2_codec_accepts_exact_payload_bound_and_rejects_plus_one()
     {
 
-        // Mutation caught: treating the reserved JsonElement as opaque-but-acceptable after tag
-        // verification would let this slice persist full-reset authority it does not define.
-        string payloadJson = FixturePayloadJson.Replace(
-            "\"hostToolsMarkerPairReset\":null",
-            "\"hostToolsMarkerPairReset\":{}",
-            StringComparison.Ordinal);
-
-        InstallationResetActiveEnvelopeV2 authenticated =
-            AuthenticatedFixtureEnvelope(payloadJson);
-
-        Error error = AssertFailure(
-            OpenFixture(
-                FixtureKey(),
-                FixtureLocation(),
-                authenticated.InstallationId,
-                authenticated));
-
-        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, error.Code);
+        // Mutation caught: retaining the legacy 64 KiB ceiling, using the file ceiling for
+        // ciphertext, or checking only after decode either rejects admissible campaign evidence
+        // or allocates one byte beyond the authenticated payload budget.
+        Assert.Equal(
+            4 * 1024 * 1024,
+            InstallationResetActiveRecordAuthenticator.MaxActivePayloadBytes);
 
         Assert.Equal(
-            "This installation-reset active evidence did not authenticate.",
-            error.Message);
+            8 * 1024 * 1024,
+            InstallationResetActiveRecordAuthenticator.MaxActiveFileBytes);
+
+        InstallationResetActiveEnvelopeV2 fixture = FixtureEnvelope();
+
+        InstallationResetActiveEnvelopeV2 exact = fixture with
+        {
+
+            CiphertextBase64Url = Base64Url.EncodeToString(
+                new byte[4 * 1024 * 1024]),
+
+        };
+
+        InstallationResetActiveEnvelopeV2 plusOne = fixture with
+        {
+
+            CiphertextBase64Url = Base64Url.EncodeToString(
+                new byte[(4 * 1024 * 1024) + 1]),
+
+        };
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.EncodeEnvelope(exact).IsSuccess);
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.EncodeEnvelope(plusOne).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task V2_file_reader_accepts_exact_active_file_bound_and_rejects_plus_one()
+    {
+
+        // Mutation caught: changing the secure reread limit away from the envelope's 8 MiB
+        // allocation budget either rejects an exact-bound file or reads a plus-one file.
+        InstallationResetActiveLocation location = Value(
+            InstallationResetActiveRecordAuthenticator.ResolveLocation(
+                _guarded,
+                Namespace()));
+
+        InstallationResetActiveFilePersistence persistence = new();
+
+        await File.WriteAllBytesAsync(
+            location.ActivePath,
+            new byte[InstallationResetActiveRecordAuthenticator.MaxActiveFileBytes]);
+
+        Result<InstallationResetActiveFileRead?> exactResult =
+            await persistence.ReadIfPresentAsync(location, CancellationToken.None);
+
+        Assert.True(exactResult.IsSuccess, exactResult.Error.Message);
+
+        using InstallationResetActiveFileRead exact = Assert.IsType<InstallationResetActiveFileRead>(
+            exactResult.Value);
+
+        Assert.Equal(
+            InstallationResetActiveRecordAuthenticator.MaxActiveFileBytes,
+            exact.Bytes.Length);
+
+        await File.WriteAllBytesAsync(
+            location.ActivePath,
+            new byte[InstallationResetActiveRecordAuthenticator.MaxActiveFileBytes + 1]);
+
+        Assert.True(
+            (await persistence.ReadIfPresentAsync(location, CancellationToken.None)).IsFailure);
+
+    }
+
+    [Fact]
+    public void V2_payload_authenticates_the_closed_host_tools_marker_pair_checkpoint()
+    {
+
+        // Mutation caught: rejecting or discarding the typed checkpoint after authenticating the
+        // envelope prevents restart from retaining the journaled destructive-effect evidence.
+        InstallationResetActivePayloadV2 payload = CheckpointPayload();
+
+        Result valid = InstallationResetActiveRecordAuthenticator.ValidatePayload(payload);
+
+        Assert.True(valid.IsSuccess, valid.Error.Message);
+
+        byte[] key = FixtureKey();
+
+        using InstallationResetActiveRecordKeyLease sealKey =
+            InstallationResetActiveRecordKeyLease.Mint(key.ToArray());
+
+        InstallationResetActiveEnvelopeV2 envelope = Value(
+            InstallationResetActiveRecordAuthenticator.Seal(
+                sealKey,
+                FixtureLocation(),
+                payload.FullInstallationResetRemediationClaim!.InstallationId,
+                revision: 1,
+                InstallationResetActiveRecordAuthenticator.ZeroDigest,
+                payload));
+
+        InstallationResetActivePayloadV2 opened = Value(
+            OpenFixture(
+                key,
+                FixtureLocation(),
+                payload.FullInstallationResetRemediationClaim.InstallationId,
+                envelope));
+
+        Assert.NotNull(opened.HostToolsMarkerPairReset);
+
+        Assert.Equal(
+            HostToolsMarkerPairResetPhase.PairJournaled,
+            opened.HostToolsMarkerPairReset.Phase);
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_requires_version_one_exact_claim_all_scope_operation_installation_and_recovery_state()
+    {
+
+        // Mutation caught: accepting a checkpoint outside its exact V1 claim/All-scope/recovery
+        // owner shape would let unrelated or already-advanced reset state adopt its authority.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
+
+        FullInstallationResetRemediationClaimV1 claim =
+            valid.FullInstallationResetRemediationClaim!;
+
+        InstallationResetActivePayloadV2[] invalid =
+        [
+            valid with
+            {
+                HostToolsMarkerPairReset = checkpoint with { Version = 2 },
+            },
+            valid with { FullInstallationResetRemediationClaim = null },
+            valid with
+            {
+                FullInstallationResetRemediationClaim = claim with { Version = 2 },
+            },
+            valid with { Scope = InstallationResetScope.Global },
+            valid with
+            {
+                HostToolsMarkerPairReset = checkpoint with
+                {
+                    RestartProof = checkpoint.RestartProof with
+                    {
+                        SignedAttestation = checkpoint.RestartProof.SignedAttestation with
+                        {
+                            OperationId = Guid.NewGuid(),
+                        },
+                    },
+                },
+            },
+            valid with
+            {
+                HostToolsMarkerPairReset = checkpoint with
+                {
+                    RestartProof = checkpoint.RestartProof with
+                    {
+                        SignedAttestation = checkpoint.RestartProof.SignedAttestation with
+                        {
+                            InstallationId = Guid.NewGuid(),
+                        },
+                    },
+                },
+            },
+            valid with { Phase = InstallationResetPhase.DataResetComplete },
+            valid with { PointOfNoReturn = true },
+            valid with { LastErrorCode = null },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(candidate).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_restart_proof_requires_accepted_at_utc_and_signed_attestation_digest_exact_claim_equality()
+    {
+
+        // Mutation caught: accepting equivalent-looking or substituted acceptance/digest evidence
+        // would detach restart authorization from the exact authenticated claim publication.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
+
+        FullInstallationResetRestartProofV1 proof = checkpoint.RestartProof;
+
+        HostToolsMarkerPairResetCheckpointV1[] invalid =
+        [
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    AcceptedAtUtc = proof.AcceptedAtUtc.AddSeconds(1),
+                },
+            },
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    AcceptedAtUtc = proof.AcceptedAtUtc.ToOffset(TimeSpan.FromHours(1)),
+                },
+            },
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    SignedAttestationDigest = DigestRange(0xA0),
+                },
+            },
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    AcceptedAtUtc = proof.AcceptedAtUtc.AddTicks(1),
+                },
+            },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_rejects_zero_unknown_skipped_regressed_or_inconsistent_phase()
+    {
+
+        // Mutation caught: treating the byte code as an ordinal/default or allowing Campaign
+        // receipts before pair absence would authenticate skipped/regressed effect ordering.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
+
+        HostToolsMarkerPairResetCheckpointV1 preparedEarly = PreparedCheckpoint(
+            checkpoint,
+            [Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00")]);
+
+        HostToolsMarkerPairResetCheckpointV1[] invalid =
+        [
+            checkpoint with { Phase = 0 },
+            checkpoint with { Phase = (HostToolsMarkerPairResetPhase)5 },
+            preparedEarly with { Phase = HostToolsMarkerPairResetPhase.PairJournaled },
+            preparedEarly with
+            {
+                Phase = HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
+            },
+            preparedEarly with
+            {
+                Phase = HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted,
+            },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_rejects_changed_signed_projection_pair_digest_inventory_or_owner_effect()
+    {
+
+        // Mutation caught: trusting stored digests without recomputing their canonical owners lets
+        // a nested projection, pair, inventory, or full-reset effect be substituted independently.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
+
+        FullInstallationResetRestartProofV1 proof = checkpoint.RestartProof;
+
+        HostToolsMarkerPairResetCheckpointV1[] invalid =
+        [
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    SignedAttestation = proof.SignedAttestation with
+                    {
+                        SignatureBase64Url = Base64Url.EncodeToString(
+                            Enumerable.Repeat((byte)0x45, 64).ToArray()),
+                    },
+                },
+            },
+            checkpoint with
+            {
+                RestartProof = proof with { PairEvidenceDigest = DigestRange(0xB0) },
+            },
+            checkpoint with { CampaignMarkerInventoryDigest = DigestRange(0xC0) },
+            checkpoint with { OwnerEffectDigest = DigestRange(0xD0) },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_rejects_coherent_substituted_pair_even_when_pair_digest_is_recomputed()
+    {
+
+        // Mutation caught: independently validating signed attestation A and coherent pair B lets
+        // a recomputed pair digest detach restart evidence from the authenticated signed statement.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
+
+        FullInstallationResetRestartProofV1 proof = checkpoint.RestartProof;
+
+        Guid substitutedTransition = Guid.Parse(
+            "01234567-89ab-4cde-8f01-23456789abcd");
+
+        Guid substitutedInstallation = Guid.Parse(
+            "12345678-9abc-4def-8012-3456789abcde");
+
+        CovenantDigest substitutedFingerprint = DigestRange(0x22);
+
+        HostProcessToolsDatabaseMarkerEvidence substitutedDatabase = new(
+            substitutedInstallation.ToString("D"),
+            RetroDownfall.Arcanum.Core.Security.CovenantHostToolsState.HostToolsTainted,
+            substitutedTransition,
+            0x1112131415161718,
+            substitutedFingerprint);
+
+        HostProcessToolsOsMarkerEvidence substitutedOs = new(
+            substitutedInstallation.ToString("D"),
+            substitutedTransition,
+            0x1112131415161718,
+            substitutedFingerprint,
+            DigestRange(0x44),
+            DigestRange(0x66));
+
+        HostProcessToolsMatchedPair substitutedPair = new(
+            substitutedDatabase,
+            substitutedOs);
+
+        HostToolsMarkerPairResetCheckpointV1 substituted = checkpoint with
+        {
+            RestartProof = proof with
+            {
+                DatabaseMarkerEvidence = substitutedDatabase,
+                OsMarkerEvidence = substitutedOs,
+                PairEvidenceDigest = Value(
+                    FullInstallationResetMarkerPairResetDigests.PairEvidence(
+                        substitutedPair)),
+            },
+        };
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                valid with { HostToolsMarkerPairReset = substituted }).IsFailure);
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_rejects_same_shaped_attestation_action_effect_or_reconstructed_child_digest_substitution()
+    {
+
+        // Mutation caught: treating any valid 32-byte digest as interchangeable across lifecycle
+        // domains would let an attacker substitute a reconstructed sibling commitment.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
+
+        FullInstallationResetRestartProofV1 proof = checkpoint.RestartProof;
+
+        HostToolsMarkerPairResetCheckpointV1[] invalid =
+        [
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    SignedAttestationDigest = checkpoint.OwnerEffectDigest,
+                },
+            },
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    SignedAttestation = proof.SignedAttestation with
+                    {
+                        RemediationActionDigest = proof.PairEvidenceDigest,
+                    },
+                },
+            },
+            checkpoint with { OwnerEffectDigest = proof.PairEvidenceDigest },
+            checkpoint with
+            {
+                CampaignMarkerInventoryDigest = proof.PairEvidenceDigest,
+            },
+            checkpoint with
+            {
+                RestartProof = proof with
+                {
+                    PairEvidenceDigest = checkpoint.CampaignMarkerInventoryDigest,
+                },
+            },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_authentication_reuses_the_Core_signed_attestation_digest_calculator()
+    {
+
+        // Mutation caught: a private Infrastructure digest that omits or loosely decodes the
+        // signature would diverge from Core's signature-inclusive canonical owner.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        FullInstallationResetRestartProofV1 proof =
+            valid.HostToolsMarkerPairReset!.RestartProof;
+
+        Result<CovenantDigest> coreDigest =
+            FullInstallationResetRemediationAttestationDigest.Calculate(
+                proof.SignedAttestation.ToAttestation());
+
+        Assert.True(coreDigest.IsSuccess, coreDigest.Error.Message);
+
+        Assert.Equal(proof.SignedAttestationDigest, coreDigest.Value);
+
+        FullInstallationResetSignedAttestationProjectionV1 noncanonical =
+            proof.SignedAttestation with
+            {
+                SignatureBase64Url = proof.SignedAttestation.SignatureBase64Url + "=",
+            };
+
+        Assert.True(
+            FullInstallationResetRemediationAttestationDigest.Calculate(
+                noncanonical.ToAttestation()).IsFailure);
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                valid with
+                {
+                    HostToolsMarkerPairReset = valid.HostToolsMarkerPairReset with
+                    {
+                        RestartProof = proof with { SignedAttestation = noncanonical },
+                    },
+                }).IsFailure);
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_rejects_unknown_missing_reordered_trailing_or_noncanonical_nested_json()
+    {
+
+        // Mutation caught: authenticating AEAD bytes without requiring the closed checkpoint's
+        // canonical source-generated spelling would admit ignored, missing, or reordered evidence.
+        string canonical = JsonSerializer.Serialize(
+            CheckpointPayload(),
+            InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
+
+        string checkpointPrefix =
+            "\"hostToolsMarkerPairReset\":{\"version\":1,\"phase\":1,";
+
+        Assert.Contains(checkpointPrefix, canonical, StringComparison.Ordinal);
+
+        string unknown = canonical.Replace(
+            checkpointPrefix,
+            "\"hostToolsMarkerPairReset\":{\"version\":1,\"phase\":1,\"unknown\":0,",
+            StringComparison.Ordinal);
+
+        string missing = canonical.Replace(
+            checkpointPrefix,
+            "\"hostToolsMarkerPairReset\":{\"phase\":1,",
+            StringComparison.Ordinal);
+
+        string reordered = canonical.Replace(
+            checkpointPrefix,
+            "\"hostToolsMarkerPairReset\":{\"phase\":1,\"version\":1,",
+            StringComparison.Ordinal);
+
+        string trailing = canonical + "{}";
+
+        string noncanonical = "\n" + canonical;
+
+        Assert.All(
+            new[] { unknown, missing, reordered, trailing, noncanonical },
+            candidate => Assert.True(
+                OpenFixture(
+                    FixtureKey(),
+                    FixtureLocation(),
+                    CheckpointPayload().FullInstallationResetRemediationClaim!.InstallationId,
+                    AuthenticatedFixtureEnvelope(candidate)).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_receipt_fields_are_all_null_or_all_present()
+    {
+
+        // Mutation caught: accepting a partially published Campaign receipt would let restart
+        // interpret an incomplete vector/count barrier as durable preparation evidence.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 prepared = PreparedCheckpoint(
+            valid.HostToolsMarkerPairReset!,
+            [Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00")]);
+
+        HostToolsMarkerPairResetCheckpointV1[] partial =
+        [
+            prepared with { MarkerIntentCount = null },
+            prepared with { OrderedMarkerIntentIds = null },
+            prepared with { MarkerIntentVectorDigest = null },
+            prepared with { DeletedCount = null },
+            prepared with { OrphanCount = null },
+        ];
+
+        Assert.All(
+            partial,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_receipt_count_and_vector_must_match_campaign_inventory_cardinality()
+    {
+
+        // Mutation caught: binding count only to vector length permits a receipt for no Campaign,
+        // too few Campaigns, or no intent despite authenticated nonempty inventory.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 emptyInventory =
+            valid.HostToolsMarkerPairReset!;
+
+        HostToolsMarkerPairResetCheckpointV1 oneInventory =
+            CheckpointWithInventory(emptyInventory, count: 1);
+
+        HostToolsMarkerPairResetCheckpointV1 twoInventory =
+            CheckpointWithInventory(emptyInventory, count: 2);
+
+        HostToolsMarkerPairResetCheckpointV1[] mismatches =
+        [
+            ReceiptCheckpoint(
+                emptyInventory,
+                [Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00")]),
+            ReceiptCheckpoint(oneInventory, []),
+            ReceiptCheckpoint(
+                twoInventory,
+                [Guid.Parse("22334455-6677-8899-aabb-ccddeeff0011")]),
+        ];
+
+        Assert.All(
+            mismatches,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_receipt_rejects_default_oversized_duplicate_reordered_or_aliased_vectors()
+    {
+
+        // Mutation caught: failing to validate and hash a defensive vector snapshot would admit
+        // default, oversized, repeated, reordered, or backing-array-mutated intent evidence.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        Guid first = Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00");
+
+        Guid second = Guid.Parse("22334455-6677-8899-aabb-ccddeeff0011");
+
+        HostToolsMarkerPairResetCheckpointV1 prepared = PreparedCheckpoint(
+            valid.HostToolsMarkerPairReset!,
+            [first, second]);
+
+        ImmutableArray<Guid> oversized = ImmutableArray.CreateRange(
+            Enumerable.Range(1, 4097).Select(static value => new Guid(value, 0, 0, new byte[8])));
+
+        Guid[] aliasedBacking = [first, second];
+
+        ImmutableArray<Guid> aliased =
+            ImmutableCollectionsMarshal.AsImmutableArray(aliasedBacking);
+
+        CovenantDigest preMutationDigest = Value(
+            FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(aliased));
+
+        aliasedBacking[1] = Guid.Parse("33445566-7788-99aa-bbcc-ddeeff001122");
+
+        HostToolsMarkerPairResetCheckpointV1[] invalid =
+        [
+            prepared with { OrderedMarkerIntentIds = default(ImmutableArray<Guid>) },
+            prepared with
+            {
+                MarkerIntentCount = checked((ulong)oversized.Length),
+                OrderedMarkerIntentIds = oversized,
+            },
+            prepared with { OrderedMarkerIntentIds = ImmutableArray.Create(first, first) },
+            prepared with { OrderedMarkerIntentIds = ImmutableArray.Create(second, first) },
+            prepared with
+            {
+                OrderedMarkerIntentIds = aliased,
+                MarkerIntentVectorDigest = preMutationDigest,
+            },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_rejects_partial_cleanup_counts_between_prepared_and_terminal()
+    {
+
+        // Mutation caught: persisting incremental child totals would make an intermediate scan
+        // indistinguishable from the single authenticated terminal receipt publication.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 prepared = PreparedCheckpoint(
+            valid.HostToolsMarkerPairReset!,
+            [
+                Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00"),
+                Guid.Parse("22334455-6677-8899-aabb-ccddeeff0011"),
+            ]);
+
+        HostToolsMarkerPairResetCheckpointV1[] partial =
+        [
+            prepared with { DeletedCount = 1 },
+            prepared with { OrphanCount = 1 },
+        ];
+
+        Assert.All(
+            partial,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
+
+    }
+
+    [Fact]
+    public void V2_checkpoint_terminal_counts_require_checked_deleted_plus_orphan_equal_count()
+    {
+
+        // Mutation caught: unchecked UInt64 addition can wrap a nonsensical terminal receipt back
+        // to the authenticated intent count and falsely report complete reconciliation.
+        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+
+        HostToolsMarkerPairResetCheckpointV1 prepared = PreparedCheckpoint(
+            valid.HostToolsMarkerPairReset!,
+            [
+                Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00"),
+                Guid.Parse("22334455-6677-8899-aabb-ccddeeff0011"),
+            ]);
+
+        HostToolsMarkerPairResetCheckpointV1 terminal = prepared with
+        {
+            DeletedCount = 1,
+            OrphanCount = 1,
+        };
+
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                valid with { HostToolsMarkerPairReset = terminal }).IsSuccess);
+
+        HostToolsMarkerPairResetCheckpointV1 empty = PreparedCheckpoint(
+            valid.HostToolsMarkerPairReset!,
+            []);
+
+        HostToolsMarkerPairResetCheckpointV1[] invalid =
+        [
+            terminal with { DeletedCount = 2, OrphanCount = 1 },
+            empty with { DeletedCount = ulong.MaxValue, OrphanCount = 1 },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator.ValidatePayload(
+                    valid with { HostToolsMarkerPairReset = candidate }).IsFailure));
 
     }
 
@@ -505,11 +1180,11 @@ public sealed class InstallationResetActiveAuthenticationTests : IDisposable
             + "\"attestationDigest\":{\"bytes\":\"EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=\"},"
             + "\"nonceDigest\":{\"bytes\":\"ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=\"},"
             + "\"issuerDigest\":{\"bytes\":\"MDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk8=\"},"
-            + "\"acceptedAtUtc\":\"2026-08-22T12:00:00+00:00\"},";
+            + "\"acceptedAtUtc\":\"2026-08-22T12:00:00+00:00\"}";
 
         string payloadJson = FixturePayloadJson.Replace(
             "\"hostToolsMarkerPairReset\":null",
-            claim + "\"hostToolsMarkerPairReset\":null",
+            "\"hostToolsMarkerPairReset\":null," + claim,
             StringComparison.Ordinal).Replace(
                 "\"lastErrorCode\":null",
                 "\"lastErrorCode\":\"Data.RecoveryRequired\"",
@@ -1151,6 +1826,195 @@ public sealed class InstallationResetActiveAuthenticationTests : IDisposable
             DataHandoff: null,
             OnlineDataCompletion: null,
             HostToolsMarkerPairReset: null);
+
+    private static InstallationResetActivePayloadV2 CheckpointPayload()
+    {
+
+        InstallationResetActivePayloadV2 fixture = FixturePayload();
+
+        HostProcessToolsMatchedPair pair = CheckpointPair();
+
+        DateTimeOffset acceptedAtUtc = new(
+            2026,
+            8,
+            22,
+            12,
+            0,
+            0,
+            TimeSpan.Zero);
+
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            fixture.OperationId,
+            Guid.Parse(pair.Database.InstallationIdentity),
+            pair.Database.TransitionId!.Value,
+            pair.Database.TaintMasterKeyVersion!.Value,
+            pair.Database.TaintFingerprint!.Value,
+            pair.Database.DatabaseMarkerDigest,
+            pair.OsMarker.MarkerBytesDigest,
+            new CovenantDigest(Convert.FromHexString(
+                "761e8536128080d5936070524da90a6558b8901ea46d93194646b413bb27a1d9")),
+            "oKGio6SlpqeoqaqrrK2urw",
+            "RetroDownfall.Remediation.v1",
+            acceptedAtUtc.AddMinutes(-5),
+            acceptedAtUtc.AddMinutes(55),
+            Base64Url.EncodeToString(Enumerable.Repeat((byte)0x44, 64).ToArray()));
+
+        CovenantDigest signedDigest = Value(
+            FullInstallationResetRemediationAttestationDigest.Calculate(attestation));
+
+        ImmutableArray<CampaignMarkerInventoryEntryV1> inventory = [];
+
+        CovenantDigest inventoryDigest = Value(
+            FullInstallationResetMarkerPairResetDigests.CampaignInventory(inventory));
+
+        CovenantDigest ownerEffect = Value(
+            FullInstallationResetMarkerPairResetDigests.FullResetEffect(
+                attestation.OperationId,
+                attestation.InstallationId,
+                attestation.HostToolsTransitionId,
+                attestation.TaintMasterKeyVersion,
+                attestation.AuthorityFingerprint,
+                attestation.DatabaseMarkerDigest,
+                attestation.OsMarkerDigest,
+                attestation.RemediationActionDigest,
+                inventoryDigest));
+
+        FullInstallationResetRemediationClaimV1 claim = new(
+            Version: 1,
+            attestation.OperationId,
+            attestation.InstallationId,
+            signedDigest,
+            DigestRange(0x70),
+            DigestRange(0x90),
+            acceptedAtUtc);
+
+        FullInstallationResetRestartProofV1 restartProof = new(
+            Version: 1,
+            FullInstallationResetSignedAttestationProjectionV1.FromAttestation(attestation),
+            acceptedAtUtc,
+            signedDigest,
+            pair.Database,
+            pair.OsMarker,
+            Value(FullInstallationResetMarkerPairResetDigests.PairEvidence(pair)));
+
+        HostToolsMarkerPairResetCheckpointV1 checkpoint = new(
+            Version: 1,
+            HostToolsMarkerPairResetPhase.PairJournaled,
+            restartProof,
+            inventory,
+            inventoryDigest,
+            ownerEffect,
+            MarkerIntentCount: null,
+            OrderedMarkerIntentIds: null,
+            MarkerIntentVectorDigest: null,
+            DeletedCount: null,
+            OrphanCount: null);
+
+        return fixture with
+        {
+            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            FullInstallationResetRemediationClaim = claim,
+            HostToolsMarkerPairReset = checkpoint,
+        };
+
+    }
+
+    private static HostProcessToolsMatchedPair CheckpointPair()
+    {
+
+        const string installation = "00112233-4455-6677-8899-aabbccddeeff";
+
+        Guid transition = Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+
+        CovenantDigest fingerprint = DigestRange(0x11);
+
+        HostProcessToolsDatabaseMarkerEvidence database = new(
+            installation,
+            RetroDownfall.Arcanum.Core.Security.CovenantHostToolsState.HostToolsTainted,
+            transition,
+            0x0102030405060708,
+            fingerprint);
+
+        HostProcessToolsOsMarkerEvidence marker = new(
+            installation,
+            transition,
+            0x0102030405060708,
+            fingerprint,
+            DigestRange(0x33),
+            DigestRange(0x55));
+
+        return new HostProcessToolsMatchedPair(database, marker);
+
+    }
+
+    private static HostToolsMarkerPairResetCheckpointV1 CheckpointWithInventory(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint,
+        int count)
+    {
+
+        ImmutableArray<CampaignMarkerInventoryEntryV1> inventory =
+            ImmutableArray.CreateRange(
+                Enumerable.Range(1, count).Select(static value =>
+                    new CampaignMarkerInventoryEntryV1(
+                        new Guid(value, 0, 0, new byte[8]),
+                        PriorPathRevision: value,
+                        DigestRange(checked((byte)(0x10 + value))),
+                        DigestRange(checked((byte)(0x30 + value))),
+                        DigestRange(checked((byte)(0x50 + value))),
+                        DigestRange(checked((byte)(0x70 + value))))));
+
+        CovenantDigest inventoryDigest = Value(
+            FullInstallationResetMarkerPairResetDigests.CampaignInventory(inventory));
+
+        FullInstallationResetSignedAttestationProjectionV1 signed =
+            checkpoint.RestartProof.SignedAttestation;
+
+        return checkpoint with
+        {
+            CampaignInventory = inventory,
+            CampaignMarkerInventoryDigest = inventoryDigest,
+            OwnerEffectDigest = Value(
+                FullInstallationResetMarkerPairResetDigests.FullResetEffect(
+                    signed.OperationId,
+                    signed.InstallationId,
+                    signed.HostToolsTransitionId,
+                    signed.TaintMasterKeyVersion,
+                    signed.AuthorityFingerprint,
+                    signed.DatabaseMarkerDigest,
+                    signed.OsMarkerDigest,
+                    signed.RemediationActionDigest,
+                    inventoryDigest)),
+        };
+
+    }
+
+    private static HostToolsMarkerPairResetCheckpointV1 PreparedCheckpoint(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint,
+        ImmutableArray<Guid> intentIds) =>
+        ReceiptCheckpoint(
+            CheckpointWithInventory(checkpoint, intentIds.Length),
+            intentIds);
+
+    private static HostToolsMarkerPairResetCheckpointV1 ReceiptCheckpoint(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint,
+        ImmutableArray<Guid> intentIds)
+    {
+
+        CovenantDigest digest = Value(
+            FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(intentIds));
+
+        return checkpoint with
+        {
+            Phase = HostToolsMarkerPairResetPhase.PairAbsenceVerified,
+            MarkerIntentCount = checked((ulong)intentIds.Length),
+            OrderedMarkerIntentIds = intentIds,
+            MarkerIntentVectorDigest = digest,
+            DeletedCount = 0,
+            OrphanCount = 0,
+        };
+
+    }
 
     private const string FixtureEnvelopeJson =
         "{\"version\":2,\"profileNamespaceDigest\":{\"bytes\":"

@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -1129,6 +1130,37 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     /// </remarks>
     internal sealed class RecordingRestoreMarkerLifecycle : ICampaignPathMarkerLifecycle
     {
+
+        public Task<Result<CampaignPathFullInstallationResetInventory>>
+            InventoryFullInstallationResetCleanupAsync(
+                Guid ownerOperationId,
+                SqliteConnection liveCoreConnection,
+                CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Restore staging never inventories full-reset roots.");
+
+        public Task<Result> RevalidateFullInstallationResetInventoryAsync(
+            CampaignPathFullInstallationResetInventory inventory,
+            SqliteConnection liveCoreConnection,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Restore staging never revalidates full-reset inventory.");
+
+        public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
+            PrepareFullInstallationResetCleanupAsync(
+                CampaignPathFullInstallationResetCleanupPreparation preparation,
+                CampaignPathFullInstallationResetCleanupReceipt? expectedReceipt,
+                HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority authority,
+                SqliteConnection liveCoreConnection,
+                SqliteTransaction liveCoreTransaction,
+                CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Restore staging never prepares full-reset cleanup.");
+
+        public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
+            ReconcileFullInstallationResetCleanupAsync(
+                CampaignPathFullInstallationResetCleanupReceipt prepared,
+                HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority authority,
+                SqliteConnection liveCoreConnection,
+                CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Restore staging never reconciles full-reset cleanup.");
 
         internal int ReconcileCalls { get; private set; }
 

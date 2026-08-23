@@ -1,7 +1,9 @@
 using System.Collections.Immutable;
+using System.Reflection;
 using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -161,6 +163,206 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         await transaction.RollbackAsync(CancellationToken.None);
 
         Assert.Equal(0, await CountIntentsAsync());
+
+    }
+
+    [Fact]
+    public async Task Owner_release_covers_restore_and_full_reset_maps_and_continues_after_disposal_fault()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot restoreRoot = await CreateMarkedRootAsync("release-restore", 16);
+
+        CampaignRoot fullResetRoot = await CreateMarkedRootAsync("release-full-reset", 17);
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
+            await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
+                new CampaignPathRestoreCleanupPreparation(owner, [restoreRoot.Seed]),
+                _database.Connection,
+                transaction,
+                CancellationToken.None);
+
+        Assert.True(prepared.IsSuccess, Describe(prepared));
+
+        CampaignPathMarkerRootAuthority fullResetAuthority =
+            ((CampaignPathCleanupRootObservation.Opened)fullResetRoot.Seed.Observation)
+                .RootAuthority;
+
+        AddFullResetRetainedRoot(
+            _lifecycle,
+            owner.OperationId,
+            fullResetRoot.Seed.CampaignId,
+            fullResetAuthority);
+
+        CampaignPathMarkerRootAuthority restoreAuthority =
+            ((CampaignPathCleanupRootObservation.Opened)restoreRoot.Seed.Observation)
+                .RootAuthority;
+
+        await _lifecycle.ReleaseRetainedRootsAsync(owner.OperationId);
+
+        Assert.Equal(0, RetainedMapCount(_lifecycle, "_retainedRoots"));
+
+        Assert.Equal(0, RetainedMapCount(_lifecycle, "_fullResetRetainedRoots"));
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await restoreAuthority.OpenMarkerOrProveAbsentNoFollowAsync(
+                CancellationToken.None));
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await fullResetAuthority.OpenMarkerOrProveAbsentNoFollowAsync(
+                CancellationToken.None));
+
+        ThrowingAsyncDisposable throwing = new();
+
+        RecordingAsyncDisposable recording = new();
+
+        await CampaignPathRetainedRootRelease.DisposeAllAsync([throwing, recording]);
+
+        Assert.Equal(1, throwing.DisposeCalls);
+
+        Assert.Equal(1, recording.DisposeCalls);
+
+        await _lifecycle.ReleaseRetainedRootsAsync(owner.OperationId);
+
+        Assert.Equal(1, throwing.DisposeCalls);
+
+        Assert.Equal(1, recording.DisposeCalls);
+
+        await transaction.RollbackAsync(CancellationToken.None);
+
+    }
+
+    [Fact]
+    public async Task Scoped_lifecycle_disposal_drains_both_retained_authority_maps_exactly_once()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignRoot restoreRoot = await CreateMarkedRootAsync("scope-restore", 18);
+
+        CampaignRoot fullResetRoot = await CreateMarkedRootAsync("scope-full-reset", 19);
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
+            await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
+                new CampaignPathRestoreCleanupPreparation(owner, [restoreRoot.Seed]),
+                _database.Connection,
+                transaction,
+                CancellationToken.None);
+
+        Assert.True(prepared.IsSuccess, Describe(prepared));
+
+        CampaignPathMarkerRootAuthority restoreAuthority =
+            ((CampaignPathCleanupRootObservation.Opened)restoreRoot.Seed.Observation)
+                .RootAuthority;
+
+        CampaignPathMarkerRootAuthority fullResetAuthority =
+            ((CampaignPathCleanupRootObservation.Opened)fullResetRoot.Seed.Observation)
+                .RootAuthority;
+
+        AddFullResetRetainedRoot(
+            _lifecycle,
+            owner.OperationId,
+            fullResetRoot.Seed.CampaignId,
+            fullResetAuthority);
+
+        ServiceCollection services = new();
+
+        services.AddScoped(_ => _lifecycle);
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        AsyncServiceScope scope = provider.CreateAsyncScope();
+
+        Assert.Same(
+            _lifecycle,
+            scope.ServiceProvider.GetRequiredService<CampaignPathMarkerLifecycle>());
+
+        Assert.Equal(1, RetainedMapCount(_lifecycle, "_retainedRoots"));
+
+        Assert.Equal(1, RetainedMapCount(_lifecycle, "_fullResetRetainedRoots"));
+
+        await scope.DisposeAsync();
+
+        await scope.DisposeAsync();
+
+        Assert.Equal(0, RetainedMapCount(_lifecycle, "_retainedRoots"));
+
+        Assert.Equal(0, RetainedMapCount(_lifecycle, "_fullResetRetainedRoots"));
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await restoreAuthority.OpenMarkerOrProveAbsentNoFollowAsync(
+                CancellationToken.None));
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await fullResetAuthority.OpenMarkerOrProveAbsentNoFollowAsync(
+                CancellationToken.None));
+
+        await transaction.RollbackAsync(CancellationToken.None);
+
+    }
+
+    [Fact]
+    public async Task Scoped_lifecycle_disposal_atomically_refuses_new_root_retention()
+    {
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        ServiceCollection services = new();
+
+        services.AddScoped(_ => _lifecycle);
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        AsyncServiceScope scope = provider.CreateAsyncScope();
+
+        Assert.Same(
+            _lifecycle,
+            scope.ServiceProvider.GetRequiredService<CampaignPathMarkerLifecycle>());
+
+        await scope.DisposeAsync();
+
+        CampaignRoot root = await CreateMarkedRootAsync("disposed-retention", 20);
+
+        CampaignPathMarkerRootAuthority authority =
+            ((CampaignPathCleanupRootObservation.Opened)root.Seed.Observation)
+                .RootAuthority;
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        try
+        {
+
+            Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
+                await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
+                    new CampaignPathRestoreCleanupPreparation(owner, [root.Seed]),
+                    _database.Connection,
+                    transaction,
+                    CancellationToken.None);
+
+            Assert.True(prepared.IsFailure);
+
+            Assert.Equal(0, RetainedMapCount(_lifecycle, "_retainedRoots"));
+
+            Assert.Equal(0, RetainedMapCount(_lifecycle, "_fullResetRetainedRoots"));
+
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await authority.OpenMarkerOrProveAbsentNoFollowAsync(
+                    CancellationToken.None));
+
+        }
+        finally
+        {
+
+            await _lifecycle.ReleaseRetainedRootsAsync(owner.OperationId);
+
+            await transaction.RollbackAsync(CancellationToken.None);
+
+        }
 
     }
 
@@ -889,7 +1091,82 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
     }
 
+    private static void AddFullResetRetainedRoot(
+        CampaignPathMarkerLifecycle lifecycle,
+        Guid ownerOperationId,
+        Guid campaignId,
+        CampaignPathMarkerRootAuthority authority)
+    {
+
+        FieldInfo mapField = typeof(CampaignPathMarkerLifecycle).GetField(
+            "_fullResetRetainedRoots",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        object map = mapField.GetValue(lifecycle)!;
+
+        Type keyType = map.GetType().GenericTypeArguments[0];
+
+        object key = Activator.CreateInstance(
+            keyType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [ownerOperationId, campaignId],
+            culture: null)!;
+
+        MethodInfo tryAdd = map.GetType().GetMethod("TryAdd")!;
+
+        Assert.True((bool)tryAdd.Invoke(map, [key, authority])!);
+
+    }
+
+    private static int RetainedMapCount(
+        CampaignPathMarkerLifecycle lifecycle,
+        string fieldName)
+    {
+
+        FieldInfo mapField = typeof(CampaignPathMarkerLifecycle).GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        object map = mapField.GetValue(lifecycle)!;
+
+        return (int)map.GetType().GetProperty("Count")!.GetValue(map)!;
+
+    }
+
     private sealed record CampaignRoot(string Directory, CampaignPathRestoreCleanupSeed Seed);
+
+    private sealed class ThrowingAsyncDisposable : IAsyncDisposable
+    {
+
+        internal int DisposeCalls { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+
+            DisposeCalls++;
+
+            throw new IOException("The disposal sentinel diagnostic must not escape.");
+
+        }
+
+    }
+
+    private sealed class RecordingAsyncDisposable : IAsyncDisposable
+    {
+
+        internal int DisposeCalls { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+
+            DisposeCalls++;
+
+            return ValueTask.CompletedTask;
+
+        }
+
+    }
 
     private sealed class StubKeySource(byte[] key) : ICampaignRootIdentityKeyProvider
     {

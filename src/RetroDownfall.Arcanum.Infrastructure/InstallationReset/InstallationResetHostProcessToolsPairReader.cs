@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 internal interface IInstallationResetHostProcessToolsDatabaseEvidenceReader
 {
 
-    Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadAsync(
+    Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadMarkerEvidenceAsync(
         CancellationToken cancellationToken = default);
 
 }
@@ -86,7 +86,7 @@ internal sealed class InstallationResetHostProcessToolsPairReader(
         {
 
             database = await databaseEvidenceReader
-                .ReadAsync(cancellationToken).ConfigureAwait(false);
+                .ReadMarkerEvidenceAsync(cancellationToken).ConfigureAwait(false);
 
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
