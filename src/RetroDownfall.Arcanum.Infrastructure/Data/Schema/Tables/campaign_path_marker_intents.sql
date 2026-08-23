@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS campaign_path_marker_intents (
     -- Observed once from the same newly opened temporary-file handle, so recovery can prove the
     -- rename moved that exact object rather than whatever now answers to the temporary name.
     TemporaryPhysicalIdentityDigest BLOB NULL CHECK (TemporaryPhysicalIdentityDigest IS NULL OR length(TemporaryPhysicalIdentityDigest) = 32),
-    TargetDisplayPath TEXT NOT NULL CHECK (length(TargetDisplayPath) BETWEEN 1 AND 4096),
+    -- Nullable for kind four only. A full-reset child whose Campaign vanished between inventory and
+    -- the pair effect still has to be journaled, and manufacturing a path for it would hand
+    -- reconciliation a location nobody observed. Every other kind still requires one.
+    TargetDisplayPath TEXT NULL CHECK (TargetDisplayPath IS NULL OR length(TargetDisplayPath) BETWEEN 1 AND 4096),
     -- Zero is legal: a first registration replaces no earlier identity revision.
     PriorRevision INTEGER NOT NULL CHECK (PriorRevision >= 0),
     -- Opened = 1, Absent = 2. Both this and the reopened identity are filled exactly once on entry
@@ -87,7 +90,28 @@ CREATE TABLE IF NOT EXISTS campaign_path_marker_intents (
     -- The orphan arm exists only because core Campaign deletion cannot stay blocked by a workspace
     -- it no longer owns. No other kind has that problem, and none may borrow the arm to abandon work
     -- it is still able to finish.
-    CHECK (PhaseCode NOT IN (15, 16) OR IntentKindCode = 2)
+    CHECK (PhaseCode NOT IN (15, 16) OR IntentKindCode = 2),
+    -- Only kind four may omit the target display path.
+    CHECK (IntentKindCode = 4 OR TargetDisplayPath IS NOT NULL),
+    -- A full installation reset cleans up an already registered Campaign, so there is always an
+    -- earlier identity revision behind it. Zero would be a first registration, which this kind never
+    -- performs.
+    CHECK (IntentKindCode <> 4 OR PriorRevision > 0),
+    -- Kind four carries no marker payload of its own to destroy, no temporary name to rename
+    -- through, and no one-time target observation: its evidence lives in the companion row, written
+    -- once before either host-tools marker was touched. Any of these columns set here would be
+    -- authority the reset never received.
+    CHECK (
+        IntentKindCode <> 4
+        OR (EncryptedMarkerPayload IS NULL
+            AND TemporaryBaseName IS NULL
+            AND TemporaryPhysicalIdentityDigest IS NULL
+            AND TargetObservationCode IS NULL
+            AND ReopenedTargetPhysicalIdentityDigest IS NULL)
+    ),
+    -- Prepared, Completed, or ManualBlocker. The two-phase filesystem phases belong to a kind that
+    -- writes a marker; kind four only deletes one it already proved is the expected one.
+    CHECK (IntentKindCode <> 4 OR PhaseCode IN (1, 12, 14))
 );
 
 -- One active intent per historical Campaign. Terminal rows are excluded so completed, compensated,

@@ -24,7 +24,9 @@ internal sealed record CampaignPathMarkerIntentRow(
     CovenantExclusiveOperation? ExclusiveOwnerOperation,
     CovenantDigest OwnerEffectDigest,
     CovenantDigest MarkerDigest,
-    string TargetDisplayPath,
+    // Null only for a full installation reset cleanup child whose Campaign was already unavailable
+    // or mismatched when the reset observed it. Every other kind is refused a null by the table.
+    string? TargetDisplayPath,
     long PriorRevision,
     CampaignPathMarkerPhase Phase,
     long PhaseRevision,
@@ -189,6 +191,98 @@ internal sealed class CampaignPathMarkerIntentStore
     }
 
     /// <summary>
+    /// Commits one <see cref="CampaignPathMarkerIntentKind.FullInstallationResetCleanup"/> child.
+    /// </summary>
+    /// <remarks>
+    /// Insert-only, deliberately without the insert-or-read twin the restore kind has. Returning an
+    /// existing identity on the strength of the owner/Campaign/kind uniqueness alone would hand a
+    /// second attempt a child it never observed — the row would match on three columns and could
+    /// still carry a different observation, path hint, or effect. The full-reset seam establishes
+    /// replay the only way that is sound: by reading the complete existing vector, parent and
+    /// companion together, and comparing every field before it decides to write nothing.
+    ///
+    /// <para>So a duplicate reaching here is not a retry to be absorbed, it is a second writer, and
+    /// the durable uniqueness index is left to refuse it.</para>
+    /// </remarks>
+    internal async Task<Result<Guid>> InsertFullInstallationResetCleanupAsync(
+        Guid ownerOperationId,
+        CovenantDigest ownerEffectDigest,
+        Guid campaignId,
+        CovenantDigest markerDigest,
+        string? targetDisplayPath,
+        long priorRevision,
+        CancellationToken cancellationToken)
+    {
+
+        // A full reset cleans up an already registered Campaign, so a zero prior revision would be
+        // a first registration this kind never performs. The table says the same; saying it here
+        // keeps the refusal typed rather than an exception from a constraint.
+        if (ownerOperationId == Guid.Empty
+            || campaignId == Guid.Empty
+            || !ownerEffectDigest.IsValid
+            || !markerDigest.IsValid
+            || priorRevision <= 0
+            || targetDisplayPath is { Length: 0 } or { Length: > 4096 })
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "A full-installation reset cleanup intent requires a complete owner, Campaign, and evidence.");
+
+        }
+
+        Guid intentId = Guid.NewGuid();
+
+        string now = Iso(_timeProvider.GetUtcNow());
+
+        using CovenantSqliteAuthorizationScope scope = _initializer.Authorize(
+            _connection,
+            CovenantSqliteAuthorizationKind.CampaignPathMarkerIntentMutation);
+
+        await using SqliteCommand command = _connection.CreateCommand();
+
+        command.Transaction = _transaction;
+
+        command.CommandText = """
+            INSERT INTO campaign_path_marker_intents (
+                IntentId, OwnerOperationId, CampaignId, IntentKindCode, ExclusiveOwnerOperationCode,
+                OwnerEffectDigest, EncryptedMarkerPayload, MarkerDigest, ApplyRequestDigest,
+                TemporaryBaseName, TemporaryPhysicalIdentityDigest, TargetDisplayPath, PriorRevision,
+                TargetObservationCode, ReopenedTargetPhysicalIdentityDigest, PendingDispositionCode,
+                PhaseCode, PhaseRevision, CreatedAtUtc, UpdatedAtUtc)
+            VALUES (
+                $intent, $owner, $campaign, 4, NULL,
+                $effect, NULL, $marker, NULL,
+                NULL, NULL, $display, $revision,
+                NULL, NULL, NULL,
+                1, 1, $now, $now);
+            """;
+
+        _ = command.Parameters.AddWithValue("$intent", intentId.ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$owner", ownerOperationId.ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$campaign", campaignId.ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$effect", ownerEffectDigest.Bytes);
+
+        _ = command.Parameters.AddWithValue("$marker", markerDigest.Bytes);
+
+        _ = command.Parameters.AddWithValue(
+            "$display",
+            targetDisplayPath is null ? DBNull.Value : targetDisplayPath);
+
+        _ = command.Parameters.AddWithValue("$revision", priorRevision);
+
+        _ = command.Parameters.AddWithValue("$now", now);
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        return intentId;
+
+    }
+
+    /// <summary>
     /// Reads one child by identity, or reports that it is absent.
     /// </summary>
     internal async Task<CampaignPathMarkerIntentRow?> ReadAsync(
@@ -228,7 +322,7 @@ internal sealed class CampaignPathMarkerIntentStore
             reader.IsDBNull(4) ? null : (CovenantExclusiveOperation)reader.GetInt32(4),
             new CovenantDigest(ReadBlob(reader, 5)),
             new CovenantDigest(ReadBlob(reader, 6)),
-            reader.GetString(7),
+            reader.IsDBNull(7) ? null : reader.GetString(7),
             reader.GetInt64(8),
             (CampaignPathMarkerPhase)reader.GetInt32(9),
             reader.GetInt64(10),
@@ -251,6 +345,36 @@ internal sealed class CampaignPathMarkerIntentStore
         command.CommandText = """
             SELECT COUNT(*) FROM campaign_path_marker_intents
             WHERE OwnerOperationId = $owner AND IntentKindCode = 3;
+            """;
+
+        _ = command.Parameters.AddWithValue("$owner", ownerOperationId.ToString("D"));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// Counts the full-reset cleanup children one owner holds.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the restore count rather than a parameterized version of it. The joined read
+    /// this cross-checks is what a replay compares against, and a count that could be pointed at the
+    /// wrong kind by a caller would agree with a vector drawn from a different journal.
+    /// </remarks>
+    internal async Task<long> CountFullInstallationResetCleanupForOwnerAsync(
+        Guid ownerOperationId,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = _connection.CreateCommand();
+
+        command.Transaction = _transaction;
+
+        command.CommandText = """
+            SELECT COUNT(*) FROM campaign_path_marker_intents
+            WHERE OwnerOperationId = $owner AND IntentKindCode = 4;
             """;
 
         _ = command.Parameters.AddWithValue("$owner", ownerOperationId.ToString("D"));

@@ -16,6 +16,18 @@ BEGIN
     SELECT RAISE(ABORT, 'A terminal Campaign path marker intent cannot be changed.')
     WHERE OLD.PhaseCode IN (12, 13, 16);
 
+    -- ManualBlocker is terminal for kind four and only for kind four. The two-phase kinds can still
+    -- be driven out of it by an operator-confirmed takeover; a full-reset child cannot, because the
+    -- installation it belonged to is already gone.
+    SELECT RAISE(ABORT, 'A terminal full installation reset cleanup intent cannot be changed.')
+    WHERE OLD.IntentKindCode = 4 AND OLD.PhaseCode = 14;
+
+    -- The only advance kind four has: Prepared to one of its two terminal phases.
+    SELECT RAISE(ABORT, 'A full installation reset cleanup intent advances only from Prepared to Completed or ManualBlocker.')
+    WHERE OLD.IntentKindCode = 4
+        AND NEW.PhaseCode <> OLD.PhaseCode
+        AND (OLD.PhaseCode <> 1 OR NEW.PhaseCode NOT IN (12, 14));
+
     SELECT RAISE(ABORT, 'A Campaign path marker intent update requires the exact prior phase revision.')
     WHERE NEW.PhaseRevision <> OLD.PhaseRevision + 1;
 
@@ -43,8 +55,11 @@ BEGIN
     SELECT RAISE(ABORT, 'A Campaign path marker intent cannot change its marker digest.')
     WHERE NEW.MarkerDigest <> OLD.MarkerDigest;
 
+    -- IS NOT rather than <>: the column became nullable for kind four, and <> is unknown whenever
+    -- either side is NULL, so both a null-to-value and a value-to-null substitution would have
+    -- slipped past an immutability guard that reads as if it covered them.
     SELECT RAISE(ABORT, 'A Campaign path marker intent cannot change its target display path.')
-    WHERE NEW.TargetDisplayPath <> OLD.TargetDisplayPath;
+    WHERE NEW.TargetDisplayPath IS NOT OLD.TargetDisplayPath;
 
     SELECT RAISE(ABORT, 'A Campaign path marker intent cannot change its prior path revision.')
     WHERE NEW.PriorRevision <> OLD.PriorRevision;
