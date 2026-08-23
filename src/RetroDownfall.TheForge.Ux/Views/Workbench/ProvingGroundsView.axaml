@@ -2,7 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
              xmlns:pg="using:RetroDownfall.Arcanum.Core.ProvingGrounds"
-             xmlns:forge="using:RetroDownfall.Arcanum.Core.TheForge"
+             xmlns:tower="using:RetroDownfall.Arcanum.Core.Tower"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.ProvingGroundsView"
              x:DataType="vm:ProvingGroundsViewModel">
   <Grid RowDefinitions="Auto,*,Auto" Margin="8">
@@ -113,7 +113,7 @@
                       SelectedItem="{Binding SelectedPrompt}"
                       MinWidth="240">
               <ComboBox.ItemTemplate>
-                <DataTemplate x:DataType="forge:PromptSummaryDto">
+                <DataTemplate x:DataType="tower:PromptSummaryDto">
                   <TextBlock Text="{Binding Name}" />
                 </DataTemplate>
               </ComboBox.ItemTemplate>

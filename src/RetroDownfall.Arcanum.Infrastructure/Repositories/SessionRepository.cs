@@ -5,7 +5,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -936,7 +936,7 @@ public sealed class SessionRepository(
         // { "session": {...}, "entries": [...] } object. The endpoint buffers the result into a
         // string (SessionExportResult.Content), so the output string is still O(total) — that
         // is inherent to the wire contract, not the accumulation. Source-generated type infos
-        // (TheForgeJsonContext) keep this AOT-safe.
+        // (ArcanumCoreJsonContext) keep this AOT-safe.
         using MemoryStream buffer = new();
 
         using Utf8JsonWriter writer = new(buffer, new JsonWriterOptions { Indented = false });
@@ -945,7 +945,7 @@ public sealed class SessionRepository(
 
         writer.WritePropertyName("session");
 
-        JsonSerializer.Serialize(writer, session, TheForgeJsonContext.Default.Session);
+        JsonSerializer.Serialize(writer, session, ArcanumCoreJsonContext.Default.Session);
 
         writer.WritePropertyName("entries");
 
@@ -957,7 +957,7 @@ public sealed class SessionRepository(
             foreach (Entry entry in batch)
             {
 
-                JsonSerializer.Serialize(writer, entry, TheForgeJsonContext.Default.Entry);
+                JsonSerializer.Serialize(writer, entry, ArcanumCoreJsonContext.Default.Entry);
 
             }
 

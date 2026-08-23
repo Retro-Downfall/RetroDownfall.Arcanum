@@ -23,7 +23,7 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 using RetroDownfall.Arcanum.Tests.Support;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 

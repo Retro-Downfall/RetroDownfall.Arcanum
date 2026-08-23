@@ -1,7 +1,7 @@
 using System.Reflection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
-using RetroDownfall.Arcanum.Infrastructure.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;

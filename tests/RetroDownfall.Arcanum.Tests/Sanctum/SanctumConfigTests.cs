@@ -60,7 +60,7 @@ public sealed class SanctumConfigTests
         // The source generator assigns every init-only member on every deserialization, passing null
         // for absent ones, so an incomplete payload must degrade to the most restrictive (empty) value
         // rather than throwing ArgumentNullException out of the setter.
-        SanctumConfig? config = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.SanctumConfig);
+        SanctumConfig? config = JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.SanctumConfig);
 
         Assert.NotNull(config);
 
@@ -82,7 +82,7 @@ public sealed class SanctumConfigTests
 
         SanctumConfig? config = JsonSerializer.Deserialize(
             """{"enabled":true,"allowedPaths":["/workspace"]}""",
-            TheForgeJsonContext.Default.SanctumConfig);
+            ArcanumCoreJsonContext.Default.SanctumConfig);
 
         Assert.NotNull(config);
 
@@ -106,7 +106,7 @@ public sealed class SanctumConfigTests
         // assigns all of them from an args array pre-filled with default(T), so an omitted member
         // discards its C# property initializer. A partial PUT body must not silently downgrade the
         // path boundary to off, floor the breach retention, or null out the resource limits.
-        SanctumConfig? config = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.SanctumConfig);
+        SanctumConfig? config = JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.SanctumConfig);
 
         AssertDeclaredDefaults(config);
 
@@ -151,7 +151,7 @@ public sealed class SanctumConfigTests
 
         SanctumConfig? config = JsonSerializer.Deserialize(
             """{"enabled":true,"enforcePathBoundary":false,"maxBreachCount":250,"resourceLimits":{"maxProcessCount":3}}""",
-            TheForgeJsonContext.Default.SanctumConfig);
+            ArcanumCoreJsonContext.Default.SanctumConfig);
 
         Assert.NotNull(config);
 
@@ -167,7 +167,7 @@ public sealed class SanctumConfigTests
     public void Serialize_KeepsTheDocumentedWireNames()
     {
 
-        string json = JsonSerializer.Serialize(new SanctumConfig(), TheForgeJsonContext.Default.SanctumConfig);
+        string json = JsonSerializer.Serialize(new SanctumConfig(), ArcanumCoreJsonContext.Default.SanctumConfig);
 
         Assert.Contains("\"enforcePathBoundary\":true", json, StringComparison.Ordinal);
 

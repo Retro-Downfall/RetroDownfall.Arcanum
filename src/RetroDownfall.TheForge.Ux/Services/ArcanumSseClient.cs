@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Mcp;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.TheForge.Core.Chronicle;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Serialization;

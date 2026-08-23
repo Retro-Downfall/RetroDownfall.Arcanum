@@ -1,7 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Divination"
-             xmlns:theForge="using:RetroDownfall.Arcanum.Core.TheForge"
+             xmlns:tower="using:RetroDownfall.Arcanum.Core.Tower"
              xmlns:weave="using:RetroDownfall.Arcanum.Core.Weave"
              xmlns:workspaces="using:RetroDownfall.Arcanum.Core.Workspaces"
              x:Class="RetroDownfall.TheForge.Ux.Views.Divination.DivinationView"
@@ -34,7 +34,7 @@
           </StackPanel>
           <ListBox Grid.Row="1" ItemsSource="{Binding SessionResults}" BorderThickness="0">
             <ListBox.ItemTemplate>
-              <DataTemplate x:DataType="theForge:SemanticSessionSearchResult">
+              <DataTemplate x:DataType="tower:SemanticSessionSearchResult">
                 <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
                   <StackPanel Spacing="3">
                     <DockPanel LastChildFill="False">

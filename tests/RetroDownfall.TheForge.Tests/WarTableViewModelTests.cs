@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Core.Conclave;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Chronicle;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;

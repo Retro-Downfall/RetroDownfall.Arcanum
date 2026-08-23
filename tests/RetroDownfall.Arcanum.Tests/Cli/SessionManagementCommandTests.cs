@@ -18,7 +18,7 @@ using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 

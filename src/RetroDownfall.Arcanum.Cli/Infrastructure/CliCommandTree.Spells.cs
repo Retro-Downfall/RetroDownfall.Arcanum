@@ -1,7 +1,7 @@
 using System.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Commands;
-using RetroDownfall.Arcanum.Cli.Commands.TheForge;
+using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Services;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;

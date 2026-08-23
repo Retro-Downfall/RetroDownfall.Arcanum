@@ -13,7 +13,9 @@ using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Health;
 using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Api.Streaming;
-using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Api.Primitives;
+using RetroDownfall.Arcanum.Api.Conclave;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
@@ -38,13 +40,14 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Telemetry;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using RetroDownfall.Arcanum.Infrastructure.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using Scalar.AspNetCore;
 
 namespace RetroDownfall.Arcanum.Api;
@@ -405,7 +408,7 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IToolResultMaterializer, ToolResultMaterializer>();
 
-        services.AddSingleton<IManaMeter, TheForge.ManaMeter>();
+        services.AddSingleton<IManaMeter, ManaMeter>();
 
         services.AddSingleton<TelemetryService>();
 
@@ -1106,7 +1109,7 @@ public static class ApiBootstrapper
 
         apiGroup.MapSpellEndpoints();
 
-        apiGroup.MapSpellForgeEndpoints();
+        apiGroup.MapSpellAuthoringEndpoints();
 
         apiGroup.MapSpellExecutionEndpoints();
 

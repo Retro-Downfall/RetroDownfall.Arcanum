@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
@@ -1368,7 +1368,7 @@ internal static class SpellScanner
                     if (sidecarRead.Status is SecureFileReadStatus.Success && sidecarRead.Text is not null)
                     {
 
-                        skillMetadata = JsonSerializer.Deserialize(sidecarRead.Text, TheForgeJsonContext.Default.SkillMetadata);
+                        skillMetadata = JsonSerializer.Deserialize(sidecarRead.Text, ArcanumCoreJsonContext.Default.SkillMetadata);
 
                         if (skillMetadata is not null
                             && SkillJsonBoundsValidator.Validate(
