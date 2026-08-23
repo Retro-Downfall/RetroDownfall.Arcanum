@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.TheForge;
@@ -189,7 +189,7 @@ public sealed partial class PromptRenderer
                 return match.Value;
             }
 
-            return JsonSerializer.Serialize(value, TheForgeJsonContext.Default.String);
+            return JsonSerializer.Serialize(value, ArcanumCoreJsonContext.Default.String);
         });
     }
 

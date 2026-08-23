@@ -14,7 +14,7 @@ using CommunityToolkit.Mvvm.Input;
 
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.TheForge.Ux.Models;
 

@@ -33,7 +33,7 @@ using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Core.Telemetry;
 
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 

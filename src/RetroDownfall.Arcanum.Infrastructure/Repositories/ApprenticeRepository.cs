@@ -220,11 +220,11 @@ public sealed class ApprenticeRepository : IApprenticeRepository
             return [];
         }
 
-        return JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ListPlanStep) ?? [];
+        return JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.ListPlanStep) ?? [];
     }
 
     public static string SerializePlan(IReadOnlyList<PlanStep> plan) =>
-        JsonSerializer.Serialize(plan.ToList(), TheForgeJsonContext.Default.ListPlanStep);
+        JsonSerializer.Serialize(plan.ToList(), ArcanumCoreJsonContext.Default.ListPlanStep);
 
     public static ApprenticeCheckpoint? DeserializeCheckpoint(string? json)
     {
@@ -233,10 +233,10 @@ public sealed class ApprenticeRepository : IApprenticeRepository
             return null;
         }
 
-        return JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApprenticeCheckpoint);
+        return JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.ApprenticeCheckpoint);
     }
 
     public static string SerializeCheckpoint(ApprenticeCheckpoint checkpoint) =>
-        JsonSerializer.Serialize(checkpoint, TheForgeJsonContext.Default.ApprenticeCheckpoint);
+        JsonSerializer.Serialize(checkpoint, ArcanumCoreJsonContext.Default.ApprenticeCheckpoint);
 
 }

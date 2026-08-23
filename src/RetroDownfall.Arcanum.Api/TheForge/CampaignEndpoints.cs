@@ -9,7 +9,7 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -540,7 +540,7 @@ internal static class CampaignEndpoints
                     try
                     {
                         spellMetadata.Add(
-                            JsonSerializer.Deserialize(spell.ResolvedSpellJson, TheForgeJsonContext.Default.SkillMetadata));
+                            JsonSerializer.Deserialize(spell.ResolvedSpellJson, ArcanumCoreJsonContext.Default.SkillMetadata));
                     }
                     catch (JsonException)
                     {
@@ -822,7 +822,7 @@ internal static class CampaignEndpoints
 
             string? spellJson = exported.Metadata is null
                 ? null
-                : JsonSerializer.Serialize(exported.Metadata, TheForgeJsonContext.Default.SkillMetadata);
+                : JsonSerializer.Serialize(exported.Metadata, ArcanumCoreJsonContext.Default.SkillMetadata);
 
             exportSpells.Add(new CampaignExportSpellDto(
                 summary.Name,

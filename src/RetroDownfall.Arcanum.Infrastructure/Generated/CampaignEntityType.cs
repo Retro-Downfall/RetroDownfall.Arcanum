@@ -3,7 +3,7 @@ using System;
 using System.Reflection;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 
 #pragma warning disable 219, 612, 618
@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
         public static RuntimeEntityType Create(RuntimeModel model, RuntimeEntityType baseEntityType = null)
         {
             var runtimeEntityType = model.AddEntityType(
-                "RetroDownfall.Arcanum.Core.TheForge.Campaign",
+                "RetroDownfall.Arcanum.Core.Tower.Campaign",
                 typeof(Campaign),
                 baseEntityType,
                 propertyCount: 10,

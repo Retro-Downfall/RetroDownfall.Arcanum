@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace RetroDownfall.Arcanum.Core.Sanctum;
 
 /// <summary>
-/// Per-campaign execution isolation policy stored as JSON on the <see cref="TheForge.Campaign"/> entity.
+/// Per-campaign execution isolation policy stored as JSON on the <see cref="Tower.Campaign"/> entity.
 /// </summary>
 /// <remarks>
 /// <see cref="ResourceLimits.MaxFileWriteMb"/> is enforced at runtime on in-process file-write tools.

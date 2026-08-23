@@ -1,5 +1,5 @@
 using System.Text.Json;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -127,7 +127,7 @@ internal static class SkillJsonIO
     {
         string path = Path.Combine(spellDirectory, CanonicalFileName);
 
-        string json = JsonSerializer.Serialize(metadata, TheForgeJsonContext.Default.SkillMetadata);
+        string json = JsonSerializer.Serialize(metadata, ArcanumCoreJsonContext.Default.SkillMetadata);
 
         await SpellAtomicFile.WriteAllTextAsync(path, json, ct).ConfigureAwait(false);
     }

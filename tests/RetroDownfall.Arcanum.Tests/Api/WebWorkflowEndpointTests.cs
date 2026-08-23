@@ -34,7 +34,7 @@ using RetroDownfall.Arcanum.Core.Sanctum;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Core.Workspaces;
 

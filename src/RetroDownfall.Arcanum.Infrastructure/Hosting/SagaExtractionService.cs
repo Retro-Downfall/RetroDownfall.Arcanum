@@ -631,7 +631,7 @@ public sealed class SagaExtractionService(
         try
         {
 
-            parsed = JsonSerializer.Deserialize(cleaned, TheForgeJsonContext.Default.SagaExtractionResponse);
+            parsed = JsonSerializer.Deserialize(cleaned, ArcanumCoreJsonContext.Default.SagaExtractionResponse);
 
         }
         catch (JsonException ex)

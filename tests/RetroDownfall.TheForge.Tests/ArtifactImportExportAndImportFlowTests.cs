@@ -1,7 +1,7 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.TheForge.Core.Services;

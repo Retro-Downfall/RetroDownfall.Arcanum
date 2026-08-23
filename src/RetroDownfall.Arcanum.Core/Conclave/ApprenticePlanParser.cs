@@ -30,7 +30,7 @@ public static class ApprenticePlanParser
         try
         {
 
-            steps = JsonSerializer.Deserialize(trimmed, TheForgeJsonContext.Default.ListPlanStep);
+            steps = JsonSerializer.Deserialize(trimmed, ArcanumCoreJsonContext.Default.ListPlanStep);
 
         }
         catch (JsonException ex)
@@ -97,7 +97,7 @@ public static class ApprenticePlanParser
         try
         {
 
-            List<PlanStep>? parsed = JsonSerializer.Deserialize(trimmed, TheForgeJsonContext.Default.ListPlanStep);
+            List<PlanStep>? parsed = JsonSerializer.Deserialize(trimmed, ArcanumCoreJsonContext.Default.ListPlanStep);
 
             if (parsed is null || parsed.Count == 0)
             {

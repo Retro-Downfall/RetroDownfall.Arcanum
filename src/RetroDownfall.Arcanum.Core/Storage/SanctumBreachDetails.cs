@@ -2,7 +2,7 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
 /// Variable, breach-type-specific detail captured alongside a <see cref="SanctumBreachRecord"/>.
-/// Serialized as the <c>DetailsJson</c> column via <c>TheForgeJsonContext.Default.SanctumBreachDetails</c>.
+/// Serialized as the <c>DetailsJson</c> column via <c>ArcanumCoreJsonContext.Default.SanctumBreachDetails</c>.
 /// </summary>
 /// <remarks>
 /// <see cref="RequestedPath"/> (pre-resolution) is retained alongside <see cref="ResolvedPath"/>
