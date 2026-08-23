@@ -20,7 +20,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Api.Streaming;
 
-using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Api.Primitives;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 

@@ -11,8 +11,8 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Intelligence;
 
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Tower;
 
-using RetroDownfall.Arcanum.Api.TheForge;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 

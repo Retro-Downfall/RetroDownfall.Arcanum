@@ -15,8 +15,8 @@ using Microsoft.Extensions.Hosting;
 
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Api.Serialization;
-using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
