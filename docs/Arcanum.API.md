@@ -679,7 +679,7 @@ Opt-in via `Arcanum:Features:Guardrails` (default false), with policy under `Arc
 
 ### 8.28 Covenant public contract (frozen, not yet routed)
 
-The request and response shapes the dedicated Covenant management surfaces will use are frozen. **No route in the table below is registered yet.** Issue #128 activates the existing `/api/data` Covenant reset/factory-erasure lifecycle in §8.20; it does not register these inspection, mutation, repair, rebuild, path, or Session-binding routes. This section remains documented because four surfaces build against these shapes, and a contract that four of them each invent separately is four contracts.
+The request and response shapes the dedicated Covenant management surfaces will use are frozen. **No route in the table below is registered yet.** The activated `/api/data` Covenant reset/factory-erasure lifecycle in §8.20 does not register these inspection, mutation, repair, rebuild, path, or Session-binding routes. This section remains documented because four surfaces build against these shapes, and a contract that four of them each invent separately is four contracts.
 
 > **Boundary status.** The authenticated boundary these management routes will sit behind is in place — see [§8.29](#829-x-arcanum-context-policy-and-the-covenant-pre-binding-boundary) — and `MemoryStatusDto` has its content-free `covenant` block. The management routes themselves are still unmapped; the four §8.20 lifecycle routes already require `LifecycleManage`.
 >
