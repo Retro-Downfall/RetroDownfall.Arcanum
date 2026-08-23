@@ -24,7 +24,9 @@ internal sealed record CampaignPathMarkerIntentRow(
     CovenantExclusiveOperation? ExclusiveOwnerOperation,
     CovenantDigest OwnerEffectDigest,
     CovenantDigest MarkerDigest,
-    string TargetDisplayPath,
+    // Null only for a full installation reset cleanup child whose Campaign was already unavailable
+    // or mismatched when the reset observed it. Every other kind is refused a null by the table.
+    string? TargetDisplayPath,
     long PriorRevision,
     CampaignPathMarkerPhase Phase,
     long PhaseRevision,
@@ -228,7 +230,7 @@ internal sealed class CampaignPathMarkerIntentStore
             reader.IsDBNull(4) ? null : (CovenantExclusiveOperation)reader.GetInt32(4),
             new CovenantDigest(ReadBlob(reader, 5)),
             new CovenantDigest(ReadBlob(reader, 6)),
-            reader.GetString(7),
+            reader.IsDBNull(7) ? null : reader.GetString(7),
             reader.GetInt64(8),
             (CampaignPathMarkerPhase)reader.GetInt32(9),
             reader.GetInt64(10),

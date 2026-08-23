@@ -40,10 +40,22 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CancellationToken cancellationToken)
     {
 
+        // The column is nullable only for a full installation reset cleanup child, and this arm is
+        // reached by the legacy kinds alone. Proving it here rather than trusting the table means a
+        // malformed row cannot reach filesystem authority with a manufactured path, and the narrowed
+        // local below is the only value the seams ever see.
+        if (row.TargetDisplayPath is not { } recordedDisplayPath)
+        {
+
+            return UnprovenRestartRoot(
+                "The Campaign path marker intent records no display path to reopen.");
+
+        }
+
         // The single no-follow resolution of the recorded path. It answers "what is there", never "may
         // this be worked on": a symlink, a file, an absent directory, and an unavailable identity key
         // all report nothing at all rather than a candidate to be argued with.
-        if (_rootOpener.IdentifyExact(row.TargetDisplayPath) is not { } reopenedIdentity)
+        if (_rootOpener.IdentifyExact(recordedDisplayPath) is not { } reopenedIdentity)
         {
 
             return UnprovenRestartRoot(
@@ -57,7 +69,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 row.CampaignId,
                 row.PriorRevision,
                 reopenedIdentity,
-                row.TargetDisplayPath,
+                recordedDisplayPath,
                 cancellationToken).ConfigureAwait(false);
 
         // The open re-derives the identity from the handle it actually obtained and refuses anything

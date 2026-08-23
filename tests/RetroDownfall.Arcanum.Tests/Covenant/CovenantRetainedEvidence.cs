@@ -47,6 +47,10 @@ internal static class CovenantRetainedEvidence
         "campaign_path_marker_intents_guard_insert",
         "campaign_path_marker_intents_guard_update",
         "campaign_path_marker_intents_guard_delete",
+        "campaign_path_full_reset_cleanup_evidence",
+        "campaign_path_full_reset_cleanup_evidence_guard_insert",
+        "campaign_path_full_reset_cleanup_evidence_guard_update",
+        "campaign_path_full_reset_cleanup_evidence_guard_delete",
         "covenant_authority_state",
     ];
 
@@ -54,6 +58,7 @@ internal static class CovenantRetainedEvidence
     private static readonly (string Table, string Order)[] RetainedTables =
     [
         ("campaign_path_marker_intents", "IntentId"),
+        ("campaign_path_full_reset_cleanup_evidence", "IntentId"),
         ("campaign_path_identities", "CampaignId"),
         ("covenant_authority_state", "StateKey"),
     ];
@@ -78,6 +83,7 @@ internal static class CovenantRetainedEvidence
     private static readonly string[] RetainedDeletionStatements =
     [
         "DELETE FROM campaign_path_marker_intents",
+        "DELETE FROM campaign_path_full_reset_cleanup_evidence",
         "DELETE FROM campaign_path_identities",
         "DELETE FROM campaign_path_operation_receipts",
         "DELETE FROM covenant_authority_state",
@@ -88,6 +94,8 @@ internal static class CovenantRetainedEvidence
     private static readonly Guid TransitionId = new("CCCCCCCC-DDDD-4EEE-8FFF-111111111111");
 
     private const ulong TaintMasterKeyVersion = 4;
+
+    private const string FullResetCleanupIntentId = "99999999-8888-4777-8666-555555555555";
 
     /// <summary>
     /// Seeds one of each retained artifact, in the representation production actually writes.
@@ -112,6 +120,8 @@ internal static class CovenantRetainedEvidence
         await SeedCampaignPathIdentityAsync(connection, cancellationToken);
 
         await SeedMarkerIntentAsync(connection, cancellationToken);
+
+        await SeedFullResetCleanupChildAsync(connection, cancellationToken);
 
         HostProcessToolsMarkerWriteStatus written = new HostProcessToolsMarkerStore(credentials).Write(
             InstallationIdentity,
@@ -394,6 +404,87 @@ internal static class CovenantRetainedEvidence
         _ = command.Parameters.AddWithValue("$updated", "2026-08-16T00:00:01.0000000+00:00");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+
+    /// <summary>
+    /// A blocked full installation reset cleanup child and the evidence behind it.
+    /// </summary>
+    /// <remarks>
+    /// The mismatch arm rather than the opened one. A blocked child is the only durable record that a
+    /// Campaign marker was deliberately left in place, and it is the row an erasure sweeping "finished
+    /// cleanup work" is most likely to mistake for rubbish. Seeding the arm that survives on purpose
+    /// is what makes the retention assertion mean something.
+    /// </remarks>
+    private static async Task SeedFullResetCleanupChildAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance.Authorize(
+            connection,
+            CovenantSqliteAuthorizationKind.CampaignPathMarkerIntentMutation);
+
+        await using (SqliteCommand parent = connection.CreateCommand())
+        {
+
+            parent.CommandText = """
+                INSERT INTO campaign_path_marker_intents (
+                    IntentId, OwnerOperationId, CampaignId, IntentKindCode, ExclusiveOwnerOperationCode,
+                    OwnerEffectDigest, EncryptedMarkerPayload, MarkerDigest, ApplyRequestDigest,
+                    TemporaryBaseName, TemporaryPhysicalIdentityDigest, TargetDisplayPath, PriorRevision,
+                    TargetObservationCode, ReopenedTargetPhysicalIdentityDigest, PendingDispositionCode,
+                    PhaseCode, PhaseRevision, CreatedAtUtc, UpdatedAtUtc)
+                VALUES (
+                    $intent, $owner, $campaign, 4, NULL,
+                    $ownerDigest, NULL, $markerDigest, NULL,
+                    NULL, NULL, NULL, 3,
+                    NULL, NULL, NULL,
+                    14, 2, $created, $updated);
+                """;
+
+            _ = parent.Parameters.AddWithValue("$intent", FullResetCleanupIntentId);
+
+            _ = parent.Parameters.AddWithValue("$owner", "22222222-3333-4444-8555-666666666666");
+
+            _ = parent.Parameters.AddWithValue("$campaign", CovenantOperationGateFixture.CampaignTwo.ToString("D"));
+
+            _ = parent.Parameters.AddWithValue("$ownerDigest", Digest(0x80).Bytes);
+
+            _ = parent.Parameters.AddWithValue("$markerDigest", Digest(0x81).Bytes);
+
+            _ = parent.Parameters.AddWithValue("$created", "2026-08-22T00:00:00.0000000+00:00");
+
+            _ = parent.Parameters.AddWithValue("$updated", "2026-08-22T00:00:01.0000000+00:00");
+
+            _ = await parent.ExecuteNonQueryAsync(cancellationToken);
+
+        }
+
+        await using SqliteCommand companion = connection.CreateCommand();
+
+        companion.CommandText = """
+            INSERT INTO campaign_path_full_reset_cleanup_evidence (
+                IntentId, CampaignInventoryEntryDigest, IndexedPhysicalIdentityDigest,
+                CanonicalDisplayPathDigest, SameHandleOwnershipEvidenceDigest, ObservationCode,
+                OpenedSameHandleOwnershipEvidenceDigest, ObservationDigest)
+            VALUES ($intent, $entry, $indexed, $path, $ownership, 3, NULL, $observation);
+            """;
+
+        _ = companion.Parameters.AddWithValue("$intent", FullResetCleanupIntentId);
+
+        _ = companion.Parameters.AddWithValue("$entry", Digest(0x82).Bytes);
+
+        _ = companion.Parameters.AddWithValue("$indexed", Digest(0x83).Bytes);
+
+        _ = companion.Parameters.AddWithValue("$path", Digest(0x84).Bytes);
+
+        _ = companion.Parameters.AddWithValue("$ownership", Digest(0x85).Bytes);
+
+        _ = companion.Parameters.AddWithValue("$observation", Digest(0x86).Bytes);
+
+        _ = await companion.ExecuteNonQueryAsync(cancellationToken);
 
     }
 
