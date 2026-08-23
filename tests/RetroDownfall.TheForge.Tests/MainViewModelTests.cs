@@ -3,7 +3,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
@@ -642,8 +642,8 @@ internal sealed class NullWarTableDataSource : RetroDownfall.TheForge.Ux.ViewMod
 
     }
 
-    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.CampaignDto>> ListCampaignsAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.CampaignDto>>([]);
+    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Tower.CampaignDto>> ListCampaignsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Tower.CampaignDto>>([]);
 
     public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Workspaces.WorkspaceInfo>> ListWorkspacesAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Workspaces.WorkspaceInfo>>([]);

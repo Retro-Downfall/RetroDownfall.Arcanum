@@ -1,7 +1,7 @@
 using RetroDownfall.TheForge.Core.Services;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels;

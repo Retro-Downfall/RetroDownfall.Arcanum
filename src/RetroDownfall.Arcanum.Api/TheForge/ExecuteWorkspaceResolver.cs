@@ -1,7 +1,7 @@
 using RetroDownfall.Arcanum.Api.Spells;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;

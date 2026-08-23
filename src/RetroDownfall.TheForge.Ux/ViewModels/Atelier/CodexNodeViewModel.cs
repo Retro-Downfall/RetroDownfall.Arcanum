@@ -1,6 +1,6 @@
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 

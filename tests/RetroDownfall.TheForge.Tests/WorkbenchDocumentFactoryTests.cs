@@ -245,9 +245,9 @@ internal sealed class NullTrialDataSource : ITrialDataSource
         CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<IReadOnlyList<string>>([], true, null, null));
 
-    public Task<DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.PromptSummaryDto>>> ListPromptsAsync(
+    public Task<DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Tower.PromptSummaryDto>>> ListPromptsAsync(
         CancellationToken cancellationToken) =>
-        Task.FromResult(new DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.PromptSummaryDto>>([], true, null, null));
+        Task.FromResult(new DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Tower.PromptSummaryDto>>([], true, null, null));
 
 }
 
@@ -282,20 +282,20 @@ internal sealed class NullTextInputDialogService : ITextInputDialogService
 internal sealed class NullCodexDataSource : ICodexDataSource
 {
 
-    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>> GetCampaignCodexAsync(Guid campaignId, CancellationToken cancellationToken) =>
-        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>(null, true, null, null));
+    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>> GetCampaignCodexAsync(Guid campaignId, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>(null, true, null, null));
 
-    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>> PutCampaignCodexAsync(Guid campaignId, string content, CancellationToken cancellationToken) =>
-        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>(null, true, null, null));
+    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>> PutCampaignCodexAsync(Guid campaignId, string content, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>(null, true, null, null));
 
     public Task<DataSourceResult<bool>> DeleteCampaignCodexAsync(Guid campaignId, CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
 
-    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>> GetGlobalCodexAsync(CancellationToken cancellationToken) =>
-        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>(null, true, null, null));
+    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>> GetGlobalCodexAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>(null, true, null, null));
 
-    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>> PutGlobalCodexAsync(string content, CancellationToken cancellationToken) =>
-        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.TheForge.CodexContentDto>(null, true, null, null));
+    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>> PutGlobalCodexAsync(string content, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>(null, true, null, null));
 
     public Task<DataSourceResult<bool>> DeleteGlobalCodexAsync(CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<bool>(true, true, null, null));

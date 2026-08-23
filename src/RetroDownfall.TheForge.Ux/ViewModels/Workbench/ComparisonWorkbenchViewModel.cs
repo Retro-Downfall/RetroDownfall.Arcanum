@@ -8,7 +8,7 @@ using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.TheForge.Core.Models.Comparisons;
 using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.TheForge.Core.Services;

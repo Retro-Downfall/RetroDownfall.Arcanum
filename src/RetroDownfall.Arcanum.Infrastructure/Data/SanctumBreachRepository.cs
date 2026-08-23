@@ -303,7 +303,7 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
             return DBNull.Value;
         }
 
-        return JsonSerializer.Serialize(details, TheForgeJsonContext.Default.SanctumBreachDetails);
+        return JsonSerializer.Serialize(details, ArcanumCoreJsonContext.Default.SanctumBreachDetails);
 
     }
 
@@ -315,7 +315,7 @@ internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBre
             return null;
         }
 
-        return JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.SanctumBreachDetails);
+        return JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.SanctumBreachDetails);
 
     }
 

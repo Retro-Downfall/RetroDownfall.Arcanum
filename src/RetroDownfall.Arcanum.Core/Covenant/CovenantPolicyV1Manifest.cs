@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Core.Covenant;
 

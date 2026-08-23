@@ -1,4 +1,4 @@
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.TheForge.Ux.ViewModels;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;

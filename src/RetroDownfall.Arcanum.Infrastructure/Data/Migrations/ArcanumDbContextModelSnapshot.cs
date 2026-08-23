@@ -253,7 +253,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.ToTable("Apprentices", (string)null);
                 });
 
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.TheForge.Campaign", b =>
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Tower.Campaign", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -310,7 +310,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.ToTable("Campaigns", (string)null);
                 });
 
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.TheForge.Prompt", b =>
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Tower.Prompt", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -390,7 +390,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("RetroDownfall.Arcanum.Core.Conclave.Apprentice", b =>
                 {
-                    b.HasOne("RetroDownfall.Arcanum.Core.TheForge.Campaign", null)
+                    b.HasOne("RetroDownfall.Arcanum.Core.Tower.Campaign", null)
                         .WithMany()
                         .HasForeignKey("CampaignId")
                         .OnDelete(DeleteBehavior.SetNull);
@@ -401,9 +401,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
                 });
 
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.TheForge.Prompt", b =>
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Tower.Prompt", b =>
                 {
-                    b.HasOne("RetroDownfall.Arcanum.Core.TheForge.Campaign", "Campaign")
+                    b.HasOne("RetroDownfall.Arcanum.Core.Tower.Campaign", "Campaign")
                         .WithMany()
                         .HasForeignKey("CampaignId")
                         .OnDelete(DeleteBehavior.Cascade);

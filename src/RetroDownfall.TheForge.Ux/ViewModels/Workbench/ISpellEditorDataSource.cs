@@ -1,6 +1,6 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;

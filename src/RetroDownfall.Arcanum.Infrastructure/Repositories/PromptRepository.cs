@@ -2,7 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -154,10 +154,10 @@ public sealed class PromptRepository : IPromptRepository
             return [];
         }
 
-        return JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.StringArray) ?? [];
+        return JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.StringArray) ?? [];
     }
 
     public static string SerializeTags(string[] tags) =>
-        JsonSerializer.Serialize(tags, TheForgeJsonContext.Default.StringArray);
+        JsonSerializer.Serialize(tags, ArcanumCoreJsonContext.Default.StringArray);
 
 }

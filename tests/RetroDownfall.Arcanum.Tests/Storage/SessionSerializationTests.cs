@@ -31,13 +31,13 @@ public sealed class SessionSerializationTests
 
         session.Entries = new List<Entry> { entry };
 
-        string json = JsonSerializer.Serialize(session, TheForgeJsonContext.Default.Session);
+        string json = JsonSerializer.Serialize(session, ArcanumCoreJsonContext.Default.Session);
 
         Assert.NotNull(json);
 
         Assert.Contains("\"title\":\"Test session\"", json, StringComparison.Ordinal);
 
-        Session? deserialized = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.Session);
+        Session? deserialized = JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.Session);
 
         Assert.NotNull(deserialized);
 

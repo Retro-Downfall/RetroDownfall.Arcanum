@@ -228,7 +228,7 @@ public sealed record SessionBindingStatusPayload(
 /// <summary>The one immutable binding choice a legacy Session is allowed.</summary>
 public sealed record SessionBindingResultPayload(
     Guid SessionId,
-    RetroDownfall.Arcanum.Core.TheForge.SessionCampaignBindingKind Kind,
+    RetroDownfall.Arcanum.Core.Tower.SessionCampaignBindingKind Kind,
     Guid? CampaignId,
     bool Replayed);
 

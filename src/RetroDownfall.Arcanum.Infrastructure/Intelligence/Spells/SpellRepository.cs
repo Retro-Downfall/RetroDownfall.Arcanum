@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -498,7 +498,7 @@ internal sealed partial class SpellRepository : ISpellRepository
                 {
                     string json = await File.ReadAllTextAsync(sidecarPath, ct).ConfigureAwait(false);
 
-                    metadata = JsonSerializer.Deserialize(json, Core.Serialization.TheForgeJsonContext.Default.SkillMetadata);
+                    metadata = JsonSerializer.Deserialize(json, Core.Serialization.ArcanumCoreJsonContext.Default.SkillMetadata);
                 }
                 catch (IOException)
                 {

@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Serialization;
@@ -434,12 +434,12 @@ public sealed class CampaignRepository : ICampaignRepository
             return CampaignSettings.CreateDefault();
         }
 
-        return JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.CampaignSettings)
+        return JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.CampaignSettings)
             ?? CampaignSettings.CreateDefault();
     }
 
     public static string SerializeSettings(CampaignSettings settings) =>
-        JsonSerializer.Serialize(settings, TheForgeJsonContext.Default.CampaignSettings);
+        JsonSerializer.Serialize(settings, ArcanumCoreJsonContext.Default.CampaignSettings);
 
     public static SanctumConfig GetSanctumConfig(Campaign campaign) =>
         DeserializeSanctumConfig(campaign.SanctumConfigJson);
@@ -456,11 +456,11 @@ public sealed class CampaignRepository : ICampaignRepository
             return DefaultSanctumConfig();
         }
 
-        return JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.SanctumConfig)
+        return JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.SanctumConfig)
             ?? DefaultSanctumConfig();
     }
 
     public static string SerializeSanctumConfig(SanctumConfig config) =>
-        JsonSerializer.Serialize(config, TheForgeJsonContext.Default.SanctumConfig);
+        JsonSerializer.Serialize(config, ArcanumCoreJsonContext.Default.SanctumConfig);
 
 }

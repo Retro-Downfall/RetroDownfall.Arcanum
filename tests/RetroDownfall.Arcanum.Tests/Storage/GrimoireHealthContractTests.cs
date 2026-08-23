@@ -22,7 +22,7 @@ public sealed class GrimoireHealthContractTests
 
     private static readonly string[] DomainNamespaces =
     [
-        "RetroDownfall.Arcanum.Core.TheForge",
+        "RetroDownfall.Arcanum.Core.Tower",
 
         "RetroDownfall.Arcanum.Core.Conclave",
 

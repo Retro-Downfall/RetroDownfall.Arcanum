@@ -26,7 +26,7 @@ public sealed class ConclaveAgentTypeContractTests : IAsyncLifetime
 
     private const string ConclaveNamespace = "RetroDownfall.Arcanum.Core.Conclave";
 
-    private const string TheForgeNamespace = "RetroDownfall.Arcanum.Core.TheForge";
+    private const string TheForgeNamespace = "RetroDownfall.Arcanum.Core.Tower";
 
     /// <summary>
     /// Every public type declared by the twelve agent files. Named rather than discovered, so that a

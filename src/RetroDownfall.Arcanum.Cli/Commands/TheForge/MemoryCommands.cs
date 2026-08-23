@@ -14,7 +14,7 @@ using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 using Spectre.Console;
 

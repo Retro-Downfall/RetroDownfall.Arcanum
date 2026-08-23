@@ -1,7 +1,7 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
 

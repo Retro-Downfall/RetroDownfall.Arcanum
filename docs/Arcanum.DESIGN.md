@@ -204,7 +204,7 @@ Single-host failure behavior:
 
 **Ownership boundaries (namespaces):** `Primitives/` (`Error`, `Result`, `ApiResponse<T>`), `CommLink/`, `Events/` (`IEventBus`, daemon SSE types), `Daemons/` (wire DTOs for `/api/daemons`), `Configuration/` (`ArcanumSettings`, providers, validators, bootstrapper), `Security/` (`ISecretStore` contract), `Intelligence/` (`IArcanumIntelligenceProvider`, `PingRequest`, `IModelTokenEstimator` and the `IManaMeter` token count, NDJSON event types), `Storage/` (Grimoire POCOs + `IGrimoireRepository`, plus the `IGrimoireDbReadiness` startup latch and the `IGrimoireLivenessProbe` bounded live check), `Chronosync/`, `Serialization/` (Core JSON contexts distinct from Api `ArcanumJsonContext`), `Pattern/` (Eye of the World), `Workspace/`.
 
-`Covenant/` owns the pure protocol vocabulary, compiler, canonical encoders, digests, evidence algebra, linker, admission contracts, the six-purpose envelope contracts, and the keyed diagnostic tagger. `Intelligence/` carries the nonserializable invocation authority — `ArcanumInvocationContext`, `ArcanumExecutionSurface`, `CovenantReadAuthorityEpoch`, `OperatorAuthorityContext`, `CovenantAuthorityRequirement`, `CovenantTurnAuthority`, and the sole `OperatorAuthorityContextIssuer` — beside `CovenantContextPolicy` and `InvocationAttendance`. `TheForge/` binds Sessions to canonical Campaign identity through `SessionCampaignBinding`, `CanonicalCampaignContext`, `ICanonicalCampaignContextResolver`, and the pure `CanonicalCampaignResolutionPolicy`; `Storage/ISessionTurnBeginStore` is the narrow port that honors that binding when a turn begins (§10.12).
+`Covenant/` owns the pure protocol vocabulary, compiler, canonical encoders, digests, evidence algebra, linker, admission contracts, the six-purpose envelope contracts, and the keyed diagnostic tagger. `Intelligence/` carries the nonserializable invocation authority — `ArcanumInvocationContext`, `ArcanumExecutionSurface`, `CovenantReadAuthorityEpoch`, `OperatorAuthorityContext`, `CovenantAuthorityRequirement`, `CovenantTurnAuthority`, and the sole `OperatorAuthorityContextIssuer` — beside `CovenantContextPolicy` and `InvocationAttendance`. `Tower/` binds Sessions to canonical Campaign identity through `SessionCampaignBinding`, `CanonicalCampaignContext`, `ICanonicalCampaignContextResolver`, and the pure `CanonicalCampaignResolutionPolicy`; `Storage/ISessionTurnBeginStore` is the narrow port that honors that binding when a turn begins (§10.12).
 
 **MSBuild:** `<IsAotCompatible>true</IsAotCompatible>`.
 
@@ -425,7 +425,7 @@ Outbound request URIs never reach a log sink. Every named `HttpClient` Arcanum r
 | `MageSetting` | `MageSettings` | `Key` (string) | `Value`, `UpdatedAt`; operator key-value surface (`/api/lore`, `arcanum lore`). No longer model-directed memory — the Lore MCP tools are removed; agent memory is The Lexicon (§10.6). |
 | `WorkspaceContext` | `WorkspaceContexts` | `Id` (Guid) | `CreatedAt` (`DateTimeOffset`), `WorkspacePath` (mapped column `RootPath`, max 4096), `SerializedSnapshot` (JSON `PatternSnapshot` via `GrimoireJsonContext`). **Chronosync reporting** appends a row after each analysis; “latest” for a path is `ORDER BY CreatedAt DESC`. Composite index on `(RootPath, CreatedAt)`. |
 
-**Supporting DTOs (Core):** `GrimoireEntryDto`, `LoreDto`, `UpsertLoreRequest`, `ChronosyncReport`, `ArcanumPaths`, `ChatCompletionUsage` (OpenAI-shaped `usage` for NDJSON and `/v1` responses), `PromptTurnResult` (buffered inference text + usage). The Forge session DTOs live under **`Core.TheForge`** (`SessionDetailDto`, `EntryDto`, etc.).
+**Supporting DTOs (Core):** `GrimoireEntryDto`, `LoreDto`, `UpsertLoreRequest`, `ChronosyncReport`, `ArcanumPaths`, `ChatCompletionUsage` (OpenAI-shaped `usage` for NDJSON and `/v1` responses), `PromptTurnResult` (buffered inference text + usage). The Session DTOs live under **`Core.Tower`** (`SessionDetailDto`, `EntryDto`, etc.), because a Session is an authored resource rather than a feature of any one client.
 
 **Entry ordering authority (`Entries.Sequence`).** `Sequence` is a strictly increasing per-session append position and **the** intra-session chronological order. `CreatedAt` is not sufficient and must never be the sole sort key: one turn writes its prompt and its answer under a single identical `CreatedAt`, as does a tool call with its result, and `Id` is a random Guid that cannot break that tie in append order — a `(CreatedAt, Id)` sort inverts those pairs for roughly half of all turns. `CreatedAt` remains the wall-clock fact and the basis of the Campaign Logger watermark (`Session.LastSummarizedMessageAt`), so watermark reads still *filter* on `CreatedAt` while *ordering* by `Sequence`.
 
@@ -563,7 +563,7 @@ The declarative tree was proven equivalent to the retired stack (the numbered `D
 Structured values must use a source-generated context:
 
 - `GrimoireJsonContext` for pattern-domain values;
-- `TheForgeJsonContext` for Campaign/Session/Sanctum domain values;
+- `ArcanumCoreJsonContext` for Campaign/Session/Sanctum domain values;
 - `ArcanumJsonContext` for API wire values; and
 - a new narrowly scoped `JsonSerializerContext` when none of those domains fit.
 
@@ -2720,7 +2720,7 @@ Auto-approval is unrelated to the CLI direct-command `--yes` / `IConfirmationPro
 - **Disabled tools** — tool names listed in **`SanctumConfig.DisabledTools`**.
 - **Resource abuse** — **`ResourceLimits.MaxFileWriteMb`** enforced on in-process **`write_file`** / **`replace_text_block`** before I/O (via **`ISanctumGuard.GetEffectiveResourceLimitsForWorkspaceAsync`**); **`read_file_chunk`** bounded to 2,000 lines per request with capped **`startLine`**. **CPU time, memory, and open file descriptors are enforced at the OS level** on the child processes spawned by **`execute_command`** and **`run_spell_script`** (see "Kernel resource limits" below); on Windows, **`MaxProcessCount`** is also enforced via Job Object **`ACTIVE_PROCESS`**.
 
-**Engine:** Scoped **`ISanctumGuard`** / **`SanctumGuard`** loads **`SanctumConfig`** from **`Campaign.SanctumConfigJson`** (`TheForgeJsonContext`). Breaches are recorded inline to the Grimoire-backed **`ISanctumBreachRepository`** / **`SanctumBreachRepository`** (raw SQL over the **`SanctumBreaches`** table, §16.2) — durable across host restarts. **`SanctumGuard`** and **`ISanctumBreachRepository`** are both scoped and share the same **`ArcanumDbContext`**, so the breach write is part of the same request scope as enforcement; no fire-and-forget is needed. Breaches raised for an unparseable/unknown campaign id are logged only (not persisted), since **`SanctumBreaches.CampaignId`** has a foreign key to **`Campaigns`**. Each insert enforces per-campaign retention (**`SanctumConfig.MaxBreachCount`**, default 1,000, clamp 100 – 100,000): oldest rows beyond the limit are deleted in the same transaction.
+**Engine:** Scoped **`ISanctumGuard`** / **`SanctumGuard`** loads **`SanctumConfig`** from **`Campaign.SanctumConfigJson`** (`ArcanumCoreJsonContext`). Breaches are recorded inline to the Grimoire-backed **`ISanctumBreachRepository`** / **`SanctumBreachRepository`** (raw SQL over the **`SanctumBreaches`** table, §16.2) — durable across host restarts. **`SanctumGuard`** and **`ISanctumBreachRepository`** are both scoped and share the same **`ArcanumDbContext`**, so the breach write is part of the same request scope as enforcement; no fire-and-forget is needed. Breaches raised for an unparseable/unknown campaign id are logged only (not persisted), since **`SanctumBreaches.CampaignId`** has a foreign key to **`Campaigns`**. Each insert enforces per-campaign retention (**`SanctumConfig.MaxBreachCount`**, default 1,000, clamp 100 – 100,000): oldest rows beyond the limit are deleted in the same transaction.
 
 **Enforcement modes:** **`SanctumMode.Strict`** — block tool execution with a synthetic denial message. **`SanctumMode.AuditOnly`** — log breach, allow execution.
 
@@ -2813,7 +2813,7 @@ Fork-specific error codes: `Session.NotFound` (source missing), `Session.EntryNo
 
 **Error codes (§11.16 overall):** `Session.NotFound`, `Session.EmptyContent`, `Session.Archived`, `Session.InvalidStatus`, `Session.EntryNotFound`.
 
-**Key types:** `Session`, `Entry`, `ISessionRepository`, `SessionRepository`, `SessionEventHub`, `SessionSettings`, `ForkSessionRequest`, The Forge DTOs under **`Core.TheForge`**.
+**Key types:** `Session`, `Entry`, `ISessionRepository`, `SessionRepository`, `SessionEventHub`, `SessionSettings`, `ForkSessionRequest`, and the Session DTOs under **`Core.Tower`**.
 
 ### 11.17 `Idempotency-Key` request replay
 

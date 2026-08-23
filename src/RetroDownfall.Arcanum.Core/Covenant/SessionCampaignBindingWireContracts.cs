@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Core.Covenant;
 

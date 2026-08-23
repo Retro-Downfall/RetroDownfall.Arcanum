@@ -4,7 +4,7 @@ using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Tower;
 
 #pragma warning disable 219, 612, 618
 #nullable disable
@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
         public static RuntimeEntityType Create(RuntimeModel model, RuntimeEntityType baseEntityType = null)
         {
             var runtimeEntityType = model.AddEntityType(
-                "RetroDownfall.Arcanum.Core.TheForge.Prompt",
+                "RetroDownfall.Arcanum.Core.Tower.Prompt",
                 typeof(Prompt),
                 baseEntityType,
                 propertyCount: 16,
