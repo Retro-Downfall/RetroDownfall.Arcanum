@@ -645,7 +645,7 @@ Manages built-in and workspace spells, named version files, validation, dry-run 
 
 ### `arcanum prompt`
 
-The Forge prompt utilities (requires arcanum serve).
+Prompt utilities (requires arcanum serve).
 
 Manages versioned prompt templates. Template and input values support inline text or `@filename`; repeatable `--param` values use `key=value`.
 
@@ -688,7 +688,7 @@ Runs Proving Grounds evaluation against a spell, prompt, or Apprentice goal. It 
 
 ### `arcanum apprentice`
 
-The Forge Apprentice orchestration (requires arcanum serve).
+Apprentice orchestration (requires arcanum serve).
 
 Manages durable Apprentice orchestration, intervention, replanning, child delegation, and Chronicle streaming. Lifecycle commands resolve an Apprentice selector before mutation.
 

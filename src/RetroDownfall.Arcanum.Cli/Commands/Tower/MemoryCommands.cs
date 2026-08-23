@@ -18,7 +18,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 public sealed class MemoryCommands(
     ArcanumApiClient apiClient,

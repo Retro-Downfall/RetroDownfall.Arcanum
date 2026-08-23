@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 /// <summary>
 /// Saga long-term associative memory (requires arcanum serve).

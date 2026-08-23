@@ -2663,7 +2663,7 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         return result.IsSuccess ? Result.Success() : Result.Failure(result.Error);
     }
 
-    #region Campaign (The Forge)
+    #region Campaign (Tower)
 
     public async Task<Result<ListPageResult<CampaignDto>>> GetCampaignsAsync(
         WorkspaceType? type = null,
@@ -2963,7 +2963,7 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     #endregion
 
-    #region Spell (The Forge)
+    #region Spell (Tower)
 
     public async Task<Result<SpellSummary[]>> GetSpellsAsync(
         string? workspace = null,
@@ -3278,7 +3278,7 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     #endregion
 
-    #region Prompt (The Forge)
+    #region Prompt (Tower)
 
     public async Task<Result<ListPageResult<PromptSummaryDto>>> GetPromptsAsync(
         Guid? campaignId = null,
@@ -3533,7 +3533,7 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     #endregion
 
-    #region Apprentice (The Forge)
+    #region Apprentice (Conclave)
 
     public async Task<Result<ListPageResult<ApprenticeSummaryDto>>> GetApprenticesAsync(
         Guid? campaignId = null,

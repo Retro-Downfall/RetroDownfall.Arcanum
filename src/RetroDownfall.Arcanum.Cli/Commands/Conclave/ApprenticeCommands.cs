@@ -6,7 +6,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
 using Spectre.Console;
 
-namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
+namespace RetroDownfall.Arcanum.Cli.Commands.Conclave;
 
 internal static class ApprenticeCommandSupport
 {
@@ -101,7 +101,7 @@ internal static class ApprenticeCommandSupport
 }
 
 /// <summary>
-/// The Forge Apprentice orchestration (requires arcanum serve).
+/// Apprentice orchestration (requires arcanum serve).
 /// </summary>
 public sealed class ApprenticeCommands(
     ArcanumApiClient apiClient,

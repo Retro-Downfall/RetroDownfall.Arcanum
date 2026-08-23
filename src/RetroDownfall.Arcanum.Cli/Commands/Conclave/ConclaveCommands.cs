@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Primitives;
 
-namespace RetroDownfall.Arcanum.Cli.Commands;
+namespace RetroDownfall.Arcanum.Cli.Commands.Conclave;
 
 /// <summary>
 /// Operator-facing Conclave / A2A commands (requires <c>arcanum serve</c>).
