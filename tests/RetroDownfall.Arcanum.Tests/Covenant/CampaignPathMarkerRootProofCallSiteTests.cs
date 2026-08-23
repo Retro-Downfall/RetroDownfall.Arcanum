@@ -27,6 +27,12 @@ public sealed class CampaignPathMarkerRootProofCallSiteTests
 
     private const string RestartProofFileName = "CampaignPathMarkerLifecycle.RestartRootProof.cs";
 
+    private const string FullResetFileName =
+        "CampaignPathMarkerLifecycle.FullInstallationReset.cs";
+
+    private const string OwnershipProofFileName =
+        "CampaignPathMarkerLifecycle.MarkerOwnershipProof.cs";
+
     private const string LifecycleFileName = "CampaignPathMarkerLifecycle.cs";
 
     [Fact]
@@ -57,7 +63,7 @@ public sealed class CampaignPathMarkerRootProofCallSiteTests
     }
 
     [Fact]
-    public void The_restart_root_proof_is_the_only_production_caller_of_that_derivation()
+    public void The_marker_ownership_helper_is_the_only_production_caller_of_that_derivation()
     {
 
         List<string> offenders =
@@ -65,7 +71,7 @@ public sealed class CampaignPathMarkerRootProofCallSiteTests
             .. ProductionSourceInventory.Sources()
                 .Where(static source =>
                     !source.Is(OpenerFileName)
-                    && !source.Is(RestartProofFileName)
+                    && !source.Is(OwnershipProofFileName)
                     && source.Names(DerivationMethodName))
                 .Select(static source => source.RelativePath),
         ];
@@ -73,9 +79,29 @@ public sealed class CampaignPathMarkerRootProofCallSiteTests
         Assert.True(
             offenders.Count == 0,
             "An identity derived from a claimed tuple is indistinguishable from one taken through a "
-            + "proven handle, and only the post-restart marker proof has a reason to compare the two. "
+            + "proven handle, and only the shared marker-ownership proof may compare the two. "
             + "Route these through it: "
             + string.Join(", ", offenders));
+
+    }
+
+    [Fact]
+    public void Restore_and_full_reset_are_the_only_owners_of_the_shared_marker_proof()
+    {
+
+        string[] callers =
+        [
+            .. ProductionSourceInventory.Sources()
+                .Where(static source =>
+                    !source.Is(OwnershipProofFileName)
+                    && source.Names("ProveMarkerOwnershipAsync"))
+                .Select(static source => Path.GetFileName(source.RelativePath))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(
+            [FullResetFileName, RestartProofFileName],
+            callers);
 
     }
 

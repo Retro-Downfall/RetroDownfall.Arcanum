@@ -301,6 +301,539 @@ public sealed class FullInstallationResetRemediationAttestationVerifierTests
 
     [Fact]
 
+    public void Recovery_verification_accepts_a_now_expired_statement_at_the_authenticated_acceptance_time()
+    {
+
+        DateTimeOffset issuedAtUtc = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            UnsignedAttestation(pair, issuedAtUtc));
+
+        FakeTrustRootProvider roots = new(
+            new FullInstallationResetRemediationTrustRoot(
+                signer.ExportSubjectPublicKeyInfo()));
+
+        FakeTimeProvider clock = new();
+
+        clock.SetUtcNow(signed.ExpiresAtUtc.AddDays(7));
+
+        FullInstallationResetRemediationAttestationVerifier verifier = new(roots, clock);
+
+        DateTimeOffset acceptedAtUtc = issuedAtUtc.AddSeconds(1);
+
+        Result<FullInstallationResetRemediationAuthorization> recovered =
+            verifier.VerifyAtAcceptedTime(
+                signed,
+                signed.InstallationId,
+                pair,
+                acceptedAtUtc);
+
+        Assert.True(recovered.IsSuccess, recovered.Error.Message);
+
+        Assert.Equal(acceptedAtUtc, recovered.Value.AcceptedAtUtc);
+
+        Assert.Equal(1, roots.ResolveCount);
+
+    }
+
+    [Fact]
+
+    public void Recovery_verification_rejects_acceptance_before_issue_or_at_expiry()
+    {
+
+        DateTimeOffset issuedAtUtc = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            UnsignedAttestation(pair, issuedAtUtc));
+
+        FullInstallationResetRemediationAttestationVerifier verifier = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    signer.ExportSubjectPublicKeyInfo())),
+            new FakeTimeProvider());
+
+        foreach (DateTimeOffset acceptedAtUtc in (DateTimeOffset[])
+                 [
+                     issuedAtUtc.AddSeconds(-1),
+                     signed.ExpiresAtUtc,
+                 ])
+        {
+
+            Result<FullInstallationResetRemediationAuthorization> result =
+                verifier.VerifyAtAcceptedTime(
+                    signed,
+                    signed.InstallationId,
+                    pair,
+                    acceptedAtUtc);
+
+            AssertInvalid(result, signed);
+
+        }
+
+    }
+
+    [Fact]
+
+    public void Recovery_verification_requires_whole_second_utc_acceptance()
+    {
+
+        DateTimeOffset issuedAtUtc = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            UnsignedAttestation(pair, issuedAtUtc));
+
+        FullInstallationResetRemediationAttestationVerifier verifier = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    signer.ExportSubjectPublicKeyInfo())),
+            new FakeTimeProvider());
+
+        foreach (DateTimeOffset acceptedAtUtc in (DateTimeOffset[])
+                 [
+                     issuedAtUtc.AddSeconds(1).AddTicks(1),
+                     issuedAtUtc.AddSeconds(1).ToOffset(TimeSpan.FromHours(1)),
+                 ])
+        {
+
+            Result<FullInstallationResetRemediationAuthorization> result =
+                verifier.VerifyAtAcceptedTime(
+                    signed,
+                    signed.InstallationId,
+                    pair,
+                    acceptedAtUtc);
+
+            AssertInvalid(result, signed);
+
+        }
+
+    }
+
+    [Fact]
+
+    public void Recovery_verification_rejects_signature_root_projection_action_or_pair_tampering()
+    {
+
+        DateTimeOffset issuedAtUtc = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        DateTimeOffset acceptedAtUtc = issuedAtUtc.AddSeconds(1);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        using ECDsa otherSigner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            UnsignedAttestation(pair, issuedAtUtc));
+
+        FullInstallationResetRemediationAttestationVerifier verifier = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    signer.ExportSubjectPublicKeyInfo())),
+            new FakeTimeProvider());
+
+        FullInstallationResetExternalRemediationAttestation[] tampered =
+        [
+            signed with
+            {
+
+                SignatureBase64Url = Base64Url.EncodeToString(new byte[64]),
+
+            },
+            signed with { OperationId = Guid.NewGuid() },
+            signed with { RemediationActionDigest = Digest(0x64) },
+        ];
+
+        foreach (FullInstallationResetExternalRemediationAttestation candidate in tampered)
+        {
+
+            AssertInvalid(
+                verifier.VerifyAtAcceptedTime(
+                    candidate,
+                    signed.InstallationId,
+                    pair,
+                    acceptedAtUtc),
+                candidate);
+
+        }
+
+        FullInstallationResetRemediationAttestationVerifier wrongRoot = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    otherSigner.ExportSubjectPublicKeyInfo())),
+            new FakeTimeProvider());
+
+        AssertInvalid(
+            wrongRoot.VerifyAtAcceptedTime(
+                signed,
+                signed.InstallationId,
+                pair,
+                acceptedAtUtc),
+            signed);
+
+        HostProcessToolsOsMarkerEvidence changedMarker = new(
+            pair.OsMarker.InstallationIdentity,
+            pair.OsMarker.TransitionId,
+            pair.OsMarker.TaintMasterKeyVersion,
+            pair.OsMarker.TaintFingerprint,
+            Digest(0x66),
+            pair.OsMarker.DurableIdentityDigest);
+
+        AssertInvalid(
+            verifier.VerifyAtAcceptedTime(
+                signed,
+                signed.InstallationId,
+                new HostProcessToolsMatchedPair(pair.Database, changedMarker),
+                acceptedAtUtc),
+            signed);
+
+    }
+
+    [Fact]
+
+    public void Signed_attestation_digest_reuses_the_exact_signature_inclusive_v1_golden_vector()
+    {
+
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            OperationId: Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"),
+            InstallationId: Guid.Parse("10213243-5465-7687-98a9-bacbdcedfe0f"),
+            HostToolsTransitionId: Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100"),
+            TaintMasterKeyVersion: 0x0102030405060708,
+            AuthorityFingerprint: Digest(0x11),
+            DatabaseMarkerDigest: Digest(0x22),
+            OsMarkerDigest: Digest(0x33),
+            RemediationActionDigest: Digest(0x44),
+            NonceBase64Url: "oKGio6SlpqeoqaqrrK2urw",
+            Issuer: "RetroDownfall.Remediation.v1",
+            IssuedAtUtc: DateTimeOffset.UnixEpoch,
+            ExpiresAtUtc: DateTimeOffset.UnixEpoch.AddSeconds(1),
+            SignatureBase64Url:
+                "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-Pw");
+
+        Result<CovenantDigest> result =
+            FullInstallationResetRemediationAttestationDigest.Calculate(attestation);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(
+            "49bdb9ee3aa8278f012e3936b524d835dfddc19392055803aafe611c9e14d7cd",
+            Convert.ToHexString(result.Value.Bytes).ToLowerInvariant());
+
+    }
+
+    [Fact]
+
+    public void Recovery_verification_returns_the_same_signed_attestation_digest_as_fresh_acceptance()
+    {
+
+        DateTimeOffset issuedAtUtc = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        DateTimeOffset acceptedAtUtc = issuedAtUtc.AddSeconds(1);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            UnsignedAttestation(pair, issuedAtUtc));
+
+        FakeTimeProvider clock = new();
+
+        clock.SetUtcNow(acceptedAtUtc);
+
+        FullInstallationResetRemediationAttestationVerifier verifier = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    signer.ExportSubjectPublicKeyInfo())),
+            clock);
+
+        Result<FullInstallationResetRemediationAuthorization> fresh =
+            verifier.Verify(signed, signed.InstallationId, pair);
+
+        Assert.True(fresh.IsSuccess, fresh.Error.Message);
+
+        clock.SetUtcNow(signed.ExpiresAtUtc.AddDays(7));
+
+        Result<FullInstallationResetRemediationAuthorization> recovered =
+            verifier.VerifyAtAcceptedTime(
+                signed,
+                signed.InstallationId,
+                pair,
+                acceptedAtUtc);
+
+        Assert.True(recovered.IsSuccess, recovered.Error.Message);
+
+        Assert.Equal(fresh.Value.AttestationDigest, recovered.Value.AttestationDigest);
+
+        Assert.Equal(fresh.Value.AcceptedAtUtc, recovered.Value.AcceptedAtUtc);
+
+    }
+
+    [Fact]
+
+    public void Recovery_verification_rejects_same_shaped_signed_attestation_and_action_digest_substitution()
+    {
+
+        DateTimeOffset issuedAtUtc = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        DateTimeOffset acceptedAtUtc = issuedAtUtc.AddSeconds(1);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation unsigned =
+            UnsignedAttestation(pair, issuedAtUtc);
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            unsigned);
+
+        FullInstallationResetExternalRemediationAttestation otherSigned = Sign(
+            signer,
+            unsigned with
+            {
+
+                NonceBase64Url = Base64Url.EncodeToString(
+                    [.. Enumerable.Repeat((byte)0x99, 16)]),
+
+            });
+
+        FullInstallationResetExternalRemediationAttestation signatureSubstitution =
+            signed with
+            {
+
+                SignatureBase64Url = otherSigned.SignatureBase64Url,
+
+            };
+
+        FullInstallationResetExternalRemediationAttestation actionSubstitution = Sign(
+            signer,
+            unsigned with { RemediationActionDigest = Digest(0x64) });
+
+        FullInstallationResetRemediationAttestationVerifier verifier = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    signer.ExportSubjectPublicKeyInfo())),
+            new FakeTimeProvider());
+
+        foreach (FullInstallationResetExternalRemediationAttestation candidate in
+                 (FullInstallationResetExternalRemediationAttestation[])
+                 [
+                     signatureSubstitution,
+                     actionSubstitution,
+                 ])
+        {
+
+            AssertInvalid(
+                verifier.VerifyAtAcceptedTime(
+                    candidate,
+                    signed.InstallationId,
+                    pair,
+                    acceptedAtUtc),
+                candidate);
+
+        }
+
+    }
+
+    [Fact]
+
+    public void Public_signed_attestation_digest_calculator_freezes_the_signature_inclusive_v1_vector()
+    {
+
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            OperationId: Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"),
+            InstallationId: Guid.Parse("10213243-5465-7687-98a9-bacbdcedfe0f"),
+            HostToolsTransitionId: Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100"),
+            TaintMasterKeyVersion: 0x0102030405060708,
+            AuthorityFingerprint: Digest(0x11),
+            DatabaseMarkerDigest: Digest(0x22),
+            OsMarkerDigest: Digest(0x33),
+            RemediationActionDigest: Digest(0x44),
+            NonceBase64Url: "oKGio6SlpqeoqaqrrK2urw",
+            Issuer: "RetroDownfall.Remediation.v1",
+            IssuedAtUtc: DateTimeOffset.UnixEpoch,
+            ExpiresAtUtc: DateTimeOffset.UnixEpoch.AddSeconds(1),
+            SignatureBase64Url:
+                "paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpQ");
+
+        Result<CovenantDigest> result =
+            FullInstallationResetRemediationAttestationDigest.Calculate(attestation);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(
+            "b94d062b76e99fefefaf3c001dc5dae1e03f97f209802b33b5b3a5b61775c139",
+            Convert.ToHexString(result.Value.Bytes).ToLowerInvariant());
+
+    }
+
+    [Fact]
+
+    public void Verifier_authorization_digest_equals_the_nonauthorizing_calculator()
+    {
+
+        DateTimeOffset now = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            UnsignedAttestation(pair, now));
+
+        Result<CovenantDigest> calculated =
+            FullInstallationResetRemediationAttestationDigest.Calculate(signed);
+
+        FakeTimeProvider clock = new();
+
+        clock.SetUtcNow(now);
+
+        FullInstallationResetRemediationAttestationVerifier verifier = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    signer.ExportSubjectPublicKeyInfo())),
+            clock);
+
+        Result<FullInstallationResetRemediationAuthorization> authorized =
+            verifier.Verify(signed, signed.InstallationId, pair);
+
+        Assert.True(calculated.IsSuccess, calculated.Error.Message);
+
+        Assert.True(authorized.IsSuccess, authorized.Error.Message);
+
+        Assert.Equal(calculated.Value, authorized.Value.AttestationDigest);
+
+    }
+
+    [Fact]
+
+    public void Signed_attestation_digest_calculator_rejects_noncanonical_signature_without_consulting_trust_or_time()
+    {
+
+        FullInstallationResetExternalRemediationAttestation attestation = new(
+            Version: 1,
+            OperationId: Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"),
+            InstallationId: Guid.Parse("10213243-5465-7687-98a9-bacbdcedfe0f"),
+            HostToolsTransitionId: Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100"),
+            TaintMasterKeyVersion: 0x0102030405060708,
+            AuthorityFingerprint: Digest(0x11),
+            DatabaseMarkerDigest: Digest(0x22),
+            OsMarkerDigest: Digest(0x33),
+            RemediationActionDigest: Digest(0x44),
+            NonceBase64Url: "oKGio6SlpqeoqaqrrK2urw",
+            Issuer: "RetroDownfall.Remediation.v1",
+            IssuedAtUtc: DateTimeOffset.UnixEpoch,
+            ExpiresAtUtc: DateTimeOffset.UnixEpoch.AddSeconds(1),
+            SignatureBase64Url: string.Empty);
+
+        string canonical = Base64Url.EncodeToString(new byte[64]);
+
+        string[] invalidSignatures =
+        [
+            string.Empty,
+            Base64Url.EncodeToString(new byte[63]),
+            Base64Url.EncodeToString(new byte[65]),
+            canonical + "=",
+            canonical[..^1] + "B",
+            canonical[..^1] + "+",
+        ];
+
+        foreach (string invalidSignature in invalidSignatures)
+        {
+
+            Result<CovenantDigest> result =
+                FullInstallationResetRemediationAttestationDigest.Calculate(
+                    attestation with { SignatureBase64Url = invalidSignature });
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, result.Error.Code);
+
+            Assert.Equal(
+                "The external remediation attestation digest could not be calculated.",
+                result.Error.Message);
+
+            if (!string.IsNullOrEmpty(invalidSignature))
+            {
+
+                Assert.DoesNotContain(
+                    invalidSignature,
+                    result.Error.Message,
+                    StringComparison.Ordinal);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+
+    public void Authenticated_claim_matching_remains_nonauthorizing()
+    {
+
+        DateTimeOffset now = new(2026, 8, 22, 14, 0, 0, TimeSpan.Zero);
+
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        HostProcessToolsMatchedPair pair = MatchedPair();
+
+        FullInstallationResetExternalRemediationAttestation signed = Sign(
+            signer,
+            UnsignedAttestation(pair, now));
+
+        FakeTimeProvider acceptingClock = new();
+
+        acceptingClock.SetUtcNow(now);
+
+        FullInstallationResetRemediationAttestationVerifier acceptingVerifier = new(
+            new FakeTrustRootProvider(
+                new FullInstallationResetRemediationTrustRoot(
+                    signer.ExportSubjectPublicKeyInfo())),
+            acceptingClock);
+
+        Result<FullInstallationResetRemediationAuthorization> authorized =
+            acceptingVerifier.Verify(signed, signed.InstallationId, pair);
+
+        Assert.True(authorized.IsSuccess, authorized.Error.Message);
+
+        FullInstallationResetRemediationAttestationVerifier matchingOnlyVerifier = new(
+            new ThrowingTrustRootProvider(),
+            new ThrowingTimeProvider());
+
+        Assert.True(MatchesAuthenticatedClaim(
+            matchingOnlyVerifier,
+            signed,
+            signed.InstallationId,
+            pair,
+            authorized.Value));
+
+    }
+
+    [Fact]
+
     public void Authenticated_claim_match_rejects_noncanonical_shape_action_and_signature_without_root_lookup()
     {
 
@@ -972,6 +1505,25 @@ public sealed class FullInstallationResetRemediationAttestationVerifierTests
             return trustRoot is not null;
 
         }
+
+    }
+
+    private sealed class ThrowingTrustRootProvider
+        : IFullInstallationResetRemediationTrustRootProvider
+    {
+
+        public bool TryResolve(
+            string issuer,
+            out FullInstallationResetRemediationTrustRoot? trustRoot) =>
+            throw new InvalidOperationException("Trust roots are authorization-only.");
+
+    }
+
+    private sealed class ThrowingTimeProvider : TimeProvider
+    {
+
+        public override DateTimeOffset GetUtcNow() =>
+            throw new InvalidOperationException("Time is authorization-only.");
 
     }
 

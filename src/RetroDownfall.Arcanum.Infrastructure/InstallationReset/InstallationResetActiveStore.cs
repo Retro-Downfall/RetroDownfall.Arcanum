@@ -2,6 +2,8 @@ using System.Text.Json;
 
 using System.Text.Json.Serialization;
 
+using System.Collections.Immutable;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -44,7 +46,9 @@ internal sealed record InstallationResetActiveRecord(
     InstallationResetDataHandoff? DataHandoff = null,
     InstallationResetOnlineDataCompletion? OnlineDataCompletion = null,
     [property: JsonIgnore]
-    FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null);
+    FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null,
+    [property: JsonIgnore]
+    HostToolsMarkerPairResetCheckpointV1? HostToolsMarkerPairReset = null);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -1744,8 +1748,12 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || next.DataHandoff != current.DataHandoff
             || current.OnlineDataCompletion is not null
                 && next.OnlineDataCompletion != current.OnlineDataCompletion
-            || current.FullInstallationResetRemediationClaim
-                != next.FullInstallationResetRemediationClaim
+            || !SameClaim(
+                current.FullInstallationResetRemediationClaim,
+                next.FullInstallationResetRemediationClaim)
+            || !IsCheckpointTransition(
+                current.HostToolsMarkerPairReset,
+                next.HostToolsMarkerPairReset)
             || !CredentialsAreMonotonic(current.CredentialResults, next.CredentialResults))
         {
 
@@ -1844,10 +1852,301 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         && string.Equals(expected.LastErrorCode, actual.LastErrorCode, StringComparison.Ordinal)
         && expected.DataHandoff == actual.DataHandoff
         && expected.OnlineDataCompletion == actual.OnlineDataCompletion
-        && expected.HostToolsMarkerPairReset is null
-        && actual.HostToolsMarkerPairReset is null
-        && expected.FullInstallationResetRemediationClaim
-            == actual.FullInstallationResetRemediationClaim;
+        && SameCheckpoint(
+            expected.HostToolsMarkerPairReset,
+            actual.HostToolsMarkerPairReset)
+        && SameClaim(
+            expected.FullInstallationResetRemediationClaim,
+            actual.FullInstallationResetRemediationClaim);
+
+    private static bool IsCheckpointTransition(
+        HostToolsMarkerPairResetCheckpointV1? current,
+        HostToolsMarkerPairResetCheckpointV1? next)
+    {
+
+        if (current is null)
+        {
+
+            return next is null
+                || next.Phase is HostToolsMarkerPairResetPhase.PairJournaled
+                    && ReceiptIsNull(next);
+
+        }
+
+        if (next is null
+            || !SameCheckpointEvidence(current, next)
+            || (int)next.Phase < (int)current.Phase
+            || (int)next.Phase > (int)current.Phase + 1)
+        {
+
+            return false;
+
+        }
+
+        if (next.Phase != current.Phase)
+        {
+
+            return SameReceipt(current, next);
+
+        }
+
+        if (current.Phase is not HostToolsMarkerPairResetPhase.PairAbsenceVerified)
+        {
+
+            return SameReceipt(current, next);
+
+        }
+
+        if (ReceiptIsNull(current))
+        {
+
+            return ReceiptIsNull(next) || ReceiptIsPrepared(next);
+
+        }
+
+        return ReceiptNeedsTerminalPublication(current)
+            && ReceiptIsTerminal(next)
+            && SameFixedReceipt(current, next);
+
+    }
+
+    private static bool SameCheckpoint(
+        HostToolsMarkerPairResetCheckpointV1? left,
+        HostToolsMarkerPairResetCheckpointV1? right) =>
+        left is null && right is null
+        || left is not null
+            && right is not null
+            && left.Phase == right.Phase
+            && SameCheckpointEvidence(left, right)
+            && SameReceipt(left, right);
+
+    private static bool SameCheckpointEvidence(
+        HostToolsMarkerPairResetCheckpointV1 left,
+        HostToolsMarkerPairResetCheckpointV1 right) =>
+        left.Version == right.Version
+        && SameRestartProof(left.RestartProof, right.RestartProof)
+        && SameCampaignInventory(left.CampaignInventory, right.CampaignInventory)
+        && SameDigest(
+            left.CampaignMarkerInventoryDigest,
+            right.CampaignMarkerInventoryDigest)
+        && SameDigest(left.OwnerEffectDigest, right.OwnerEffectDigest);
+
+    private static bool SameRestartProof(
+        FullInstallationResetRestartProofV1 left,
+        FullInstallationResetRestartProofV1 right) =>
+        left.Version == right.Version
+        && SameSignedProjection(left.SignedAttestation, right.SignedAttestation)
+        && left.AcceptedAtUtc == right.AcceptedAtUtc
+        && SameDigest(left.SignedAttestationDigest, right.SignedAttestationDigest)
+        && SameDatabaseEvidence(
+            left.DatabaseMarkerEvidence,
+            right.DatabaseMarkerEvidence)
+        && SameOsEvidence(left.OsMarkerEvidence, right.OsMarkerEvidence)
+        && SameDigest(left.PairEvidenceDigest, right.PairEvidenceDigest);
+
+    private static bool SameSignedProjection(
+        FullInstallationResetSignedAttestationProjectionV1 left,
+        FullInstallationResetSignedAttestationProjectionV1 right) =>
+        left.Version == right.Version
+        && left.OperationId == right.OperationId
+        && left.InstallationId == right.InstallationId
+        && left.HostToolsTransitionId == right.HostToolsTransitionId
+        && left.TaintMasterKeyVersion == right.TaintMasterKeyVersion
+        && SameDigest(left.AuthorityFingerprint, right.AuthorityFingerprint)
+        && SameDigest(left.DatabaseMarkerDigest, right.DatabaseMarkerDigest)
+        && SameDigest(left.OsMarkerDigest, right.OsMarkerDigest)
+        && SameDigest(left.RemediationActionDigest, right.RemediationActionDigest)
+        && string.Equals(left.NonceBase64Url, right.NonceBase64Url, StringComparison.Ordinal)
+        && string.Equals(left.Issuer, right.Issuer, StringComparison.Ordinal)
+        && left.IssuedAtUtc == right.IssuedAtUtc
+        && left.ExpiresAtUtc == right.ExpiresAtUtc
+        && string.Equals(
+            left.SignatureBase64Url,
+            right.SignatureBase64Url,
+            StringComparison.Ordinal);
+
+    private static bool SameDatabaseEvidence(
+        RetroDownfall.Arcanum.Core.Security.HostProcessToolsDatabaseMarkerEvidence left,
+        RetroDownfall.Arcanum.Core.Security.HostProcessToolsDatabaseMarkerEvidence right) =>
+        string.Equals(
+            left.InstallationIdentity,
+            right.InstallationIdentity,
+            StringComparison.Ordinal)
+        && left.State == right.State
+        && left.TransitionId == right.TransitionId
+        && left.TaintMasterKeyVersion == right.TaintMasterKeyVersion
+        && SameOptionalDigest(left.TaintFingerprint, right.TaintFingerprint)
+        && SameOptionalDigest(left.TaintIdentityDigest, right.TaintIdentityDigest)
+        && SameDigest(left.DatabaseMarkerDigest, right.DatabaseMarkerDigest);
+
+    private static bool SameOsEvidence(
+        RetroDownfall.Arcanum.Core.Security.HostProcessToolsOsMarkerEvidence left,
+        RetroDownfall.Arcanum.Core.Security.HostProcessToolsOsMarkerEvidence right) =>
+        string.Equals(
+            left.InstallationIdentity,
+            right.InstallationIdentity,
+            StringComparison.Ordinal)
+        && left.TransitionId == right.TransitionId
+        && left.TaintMasterKeyVersion == right.TaintMasterKeyVersion
+        && SameDigest(left.TaintFingerprint, right.TaintFingerprint)
+        && SameDigest(left.MarkerBytesDigest, right.MarkerBytesDigest)
+        && SameDigest(left.DurableIdentityDigest, right.DurableIdentityDigest)
+        && SameDigest(left.TaintIdentityDigest, right.TaintIdentityDigest);
+
+    private static bool SameCampaignInventory(
+        ImmutableArray<CampaignMarkerInventoryEntryV1> left,
+        ImmutableArray<CampaignMarkerInventoryEntryV1> right)
+    {
+
+        if (left.IsDefault || right.IsDefault || left.Length != right.Length)
+        {
+
+            return left.IsDefault && right.IsDefault;
+
+        }
+
+        for (int index = 0; index < left.Length; index++)
+        {
+
+            CampaignMarkerInventoryEntryV1 leftEntry = left[index];
+
+            CampaignMarkerInventoryEntryV1 rightEntry = right[index];
+
+            if (leftEntry.CampaignId != rightEntry.CampaignId
+                || leftEntry.PriorPathRevision != rightEntry.PriorPathRevision
+                || !SameDigest(leftEntry.MarkerDigest, rightEntry.MarkerDigest)
+                || !SameDigest(
+                    leftEntry.IndexedPhysicalIdentityDigest,
+                    rightEntry.IndexedPhysicalIdentityDigest)
+                || !SameDigest(
+                    leftEntry.CanonicalDisplayPathDigest,
+                    rightEntry.CanonicalDisplayPathDigest)
+                || !SameDigest(
+                    leftEntry.SameHandleOwnershipEvidenceDigest,
+                    rightEntry.SameHandleOwnershipEvidenceDigest))
+            {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
+
+    }
+
+    private static bool SameReceipt(
+        HostToolsMarkerPairResetCheckpointV1 left,
+        HostToolsMarkerPairResetCheckpointV1 right) =>
+        left.MarkerIntentCount == right.MarkerIntentCount
+        && SameIntentIds(left.OrderedMarkerIntentIds, right.OrderedMarkerIntentIds)
+        && SameOptionalDigest(
+            left.MarkerIntentVectorDigest,
+            right.MarkerIntentVectorDigest)
+        && left.DeletedCount == right.DeletedCount
+        && left.OrphanCount == right.OrphanCount;
+
+    private static bool ReceiptIsNull(HostToolsMarkerPairResetCheckpointV1 checkpoint) =>
+        checkpoint.MarkerIntentCount is null
+        && checkpoint.OrderedMarkerIntentIds is null
+        && checkpoint.MarkerIntentVectorDigest is null
+        && checkpoint.DeletedCount is null
+        && checkpoint.OrphanCount is null;
+
+    private static bool ReceiptIsPrepared(HostToolsMarkerPairResetCheckpointV1 checkpoint) =>
+        checkpoint.MarkerIntentCount is not null
+        && checkpoint.OrderedMarkerIntentIds is not null
+        && checkpoint.MarkerIntentVectorDigest is not null
+        && checkpoint.DeletedCount is 0
+        && checkpoint.OrphanCount is 0;
+
+    private static bool ReceiptNeedsTerminalPublication(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint) =>
+        ReceiptIsPrepared(checkpoint)
+        && checkpoint.MarkerIntentCount is > 0;
+
+    private static bool ReceiptIsTerminal(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint)
+    {
+
+        if (checkpoint.MarkerIntentCount is not { } count
+            || checkpoint.OrderedMarkerIntentIds is null
+            || checkpoint.MarkerIntentVectorDigest is null
+            || checkpoint.DeletedCount is not { } deleted
+            || checkpoint.OrphanCount is not { } orphan)
+        {
+
+            return false;
+
+        }
+
+        return count == 0
+            ? deleted == 0 && orphan == 0
+            : (deleted != 0 || orphan != 0)
+                && deleted <= count
+                && orphan == count - deleted;
+
+    }
+
+    private static bool SameFixedReceipt(
+        HostToolsMarkerPairResetCheckpointV1 left,
+        HostToolsMarkerPairResetCheckpointV1 right) =>
+        left.MarkerIntentCount == right.MarkerIntentCount
+        && SameIntentIds(left.OrderedMarkerIntentIds, right.OrderedMarkerIntentIds)
+        && SameOptionalDigest(
+            left.MarkerIntentVectorDigest,
+            right.MarkerIntentVectorDigest);
+
+    private static bool SameIntentIds(
+        ImmutableArray<Guid>? left,
+        ImmutableArray<Guid>? right)
+    {
+
+        if (left is null || right is null)
+        {
+
+            return left is null && right is null;
+
+        }
+
+        if (left.Value.IsDefault
+            || right.Value.IsDefault
+            || left.Value.Length != right.Value.Length)
+        {
+
+            return left.Value.IsDefault && right.Value.IsDefault;
+
+        }
+
+        return left.Value.AsSpan().SequenceEqual(right.Value.AsSpan());
+
+    }
+
+    private static bool SameClaim(
+        FullInstallationResetRemediationClaimV1? left,
+        FullInstallationResetRemediationClaimV1? right) =>
+        left is null && right is null
+        || left is not null
+            && right is not null
+            && left.Version == right.Version
+            && left.OperationId == right.OperationId
+            && left.InstallationId == right.InstallationId
+            && SameDigest(left.AttestationDigest, right.AttestationDigest)
+            && SameDigest(left.NonceDigest, right.NonceDigest)
+            && SameDigest(left.IssuerDigest, right.IssuerDigest)
+            && left.AcceptedAtUtc == right.AcceptedAtUtc;
+
+    private static bool SameOptionalDigest(
+        CovenantDigest? left,
+        CovenantDigest? right) =>
+        left is null && right is null
+        || left is { } leftDigest
+            && right is { } rightDigest
+            && SameDigest(leftDigest, rightDigest);
+
+    private static bool SameDigest(CovenantDigest left, CovenantDigest right) =>
+        left.Bytes.AsSpan().SequenceEqual(right.Bytes);
 
     private static bool SameLegacyRecord(
         InstallationResetActiveRecord expected,

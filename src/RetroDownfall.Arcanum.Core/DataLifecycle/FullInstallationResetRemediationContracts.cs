@@ -90,6 +90,168 @@ public sealed class FullInstallationResetRemediationAuthorization
 
 }
 
+public static class FullInstallationResetRemediationAttestationDigest
+{
+
+    internal const int SignatureBytes = 64;
+
+    private const string Domain =
+        "Arcanum.FullInstallationReset.ExternalRemediationDigest.v1";
+
+    public static Result<CovenantDigest> Calculate(
+        FullInstallationResetExternalRemediationAttestation attestation)
+    {
+
+        byte[] preimage = [];
+
+        byte[] signature = [];
+
+        byte[] digest = [];
+
+        try
+        {
+
+            if (attestation is null)
+            {
+
+                return Invalid();
+
+            }
+
+            Result<byte[]> preimageResult =
+                FullInstallationResetRemediationPreimage.Build(attestation);
+
+            if (preimageResult.IsFailure
+                || !FullInstallationResetRemediationPreimage.TryDecodeCanonicalBase64Url(
+                    attestation.SignatureBase64Url,
+                    SignatureBytes,
+                    SignatureBytes,
+                    out signature))
+            {
+
+                return Invalid();
+
+            }
+
+            preimage = preimageResult.Value;
+
+            digest = CalculateCanonical(preimage, signature);
+
+            return Result<CovenantDigest>.Success(new CovenantDigest(digest));
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(preimage);
+
+            CryptographicOperations.ZeroMemory(signature);
+
+            CryptographicOperations.ZeroMemory(digest);
+
+        }
+
+    }
+
+    internal static byte[] CalculateCanonical(
+        ReadOnlySpan<byte> preimage,
+        ReadOnlySpan<byte> signature) =>
+        CalculateFramed(Domain, preimage, signature);
+
+    internal static byte[] CalculateFramed(
+        string domain,
+        ReadOnlySpan<byte> value)
+    {
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        AppendDomain(hash, domain);
+
+        AppendLengthPrefixed(hash, value);
+
+        return hash.GetHashAndReset();
+
+    }
+
+    private static byte[] CalculateFramed(
+        string domain,
+        ReadOnlySpan<byte> first,
+        ReadOnlySpan<byte> second)
+    {
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        AppendDomain(hash, domain);
+
+        AppendLengthPrefixed(hash, first);
+
+        AppendLengthPrefixed(hash, second);
+
+        return hash.GetHashAndReset();
+
+    }
+
+    private static void AppendDomain(IncrementalHash hash, string domain)
+    {
+
+        byte[] encoded = Encoding.ASCII.GetBytes(domain);
+
+        Span<byte> separator = stackalloc byte[1];
+
+        separator.Clear();
+
+        try
+        {
+
+            hash.AppendData(encoded);
+
+            hash.AppendData(separator);
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(encoded);
+
+            CryptographicOperations.ZeroMemory(separator);
+
+        }
+
+    }
+
+    private static void AppendLengthPrefixed(
+        IncrementalHash hash,
+        ReadOnlySpan<byte> value)
+    {
+
+        Span<byte> length = stackalloc byte[sizeof(ushort)];
+
+        try
+        {
+
+            BinaryPrimitives.WriteUInt16BigEndian(length, checked((ushort)value.Length));
+
+            hash.AppendData(length);
+
+            hash.AppendData(value);
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(length);
+
+        }
+
+    }
+
+    private static Result<CovenantDigest> Invalid() =>
+        Result<CovenantDigest>.Failure(new Error(
+            ErrorCodes.Data.ExternalRemediationInvalid,
+            "The external remediation attestation digest could not be calculated."));
+
+}
+
 public interface IFullInstallationResetRemediationAttestationVerifier
 {
 
@@ -116,6 +278,12 @@ public interface IFullInstallationResetRemediationAttestationVerifier
         Guid currentInstallationId,
         HostProcessToolsMatchedPair matchedPair);
 
+    Result<FullInstallationResetRemediationAuthorization> VerifyAtAcceptedTime(
+        FullInstallationResetExternalRemediationAttestation attestation,
+        Guid authenticatedInstallationId,
+        HostProcessToolsMatchedPair persistedPair,
+        DateTimeOffset acceptedAtUtc);
+
 }
 
 public sealed class FullInstallationResetRemediationAttestationVerifier(
@@ -124,12 +292,7 @@ public sealed class FullInstallationResetRemediationAttestationVerifier(
     : IFullInstallationResetRemediationAttestationVerifier
 {
 
-    private const int SignatureBytes = 64;
-
     private const string P256ObjectIdentifier = "1.2.840.10045.3.1.7";
-
-    private const string AttestationDigestDomain =
-        "Arcanum.FullInstallationReset.ExternalRemediationDigest.v1";
 
     private const string NonceDigestDomain =
         "Arcanum.FullInstallationReset.ExternalRemediationNonce.v1";
@@ -149,49 +312,41 @@ public sealed class FullInstallationResetRemediationAttestationVerifier(
         HostProcessToolsMatchedPair matchedPair)
     {
 
-        if (!TryCalculateClaimProjection(
-                attestation,
-                currentInstallationId,
-                matchedPair,
-                out ClaimProjection? projection)
-            || projection is null)
+        DateTimeOffset observedAtUtc = _timeProvider.GetUtcNow();
+
+        DateTimeOffset acceptedAtUtc = DateTimeOffset.FromUnixTimeSeconds(
+            observedAtUtc.ToUnixTimeSeconds());
+
+        return VerifyAtTime(
+            attestation,
+            currentInstallationId,
+            matchedPair,
+            observedAtUtc,
+            acceptedAtUtc);
+
+    }
+
+    public Result<FullInstallationResetRemediationAuthorization> VerifyAtAcceptedTime(
+        FullInstallationResetExternalRemediationAttestation attestation,
+        Guid authenticatedInstallationId,
+        HostProcessToolsMatchedPair persistedPair,
+        DateTimeOffset acceptedAtUtc)
+    {
+
+        if (acceptedAtUtc.Offset != TimeSpan.Zero
+            || acceptedAtUtc.Ticks % TimeSpan.TicksPerSecond != 0)
         {
 
             return Invalid();
 
         }
 
-        using (projection)
-        {
-
-            DateTimeOffset observedAtUtc = _timeProvider.GetUtcNow();
-
-            if (observedAtUtc < attestation.IssuedAtUtc
-                || observedAtUtc >= attestation.ExpiresAtUtc
-                || !_trustRoots.TryResolve(attestation.Issuer, out var trustRoot)
-                || trustRoot is null
-                || !VerifySignature(
-                    trustRoot,
-                    projection.Preimage,
-                    projection.Signature))
-            {
-
-                return Invalid();
-
-            }
-
-            DateTimeOffset acceptedAtUtc = DateTimeOffset.FromUnixTimeSeconds(
-                observedAtUtc.ToUnixTimeSeconds());
-
-            return new FullInstallationResetRemediationAuthorization(
-                projection.OperationId,
-                projection.InstallationId,
-                projection.CopyAttestationDigest(),
-                projection.CopyNonceDigest(),
-                projection.CopyIssuerDigest(),
-                acceptedAtUtc);
-
-        }
+        return VerifyAtTime(
+            attestation,
+            authenticatedInstallationId,
+            persistedPair,
+            acceptedAtUtc,
+            acceptedAtUtc);
 
     }
 
@@ -295,13 +450,17 @@ public sealed class FullInstallationResetRemediationAttestationVerifier(
 
             preimage = preimageResult.Value;
 
-            if (!FullInstallationResetRemediationAction.IsExpected(
+            Result<CovenantDigest> attestationDigestResult =
+                FullInstallationResetRemediationAttestationDigest.Calculate(attestation);
+
+            if (attestationDigestResult.IsFailure
+                || !FullInstallationResetRemediationAction.IsExpected(
                     attestation.RemediationActionDigest)
                 || !MatchesEvidence(attestation, currentInstallationId, matchedPair)
                 || !FullInstallationResetRemediationPreimage.TryDecodeCanonicalBase64Url(
                     attestation.SignatureBase64Url,
-                    SignatureBytes,
-                    SignatureBytes,
+                    FullInstallationResetRemediationAttestationDigest.SignatureBytes,
+                    FullInstallationResetRemediationAttestationDigest.SignatureBytes,
                     out signature)
                 || !FullInstallationResetRemediationPreimage.TryDecodeCanonicalBase64Url(
                     attestation.NonceBase64Url,
@@ -317,7 +476,7 @@ public sealed class FullInstallationResetRemediationAttestationVerifier(
 
             }
 
-            attestationDigest = AttestationDigest(preimage, signature);
+            attestationDigest = attestationDigestResult.Value.Bytes;
 
             nonceDigest = FramedDigest(NonceDigestDomain, nonce);
 
@@ -361,6 +520,55 @@ public sealed class FullInstallationResetRemediationAttestationVerifier(
             CryptographicOperations.ZeroMemory(nonceDigest);
 
             CryptographicOperations.ZeroMemory(issuerDigest);
+
+        }
+
+    }
+
+    private Result<FullInstallationResetRemediationAuthorization> VerifyAtTime(
+        FullInstallationResetExternalRemediationAttestation attestation,
+        Guid installationId,
+        HostProcessToolsMatchedPair matchedPair,
+        DateTimeOffset verificationTimeUtc,
+        DateTimeOffset acceptedAtUtc)
+    {
+
+        if (!TryCalculateClaimProjection(
+                attestation,
+                installationId,
+                matchedPair,
+                out ClaimProjection? projection)
+            || projection is null)
+        {
+
+            return Invalid();
+
+        }
+
+        using (projection)
+        {
+
+            if (verificationTimeUtc < attestation.IssuedAtUtc
+                || verificationTimeUtc >= attestation.ExpiresAtUtc
+                || !_trustRoots.TryResolve(attestation.Issuer, out var trustRoot)
+                || trustRoot is null
+                || !VerifySignature(
+                    trustRoot,
+                    projection.Preimage,
+                    projection.Signature))
+            {
+
+                return Invalid();
+
+            }
+
+            return new FullInstallationResetRemediationAuthorization(
+                projection.OperationId,
+                projection.InstallationId,
+                projection.CopyAttestationDigest(),
+                projection.CopyNonceDigest(),
+                projection.CopyIssuerDigest(),
+                acceptedAtUtc);
 
         }
 
@@ -459,91 +667,12 @@ public sealed class FullInstallationResetRemediationAttestationVerifier(
 
     }
 
-    private static byte[] AttestationDigest(
-        ReadOnlySpan<byte> preimage,
-        ReadOnlySpan<byte> signature)
-    {
-
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-
-        AppendDomain(hash, AttestationDigestDomain);
-
-        AppendLengthPrefixed(hash, preimage);
-
-        AppendLengthPrefixed(hash, signature);
-
-        return hash.GetHashAndReset();
-
-    }
-
     private static byte[] FramedDigest(
         string domain,
-        ReadOnlySpan<byte> value)
-    {
-
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-
-        AppendDomain(hash, domain);
-
-        AppendLengthPrefixed(hash, value);
-
-        return hash.GetHashAndReset();
-
-    }
-
-    private static void AppendDomain(IncrementalHash hash, string domain)
-    {
-
-        byte[] encoded = Encoding.ASCII.GetBytes(domain);
-
-        Span<byte> separator = stackalloc byte[1];
-
-        separator.Clear();
-
-        try
-        {
-
-            hash.AppendData(encoded);
-
-            hash.AppendData(separator);
-
-        }
-        finally
-        {
-
-            CryptographicOperations.ZeroMemory(encoded);
-
-            CryptographicOperations.ZeroMemory(separator);
-
-        }
-
-    }
-
-    private static void AppendLengthPrefixed(
-        IncrementalHash hash,
-        ReadOnlySpan<byte> value)
-    {
-
-        Span<byte> length = stackalloc byte[sizeof(ushort)];
-
-        try
-        {
-
-            BinaryPrimitives.WriteUInt16BigEndian(length, checked((ushort)value.Length));
-
-            hash.AppendData(length);
-
-            hash.AppendData(value);
-
-        }
-        finally
-        {
-
-            CryptographicOperations.ZeroMemory(length);
-
-        }
-
-    }
+        ReadOnlySpan<byte> value) =>
+        FullInstallationResetRemediationAttestationDigest.CalculateFramed(
+            domain,
+            value);
 
     private static bool EqualGuid(Guid left, Guid right)
     {

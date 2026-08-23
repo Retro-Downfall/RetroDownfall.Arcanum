@@ -4,10 +4,13 @@ using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
 
+using Serilog;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -32,7 +35,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// journal would be storing a per-registration secret in order to delete a file, and the digest plus
 /// a re-read proves the same thing without holding the secret at all.</para>
 /// </remarks>
-internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerLifecycle
+internal sealed partial class CampaignPathMarkerLifecycle
+    : ICampaignPathMarkerLifecycle, IAsyncDisposable
 {
 
     private readonly ICampaignPathMarkerCodec _codec;
@@ -53,6 +57,8 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
 
     private readonly TimeProvider _timeProvider;
 
+    private readonly ICampaignRootIdentityRecoveryKeyProvider? _recoveryKeys;
+
     /// <summary>
     /// Roots this process opened during preparation, keyed by the child they belong to.
     /// </summary>
@@ -63,12 +69,23 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
     /// </remarks>
     private readonly ConcurrentDictionary<Guid, RetainedRoot> _retainedRoots = new();
 
+    /// <summary>
+    /// Roots retained before full-reset marker child identifiers exist.
+    /// </summary>
+    private readonly ConcurrentDictionary<FullResetRetainedRootKey, CampaignPathMarkerRootAuthority>
+        _fullResetRetainedRoots = new();
+
+    private readonly object _retainedRootsGate = new();
+
+    private bool _retainedRootsDisposed;
+
     internal CampaignPathMarkerLifecycle(
         ICampaignPathMarkerCodec codec,
         PhysicalCampaignRootOpener rootOpener,
         ICovenantConnectionSource liveConnections,
         CovenantSqliteConnectionInitializer initializer,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ICampaignRootIdentityRecoveryKeyProvider? recoveryKeys = null)
     {
 
         _codec = codec ?? throw new ArgumentNullException(nameof(codec));
@@ -80,6 +97,8 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+
+        _recoveryKeys = recoveryKeys;
 
     }
 
@@ -220,11 +239,30 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
 
             }
 
-            committed.Add(inserted.Value);
-
-            _retainedRoots[inserted.Value] = new RetainedRoot(
+            RetainedRoot retained = new(
                 preparation.Owner.OperationId,
                 authority);
+
+            if (!TryRetainRoot(inserted.Value, retained, out RetainedRoot? displaced))
+            {
+
+                await authority.DisposeAsync().ConfigureAwait(false);
+
+                return new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "Campaign marker lifecycle authority is no longer available.");
+
+            }
+
+            if (displaced is not null)
+            {
+
+                await CampaignPathRetainedRootRelease.DisposeAllAsync(
+                    [displaced.Authority]).ConfigureAwait(false);
+
+            }
+
+            committed.Add(inserted.Value);
 
         }
 
@@ -375,10 +413,121 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
     public async ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
     {
 
+        List<IAsyncDisposable> removedRoots;
+
+        lock (_retainedRootsGate)
+        {
+
+            removedRoots = DetachRetainedRoots(ownerOperationId);
+
+        }
+
+        await CampaignPathRetainedRootRelease.DisposeAllAsync(removedRoots)
+            .ConfigureAwait(false);
+
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+
+        List<IAsyncDisposable> removedRoots;
+
+        lock (_retainedRootsGate)
+        {
+
+            if (_retainedRootsDisposed)
+            {
+
+                return;
+
+            }
+
+            _retainedRootsDisposed = true;
+
+            removedRoots = DetachRetainedRoots(ownerOperationId: null);
+
+        }
+
+        await CampaignPathRetainedRootRelease.DisposeAllAsync(removedRoots)
+            .ConfigureAwait(false);
+
+    }
+
+    private bool TryRetainRoot(
+        Guid intentId,
+        RetainedRoot retained,
+        out RetainedRoot? displaced)
+    {
+
+        lock (_retainedRootsGate)
+        {
+
+            displaced = null;
+
+            if (_retainedRootsDisposed)
+            {
+
+                return false;
+
+            }
+
+            if (_retainedRoots.TryGetValue(intentId, out RetainedRoot? current)
+                && !ReferenceEquals(current.Authority, retained.Authority))
+            {
+
+                displaced = current;
+
+            }
+
+            _retainedRoots[intentId] = retained;
+
+            return true;
+
+        }
+
+    }
+
+    private bool TryRetainFullResetRoot(
+        FullResetRetainedRootKey retainedKey,
+        CampaignPathMarkerRootAuthority authority)
+    {
+
+        lock (_retainedRootsGate)
+        {
+
+            if (_retainedRootsDisposed)
+            {
+
+                return false;
+
+            }
+
+            if (_fullResetRetainedRoots.TryGetValue(
+                    retainedKey,
+                    out CampaignPathMarkerRootAuthority? current)
+                && ReferenceEquals(current, authority))
+            {
+
+                return true;
+
+            }
+
+            return _fullResetRetainedRoots.TryAdd(retainedKey, authority);
+
+        }
+
+    }
+
+    private List<IAsyncDisposable> DetachRetainedRoots(Guid? ownerOperationId)
+    {
+
+        List<IAsyncDisposable> removedRoots = [];
+
         foreach (KeyValuePair<Guid, RetainedRoot> entry in _retainedRoots)
         {
 
-            if (entry.Value.OwnerOperationId != ownerOperationId)
+            if (ownerOperationId is { } owner
+                && entry.Value.OwnerOperationId != owner)
             {
 
                 continue;
@@ -388,11 +537,36 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
             if (_retainedRoots.TryRemove(entry.Key, out RetainedRoot? removed))
             {
 
-                await removed.Authority.DisposeAsync().ConfigureAwait(false);
+                removedRoots.Add(removed.Authority);
 
             }
 
         }
+
+        foreach (KeyValuePair<FullResetRetainedRootKey, CampaignPathMarkerRootAuthority> entry
+            in _fullResetRetainedRoots)
+        {
+
+            if (ownerOperationId is { } owner
+                && entry.Key.OwnerOperationId != owner)
+            {
+
+                continue;
+
+            }
+
+            if (_fullResetRetainedRoots.TryRemove(
+                    entry.Key,
+                    out CampaignPathMarkerRootAuthority? removed))
+            {
+
+                removedRoots.Add(removed);
+
+            }
+
+        }
+
+        return removedRoots;
 
     }
 
@@ -868,6 +1042,10 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
         Guid OwnerOperationId,
         CampaignPathMarkerRootAuthority Authority);
 
+    private readonly record struct FullResetRetainedRootKey(
+        Guid OwnerOperationId,
+        Guid CampaignId);
+
     private readonly record struct ObservedMarker(
         bool Absent,
         CovenantDigest MarkerDigest,
@@ -965,6 +1143,37 @@ internal sealed partial class CampaignPathMarkerLifecycle : ICampaignPathMarkerL
             await owner.ReleaseRetainedRootsAsync(recoveryOwner.OperationId).ConfigureAwait(false);
 
             return Result.Success();
+
+        }
+
+    }
+
+}
+
+internal static class CampaignPathRetainedRootRelease
+{
+
+    internal static async ValueTask DisposeAllAsync(
+        IEnumerable<IAsyncDisposable> retainedRoots)
+    {
+
+        foreach (IAsyncDisposable retainedRoot in retainedRoots)
+        {
+
+            try
+            {
+
+                await retainedRoot.DisposeAsync().ConfigureAwait(false);
+
+            }
+            catch (Exception exception)
+            {
+
+                Log.Warning(
+                    exception,
+                    "A retained Campaign root authority reported a disposal failure; remaining roots will still be released.");
+
+            }
 
         }
 

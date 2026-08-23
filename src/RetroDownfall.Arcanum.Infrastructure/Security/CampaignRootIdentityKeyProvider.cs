@@ -6,6 +6,21 @@ using Serilog;
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 /// <summary>
+/// Copies only an already-persisted Campaign root-identity key for recovery work.
+/// </summary>
+/// <remarks>
+/// Unlike ordinary first registration, this port never creates a credential. Recovery that cannot
+/// prove the existing key must stop before it opens any registered root.
+/// </remarks>
+internal interface ICampaignRootIdentityRecoveryKeyProvider
+{
+
+    /// <summary>Copies the exact 32-byte existing key without generating one.</summary>
+    bool TryCopyExistingRootIdentityKey(Span<byte> destination);
+
+}
+
+/// <summary>
 /// Owns the installation-private secret behind every Campaign physical-root identity.
 /// </summary>
 /// <remarks>
@@ -31,7 +46,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// credential, then restart the process. There is no in-process repair entry point yet (§10.12).</para>
 /// </remarks>
 internal sealed class CampaignRootIdentityKeyProvider(IOsCredentialStore credentials)
-    : ICampaignRootIdentityKeyProvider, IDisposable
+    : ICampaignRootIdentityKeyProvider, ICampaignRootIdentityRecoveryKeyProvider, IDisposable
 {
 
     /// <summary>The dedicated credential account. Never shared with another Arcanum secret.</summary>
@@ -76,6 +91,52 @@ internal sealed class CampaignRootIdentityKeyProvider(IOsCredentialStore credent
                 _resolved = true;
 
                 _key = LoadOrCreate();
+
+            }
+
+            if (_key is null)
+            {
+                return false;
+            }
+
+            _key.CopyTo(destination);
+
+            return true;
+
+        }
+
+    }
+
+    /// <inheritdoc />
+    public bool TryCopyExistingRootIdentityKey(Span<byte> destination)
+    {
+
+        if (destination.Length != KeyBytes)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+
+            if (_disposed)
+            {
+                return false;
+            }
+
+            if (_key is null && !_resolved)
+            {
+
+                byte[]? existing = LoadExisting();
+
+                if (existing is null)
+                {
+                    return false;
+                }
+
+                _key = existing;
+
+                _resolved = true;
 
             }
 
@@ -186,6 +247,45 @@ internal sealed class CampaignRootIdentityKeyProvider(IOsCredentialStore credent
         {
 
             Log.Warning(exception, "The Campaign root-identity key could not be resolved.");
+
+            return null;
+
+        }
+
+    }
+
+    private byte[]? LoadExisting()
+    {
+
+        try
+        {
+
+            OsCredentialStoreResult existing = _credentials.TryGet(
+                ArcanumCredentialIdentity.Service,
+                Account);
+
+            if (existing.Status is not OsCredentialStoreStatus.Ok
+                || existing.Value is not { Length: > 0 } stored)
+            {
+                return null;
+            }
+
+            byte[] decoded = Convert.FromBase64String(stored);
+
+            if (decoded.Length == KeyBytes)
+            {
+                return decoded;
+            }
+
+            CryptographicOperations.ZeroMemory(decoded);
+
+            return null;
+
+        }
+        catch (Exception exception) when (exception is FormatException or InvalidOperationException)
+        {
+
+            Log.Warning(exception, "The existing Campaign root-identity key could not be resolved.");
 
             return null;
 

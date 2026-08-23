@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 
 using System.Buffers.Text;
 
+using System.Collections.Immutable;
+
 using System.Security.Cryptography;
 
 using System.Text;
@@ -13,6 +15,8 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -26,7 +30,9 @@ internal static class InstallationResetActiveRecordAuthenticator
 
     internal const byte AnchorVersion = 1;
 
-    internal const int MaxActiveFileBytes = 64 * 1024;
+    internal const int MaxActivePayloadBytes = 4 * 1024 * 1024;
+
+    internal const int MaxActiveFileBytes = 8 * 1024 * 1024;
 
     internal const int NonceBytes = 12;
 
@@ -222,7 +228,7 @@ internal static class InstallationResetActiveRecordAuthenticator
         try
         {
 
-            if (plaintext.Length is 0 or > MaxActiveFileBytes)
+            if (plaintext.Length is 0 or > MaxActivePayloadBytes)
             {
 
                 return Invalid<InstallationResetActiveEnvelopeV2>();
@@ -350,7 +356,7 @@ internal static class InstallationResetActiveRecordAuthenticator
                 payload,
                 InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
 
-            if (plaintext.Length is 0 or > MaxActiveFileBytes)
+            if (plaintext.Length is 0 or > MaxActivePayloadBytes)
             {
 
                 return InvalidResult();
@@ -442,7 +448,7 @@ internal static class InstallationResetActiveRecordAuthenticator
                 out tag)
             || !TryDecodeBounded(
                 envelope.CiphertextBase64Url,
-                MaxActiveFileBytes,
+                MaxActivePayloadBytes,
                 out ciphertext))
         {
 
@@ -519,12 +525,42 @@ internal static class InstallationResetActiveRecordAuthenticator
 
             }
 
+            byte[] canonical = [];
+
+            try
+            {
+
+                canonical = JsonSerializer.SerializeToUtf8Bytes(
+                    payload,
+                    InstallationResetActiveJsonContext.Default
+                        .InstallationResetActivePayloadV2);
+
+                if (!plaintext.AsSpan().SequenceEqual(canonical))
+                {
+
+                    return Invalid<InstallationResetActivePayloadV2>();
+
+                }
+
+            }
+            catch (Exception exception) when (IsDecodeFailure(exception))
+            {
+
+                return Invalid<InstallationResetActivePayloadV2>();
+
+            }
+            finally
+            {
+
+                CryptographicOperations.ZeroMemory(canonical);
+
+            }
+
             if (payload is null
                 || payload.Version != EnvelopeVersion
                 || payload.OperationId != envelope.OperationId
                 || payload.Scope != envelope.Scope
                 || !string.Equals(payload.PlanId, envelope.PlanId, StringComparison.Ordinal)
-                || payload.HostToolsMarkerPairReset is not null
                 || ValidatePayload(payload).IsFailure
                 || !MatchesInstallation(payload, envelope.InstallationId))
             {
@@ -813,7 +849,8 @@ internal static class InstallationResetActiveRecordAuthenticator
             || payload.RowsDeleted < 0
             || payload.FilesDeleted < 0
             || payload.EstimatedBytesDeleted < 0
-            || payload.HostToolsMarkerPairReset is not null)
+            || payload.HostToolsMarkerPairReset is { } checkpoint
+                && ValidateCheckpoint(payload, checkpoint).IsFailure)
         {
 
             return InvalidResult();
@@ -917,6 +954,176 @@ internal static class InstallationResetActiveRecordAuthenticator
 
     }
 
+    private static Result ValidateCheckpoint(
+        InstallationResetActivePayloadV2 payload,
+        HostToolsMarkerPairResetCheckpointV1 checkpoint)
+    {
+
+        if (checkpoint.Version != 1
+            || !Enum.IsDefined(checkpoint.Phase)
+            || payload.FullInstallationResetRemediationClaim is not { } claim
+            || checkpoint.RestartProof is not { Version: 1 } restartProof
+            || restartProof.SignedAttestation is not { } signed
+            || signed.OperationId != payload.OperationId
+            || signed.OperationId != claim.OperationId
+            || signed.InstallationId != claim.InstallationId
+            || restartProof.AcceptedAtUtc != claim.AcceptedAtUtc
+            || restartProof.AcceptedAtUtc.Offset != TimeSpan.Zero
+            || restartProof.AcceptedAtUtc.Ticks % TimeSpan.TicksPerSecond != 0
+            || restartProof.SignedAttestationDigest != claim.AttestationDigest)
+        {
+
+            return InvalidResult();
+
+        }
+
+        if (restartProof.DatabaseMarkerEvidence is null
+            || restartProof.OsMarkerEvidence is null
+            || !HostToolsMarkerPairResetCheckpointBounds.HasValidVectorShape(checkpoint)
+            || !PairMatchesSignedAttestation(
+                signed,
+                restartProof.DatabaseMarkerEvidence,
+                restartProof.OsMarkerEvidence))
+        {
+
+            return InvalidResult();
+
+        }
+
+        FullInstallationResetExternalRemediationAttestation attestation =
+            signed.ToAttestation();
+
+        Result<CovenantDigest> signedDigest =
+            FullInstallationResetRemediationAttestationDigest.Calculate(attestation);
+
+        HostProcessToolsMatchedPair pair = new(
+            restartProof.DatabaseMarkerEvidence,
+            restartProof.OsMarkerEvidence);
+
+        Result<CovenantDigest> pairDigest =
+            FullInstallationResetMarkerPairResetDigests.PairEvidence(pair);
+
+        Result<CovenantDigest> inventoryDigest =
+            FullInstallationResetMarkerPairResetDigests.CampaignInventory(
+                checkpoint.CampaignInventory);
+
+        Result<CovenantDigest> ownerEffect =
+            FullInstallationResetMarkerPairResetDigests.FullResetEffect(
+                signed.OperationId,
+                signed.InstallationId,
+                signed.HostToolsTransitionId,
+                signed.TaintMasterKeyVersion,
+                signed.AuthorityFingerprint,
+                signed.DatabaseMarkerDigest,
+                signed.OsMarkerDigest,
+                signed.RemediationActionDigest,
+                checkpoint.CampaignMarkerInventoryDigest);
+
+        if (signedDigest.IsFailure
+            || signedDigest.Value != restartProof.SignedAttestationDigest
+            || pairDigest.IsFailure
+            || pairDigest.Value != restartProof.PairEvidenceDigest
+            || inventoryDigest.IsFailure
+            || inventoryDigest.Value != checkpoint.CampaignMarkerInventoryDigest
+            || ownerEffect.IsFailure
+            || ownerEffect.Value != checkpoint.OwnerEffectDigest)
+        {
+
+            return InvalidResult();
+
+        }
+
+        bool hasReceipt = checkpoint.MarkerIntentCount is not null
+            || checkpoint.OrderedMarkerIntentIds is not null
+            || checkpoint.MarkerIntentVectorDigest is not null
+            || checkpoint.DeletedCount is not null
+            || checkpoint.OrphanCount is not null;
+
+        bool hasCompleteReceipt = checkpoint.MarkerIntentCount is not null
+            && checkpoint.OrderedMarkerIntentIds is not null
+            && checkpoint.MarkerIntentVectorDigest is not null
+            && checkpoint.DeletedCount is not null
+            && checkpoint.OrphanCount is not null;
+
+        if (hasReceipt != hasCompleteReceipt
+            || hasReceipt
+            && checkpoint.Phase is not HostToolsMarkerPairResetPhase.PairAbsenceVerified)
+        {
+
+            return InvalidResult();
+
+        }
+
+        if (hasCompleteReceipt)
+        {
+
+            ImmutableArray<Guid> intentIds = checkpoint.OrderedMarkerIntentIds!.Value;
+
+            if (checkpoint.MarkerIntentCount != checked((ulong)intentIds.Length)
+                || checkpoint.MarkerIntentCount
+                    != checked((ulong)checkpoint.CampaignInventory.Length))
+            {
+
+                return InvalidResult();
+
+            }
+
+            ImmutableArray<Guid>.Builder copiedIntentBuilder =
+                ImmutableArray.CreateBuilder<Guid>(intentIds.Length);
+
+            copiedIntentBuilder.AddRange(intentIds);
+
+            ImmutableArray<Guid> copiedIntentIds =
+                copiedIntentBuilder.MoveToImmutable();
+
+            Result<CovenantDigest> intentDigest =
+                FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(
+                    copiedIntentIds);
+
+            if (intentDigest.IsFailure
+                || intentDigest.Value != checkpoint.MarkerIntentVectorDigest)
+            {
+
+                return InvalidResult();
+
+            }
+
+            ulong deleted = checkpoint.DeletedCount!.Value;
+
+            ulong orphan = checkpoint.OrphanCount!.Value;
+
+            if ((deleted != 0 || orphan != 0)
+                && (deleted > checkpoint.MarkerIntentCount!.Value
+                    || orphan != checkpoint.MarkerIntentCount.Value - deleted))
+            {
+
+                return InvalidResult();
+
+            }
+
+        }
+
+        return Result.Success();
+
+    }
+
+    private static bool PairMatchesSignedAttestation(
+        FullInstallationResetSignedAttestationProjectionV1 signed,
+        HostProcessToolsDatabaseMarkerEvidence database,
+        HostProcessToolsOsMarkerEvidence osMarker) =>
+        Guid.TryParse(database.InstallationIdentity, out Guid databaseInstallationId)
+        && Guid.TryParse(osMarker.InstallationIdentity, out Guid osInstallationId)
+        && databaseInstallationId == signed.InstallationId
+        && osInstallationId == signed.InstallationId
+        && database.TransitionId == signed.HostToolsTransitionId
+        && osMarker.TransitionId == signed.HostToolsTransitionId
+        && database.TaintMasterKeyVersion == signed.TaintMasterKeyVersion
+        && osMarker.TaintMasterKeyVersion == signed.TaintMasterKeyVersion
+        && database.TaintFingerprint == signed.AuthorityFingerprint
+        && osMarker.TaintFingerprint == signed.AuthorityFingerprint
+        && database.DatabaseMarkerDigest == signed.DatabaseMarkerDigest
+        && osMarker.MarkerBytesDigest == signed.OsMarkerDigest;
+
     private static bool MatchesInstallation(
         InstallationResetActivePayloadV2 payload,
         Guid installationId) =>
@@ -961,7 +1168,7 @@ internal static class InstallationResetActiveRecordAuthenticator
                 out tag)
             || !TryDecodeBounded(
                 envelope.CiphertextBase64Url,
-                MaxActiveFileBytes,
+                MaxActivePayloadBytes,
                 out ciphertext))
         {
 

@@ -1,12 +1,12 @@
 using System.Collections.Immutable;
 
-using System.Text.Json;
-
 using System.Text.Json.Serialization;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -110,7 +110,7 @@ internal sealed record InstallationResetActivePayloadV2(
     string? LastErrorCode,
     InstallationResetDataHandoff? DataHandoff,
     InstallationResetActiveOnlineCompletionV2? OnlineDataCompletion,
-    JsonElement? HostToolsMarkerPairReset,
+    HostToolsMarkerPairResetCheckpointV1? HostToolsMarkerPairReset,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null)
 {
@@ -173,7 +173,7 @@ internal sealed record InstallationResetActivePayloadV2(
                     record.OnlineDataCompletion.FilesDeleted,
                     record.OnlineDataCompletion.EstimatedBytesDeleted,
                     record.OnlineDataCompletion.DerivedRecordsDeleted),
-            HostToolsMarkerPairReset: null,
+            HostToolsMarkerPairReset: CopyCheckpoint(record.HostToolsMarkerPairReset),
             FullInstallationResetRemediationClaim:
                 record.FullInstallationResetRemediationClaim);
 
@@ -243,7 +243,111 @@ internal sealed record InstallationResetActivePayloadV2(
                     OnlineDataCompletion.EstimatedBytesDeleted,
                     OnlineDataCompletion.DerivedRecordsDeleted),
             FullInstallationResetRemediationClaim:
-                FullInstallationResetRemediationClaim);
+                FullInstallationResetRemediationClaim,
+            HostToolsMarkerPairReset: CopyCheckpoint(HostToolsMarkerPairReset));
+
+    private static HostToolsMarkerPairResetCheckpointV1? CopyCheckpoint(
+        HostToolsMarkerPairResetCheckpointV1? checkpoint)
+    {
+
+        if (checkpoint is null)
+        {
+
+            return null;
+
+        }
+
+        HostToolsMarkerPairResetCheckpointBounds.RequireValidVectorShapeBeforeCopy(checkpoint);
+
+        FullInstallationResetRestartProofV1 restartProof = checkpoint.RestartProof;
+
+        FullInstallationResetSignedAttestationProjectionV1 signed =
+            restartProof.SignedAttestation;
+
+        HostProcessToolsDatabaseMarkerEvidence database =
+            restartProof.DatabaseMarkerEvidence;
+
+        HostProcessToolsOsMarkerEvidence osMarker = restartProof.OsMarkerEvidence;
+
+        return new HostToolsMarkerPairResetCheckpointV1(
+            checkpoint.Version,
+            checkpoint.Phase,
+            new FullInstallationResetRestartProofV1(
+                restartProof.Version,
+                new FullInstallationResetSignedAttestationProjectionV1(
+                    signed.Version,
+                    signed.OperationId,
+                    signed.InstallationId,
+                    signed.HostToolsTransitionId,
+                    signed.TaintMasterKeyVersion,
+                    CopyDigest(signed.AuthorityFingerprint),
+                    CopyDigest(signed.DatabaseMarkerDigest),
+                    CopyDigest(signed.OsMarkerDigest),
+                    CopyDigest(signed.RemediationActionDigest),
+                    signed.NonceBase64Url,
+                    signed.Issuer,
+                    signed.IssuedAtUtc,
+                    signed.ExpiresAtUtc,
+                    signed.SignatureBase64Url),
+                restartProof.AcceptedAtUtc,
+                CopyDigest(restartProof.SignedAttestationDigest),
+                new HostProcessToolsDatabaseMarkerEvidence(
+                    database.InstallationIdentity,
+                    database.State,
+                    database.TransitionId,
+                    database.TaintMasterKeyVersion,
+                    database.TaintFingerprint is { } databaseFingerprint
+                        ? CopyDigest(databaseFingerprint)
+                        : null),
+                new HostProcessToolsOsMarkerEvidence(
+                    osMarker.InstallationIdentity,
+                    osMarker.TransitionId,
+                    osMarker.TaintMasterKeyVersion,
+                    CopyDigest(osMarker.TaintFingerprint),
+                    CopyDigest(osMarker.MarkerBytesDigest),
+                    CopyDigest(osMarker.DurableIdentityDigest)),
+                CopyDigest(restartProof.PairEvidenceDigest)),
+            checkpoint.CampaignInventory.IsDefault
+                ? default
+                : ImmutableArray.CreateRange(
+                    checkpoint.CampaignInventory.Select(static entry =>
+                        new CampaignMarkerInventoryEntryV1(
+                            entry.CampaignId,
+                            entry.PriorPathRevision,
+                            CopyDigest(entry.MarkerDigest),
+                            CopyDigest(entry.IndexedPhysicalIdentityDigest),
+                            CopyDigest(entry.CanonicalDisplayPathDigest),
+                            CopyDigest(entry.SameHandleOwnershipEvidenceDigest)))),
+            CopyDigest(checkpoint.CampaignMarkerInventoryDigest),
+            CopyDigest(checkpoint.OwnerEffectDigest),
+            checkpoint.MarkerIntentCount,
+            checkpoint.OrderedMarkerIntentIds is { } intents
+                ? intents.IsDefault
+                    ? default(ImmutableArray<Guid>)
+                    : CopyIntentIds(intents)
+                : null,
+            checkpoint.MarkerIntentVectorDigest is { } intentDigest
+                ? CopyDigest(intentDigest)
+                : null,
+            checkpoint.DeletedCount,
+            checkpoint.OrphanCount);
+
+    }
+
+    private static CovenantDigest CopyDigest(CovenantDigest digest) =>
+        new(digest.Bytes);
+
+    private static ImmutableArray<Guid> CopyIntentIds(ImmutableArray<Guid> intentIds)
+    {
+
+        ImmutableArray<Guid>.Builder builder =
+            ImmutableArray.CreateBuilder<Guid>(intentIds.Length);
+
+        builder.AddRange(intentIds);
+
+        return builder.MoveToImmutable();
+
+    }
 
 }
 
@@ -260,14 +364,23 @@ internal sealed record InstallationResetActivePayloadV2(
 [JsonSerializable(typeof(InstallationResetActiveCredentialResultV2))]
 [JsonSerializable(typeof(InstallationResetActiveOnlineCompletionV2))]
 [JsonSerializable(typeof(FullInstallationResetRemediationClaimV1))]
+[JsonSerializable(typeof(HostToolsMarkerPairResetCheckpointV1))]
+[JsonSerializable(typeof(HostToolsMarkerPairResetPhase))]
+[JsonSerializable(typeof(FullInstallationResetRestartProofV1))]
+[JsonSerializable(typeof(FullInstallationResetSignedAttestationProjectionV1))]
+[JsonSerializable(typeof(CampaignMarkerInventoryEntryV1))]
+[JsonSerializable(typeof(HostProcessToolsDatabaseMarkerEvidence))]
+[JsonSerializable(typeof(HostProcessToolsOsMarkerEvidence))]
+[JsonSerializable(typeof(CovenantHostToolsState))]
 [JsonSerializable(typeof(InstallationResetActiveAnchorState))]
 [JsonSerializable(typeof(InstallationResetScope))]
 [JsonSerializable(typeof(InstallationResetPhase))]
 [JsonSerializable(typeof(InstallationResetItemStatus))]
 [JsonSerializable(typeof(InstallationResetDataHandoff))]
 [JsonSerializable(typeof(CovenantDigest))]
-[JsonSerializable(typeof(JsonElement))]
 [JsonSerializable(typeof(ImmutableArray<string>))]
 [JsonSerializable(typeof(ImmutableArray<InstallationResetActivePreservedBackupV2>))]
 [JsonSerializable(typeof(ImmutableArray<InstallationResetActiveCredentialResultV2>))]
+[JsonSerializable(typeof(ImmutableArray<CampaignMarkerInventoryEntryV1>))]
+[JsonSerializable(typeof(ImmutableArray<Guid>))]
 internal sealed partial class InstallationResetActiveJsonContext : JsonSerializerContext;

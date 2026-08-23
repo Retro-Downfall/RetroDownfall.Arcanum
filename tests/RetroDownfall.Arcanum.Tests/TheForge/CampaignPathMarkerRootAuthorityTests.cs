@@ -120,6 +120,42 @@ public sealed class CampaignPathMarkerRootAuthorityTests : IDisposable
     }
 
     [Fact]
+    public async Task Existing_only_authority_uses_the_noncreating_retained_opener_path()
+    {
+
+        string missingMarkerRoot = Directory.CreateDirectory(
+            Path.Combine(_parent, "missing-marker-directory")).FullName;
+
+        Result<CampaignPathMarkerRootAuthority> refused =
+            await CampaignPathMarkerRootAuthority.Instance.OpenExistingAsync(
+                _opener,
+                Guid.NewGuid(),
+                1,
+                _opener.IdentifyExact(missingMarkerRoot)!.Value,
+                missingMarkerRoot,
+                CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+        Assert.False(Directory.Exists(Path.Combine(missingMarkerRoot, ".arcanum")));
+
+        await using CampaignPathMarkerRootAuthority ordinary = await OpenAsync();
+
+        Result<CampaignPathMarkerRootAuthority> existing =
+            await CampaignPathMarkerRootAuthority.Instance.OpenExistingAsync(
+                _opener,
+                _campaignId,
+                3,
+                ordinary.PhysicalIdentityDigest,
+                _root,
+                CancellationToken.None);
+
+        Assert.True(existing.IsSuccess);
+
+        await existing.Value.DisposeAsync();
+
+    }
+
+    [Fact]
     public async Task A_mismatched_identity_echo_is_refused_and_nothing_is_retained()
     {
 

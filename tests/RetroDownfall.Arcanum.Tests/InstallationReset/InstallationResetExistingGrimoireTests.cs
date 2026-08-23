@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -131,6 +133,59 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Null(result.Value.Rows);
 
         Assert.False(Directory.Exists(_testHome));
+
+    }
+
+    [SkippableFact]
+    public async Task Full_reset_marker_evidence_uses_only_the_narrow_six_column_projection()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        using ServiceProvider provider = CreateProvider();
+
+        await InstallExistingGrimoireAsync(provider);
+
+        await using (ArcanumDbContext context = _fixture.CreateContext(
+            ArcanumPaths.GrimoireDatabaseFile))
+        {
+
+            _ = await context.Database.ExecuteSqlRawAsync(
+                "PRAGMA ignore_check_constraints = ON;");
+
+            _ = await context.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE covenant_authority_state
+                SET AuthorityEpoch = 'unrelated-epoch',
+                    CurrentMasterKeyVersion = 'unrelated-version',
+                    CurrentMasterKeyFingerprint = 'unrelated-fingerprint',
+                    RecoveryEnvelopeEpoch = 'unrelated-recovery';
+                """);
+
+            await context.Database.CloseConnectionAsync();
+
+        }
+
+        using IServiceScope scope = provider.CreateScope();
+
+        IInstallationResetHostProcessToolsDatabaseEvidenceReader reader =
+            scope.ServiceProvider.GetRequiredService<
+                IInstallationResetHostProcessToolsDatabaseEvidenceReader>();
+
+        Result<HostProcessToolsDatabaseMarkerEvidence> evidence =
+            await reader.ReadMarkerEvidenceAsync(CancellationToken.None);
+
+        Assert.True(evidence.IsSuccess, evidence.Error.Message);
+
+        Assert.Equal(CovenantHostToolsState.Clean, evidence.Value.State);
+
+        Assert.Null(evidence.Value.TransitionId);
+
+        Assert.Null(evidence.Value.TaintMasterKeyVersion);
+
+        Assert.Null(evidence.Value.TaintFingerprint);
 
     }
 

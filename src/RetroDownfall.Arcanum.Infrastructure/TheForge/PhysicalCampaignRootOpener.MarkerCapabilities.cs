@@ -19,6 +19,10 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// <summary>The fixed private marker leaf, never supplied by a caller.</summary>
     private const string MarkerFileLeaf = "campaign-root.marker";
 
+    internal Action? AfterRootHandleOpenedBeforeMarkerDirectoryOpenForTests { get; set; }
+
+    internal Action? BeforeMarkerChildOpenForTests { get; set; }
+
     /// <summary>The longest display path this producer will consider.</summary>
     /// <remarks>Matches the durable <c>TargetDisplayPath</c> ceiling, so nothing openable is unstorable.</remarks>
     private const int MaximumDisplayPathLength = 4096;
@@ -43,6 +47,43 @@ internal sealed partial class PhysicalCampaignRootOpener
         long pathRevision,
         CovenantDigest expectedPhysicalIdentityDigest,
         string canonicalDisplayPath,
+        CancellationToken cancellationToken) =>
+        OpenForMarkerLifecycleAsync(
+            campaignId,
+            pathRevision,
+            expectedPhysicalIdentityDigest,
+            canonicalDisplayPath,
+            requireExistingMarkerDirectory: false,
+            cancellationToken);
+
+    /// <summary>
+    /// Opens one proven Campaign root while requiring its private marker directory to already exist.
+    /// </summary>
+    /// <remarks>
+    /// Full-reset inventory is read-only until its pair checkpoint is durable. This arm therefore
+    /// never creates <c>.arcanum</c>; absence is a refusal, while ordinary registration keeps using
+    /// <see cref="OpenForMarkerLifecycleAsync"/> and its established create-capable behavior.
+    /// </remarks>
+    internal ValueTask<Result<MarkerRootCapability>> OpenExistingForMarkerLifecycleAsync(
+        Guid campaignId,
+        long pathRevision,
+        CovenantDigest expectedPhysicalIdentityDigest,
+        string canonicalDisplayPath,
+        CancellationToken cancellationToken) =>
+        OpenForMarkerLifecycleAsync(
+            campaignId,
+            pathRevision,
+            expectedPhysicalIdentityDigest,
+            canonicalDisplayPath,
+            requireExistingMarkerDirectory: true,
+            cancellationToken);
+
+    private ValueTask<Result<MarkerRootCapability>> OpenForMarkerLifecycleAsync(
+        Guid campaignId,
+        long pathRevision,
+        CovenantDigest expectedPhysicalIdentityDigest,
+        string canonicalDisplayPath,
+        bool requireExistingMarkerDirectory,
         CancellationToken cancellationToken)
     {
 
@@ -81,7 +122,8 @@ internal sealed partial class PhysicalCampaignRootOpener
                 campaignId,
                 pathRevision,
                 expectedPhysicalIdentityDigest,
-                canonical));
+                canonical,
+                requireExistingMarkerDirectory));
 
     }
 
@@ -97,7 +139,8 @@ internal sealed partial class PhysicalCampaignRootOpener
         Guid campaignId,
         long pathRevision,
         CovenantDigest expectedPhysicalIdentityDigest,
-        string canonicalRootPath)
+        string canonicalRootPath,
+        bool requireExistingMarkerDirectory)
     {
 
         SafeFileHandle? root = null;
@@ -125,15 +168,21 @@ internal sealed partial class PhysicalCampaignRootOpener
                 return UnprovenIdentity;
             }
 
+            AfterRootHandleOpenedBeforeMarkerDirectoryOpenForTests?.Invoke();
+
             string markerDirectoryPath = Path.Combine(canonicalRootPath, MarkerDirectoryLeaf);
 
-            if (!TryPrepareMarkerDirectory(markerDirectoryPath))
+            if (requireExistingMarkerDirectory
+                    ? !TryValidateExistingMarkerDirectory(markerDirectoryPath)
+                    : !TryPrepareMarkerDirectory(markerDirectoryPath))
             {
                 return InvalidRootRequest;
             }
 
-            if (!FileHandleIdentityInterop.TryOpenDirectoryMetadata(
-                    markerDirectoryPath,
+            if (!FileHandleIdentityInterop.TryOpenDirectoryMetadataRelative(
+                    root,
+                    MarkerDirectoryLeaf,
+                    requestReadControl: true,
                     out markerDirectory,
                     out FileHandleMetadata markerMetadata))
             {
@@ -143,6 +192,22 @@ internal sealed partial class PhysicalCampaignRootOpener
             // Same volume as its own root. A mounted filesystem where the marker directory belongs is a
             // boundary someone else controls, not a subdirectory of this Campaign.
             if (markerMetadata.Identity.VolumeId != rootMetadata.Identity.VolumeId)
+            {
+                return InvalidRootRequest;
+            }
+
+            if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollowIgnoringTestSeam(
+                    canonicalRootPath,
+                    out FileHandleMetadata currentRoot)
+                || !FileHandleIdentity.IdentitiesMatch(
+                    rootMetadata.Identity,
+                    currentRoot.Identity)
+                || !FileHandleIdentityInterop.TryGetPathMetadataNoFollowIgnoringTestSeam(
+                    markerDirectoryPath,
+                    out FileHandleMetadata currentMarkerDirectory)
+                || !FileHandleIdentity.IdentitiesMatch(
+                    markerMetadata.Identity,
+                    currentMarkerDirectory.Identity))
             {
                 return InvalidRootRequest;
             }
@@ -219,6 +284,21 @@ internal sealed partial class PhysicalCampaignRootOpener
             }
 
         }
+
+        return ExistingMarkerDirectoryIsUsable(markerDirectoryPath, existing);
+
+    }
+
+    private static bool TryValidateExistingMarkerDirectory(string markerDirectoryPath) =>
+        FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+            markerDirectoryPath,
+            out FileHandleMetadata existing)
+        && ExistingMarkerDirectoryIsUsable(markerDirectoryPath, existing);
+
+    private static bool ExistingMarkerDirectoryIsUsable(
+        string markerDirectoryPath,
+        FileHandleMetadata existing)
+    {
 
         if (existing.Kind is not FileSystemObjectKind.Directory)
         {
@@ -757,10 +837,11 @@ internal sealed partial class PhysicalCampaignRootOpener
 
             absent = false;
 
-            string path = Path.Combine(_markerDirectoryPath, leaf);
+            _producer.BeforeMarkerChildOpenForTests?.Invoke();
 
-            SecureFileOpenStatus status = FileHandleIdentityInterop.TryOpenReadOnlyNoFollow(
-                path,
+            SecureFileOpenStatus status = FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(
+                GetMarkerDirectory(),
+                leaf,
                 out SafeFileHandle? handle);
 
             if (status is SecureFileOpenStatus.NotFound)

@@ -1427,6 +1427,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICampaignRootIdentityKeyProvider>(
             static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
 
+        services.AddSingleton<ICampaignRootIdentityRecoveryKeyProvider>(
+            static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
+
         services.AddSingleton(
             static sp => new PhysicalCampaignRootOpener(
                 sp.GetRequiredService<ICampaignRootIdentityKeyProvider>()));
@@ -1457,7 +1460,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<PhysicalCampaignRootOpener>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 CovenantSqliteConnectionInitializer.Instance,
-                sp.GetRequiredService<TimeProvider>()));
+                sp.GetRequiredService<TimeProvider>(),
+                sp.GetRequiredService<ICampaignRootIdentityRecoveryKeyProvider>()));
 
         return services;
 

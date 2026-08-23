@@ -91,14 +91,23 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         // Anything already parked under this child belongs to an owner the row has just disproved, and
         // dropping it without disposal would leak the descriptors it holds.
-        if (_retainedRoots.TryRemove(row.IntentId, out RetainedRoot? displaced))
+        if (!TryRetainRoot(row.IntentId, retained, out RetainedRoot? displaced))
         {
 
-            await displaced.Authority.DisposeAsync().ConfigureAwait(false);
+            await authority.DisposeAsync().ConfigureAwait(false);
+
+            return UnprovenRestartRoot(
+                "Campaign marker lifecycle authority is no longer available.");
 
         }
 
-        _retainedRoots[row.IntentId] = retained;
+        if (displaced is not null)
+        {
+
+            await CampaignPathRetainedRootRelease.DisposeAllAsync(
+                [displaced.Authority]).ConfigureAwait(false);
+
+        }
 
         return retained;
 
@@ -118,85 +127,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CancellationToken cancellationToken)
     {
 
-        Result<PhysicalCampaignMarkerOpenResult> opened =
-            await authority.OpenMarkerOrProveAbsentNoFollowAsync(cancellationToken)
-                .ConfigureAwait(false);
+        Result<MarkerOwnershipEvidence> proof = await ProveMarkerOwnershipAsync(
+            authority,
+            row.CampaignId,
+            row.PriorRevision,
+            cancellationToken).ConfigureAwait(false);
 
-        if (opened.IsFailure)
-        {
-
-            return UnprovenRestartRoot(
-                "The marker inside the reopened Campaign root could not be opened.");
-
-        }
-
-        // Absence is a completed delete only for the process that still holds the root it opened.
-        // Here it is the absence of the one piece of evidence that could identify this directory, and
-        // recording a cleanup against a root nobody identified is not a cheaper answer than an
-        // operator looking at it.
-        if (opened.Value is PhysicalCampaignMarkerOpenResult.Absent)
-        {
-
-            return UnprovenRestartRoot(
-                "The reopened Campaign root carries no marker, so nothing proves it is this child's root.");
-
-        }
-
-        PhysicalCampaignRootOpener.MarkerHandleCapability marker =
-            ((PhysicalCampaignMarkerOpenResult.Opened)opened.Value).Marker;
-
-        await using (marker.ConfigureAwait(false))
-        {
-
-            Result<PhysicalCampaignRootOpener.MarkerCodecBytesLease> read =
-                await marker.ReadAllBoundedAsync(
-                    _codec.MaximumMarkerByteCount,
-                    cancellationToken).ConfigureAwait(false);
-
-            if (read.IsFailure)
-            {
-
-                return UnprovenRestartRoot(
-                    "The marker inside the reopened Campaign root could not be read within its bound.");
-
-            }
-
-            using PhysicalCampaignRootOpener.MarkerCodecBytesLease lease = read.Value;
-
-            // The shared codec, so this arm accepts exactly what registration produces and authenticates
-            // the tag before a single field is believed.
-            Result<CampaignPathMarkerContent> parsed = _codec.Parse(lease.Bytes.Span);
-
-            if (parsed.IsFailure)
-            {
-
-                return UnprovenRestartRoot(
-                    "The marker inside the reopened Campaign root did not authenticate.");
-
-            }
-
-            if (parsed.Value.CampaignId != row.CampaignId
-                || parsed.Value.PathRevision != row.PriorRevision)
-            {
-
-                return UnprovenRestartRoot(
-                    "The reopened Campaign root carries a marker that names different ownership.");
-
-            }
-
-            CovenantDigest? claimed = _rootOpener.DeriveClaimedRootIdentityDigest(
-                parsed.Value.RootVolumeId,
-                parsed.Value.RootFileId);
-
-            // The whole proof, in one equality: the marker asserting it still lives in the directory
-            // it was written into, checked against what that directory says it is.
-            return claimed is { } claimedIdentity
-                && claimedIdentity == authority.PhysicalIdentityDigest
-                    ? Result.Success()
-                    : UnprovenRestartRoot(
-                        "The reopened Campaign root is not the root its own marker binds itself to.");
-
-        }
+        return proof.IsSuccess
+            ? Result.Success()
+            : UnprovenRestartRoot(
+                "The marker inside the reopened Campaign root did not prove its ownership.");
 
     }
 

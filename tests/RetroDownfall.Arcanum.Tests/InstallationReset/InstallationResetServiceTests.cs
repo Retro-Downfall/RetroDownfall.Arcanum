@@ -3055,6 +3055,16 @@ public sealed class InstallationResetServiceTests
 
         }
 
+        public Result<FullInstallationResetRemediationAuthorization> VerifyAtAcceptedTime(
+            FullInstallationResetExternalRemediationAttestation attestation,
+            Guid authenticatedInstallationId,
+            HostProcessToolsMatchedPair persistedPair,
+            DateTimeOffset acceptedAtUtc) =>
+            Result<FullInstallationResetRemediationAuthorization>.Failure(
+                new Error(
+                    ErrorCodes.Data.ExternalRemediationInvalid,
+                    "The test recovery verifier is intentionally inert until service recovery is implemented."));
+
         public bool MatchesAuthenticatedClaim(
             FullInstallationResetExternalRemediationAttestation attestation,
             Guid currentInstallationId,

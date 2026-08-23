@@ -195,42 +195,23 @@ internal sealed class InstallationResetExistingGrimoire(
             cancellationToken);
 
     Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
-        IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadAsync(
+        IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken) =>
         ExecuteAsync(
             writable: false,
             static async (_, _, context, token) =>
             {
 
-                Result<HostProcessToolsAuthorityRow> row =
-                    await new HostProcessToolsAuthorityStore(
-                        (SqliteConnection)context.Database.GetDbConnection())
-                        .ReadAsync(token).ConfigureAwait(false);
+                Result<HostProcessToolsDatabaseMarkerEvidence> evidence =
+                    await HostToolsDatabaseMarkerProjectionReader
+                        .ReadAsync(
+                            (SqliteConnection)context.Database.GetDbConnection(),
+                            token)
+                        .ConfigureAwait(false);
 
-                if (row.IsFailure)
-                {
-
-                    return HostProcessToolsEvidenceUnavailable();
-
-                }
-
-                try
-                {
-
-                    return Result<HostProcessToolsDatabaseMarkerEvidence>.Success(
-                        row.Value.ToEvidence());
-
-                }
-                catch (Exception exception) when (
-                    exception is ArgumentException
-                        or FormatException
-                        or OverflowException
-                        or InvalidCastException)
-                {
-
-                    return HostProcessToolsEvidenceUnavailable();
-
-                }
+                return evidence.IsSuccess
+                    ? evidence
+                    : HostProcessToolsEvidenceUnavailable();
 
             },
             cancellationToken);
