@@ -1,4 +1,4 @@
-namespace RetroDownfall.Arcanum.Core.TheForge;
+namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
 /// Bounded live check that the Grimoire database still answers queries.

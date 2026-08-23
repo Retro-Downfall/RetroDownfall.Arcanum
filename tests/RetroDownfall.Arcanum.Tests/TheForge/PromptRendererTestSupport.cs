@@ -1,5 +1,5 @@
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
 using RetroDownfall.Arcanum.Tests.Support;
 
