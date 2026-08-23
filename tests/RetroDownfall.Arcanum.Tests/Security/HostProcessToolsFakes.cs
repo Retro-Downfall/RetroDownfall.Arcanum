@@ -261,7 +261,15 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
 
     }
 
-    public bool CompareDelete(HostProcessToolsOsMarkerEvidence expected)
+    /// <summary>
+    /// Strips the stored marker, the way an out-of-band removal would.
+    /// </summary>
+    /// <remarks>
+    /// A test utility rather than a store member. The ordinary marker store has no compare-delete
+    /// surface at all — deleting this slot is reset authority and lives behind the reset port — so a
+    /// fake that offered one would let a suite exercise a shape production cannot reach.
+    /// </remarks>
+    internal bool ClearStoredForTest(HostProcessToolsOsMarkerEvidence expected)
     {
 
         CompareDeleteCount++;
@@ -314,5 +322,20 @@ internal sealed class FakeHostProcessToolsInstallationLockSource : IHostProcessT
         public void Dispose() => owner.Released = true;
 
     }
+
+}
+
+/// <summary>
+/// The one marker mutation gate every host-tools suite shares, exactly as the process does.
+/// </summary>
+/// <remarks>
+/// Shared rather than per-harness on purpose. A gate constructed per test would exclude nothing,
+/// and a suite driving two mutators through separate gates would be proving that two locks nobody
+/// contends for do not contend.
+/// </remarks>
+internal static class HostProcessToolsTestGate
+{
+
+    internal static HostProcessToolsMarkerMutationGate Shared { get; } = new();
 
 }

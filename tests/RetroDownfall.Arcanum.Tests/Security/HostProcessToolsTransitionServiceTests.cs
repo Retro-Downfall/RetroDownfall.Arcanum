@@ -426,7 +426,8 @@ public sealed class HostProcessToolsTransitionServiceTests
                 markers,
                 environment,
                 installationLock,
-                new HostProcessToolsMarkerPairJoiner());
+                new HostProcessToolsMarkerPairJoiner(),
+                HostProcessToolsTestGate.Shared);
 
             return new Harness(service, authority, markers, environment, installationLock);
 

@@ -224,14 +224,19 @@ internal static class CovenantRetainedEvidence
                 .Where(static source => !source.Is("HostProcessToolsMarkerStore.cs"))
                 .Where(static source => !source.Is("ArcanumCredentialIdentity.cs"))
                 .Where(static source => !source.Is("InstallationResetCredentialCatalog.cs"))
+                .Where(static source =>
+                    !source.Is("HostProcessToolsMarkerCredentialCapabilitySource.cs"))
                 .Where(static source => source.Names(ArcanumCredentialIdentity.HostProcessToolsTaintAccount)
                     || source.Names("HostProcessToolsTaintAccount"))
                 .Select(static source => source.RelativePath),
         ];
 
-        // The marker store owns compare-deletion. The closed reset catalog may name the account only
-        // in its explicit retained-identity filter; the catalog tests prove it never returns that name
-        // to DeleteAndVerify. No other production file may spell the marker account.
+        // The marker store owns the ordinary read and write, and the fixed-slot capability source is
+        // where every reset arm learns which slot it is allowed to open — the per-platform backends
+        // are handed the names by it and never spell them, which is what keeps a reset from being a
+        // general credential deleter wearing a marker's name. The closed reset catalog may name the
+        // account only in its explicit retained-identity filter; the catalog tests prove it never
+        // returns that name to DeleteAndVerify. No other production file may spell it at all.
         Assert.Empty(credentialOffenders);
 
     }

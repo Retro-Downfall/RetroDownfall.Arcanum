@@ -182,7 +182,7 @@ public sealed class HostProcessToolsStartupGateTests
 
         taintedWithoutMarker.Taint();
 
-        _ = taintedWithoutMarker.Markers.CompareDelete(TakeMarker(taintedWithoutMarker));
+        _ = taintedWithoutMarker.Markers.ClearStoredForTest(TakeMarker(taintedWithoutMarker));
 
         Assert.True((await taintedWithoutMarker.Gate.ClassifyAndPublishAsync(CancellationToken.None)).IsFailure);
 
@@ -341,7 +341,8 @@ public sealed class HostProcessToolsStartupGateTests
                 Markers,
                 new FakeHostProcessToolsEnvironmentProbe(),
                 new FakeHostProcessToolsInstallationLockSource(),
-                new HostProcessToolsMarkerPairJoiner());
+                new HostProcessToolsMarkerPairJoiner(),
+                HostProcessToolsTestGate.Shared);
 
             Result<HostProcessToolsTransitionResult> result = service
                 .EnableAsync(new HostProcessToolsTransitionRequest(Transition), CancellationToken.None)
