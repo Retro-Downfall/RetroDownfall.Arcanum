@@ -34,7 +34,8 @@ internal sealed class HostProcessToolsTransitionService(
     IHostProcessToolsMarkerStore markers,
     IHostProcessToolsEnvironmentProbe environment,
     IHostProcessToolsInstallationLockSource installationLock,
-    IHostProcessToolsMarkerPairJoiner joiner) : IHostProcessToolsTransitionService
+    IHostProcessToolsMarkerPairJoiner joiner,
+    HostProcessToolsMarkerMutationGate markerMutationGate) : IHostProcessToolsTransitionService
 {
 
     public async Task<Result<HostProcessToolsTransitionResult>> EnableAsync(
@@ -79,6 +80,16 @@ internal sealed class HostProcessToolsTransitionService(
             return Refused(request, HostProcessToolsTransitionBlocker.HostRunning);
 
         }
+
+        // The cross-process installation lock keeps another Arcanum out; this keeps the other
+        // in-process mutator of the same slot out. A full installation reset deleting the marker
+        // while this transition is between its write and its readback would leave the readback
+        // describing a slot neither operation owns, and both would then be reasoning about the
+        // other's effect. Held from before the first marker access through the last one, because a
+        // gate taken only around the write would still let a delete land inside the readback.
+        await using IAsyncDisposable markerLease = await markerMutationGate
+            .AcquireExclusiveAsync(cancellationToken)
+            .ConfigureAwait(false);
 
         return await RunUnderInstallationLockAsync(request, cancellationToken).ConfigureAwait(false);
 

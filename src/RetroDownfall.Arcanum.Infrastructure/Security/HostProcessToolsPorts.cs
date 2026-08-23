@@ -137,8 +137,6 @@ internal interface IHostProcessToolsMarkerStore
         ulong taintMasterKeyVersion,
         CovenantDigest taintFingerprint);
 
-    bool CompareDelete(HostProcessToolsOsMarkerEvidence expected);
-
 }
 
 /// <summary>The trusted process facts the transition validates before doing anything.</summary>

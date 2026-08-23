@@ -1,7 +1,10 @@
+using System.Buffers;
+using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Secrets.Security;
 using Serilog;
 
@@ -123,35 +126,6 @@ internal sealed class HostProcessToolsMarkerStore(IOsCredentialStore credentials
 
     }
 
-    public bool CompareDelete(HostProcessToolsOsMarkerEvidence expected)
-    {
-
-        ArgumentNullException.ThrowIfNull(expected);
-
-        if (Read() is not { Status: HostProcessToolsMarkerReadStatus.Present, Marker: { } current })
-        {
-
-            return false;
-
-        }
-
-        if (!CryptographicOperations.FixedTimeEquals(
-            current.TaintIdentityDigest.Bytes,
-            expected.TaintIdentityDigest.Bytes))
-        {
-
-            return false;
-
-        }
-
-        OsCredentialStoreResult deleted = _credentials.Delete(
-            ArcanumCredentialIdentity.Service,
-            ArcanumCredentialIdentity.HostProcessToolsTaintAccount);
-
-        return deleted.Status is OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound;
-
-    }
-
     /// <summary>
     /// The content-free identity of the slot the marker was opened from.
     /// </summary>
@@ -160,7 +134,7 @@ internal sealed class HostProcessToolsMarkerStore(IOsCredentialStore credentials
     /// opened under. It proves a readback came from the slot the write targeted rather than from a
     /// differently named account that happens to hold the same bytes.
     /// </remarks>
-    private static CovenantDigest SlotIdentityDigest()
+    internal static CovenantDigest SlotIdentityDigest()
     {
 
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -211,6 +185,369 @@ internal sealed class HostProcessToolsMarkerStore(IOsCredentialStore credentials
                 fields.TaintFingerprint,
                 HostProcessToolsMarkerPayload.DigestOf(payload),
                 SlotIdentityDigest()));
+
+    }
+
+}
+/// <summary>
+/// The reset-only view of the same slot: open a retained record, compare-delete it, prove it gone.
+/// </summary>
+/// <remarks>
+/// Beside the ordinary store rather than inside it, and reached through a different port, because
+/// the two want opposite things. The ordinary store reads and writes a value; this one takes
+/// ownership of a live platform record and destroys it, which is authority no ordinary caller of
+/// the marker store should acquire by depending on the type it already depends on.
+///
+/// <para>Every mutation here runs under the shared process gate, and every one of them holds it
+/// across the <i>complete</i> Secrets-owned operation — delete, platform durability barrier, and
+/// readback are one call by construction, so no layer above can repeat, split, or skip that
+/// sequence. Infrastructure maps the closed statuses one-for-one and adds no barrier of its own; a
+/// second barrier here would be a second thing to get wrong about a guarantee that already has an
+/// owner.</para>
+/// </remarks>
+internal sealed class HostProcessToolsMarkerResetAdapter : IHostToolsMarkerPairResetOsPort
+{
+
+    private readonly IHostProcessToolsMarkerCredentialCapabilitySource _slots;
+
+    private readonly HostProcessToolsMarkerMutationGate _gate;
+
+    /// <summary>Proves a capability came from this adapter instance and not from another one.</summary>
+    private readonly object _mintTicket = new();
+
+    internal HostProcessToolsMarkerResetAdapter(
+        IHostProcessToolsMarkerCredentialCapabilitySource slots,
+        HostProcessToolsMarkerMutationGate gate)
+    {
+
+        _slots = slots ?? throw new ArgumentNullException(nameof(slots));
+
+        _gate = gate ?? throw new ArgumentNullException(nameof(gate));
+
+    }
+
+    public HostToolsMarkerPairResetOsOpenResult OpenExact() => OpenCore(expectedEvidence: null);
+
+    public HostToolsMarkerPairResetOsOpenResult ReopenExact(
+        HostProcessToolsOsMarkerEvidence expectedEvidence) =>
+        expectedEvidence is null
+            ? HostToolsMarkerPairResetOsOpenResult.Unavailable()
+            : OpenCore(expectedEvidence);
+
+    public async Task<HostToolsMarkerPairResetOsDeleteStatus> CompareDeleteExactAsync(
+        IHostToolsMarkerPairResetOsCapability capability,
+        HostProcessToolsOsMarkerEvidence expectedEvidence,
+        CancellationToken cancellationToken)
+    {
+
+        // A capability this adapter did not mint is refused as uncertainty rather than acted on. It
+        // may be a perfectly good capability over the same slot from another adapter instance, and
+        // that is precisely the case where deleting would destroy a record somebody else retains.
+        if (capability is not ResetOsCapability owned
+            || !owned.BelongsTo(_mintTicket)
+            || expectedEvidence is null)
+        {
+
+            return HostToolsMarkerPairResetOsDeleteStatus.Unavailable;
+
+        }
+
+        await using IAsyncDisposable lease =
+            await _gate.AcquireExclusiveAsync(cancellationToken).ConfigureAwait(false);
+
+        return owned.CompareDeleteExact(expectedEvidence);
+
+    }
+
+    public async Task<HostToolsMarkerPairResetOsAbsenceStatus> ProveExactAbsenceAsync(
+        CancellationToken cancellationToken)
+    {
+
+        await using IAsyncDisposable lease =
+            await _gate.AcquireExclusiveAsync(cancellationToken).ConfigureAwait(false);
+
+        return _slots.ProveFixedSlotDurablyAbsent().Status switch
+        {
+
+            HostProcessToolsMarkerCredentialAbsenceStatus.Absent =>
+                HostToolsMarkerPairResetOsAbsenceStatus.Absent,
+
+            // Something is in the slot after the reset believed it emptied it. That is a mismatch
+            // rather than a failure to look, and it is never absence.
+            HostProcessToolsMarkerCredentialAbsenceStatus.Present =>
+                HostToolsMarkerPairResetOsAbsenceStatus.Mismatch,
+
+            _ => HostToolsMarkerPairResetOsAbsenceStatus.Unavailable,
+
+        };
+
+    }
+
+    /// <summary>
+    /// Opens the fixed slot and turns valid content into evidence, or closes without one.
+    /// </summary>
+    /// <remarks>
+    /// The decode is strict on purpose. <c>Convert.FromBase64String</c> tolerates embedded
+    /// whitespace, so two different texts would decode to the same payload and one of them was never
+    /// what the transition wrote; the UTF-8 Base64 decoder used here rejects that, and the
+    /// re-encode-and-compare rejects noncanonical padding on top of it. Every malformed shape
+    /// disposes the retained record and reports a mismatch — never an absence, because the slot
+    /// demonstrably had something in it.
+    /// </remarks>
+    private HostToolsMarkerPairResetOsOpenResult OpenCore(
+        HostProcessToolsOsMarkerEvidence? expectedEvidence)
+    {
+
+        HostProcessToolsMarkerCredentialOpenResult opened = _slots.OpenFixedSlot();
+
+        switch (opened.Status)
+        {
+
+            case HostProcessToolsMarkerCredentialOpenStatus.Absent:
+
+                return HostToolsMarkerPairResetOsOpenResult.Absent();
+
+            // Definitely present and definitely unusable. No capability was minted and no database
+            // is consulted: there is nothing here that a comparison could be made against.
+            case HostProcessToolsMarkerCredentialOpenStatus.PresentInvalid:
+
+                return HostToolsMarkerPairResetOsOpenResult.Mismatch();
+
+            case HostProcessToolsMarkerCredentialOpenStatus.Opened
+                when opened.Capability is { } capability:
+
+                return AdoptOrDispose(capability, expectedEvidence);
+
+            default:
+
+                return HostToolsMarkerPairResetOsOpenResult.Unavailable();
+
+        }
+
+    }
+
+    private HostToolsMarkerPairResetOsOpenResult AdoptOrDispose(
+        HostProcessToolsMarkerCredentialCapability capability,
+        HostProcessToolsOsMarkerEvidence? expectedEvidence)
+    {
+
+        byte[] encoded = new byte[capability.EncodedSecretUtf8Length];
+
+        byte[] payload = new byte[HostProcessToolsMarkerPayload.Length];
+
+        try
+        {
+
+            if (!capability.TryCopyEncodedSecretUtf8(encoded, out int copied)
+                || copied != encoded.Length
+                || !TryDecodeExact(encoded, payload, out HostProcessToolsMarkerFields fields))
+            {
+
+                capability.Dispose();
+
+                return HostToolsMarkerPairResetOsOpenResult.Mismatch();
+
+            }
+
+            HostProcessToolsOsMarkerEvidence evidence = new(
+                fields.InstallationIdentity,
+                fields.TransitionId,
+                fields.TaintMasterKeyVersion,
+                fields.TaintFingerprint,
+                HostProcessToolsMarkerPayload.DigestOf(payload),
+                HostProcessToolsMarkerStore.SlotIdentityDigest());
+
+            // Only the recovery arm compares. A first open has nothing authenticated to compare
+            // against yet — the caller is about to journal what this returns — and comparing there
+            // would mean inventing an expectation.
+            if (expectedEvidence is not null && !EvidenceEquals(evidence, expectedEvidence))
+            {
+
+                capability.Dispose();
+
+                return HostToolsMarkerPairResetOsOpenResult.Mismatch();
+
+            }
+
+            return HostToolsMarkerPairResetOsOpenResult.Opened(
+                evidence,
+                new ResetOsCapability(_mintTicket, capability, encoded));
+
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+
+            capability.Dispose();
+
+            CryptographicOperations.ZeroMemory(encoded);
+
+            return HostToolsMarkerPairResetOsOpenResult.Unavailable();
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(payload);
+
+        }
+
+    }
+
+    private static bool TryDecodeExact(
+        ReadOnlySpan<byte> encoded,
+        Span<byte> payload,
+        out HostProcessToolsMarkerFields fields)
+    {
+
+        fields = default;
+
+        if (Base64.DecodeFromUtf8(encoded, payload, out int consumed, out int written)
+                is not OperationStatus.Done
+            || consumed != encoded.Length
+            || written != payload.Length)
+        {
+
+            return false;
+
+        }
+
+        Span<byte> canonical = stackalloc byte[Base64.GetMaxEncodedToUtf8Length(payload.Length)];
+
+        return Base64.EncodeToUtf8(payload, canonical, out _, out int encodedLength)
+                is OperationStatus.Done
+            && encodedLength == encoded.Length
+            && canonical[..encodedLength].SequenceEqual(encoded)
+            && HostProcessToolsMarkerPayload.TryDecode(payload, out fields);
+
+    }
+
+    private static bool EvidenceEquals(
+        HostProcessToolsOsMarkerEvidence left,
+        HostProcessToolsOsMarkerEvidence right) =>
+        string.Equals(left.InstallationIdentity, right.InstallationIdentity, StringComparison.Ordinal)
+        && left.TransitionId == right.TransitionId
+        && left.TaintMasterKeyVersion == right.TaintMasterKeyVersion
+        && DigestEquals(left.TaintFingerprint, right.TaintFingerprint)
+        && DigestEquals(left.MarkerBytesDigest, right.MarkerBytesDigest)
+        && DigestEquals(left.DurableIdentityDigest, right.DurableIdentityDigest);
+
+    private static bool DigestEquals(CovenantDigest left, CovenantDigest right) =>
+        left.IsValid
+        && right.IsValid
+        && CryptographicOperations.FixedTimeEquals(left.Bytes, right.Bytes);
+
+    /// <summary>
+    /// The reset port's opaque capability: the Secrets record, and this adapter's copy of its bytes.
+    /// </summary>
+    /// <remarks>
+    /// Disposal zeroes the Infrastructure-owned copy and disposes the Secrets capability exactly
+    /// once, and a second disposal is a no-op — the copy is the only plaintext marker this layer
+    /// ever holds, and leaving it in a collected array would leave it in memory the process later
+    /// hands to something else.
+    /// </remarks>
+    private sealed class ResetOsCapability : IHostToolsMarkerPairResetOsCapability
+    {
+
+        private readonly object _mintTicket;
+
+        private readonly byte[] _encoded;
+
+        private HostProcessToolsMarkerCredentialCapability? _capability;
+
+        private bool _disposed;
+
+        internal ResetOsCapability(
+            object mintTicket,
+            HostProcessToolsMarkerCredentialCapability capability,
+            byte[] encoded)
+        {
+
+            _mintTicket = mintTicket;
+
+            _capability = capability;
+
+            _encoded = encoded;
+
+        }
+
+        internal bool BelongsTo(object mintTicket) => ReferenceEquals(_mintTicket, mintTicket);
+
+        internal HostToolsMarkerPairResetOsDeleteStatus CompareDeleteExact(
+            HostProcessToolsOsMarkerEvidence expectedEvidence)
+        {
+
+            if (_disposed || _capability is not { } capability)
+            {
+
+                return HostToolsMarkerPairResetOsDeleteStatus.Unavailable;
+
+            }
+
+            // The expected evidence is rechecked at the delete boundary rather than trusted from the
+            // open. Between the two there is a journal write and a durability barrier, and a caller
+            // that changed its mind in between must not be able to delete on the strength of an
+            // agreement it no longer holds.
+            Span<byte> payload = stackalloc byte[HostProcessToolsMarkerPayload.Length];
+
+            try
+            {
+
+                if (Base64.DecodeFromUtf8(_encoded, payload, out _, out int written)
+                        is not OperationStatus.Done
+                    || written != payload.Length
+                    || !DigestEquals(
+                        HostProcessToolsMarkerPayload.DigestOf(payload),
+                        expectedEvidence.MarkerBytesDigest))
+                {
+
+                    return HostToolsMarkerPairResetOsDeleteStatus.Mismatch;
+
+                }
+
+            }
+            finally
+            {
+
+                CryptographicOperations.ZeroMemory(payload);
+
+            }
+
+            return capability.CompareDeleteExact(_encoded) switch
+            {
+
+                HostProcessToolsMarkerCredentialDeleteStatus.Deleted =>
+                    HostToolsMarkerPairResetOsDeleteStatus.Deleted,
+
+                HostProcessToolsMarkerCredentialDeleteStatus.Mismatch =>
+                    HostToolsMarkerPairResetOsDeleteStatus.Mismatch,
+
+                _ => HostToolsMarkerPairResetOsDeleteStatus.Unavailable,
+
+            };
+
+        }
+
+        public void Dispose()
+        {
+
+            if (_disposed)
+            {
+
+                return;
+
+            }
+
+            _disposed = true;
+
+            CryptographicOperations.ZeroMemory(_encoded);
+
+            HostProcessToolsMarkerCredentialCapability? capability = _capability;
+
+            _capability = null;
+
+            capability?.Dispose();
+
+        }
 
     }
 

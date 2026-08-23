@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
@@ -120,33 +121,35 @@ public sealed class HostProcessToolsMarkerStoreTests
 
     }
 
+    /// <summary>
+    /// The ordinary store reads and writes. It cannot delete, and neither can its interface.
+    /// </summary>
+    /// <remarks>
+    /// Deleting this slot is reset authority. It used to live here as a read-then-delete pair with a
+    /// gap in the middle, which is a race against any concurrent writer as well as authority every
+    /// ordinary consumer of the marker store inherited for free. Both are gone: the delete belongs
+    /// to the retained-record reset adapter, and this assertion is what keeps it from drifting back
+    /// as a convenience — it fails on the member existing, not on a wrong result.
+    /// </remarks>
     [Fact]
-    public void Compare_delete_removes_only_the_marker_it_was_shown()
+    public void The_ordinary_marker_store_and_its_interface_expose_no_delete_surface()
     {
 
-        InMemoryOsCredentialStore credentials = new();
+        Type[] surfaces = [typeof(HostProcessToolsMarkerStore), typeof(IHostProcessToolsMarkerStore)];
 
-        HostProcessToolsMarkerStore store = new(credentials);
+        foreach (Type surface in surfaces)
+        {
 
-        _ = store.Write(Installation, Transition, 7, Fingerprint(3));
+            Assert.DoesNotContain(
+                surface.GetMethods(
+                    BindingFlags.Public
+                    | BindingFlags.NonPublic
+                    | BindingFlags.Instance
+                    | BindingFlags.Static
+                    | BindingFlags.DeclaredOnly),
+                method => method.Name.Contains("Delete", StringComparison.OrdinalIgnoreCase));
 
-        HostProcessToolsOsMarkerEvidence current = store.Read().Marker!;
-
-        HostProcessToolsOsMarkerEvidence foreign = new(
-            Installation,
-            Guid.Parse("11112222-3333-4444-5555-666677778888"),
-            7,
-            Fingerprint(3),
-            current.MarkerBytesDigest,
-            current.DurableIdentityDigest);
-
-        Assert.False(store.CompareDelete(foreign));
-
-        Assert.Equal(HostProcessToolsMarkerReadStatus.Present, store.Read().Status);
-
-        Assert.True(store.CompareDelete(current));
-
-        Assert.Equal(HostProcessToolsMarkerReadStatus.Absent, store.Read().Status);
+        }
 
     }
 
