@@ -65,7 +65,7 @@ internal static class ProviderTestEndpoints
                     // failures (W3.5): keep the detailed guard reason (which can carry resolved
                     // hosts/IPs) in the server log; return a generic, non-revealing message to the
                     // client.
-                    loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.TheForge.ProviderTest")
+                    loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.Tower.ProviderTest")
                         .LogDebug(
                             "Provider test endpoint {Endpoint} failed outbound URL validation: {Reason}",
                             body.Endpoint,
@@ -80,7 +80,7 @@ internal static class ProviderTestEndpoints
 
                 ProviderTestResult result = await ProbeProviderAsync(
                     body,
-                    loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.TheForge.ProviderTest"),
+                    loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.Tower.ProviderTest"),
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.Ok(

@@ -397,7 +397,7 @@ Presets are a dedicated polished section rather than descriptor-generated fields
 
 ### The Forge
 
-The Forge is the desktop inference IDE and the name of related server-side Campaign, Spell, and Prompt surfaces. Its desktop client communicates with Arcanum over HTTP only. The client uses bounded response readers, strict typed contracts, asynchronous UI refresh, and atomic downloads.
+The Forge is the desktop inference IDE, and only that. The Campaign, Spell, and Prompt surfaces it edits are server capabilities of their own — the Tower — and they work the same way from the API and the CLI with no desktop application installed. Its desktop client communicates with Arcanum over HTTP only. The client uses bounded response readers, strict typed contracts, asynchronous UI refresh, and atomic downloads.
 
 The Forge accepts the shared startup deep link only after its ordinary authenticated connection is ready. Session, Prompt, and Spell routes open Workbench documents, Campaign focuses the Atelier, and Apprentice focuses the War Table. Workspace Spells carry the opaque Workspace ID; The Forge resolves it through the authenticated API and uses the server-returned path only inside the client. Campaigns and Apprentices can be fetched directly by canonical ID even when they are outside a visible list page, and a truly missing ID is reported as not routed. The portable launcher starts a new instance and never claims it focused an existing window unless a platform integration actually supports that operation.
 
