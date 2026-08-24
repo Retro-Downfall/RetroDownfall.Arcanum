@@ -52,7 +52,12 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
-    private static JsonElement BuildRetireCovenantSchema()
+    /// <summary>
+    /// Visible to tests because the shape it forbids outlives the advertisement that carried it: the
+    /// retirement tool is withheld from <c>tools/list</c> in this build, so nothing else can reach the
+    /// schema to prove it still refuses to represent scope, origin, or authority on the wire.
+    /// </summary>
+    internal static JsonElement BuildRetireCovenantSchema()
     {
         return BuildSchema(static w =>
         {

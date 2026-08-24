@@ -47,7 +47,7 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task Both_tools_advertise_a_hand_authored_input_and_output_schema()
+    public async Task The_proposal_tool_advertises_a_hand_authored_input_and_output_schema()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
@@ -56,22 +56,43 @@ public sealed class CovenantMutationToolTests
         McpToolDefinitionWire propose = Assert.Single(
             tools.Tools,
             static tool => tool.Name == CovenantToolNames.ProposeCovenant);
-        McpToolDefinitionWire retire = Assert.Single(
-            tools.Tools,
-            static tool => tool.Name == CovenantToolNames.RetireCovenant);
+
+        JsonElement retire = ArcanumInternalToolServer.BuildRetireCovenantSchema();
 
         Assert.Equal(["content", "key"], PropertyNames(propose.InputSchema));
-        Assert.Equal(["key", "lane"], PropertyNames(retire.InputSchema));
+        Assert.Equal(["key", "lane"], PropertyNames(retire));
         Assert.NotNull(propose.OutputSchema);
-        Assert.NotNull(retire.OutputSchema);
 
         // Everything an agent could use to widen its own reach is absent from the wire, not merely
         // rejected by the server.
         foreach (string forbidden in (string[])["scope", "campaignId", "origin", "lifecycle", "revision", "attachment_id"])
         {
             Assert.DoesNotContain(forbidden, PropertyNames(propose.InputSchema));
-            Assert.DoesNotContain(forbidden, PropertyNames(retire.InputSchema));
+            Assert.DoesNotContain(forbidden, PropertyNames(retire));
         }
+    }
+
+    [Fact]
+    public async Task Retirement_is_withheld_from_the_advertised_set_it_cannot_be_granted_from()
+    {
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
+
+        McpToolsListResultWire tools = await session.ListToolsAsync();
+
+        // A healthy Covenant tier advertises exactly the tools a turn can mint a capability for.
+        // Minting a retirement capability needs the preflight disclosure and Ward receipt no
+        // production caller builds, so every retirement would refuse; advertising it anyway teaches a
+        // model that the capability is broken rather than absent.
+        Assert.Contains(tools.Tools, static tool => tool.Name == CovenantToolNames.ProposeCovenant);
+        Assert.DoesNotContain(tools.Tools, static tool => tool.Name == CovenantToolNames.RetireCovenant);
+
+        // The handler stays registered regardless, so a stale or direct invocation still fails closed
+        // rather than reaching an unregistered name.
+        McpToolsCallResultWire refused = await session.CallRetireAsync(
+            "campaign.a",
+            nameof(CovenantLane.Proposed));
+
+        Assert.Equal(ErrorCodes.Covenant.IneligibleTurn, Failure(refused).Code);
     }
 
     [Fact]

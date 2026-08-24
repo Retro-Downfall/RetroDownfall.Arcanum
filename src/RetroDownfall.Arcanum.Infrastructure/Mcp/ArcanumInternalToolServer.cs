@@ -982,16 +982,19 @@ internal sealed partial class ArcanumInternalToolServer
                     OutputSchema = _covenantMutationOutputSchema,
                 });
 
-            tools.Add(
-                new McpToolDefinitionWire
-                {
-                    Name = CovenantToolNames.RetireCovenant,
-                    Description =
-                        "Retire one standing preference that this turn actually showed you, when the operator says it no longer applies. "
-                        + "It requires their approval, and it can only target content admitted into this exact model call.",
-                    InputSchema = _retireCovenantSchema,
-                    OutputSchema = _covenantMutationOutputSchema,
-                });
+            if (CovenantRetirementAvailable)
+            {
+                tools.Add(
+                    new McpToolDefinitionWire
+                    {
+                        Name = CovenantToolNames.RetireCovenant,
+                        Description =
+                            "Retire one standing preference that this turn actually showed you, when the operator says it no longer applies. "
+                            + "It requires their approval, and it can only target content admitted into this exact model call.",
+                        InputSchema = _retireCovenantSchema,
+                        OutputSchema = _covenantMutationOutputSchema,
+                    });
+            }
         }
 
         if (_settings.EnableArchiveSearch)

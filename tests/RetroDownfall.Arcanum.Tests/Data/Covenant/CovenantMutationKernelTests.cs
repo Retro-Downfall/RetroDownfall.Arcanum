@@ -348,6 +348,65 @@ public sealed class CovenantMutationKernelTests
 
         Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, refused.Error.Code);
 
+        // The code alone proves nothing here: the neighbouring "reactivation was not requested" arm
+        // raises the same code for the same intent, so deleting the Proposed-lane arm would leave this
+        // test green. The message is the only thing that distinguishes them.
+        Assert.Equal(
+            "An agent cannot reactivate a retired Proposed Covenant lane.",
+            refused.Error.Message);
+
+    }
+
+    [Fact]
+    public async Task A_confirmed_tombstone_leaves_the_proposed_lane_open_to_an_agent()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+
+        CovenantOperationScope scope = CovenantOperationScope.ForCampaign(CampaignOne);
+
+        _ = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(
+                fixture,
+                Token,
+                CovenantMutationFixture.OperatorSet(scope, "campaign.shared", "Confirmed one.", 0, 0)),
+            Token);
+
+        _ = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(
+                fixture,
+                Token,
+                CovenantMutationFixture.OperatorRetire(scope, "campaign.shared", CovenantLane.Confirmed, 1, 1)),
+            Token);
+
+        // Retirement tombstones one lane, not the key. An agent proposing the same key after the
+        // operator retired their Confirmed content is proposing into a lane that was never retired.
+        Result<IReadOnlyList<CovenantMutationReceipt>> proposed = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(
+                fixture,
+                Token,
+                CovenantMutationFixture.AgentPropose(CampaignOne, "campaign.shared", "A proposal.", 0, 2)),
+            Token);
+
+        Assert.True(proposed.IsSuccess, proposed.IsFailure ? proposed.Error.Message : string.Empty);
+
+        Assert.Equal(CovenantMutationOutcome.Applied, Assert.Single(proposed.Value).Outcome);
+
+        Assert.Equal(1L, Assert.Single(proposed.Value).ResultingLaneRevision);
+
+        Assert.Equal(
+            (long)CovenantOperation.Retire,
+            await ScalarAsync(fixture, "SELECT CurrentOperationCode FROM covenant_heads WHERE LaneCode = 1;"));
+
+        Assert.Equal(
+            (long)CovenantOperation.Set,
+            await ScalarAsync(fixture, "SELECT CurrentOperationCode FROM covenant_heads WHERE LaneCode = 2;"));
+
     }
 
     [Fact]

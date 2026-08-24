@@ -509,6 +509,68 @@ public sealed class CovenantStoreTests
     }
 
     [Fact]
+    public async Task Lane_head_probe_isolates_lanes_so_one_tombstone_never_speaks_for_the_other()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+
+        SeededHead confirmed = await fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "campaign.shared",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Confirmed.",
+            Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "campaign.shared",
+            CovenantLane.Confirmed,
+            CovenantOperation.Retire,
+            null,
+            Token,
+            entryId: confirmed.EntryId,
+            laneRevision: 2,
+            predecessorVersionId: confirmed.VersionId);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantReadLease lease = (await gate.AcquireReadAsync(
+            CovenantOperationScope.ForCampaign(CampaignOne),
+            Token)).Value;
+
+        CanonicalCampaignContext campaign = CovenantCanonicalFixture.CampaignContext(CampaignOne);
+
+        CovenantLaneHeadProbe retired = (await fixture.Store.ProbeLaneHeadAsync(
+            campaign,
+            CovenantLane.Confirmed,
+            "campaign.shared",
+            lease,
+            Token)).Value;
+
+        // The two lanes carry independent heads, so a Confirmed tombstone must not present the
+        // Proposed lane as retired. Were the probe key-scoped instead of lane-scoped, an agent's
+        // proposal for this key would be refused as a reactivation it never attempted.
+        CovenantLaneHeadProbe sibling = (await fixture.Store.ProbeLaneHeadAsync(
+            campaign,
+            CovenantLane.Proposed,
+            "campaign.shared",
+            lease,
+            Token)).Value;
+
+        Assert.Equal(CovenantLaneHeadPresence.Retired, retired.Presence);
+
+        Assert.Equal(CovenantLaneHeadPresence.Absent, sibling.Presence);
+
+        Assert.Null(sibling.EntryId);
+
+    }
+
+    [Fact]
     public async Task List_pages_are_clamped_stable_and_keyset_continuable()
     {
 
