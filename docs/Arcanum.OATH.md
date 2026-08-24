@@ -480,6 +480,8 @@ The admission planner operates over an immutable, sensitivity-independent projec
 
 Confirmed is never silently truncated. If required Confirmed content cannot fit after permitted pressure, the turn fails with a typed context-capacity error. Proposed is elastic and is the first Covenant tier evicted.
 
+A Confirmed no-fit and a Proposed trim are separate operator-visible facts and are never reported as one. Confirmed is admitted all-or-fail, so an attempt that cannot seat it withholds the whole Section rather than shortening it; the admission planner nonetheless describes that outcome as every Proposed candidate pressured out, which is arithmetically true and would tell an operator their agreement had been honored minus a few suggestions. The materialization ledger therefore carries the withholding as its own fact, the context breakdown surfaces it beside the pressure counters rather than inside them, and `context inspect` names it on the Confirmed lane — where a lane reporting zero tokens and nothing else would otherwise read as an installation that holds no Covenant at all.
+
 ### 7.8 Acknowledge disclosure before dispatch
 
 A protected provider attempt queues a content-free disclosure draft keyed by subject, physical attempt ordinal, provider destination, provider-call digest, admission, sensitivity, and generation evidence. A dedicated committer persists the receipt and updates the subject's rolling disclosure chain under `synchronous=FULL`. Network dispatch begins only after acknowledgement.

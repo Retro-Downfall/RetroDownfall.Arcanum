@@ -865,6 +865,18 @@ public sealed partial class WizardIntelligenceProvider
 
             }
 
+            // A refusal withholds the section whole, Confirmed included. Left unsaid, this lane just
+            // reports zero tokens, which an operator reads as "this installation has no Covenant"
+            // rather than "this turn could not carry the one it has".
+            if (component.Source is ContextTokenSource.CovenantConfirmed && breakdown.CovenantConfirmedNoFit)
+            {
+
+                reason = "The Covenant did not fit this turn's context budget and was withheld "
+                    + "entirely; Confirmed content is admitted all-or-nothing, so nothing was trimmed "
+                    + "and nothing was sent.";
+
+            }
+
             string? content = request.ShowContent
 
                 && component.Source == ContextTokenSource.SystemCodexSpell

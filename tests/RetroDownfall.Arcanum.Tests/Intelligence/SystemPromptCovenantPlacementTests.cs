@@ -30,32 +30,41 @@ public sealed class SystemPromptCovenantPlacementTests
     [Fact]
     public void BuildDocument_WithoutCovenant_PreservesGoldenPromptBytes()
     {
-        string existing = SystemPromptBuilder.Build(new PingRequest("hello"), codexContent: null);
+        // Not compared against Build(...): that overload's covenant parameter defaults to null and
+        // BuildDocument coalesces null to None, so the two are one path and the comparison would hold
+        // even if None rendered a Covenant heading. The digest is the authority, and it predates the
+        // Covenant work -- which is what makes it evidence that composing the runtime moved no bytes.
         SystemPromptDocument document = SystemPromptBuilder.BuildDocument(
             new PingRequest("hello"),
             codexContent: null,
             covenant: CovenantPromptContent.None);
 
-        Assert.Equal(existing, document.Render());
+        string rendered = document.Render();
+
+        // Hashed over the raw bytes rather than a line-ending-normalized copy, so a builder that
+        // started emitting CRLF could not pass by having its endings rewritten before hashing.
+        Assert.DoesNotContain("\r\n", rendered, StringComparison.Ordinal);
+
         Assert.Equal(
             "ED21AA2B32342F90AC81FBC28529442211FDD09BB688D0916E9130C5FBD030AF",
-            Digest(document.Render()));
+            Digest(rendered));
     }
 
     [Fact]
     public void BuildDocument_WithoutCovenant_PreservesSegmentShapeAndEmitsNoCovenantSpan()
     {
-        SystemPromptDocument baseline = SystemPromptBuilder.BuildDocument(
-            new PingRequest("hello"),
-            codexContent: "codex");
         SystemPromptDocument composed = SystemPromptBuilder.BuildDocument(
             new PingRequest("hello"),
             codexContent: "codex",
             covenant: CovenantPromptContent.None);
 
-        Assert.Equal(
-            baseline.OrderedSegments.Select(static segment => segment.Kind),
-            composed.OrderedSegments.Select(static segment => segment.Kind));
+        // Pinned rather than compared against a defaulted baseline, which is the same path: the two
+        // would agree even if None emitted Covenant segments into both.
+        Assert.DoesNotContain(
+            composed.OrderedSegments,
+            static segment => segment.Kind is PromptSegmentKind.CovenantGlobalConfirmed
+                or PromptSegmentKind.CovenantCampaignConfirmed
+                or PromptSegmentKind.CovenantProposed);
 
         SystemPromptBuildResult result = composed.BuildResult();
 

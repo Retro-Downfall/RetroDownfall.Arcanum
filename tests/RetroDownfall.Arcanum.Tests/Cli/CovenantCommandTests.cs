@@ -832,8 +832,6 @@ public sealed class CovenantCommandTests : IDisposable
                             false,
                             false,
                             false,
-                            4096,
-                            8192,
                             "22",
                             "33"),
                         DateTimeOffset.UtcNow,

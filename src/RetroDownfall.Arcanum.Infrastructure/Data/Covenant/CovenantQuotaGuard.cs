@@ -258,11 +258,158 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             ?? Exceeds(snapshot.ProvenanceRowsInCampaign, demand.NewProvenanceRows, CovenantLimits.MaxAttachmentProvenanceRowsPerCampaign, "attachment provenance rows in this Campaign")
             ?? Exceeds(snapshot.PendingOutboxRows, demand.NewOutboxRows, CovenantLimits.MaxPendingSearchOutboxRows, "pending search-outbox rows");
 
-        return refusal is { } error
-            ? error
-            : Result<CovenantQuotaSnapshot>.Success(snapshot);
+        if (refusal is { } scopeError)
+        {
+
+            return scopeError;
+
+        }
+
+        // The scope-wide ceilings are orders of magnitude looser than the Section ceilings the
+        // renderer enforces, so a batch can satisfy every one of them and still assemble a Section
+        // that no longer renders. That failure is not confined to the mutation: it is the whole
+        // placement, for every turn afterwards, which is why it has to be refused here rather than
+        // discovered at render time.
+        foreach (CovenantSectionDemand section in demand.Sections)
+        {
+
+            Error? sectionRefusal = await CheckSectionAsync(
+                    scope,
+                    section,
+                    transaction,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (sectionRefusal is { } sectionError)
+            {
+
+                return sectionError;
+
+            }
+
+        }
+
+        return Result<CovenantQuotaSnapshot>.Success(snapshot);
 
     }
+
+    private static async ValueTask<Error?> CheckSectionAsync(
+        CovenantOperationScope scope,
+        CovenantSectionDemand section,
+        CovenantMutationTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+
+        CovenantPlacement placement = CovenantSectionCapacity.Placement(scope.Kind, section.Lane);
+
+        CovenantSectionOccupancy retained = await ReadSectionOccupancyAsync(
+                scope,
+                section,
+                transaction,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        long entries = checked(retained.Entries + section.NewEntries);
+
+        int maximumEntries = CovenantSectionCapacity.MaximumEntries(placement);
+
+        if (entries > maximumEntries)
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.CapacityExceeded,
+                $"This mutation would exceed the {maximumEntries}-entry bound on the {placement} Section.");
+
+        }
+
+        long rendered = CovenantSectionCapacity.RenderedBytes(
+            placement,
+            entries,
+            checked(retained.FragmentBytes + section.NewFragmentBytes),
+            Math.Max(retained.LongestFenceLength, section.RequiredFenceLength));
+
+        int maximumBytes = CovenantSectionCapacity.MaximumRenderedBytes(placement);
+
+        return rendered > maximumBytes
+            ? new Error(
+                ErrorCodes.Covenant.CapacityExceeded,
+                $"This mutation would render the {placement} Section at {rendered} bytes, past its {maximumBytes}-byte bound.")
+            : null;
+
+    }
+
+    /// <summary>
+    /// What the Section already holds that this batch will not replace.
+    /// </summary>
+    /// <remarks>
+    /// The touched keys are excluded from all three measures rather than only from the counts. A
+    /// <c>Set</c> supersedes the active version of its key, so leaving the old version's bytes in the
+    /// total would charge one entry twice, and leaving its fence requirement in would size the
+    /// Section around backticks the batch is about to remove.
+    /// </remarks>
+    private static async ValueTask<CovenantSectionOccupancy> ReadSectionOccupancyAsync(
+        CovenantOperationScope scope,
+        CovenantSectionDemand section,
+        CovenantMutationTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+
+        string scopePredicate = scope.Kind == CovenantScope.Campaign
+            ? "h.CampaignId = $campaign"
+            : "h.CampaignId IS NULL";
+
+        string[] keyParameters = [.. section.TouchedKeys.Select(static (_, index) => $"$key{index}")];
+
+        string untouched = keyParameters.Length == 0
+            ? "1 = 1"
+            : $"h.NormalizedKey NOT IN ({string.Join(", ", keyParameters)})";
+
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = $"""
+            SELECT COUNT(*),
+                   COALESCE(SUM(h.CompiledByteCost), 0),
+                   COALESCE(MAX(v.RequiredFenceLength), 0)
+            FROM covenant_heads h
+            JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
+            WHERE {scopePredicate}
+              AND h.LaneCode = $lane
+              AND h.CurrentOperationCode = 1
+              AND {untouched};
+            """;
+
+        if (scope.Kind == CovenantScope.Campaign)
+        {
+
+            Bind(command, "$campaign", scope.CampaignId!.Value.ToString("D"));
+
+        }
+
+        Bind(command, "$lane", (int)section.Lane);
+
+        for (int index = 0; index < keyParameters.Length; index++)
+        {
+
+            Bind(command, keyParameters[index], section.TouchedKeys[index]);
+
+        }
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        return new CovenantSectionOccupancy(
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            (int)reader.GetInt64(2));
+
+    }
+
+    private readonly record struct CovenantSectionOccupancy(
+        long Entries,
+        long FragmentBytes,
+        int LongestFenceLength);
 
     private static Error? Exceeds(long current, long added, long ceiling, string what) =>
         checked(current + added) > ceiling

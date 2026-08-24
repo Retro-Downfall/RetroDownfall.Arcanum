@@ -279,7 +279,7 @@ public sealed class CovenantQuotaTests
 
     }
 
-    private static CovenantQuotaDemand Nothing => new(0, 0, 0, 0, 0, 0, 0, 0, 0);
+    private static CovenantQuotaDemand Nothing => new(0, 0, 0, 0, 0, 0, 0, 0, 0, []);
 
     private static async Task<CovenantQuotaSnapshot> CheckAsync(
         CovenantCanonicalFixture fixture,

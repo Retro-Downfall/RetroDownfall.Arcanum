@@ -58,17 +58,6 @@ public static class CovenantToolClassifier
 
     private static readonly WardSettings EmptyWards = new() { ForbiddenArts = [] };
 
-    public static Result<ProviderToolCallClassification> Classify(
-        FrozenProviderToolCall call,
-        WardSettings wardSettings)
-    {
-
-        ArgumentNullException.ThrowIfNull(call);
-
-        return Classify(call.Name, call.ArgumentsUtf8.AsSpan(), wardSettings);
-
-    }
-
     /// <summary>
     /// Classifies a call that is already known to be one of the two Covenant mutation tools.
     /// </summary>

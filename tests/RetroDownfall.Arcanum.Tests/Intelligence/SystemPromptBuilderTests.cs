@@ -38,9 +38,13 @@ public sealed class SystemPromptBuilderTests
     public void Build_MinimalRequest_PreservesGoldenDciBytes()
     {
         string prompt = SystemPromptBuilder.Build(new PingRequest("hello"), codexContent: null);
-        string canonicalPrompt = prompt.Replace("\r\n", "\n", StringComparison.Ordinal);
-        string digest = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(canonicalPrompt)));
+
+        // The line endings are part of the pinned bytes. Normalizing before hashing left them
+        // unpinned, so a builder that started emitting CRLF -- which every provider tokenizes
+        // differently and every prefix cache keys on -- would still match this digest.
+        Assert.DoesNotContain("\r\n", prompt, StringComparison.Ordinal);
+
+        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt)));
 
         Assert.Equal(
             "ED21AA2B32342F90AC81FBC28529442211FDD09BB688D0916E9130C5FBD030AF",

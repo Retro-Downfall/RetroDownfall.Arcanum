@@ -750,8 +750,6 @@ internal sealed class CovenantMutationService(
                 && effect.LocalDecision is CovenantEffectDecision.ProposedBecomesEligible,
             ProposedRemainsReviewOnly: effect.Lane is CovenantLane.Proposed
                 && effect.LocalDecision is not CovenantEffectDecision.ProposedBecomesEligible,
-            compiled?.FragmentUtf8ByteCount ?? 0,
-            CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             Hex(effect.DependentHeadVectorDigest),
             Hex(EffectDigest(effect)));
 

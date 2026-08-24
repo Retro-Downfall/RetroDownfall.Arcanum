@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Serialization;
 
@@ -213,4 +214,27 @@ public sealed record CovenantQuotaDemand(
     long NewAgentBytes,
     long NewMutationReceipts,
     long NewProvenanceRows,
-    long NewOutboxRows);
+    long NewOutboxRows,
+    ImmutableArray<CovenantSectionDemand> Sections);
+
+/// <summary>
+/// What one prospective batch would leave in one rendered Section of one scope.
+/// </summary>
+/// <remarks>
+/// Separate from the scope-wide counters because a Section is a different unit with a much smaller
+/// ceiling: a scope holds hundreds of entries and megabytes, while the Section those entries render
+/// into holds a few thousand bytes. Every scope-wide quota can be comfortably satisfied by a batch
+/// that still renders a Section past its bound, and a Section past its bound is not a failed write
+/// but a Covenant that stops reaching the model at all.
+///
+/// <para><see cref="TouchedKeys"/> is what makes editing possible. A <c>Set</c> replaces an entry's
+/// contribution rather than adding to it, so the keys this batch writes have their present cost
+/// subtracted before the batch's own cost is added; without that, re-setting an existing entry would
+/// be charged twice and an ordinary edit would be refused.</para>
+/// </remarks>
+public sealed record CovenantSectionDemand(
+    CovenantLane Lane,
+    ImmutableArray<string> TouchedKeys,
+    long NewEntries,
+    long NewFragmentBytes,
+    int RequiredFenceLength);

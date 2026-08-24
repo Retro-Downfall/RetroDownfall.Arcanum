@@ -9,6 +9,25 @@ public sealed class CovenantLinker : ICovenantLinker
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
+        // Section rendering enforces the per-placement byte ceilings by throwing, and nothing on the
+        // write path stops an installation from accumulating entries that together exceed one. That
+        // is a fact about stored state, not a programming error, so it degrades the turn through the
+        // ordinary failure channel the dispatch gate already handles rather than escaping as an
+        // exception past the gate's never-fail-the-turn contract and taking the turn lease with it.
+        try
+        {
+            return LinkCore(snapshot);
+        }
+        catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
+        {
+            return Result<CovenantTurnPlan>.Failure(new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "The stored Covenant cannot be rendered within its placement bounds."));
+        }
+    }
+
+    private static Result<CovenantTurnPlan> LinkCore(CovenantTurnSnapshot snapshot)
+    {
         CovenantSnapshotCandidate[] candidates = snapshot.Candidates.ToArray();
 
         Array.Sort(candidates, CandidateComparer.Instance);

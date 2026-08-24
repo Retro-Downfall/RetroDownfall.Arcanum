@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Runtime.InteropServices;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -713,6 +714,46 @@ public sealed class CovenantLinkerTests
             CovenantSnapshotCandidateIntegrity.Verified));
     }
 
+    [Fact]
+    public void A_section_that_cannot_be_rendered_within_its_bound_degrades_rather_than_throwing()
+    {
+        // Section rendering enforces its ceiling by throwing, and the linker is called from a gate
+        // whose contract is to never fail the turn. An exception escaping here does not degrade to a
+        // Covenant-free turn -- it takes down an inference the operator never asked to be
+        // Covenant-bearing, and every turn afterwards with it.
+        CovenantTurnSnapshot snapshot = CovenantTask6Fixture.Snapshot(
+            null,
+            Oversized("global.huge", CovenantTask6Fixture.G1, CovenantTask6Fixture.G2, 1, 1));
+
+        Result<CovenantTurnPlan> linked = new CovenantLinker().Link(snapshot);
+
+        Assert.True(linked.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, linked.Error.Code);
+    }
+
+    private static CovenantSnapshotCandidate Oversized(
+        string key,
+        Guid entryId,
+        Guid versionId,
+        ulong searchDocumentId,
+        byte digestSeed) =>
+        CovenantTask6Fixture.CreateCandidate(
+            key,
+            entryId,
+            versionId,
+            searchDocumentId,
+            CovenantScope.Global,
+            null,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            CovenantOrigin.Operator,
+            1,
+            0,
+            CovenantSnapshotCandidateIntegrity.Verified,
+            digestSeed: digestSeed,
+            compiledFragment: OversizedFragment());
+
     private static CovenantTurnPlan Link(CovenantTurnSnapshot snapshot)
     {
         var result = new CovenantLinker().Link(snapshot);
@@ -753,38 +794,34 @@ public sealed class CovenantLinkerTests
         return ImmutableCollectionsMarshal.AsImmutableArray(bytes);
     }
 
-    private static long MeasureRejectedLinkAllocation(Action action)
+    private static long MeasureRejectedLinkAllocation(Func<Result<CovenantTurnPlan>> link)
     {
         const int Warmups = 8;
         const int Samples = 32;
 
         for (int index = 0; index < Warmups; index++)
         {
-            RequireArgumentFailure(action);
+            RequireIntegrityFailure(link);
         }
 
         long before = GC.GetAllocatedBytesForCurrentThread();
 
         for (int index = 0; index < Samples; index++)
         {
-            RequireArgumentFailure(action);
+            RequireIntegrityFailure(link);
         }
 
         return (GC.GetAllocatedBytesForCurrentThread() - before) / Samples;
     }
 
-    private static void RequireArgumentFailure(Action action)
+    private static void RequireIntegrityFailure(Func<Result<CovenantTurnPlan>> link)
     {
-        try
-        {
-            action();
-        }
-        catch (ArgumentException)
-        {
-            return;
-        }
+        Result<CovenantTurnPlan> result = link();
 
-        throw new InvalidOperationException("Expected the oversized Section to fail before rendering.");
+        if (result.IsSuccess || result.Error.Code != ErrorCodes.Covenant.IntegrityFailure)
+        {
+            throw new InvalidOperationException("Expected the oversized Section to fail before rendering.");
+        }
     }
 }
 

@@ -232,6 +232,17 @@ public sealed class ContextMaterializationLedger
     public int DroppedCovenantProposedTokens => _droppedCovenantProposedTokens;
 
     /// <summary>
+    /// Whether the dispatching attempt withheld the whole Covenant section for want of head-room.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from Proposed pressure, and deliberately not folded into it. Pressure means the
+    /// agreement reached the model with its weakest preferences trimmed; this means it did not reach
+    /// the model at all. An operator reading a trim count where the truth is a total withholding
+    /// would conclude the Covenant was honored.
+    /// </remarks>
+    public bool CovenantConfirmedNoFit => _covenantConfirmedNoFit;
+
+    /// <summary>
     /// Records the Proposed entries one attempt's admission could not fit.
     /// </summary>
     /// <remarks>
@@ -246,11 +257,35 @@ public sealed class ContextMaterializationLedger
 
         _droppedCovenantProposedTokens = Math.Max(0, droppedTokens);
 
+        _covenantConfirmedNoFit = false;
+
+    }
+
+    /// <summary>
+    /// Records that this attempt's admission refused the Covenant outright.
+    /// </summary>
+    /// <remarks>
+    /// Clears the pressure counters as well as raising the flag. The planner reports a refusal as
+    /// every Proposed candidate pressured out, which is arithmetically true and operationally
+    /// misleading; leaving a previous attempt's trim counts standing beside this flag would describe
+    /// two different outcomes for one turn.
+    /// </remarks>
+    public void RecordCovenantConfirmedNoFit()
+    {
+
+        _droppedCovenantProposed = 0;
+
+        _droppedCovenantProposedTokens = 0;
+
+        _covenantConfirmedNoFit = true;
+
     }
 
     private int _droppedCovenantProposed;
 
     private int _droppedCovenantProposedTokens;
+
+    private bool _covenantConfirmedNoFit;
 
     public ContextMaterializationEntry Accept(
         ContextMaterializationCandidate candidate,

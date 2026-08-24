@@ -79,6 +79,15 @@ public sealed class SystemPromptTokenAttributionTests
 
         Assert.True(covenantBreakdown.Source(ContextTokenSource.CovenantConfirmed).TokenCount > 0);
         Assert.True(covenantBreakdown.Source(ContextTokenSource.CovenantProposed).TokenCount > 0);
+        // Presence and a zero, not a zero alone. Source() synthesizes a zero estimate for a component
+        // the breakdown does not hold, so a bare zero-token assertion holds whether the lane was
+        // measured and found empty or never measured at all -- and those are different claims.
+        Assert.Contains(
+            baseline.Components,
+            static component => component.Source is ContextTokenSource.CovenantConfirmed);
+        Assert.Contains(
+            baseline.Components,
+            static component => component.Source is ContextTokenSource.CovenantProposed);
         Assert.Equal(0, baseline.Source(ContextTokenSource.CovenantConfirmed).TokenCount);
         Assert.Equal(0, baseline.Source(ContextTokenSource.CovenantProposed).TokenCount);
         Assert.Equal(
@@ -107,6 +116,9 @@ public sealed class SystemPromptTokenAttributionTests
 
         ContextTokenBreakdown breakdown = Estimate(result);
 
+        Assert.Contains(
+            breakdown.Components,
+            static component => component.Source is ContextTokenSource.CovenantConfirmed);
         Assert.Equal(0, breakdown.Source(ContextTokenSource.CovenantConfirmed).TokenCount);
         Assert.Equal(0, breakdown.Source(ContextTokenSource.CovenantProposed).TokenCount);
     }

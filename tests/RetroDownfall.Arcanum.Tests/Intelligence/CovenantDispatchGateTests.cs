@@ -346,6 +346,62 @@ public sealed class CovenantDispatchGateTests
 
     }
 
+    [Fact]
+    public async Task A_stored_covenant_that_cannot_be_rendered_leaves_the_turn_covenant_free()
+    {
+
+        // The gate promises never to fail the turn, but it only handles typed failures. Linking is
+        // where stored state meets the Section ceilings, so a store holding entries that render past
+        // one has to arrive here as an absence rather than as an exception past every catch.
+        CovenantDispatchGate gate = CreateGate(
+            new LinkingContextProvider(OversizedSnapshot()),
+            new RecordingJournal(),
+            new RecordingSensitivityLedger());
+
+        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+            ArcanumInvocationContext.None,
+            Guid.NewGuid(),
+            sessionId: null,
+            CancellationToken.None);
+
+        Assert.False(scope.HasPlan);
+
+        Assert.Equal(CovenantTurnAbsence.CapabilityUnavailable, scope.Absence);
+
+    }
+
+    private static CovenantTurnSnapshot OversizedSnapshot() =>
+        CovenantTask6Fixture.Snapshot(
+            null,
+            CovenantTask6Fixture.CreateCandidate(
+                "global.huge",
+                CovenantTask6Fixture.G1,
+                CovenantTask6Fixture.G2,
+                1,
+                CovenantScope.Global,
+                null,
+                CovenantLane.Confirmed,
+                CovenantOperation.Set,
+                CovenantOrigin.Operator,
+                CovenantCompiler.CompilerPolicyVersion,
+                0,
+                CovenantSnapshotCandidateIntegrity.Verified,
+                digestSeed: 1,
+                compiledFragment: OversizedFragment()));
+
+    private static ImmutableArray<byte> OversizedFragment()
+    {
+
+        byte[] bytes = new byte[2 * CovenantLimits.MaxGlobalConfirmedRenderedBytes];
+
+        bytes.AsSpan().Fill((byte)'x');
+
+        bytes[^1] = (byte)'\n';
+
+        return [.. bytes];
+
+    }
+
     private static CovenantDispatchGate CreateGate(
         ICovenantContextProvider contextProvider,
         ICovenantDisclosureJournal journal,
@@ -469,6 +525,33 @@ public sealed class CovenantDispatchGateTests
                     new CovenantTurnLease(new StubLeaseRegistration()),
                     null,
                     logicalTurnId)));
+
+    }
+
+    /// <summary>
+    /// Links a stored snapshot exactly as the production context provider does, so that whatever the
+    /// linker does with unrenderable state is what the gate has to survive.
+    /// </summary>
+    private sealed class LinkingContextProvider(CovenantTurnSnapshot snapshot) : ICovenantContextProvider
+    {
+
+        public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(
+            ArcanumInvocationContext invocation,
+            Guid logicalTurnId,
+            CancellationToken cancellationToken)
+        {
+
+            Result<CovenantTurnPlan> linked = new CovenantLinker().Link(snapshot);
+
+            return ValueTask.FromResult(linked.IsFailure
+                ? Result<CovenantTurnContext>.Failure(linked.Error)
+                : Result<CovenantTurnContext>.Success(CovenantTurnContext.ForPlan(
+                    linked.Value,
+                    new CovenantTurnLease(new StubLeaseRegistration()),
+                    null,
+                    logicalTurnId)));
+
+        }
 
     }
 

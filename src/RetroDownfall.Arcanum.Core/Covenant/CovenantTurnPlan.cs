@@ -301,13 +301,7 @@ internal static class CovenantSectionRenderer
         CovenantPlacement placement,
         ReadOnlySpan<CovenantPlanCandidateDecision> decisions)
     {
-        int maximumBytes = placement switch
-        {
-            CovenantPlacement.GlobalConfirmed => CovenantLimits.MaxGlobalConfirmedRenderedBytes,
-            CovenantPlacement.CampaignConfirmed => CovenantLimits.MaxCampaignConfirmedRenderedBytes,
-            CovenantPlacement.CampaignProposed => CovenantLimits.MaxCampaignProposedRenderedBytes,
-            _ => throw new ArgumentOutOfRangeException(nameof(placement))
-        };
+        int maximumBytes = CovenantSectionCapacity.MaximumRenderedBytes(placement);
 
         if (decisions.IsEmpty)
         {
@@ -378,8 +372,18 @@ internal static class CovenantSectionRenderer
             }
         }
 
-        int fenceLength = Math.Max(3, checked(longestBacktickRun + 1));
-        int totalLength = checked(fenceLength + "text\n"u8.Length + contentLength + fenceLength + 1);
+        int fenceLength = Math.Max(
+            CovenantSectionCapacity.MinimumFenceLength,
+            checked(longestBacktickRun + 1));
+
+        // Sized through the shared helper rather than in place, so the quota guard that refuses an
+        // over-budget write and the renderer that refuses an over-budget Section cannot disagree
+        // about what this Section costs.
+        int totalLength = checked((int)CovenantSectionCapacity.RenderedBytes(
+            CovenantPlacement.CampaignProposed,
+            decisions.Length,
+            contentLength,
+            fenceLength));
 
         RequireWithinBound(totalLength, maximumBytes);
 

@@ -20,10 +20,10 @@ public sealed class CovenantSensitiveEgressTests
     public void A_frozen_covenant_call_classifies_as_sensitive_egress_with_private_arguments()
     {
         Result<ProviderToolCallClassification> proposal = CovenantToolClassifier.Classify(
-            FrozenCall(CovenantToolNames.ProposeCovenant, "{\"key\":\"a\",\"content\":\"b\"}"),
+            CovenantToolNames.ProposeCovenant, Bytes("{\"key\":\"a\",\"content\":\"b\"}"),
             Wards());
         Result<ProviderToolCallClassification> retirement = CovenantToolClassifier.Classify(
-            FrozenCall(CovenantToolNames.RetireCovenant, "{\"key\":\"a\",\"lane\":\"Proposed\"}"),
+            CovenantToolNames.RetireCovenant, Bytes("{\"key\":\"a\",\"lane\":\"Proposed\"}"),
             Wards());
 
         Assert.Equal(CovenantToolRiskIdentity.CovenantSensitiveEgress, proposal.Value.RiskIdentity);
@@ -37,13 +37,13 @@ public sealed class CovenantSensitiveEgressTests
     public void An_ordinary_call_keeps_its_public_projection_and_a_forbidden_art_keeps_its_risk()
     {
         Result<ProviderToolCallClassification> ordinary = CovenantToolClassifier.Classify(
-            FrozenCall("read_saga", "{\"query\":\"a\"}"),
+            "read_saga", Bytes("{\"query\":\"a\"}"),
             Wards());
         Result<ProviderToolCallClassification> intrinsic = CovenantToolClassifier.Classify(
-            FrozenCall(ToolRiskClassifier.ApplyPatchToolName, "{\"patch\":\"a\"}"),
+            ToolRiskClassifier.ApplyPatchToolName, Bytes("{\"patch\":\"a\"}"),
             Wards());
         Result<ProviderToolCallClassification> configured = CovenantToolClassifier.Classify(
-            FrozenCall("delete_lexicon", "{\"name\":\"a\"}"),
+            "delete_lexicon", Bytes("{\"name\":\"a\"}"),
             Wards());
 
         Assert.Equal(CovenantToolRiskIdentity.Ordinary, ordinary.Value.RiskIdentity);
@@ -56,13 +56,13 @@ public sealed class CovenantSensitiveEgressTests
     public void Classification_binds_the_exact_name_and_the_canonical_arguments()
     {
         ProviderToolCallClassification first = CovenantToolClassifier
-            .Classify(FrozenCall(CovenantToolNames.ProposeCovenant, "{\"b\":2,\"a\":1}"), Wards())
+            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"b\":2,\"a\":1}"), Wards())
             .Value;
         ProviderToolCallClassification reordered = CovenantToolClassifier
-            .Classify(FrozenCall(CovenantToolNames.ProposeCovenant, "{\"a\":1,\"b\":2}"), Wards())
+            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"a\":1,\"b\":2}"), Wards())
             .Value;
         ProviderToolCallClassification different = CovenantToolClassifier
-            .Classify(FrozenCall(CovenantToolNames.ProposeCovenant, "{\"a\":1,\"b\":3}"), Wards())
+            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"a\":1,\"b\":3}"), Wards())
             .Value;
 
         // RFC 8785 ordering means the same request cannot produce two different evidence digests.
@@ -70,14 +70,14 @@ public sealed class CovenantSensitiveEgressTests
         Assert.NotEqual(first.CanonicalArgumentDigest, different.CanonicalArgumentDigest);
         Assert.NotEqual(
             first.FrozenNameDigest,
-            CovenantToolClassifier.Classify(FrozenCall("read_saga", "{}"), Wards()).Value.FrozenNameDigest);
+            CovenantToolClassifier.Classify("read_saga", Bytes("{}"), Wards()).Value.FrozenNameDigest);
     }
 
     [Fact]
     public void Classification_refuses_arguments_that_are_not_valid_json()
     {
         Result<ProviderToolCallClassification> malformed = CovenantToolClassifier.Classify(
-            FrozenCall(CovenantToolNames.ProposeCovenant, "{\"key\":"),
+            CovenantToolNames.ProposeCovenant, Bytes("{\"key\":"),
             Wards());
 
         Assert.Equal(ErrorCodes.Hub.ProviderToolCallInvalid, malformed.Error.Code);
@@ -87,10 +87,10 @@ public sealed class CovenantSensitiveEgressTests
     public void An_absent_argument_body_classifies_as_the_empty_object()
     {
         ProviderToolCallClassification empty = CovenantToolClassifier
-            .Classify(FrozenCall("read_saga", string.Empty), Wards())
+            .Classify("read_saga", Bytes(string.Empty), Wards())
             .Value;
         ProviderToolCallClassification explicitEmpty = CovenantToolClassifier
-            .Classify(FrozenCall("read_saga", "{}"), Wards())
+            .Classify("read_saga", Bytes("{}"), Wards())
             .Value;
 
         Assert.Equal(explicitEmpty.CanonicalArgumentDigest, empty.CanonicalArgumentDigest);
@@ -386,21 +386,17 @@ public sealed class CovenantSensitiveEgressTests
     private static ProviderToolCallClassification Classified(
         string toolName,
         string arguments = "{\"key\":\"a\"}") =>
-        CovenantToolClassifier.Classify(FrozenCall(toolName, arguments), Wards()).Value;
+        CovenantToolClassifier.Classify(toolName, Bytes(arguments), Wards()).Value;
 
-    private static FrozenProviderToolCall FrozenCall(string name, string arguments)
-    {
-        ProviderToolCallBuffer buffer = new();
-
-        _ = buffer.AppendNameFragment(0, "call-1", Encoding.UTF8.GetBytes(name));
-
-        if (arguments.Length > 0)
-        {
-            _ = buffer.AppendArgumentFragment(0, Encoding.UTF8.GetBytes(arguments));
-        }
-
-        return buffer.Freeze(0).Value;
-    }
+    /// <summary>
+    /// The argument bytes exactly as a transport that already framed the call hands them over.
+    /// </summary>
+    /// <remarks>
+    /// These used to be assembled through a streaming fragment buffer that no production path ever
+    /// called. Routing the tests through the same complete-name, complete-body shape the in-process
+    /// MCP server actually produces keeps them describing a call the system can really receive.
+    /// </remarks>
+    private static byte[] Bytes(string arguments) => Encoding.UTF8.GetBytes(arguments);
 
     private static WardSettings Wards(
         bool enabled = true,

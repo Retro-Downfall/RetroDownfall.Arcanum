@@ -2766,6 +2766,20 @@ public sealed partial class WizardIntelligenceProvider(
 
             ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamTurnContext.InferenceTools, request, lease);
 
+            if (streamCovenantContent is not null)
+            {
+
+                // Head-room is measured against the transcript as it stands, and only a Covenant-free
+                // transcript makes that measurement honest. A restart inheriting the previous attempt's
+                // Covenant bytes counts them as somebody else's context and admits less than fits, and
+                // if the shrunken head-room refuses outright, the rebuild below is skipped and this
+                // attempt would dispatch the very content its own planner declined.
+                streamCovenantContent = null;
+
+                RebuildMaterializedSystemPrompt();
+
+            }
+
             streamCovenantDispatch = ResolveCovenantAdmission(
                 covenantScope,
                 lease,
@@ -2782,7 +2796,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             }
 
-            if (streamCovenantDispatch.Admission is { } streamCovenantAdmission)
+            if (streamCovenantDispatch.Admission is { ConfirmedAdmitted: true } streamCovenantAdmission)
             {
 
                 // Recorded whether or not anything was dropped: zero is a measurement here, and an
@@ -2791,6 +2805,17 @@ public sealed partial class WizardIntelligenceProvider(
                 streamMaterializationLedger.RecordCovenantPressure(
                     streamCovenantAdmission.ProposedRemovals,
                     (int)Math.Min(int.MaxValue, streamCovenantAdmission.PressuredProposedTokens));
+
+            }
+            else if (streamCovenantDispatch.Admission is not null)
+            {
+
+                // A refusal marks every candidate Pressured and counts every Proposed entry as a
+                // removal, but nothing was trimmed: Confirmed is all-or-fail, so the entire section
+                // was withheld. Reporting those counts as Proposed pressure would tell an operator
+                // their standing agreement was honored minus a few preferences, when none of it was
+                // sent at all -- the one outcome that must never be silent.
+                streamMaterializationLedger.RecordCovenantConfirmedNoFit();
 
             }
 
@@ -7068,6 +7093,8 @@ public sealed partial class WizardIntelligenceProvider(
                 DroppedCovenantProposed = ledger.DroppedCovenantProposed,
 
                 DroppedCovenantProposedTokens = ledger.DroppedCovenantProposedTokens,
+
+                CovenantConfirmedNoFit = ledger.CovenantConfirmedNoFit,
             };
         }
 

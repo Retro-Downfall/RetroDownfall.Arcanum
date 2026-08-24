@@ -1059,6 +1059,29 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The same direct construction these tests use, with the Covenant arm actually composed.
+    /// </summary>
+    /// <remarks>
+    /// Exposed rather than duplicated because the provider takes thirty dependencies, and a second
+    /// copy of that wiring is a second thing to drift. The gate is the only parameter that matters
+    /// to the caller: it is registered unconditionally in production and passed by nobody in tests,
+    /// which is the whole reason the dispatch path was unreachable.
+    /// </remarks>
+    internal static WizardIntelligenceProvider CreateCovenantWizard(
+        IChatClientFactory factory,
+        CovenantDispatchGate? covenantDispatch,
+        FakeInferenceAuditLogger? auditLogger,
+        params ProviderSettings[] providers) =>
+        CreateWizard(
+            factory,
+            healthTracker: null,
+            withHealthTracker: false,
+            new FakeGrimoireRepository(),
+            covenantDispatch,
+            auditLogger,
+            providers);
+
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
         IProviderHealthTracker? healthTracker,
@@ -1077,6 +1100,16 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IProviderHealthTracker? healthTracker,
         bool withHealthTracker,
         FakeGrimoireRepository grimoire,
+        params ProviderSettings[] providers) =>
+        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, providers);
+
+    private static WizardIntelligenceProvider CreateWizard(
+        IChatClientFactory factory,
+        IProviderHealthTracker? healthTracker,
+        bool withHealthTracker,
+        FakeGrimoireRepository grimoire,
+        CovenantDispatchGate? covenantDispatch,
+        FakeInferenceAuditLogger? auditLogger,
         params ProviderSettings[] providers)
     {
 
@@ -1136,7 +1169,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<SemanticSpellRouter>.Instance),
             new FakeLexiconService(),
             CreateUnusedDbContext(),
-            new FakeInferenceAuditLogger(),
+            auditLogger ?? new FakeInferenceAuditLogger(),
             new StructuredOutputValidator(),
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
             new BudgetMonitor(
@@ -1146,7 +1179,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<BudgetMonitor>.Instance),
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
-            withHealthTracker ? healthTracker : null);
+            withHealthTracker ? healthTracker : null,
+            covenantDispatch: covenantDispatch);
     }
 
     private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(

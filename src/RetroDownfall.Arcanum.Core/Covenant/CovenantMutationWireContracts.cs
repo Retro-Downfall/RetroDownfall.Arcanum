@@ -22,6 +22,12 @@ public sealed record CovenantMutationEffectExampleDto(
 ///
 /// <para>Global semantics also apply to Campaigns that do not exist yet. <paramref name="AppliesToFutureCampaigns"/>
 /// says so explicitly rather than leaving it to be inferred from a count that can only describe today.</para>
+///
+/// <para>There is deliberately no Section byte projection here. The preflight computes one compiled
+/// artifact, not the Section that artifact would join, and reporting the artifact's own size beside
+/// the Section's ceiling invited exactly one reading: that a preference well under the ceiling is
+/// therefore safe to write. Whether a Section has room is settled where it can be enforced, by the
+/// quota guard refusing the mutation.</para>
 /// </remarks>
 public sealed record CovenantMutationEffectDto(
     CovenantEffectDecision LocalDecision,
@@ -32,8 +38,6 @@ public sealed record CovenantMutationEffectDto(
     bool GlobalConfirmedResurfaces,
     bool ProposedBecomesEligible,
     bool ProposedRemainsReviewOnly,
-    long SectionRenderedBytesAfter,
-    long SectionRenderedByteCeiling,
     string DependentHeadVectorDigest,
     string EffectDigest);
 

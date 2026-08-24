@@ -205,6 +205,14 @@ public sealed record ContextTokenBreakdown
     /// <summary>Estimated tokens those pressured Proposed entries would have occupied.</summary>
     public int DroppedCovenantProposedTokens { get; init; }
 
+    /// <summary>Whether this attempt withheld the entire Covenant section for want of head-room.</summary>
+    /// <remarks>
+    /// Confirmed content is admitted all-or-fail, so a section that does not fit is not trimmed but
+    /// dropped whole. That outcome has to be reportable on its own: an operator who sees only a
+    /// Proposed trim count would read a total withholding as a mostly-honored agreement.
+    /// </remarks>
+    public bool CovenantConfirmedNoFit { get; init; }
+
     [JsonIgnore]
     public bool HasCovenantPressure => DroppedCovenantProposed > 0;
 
