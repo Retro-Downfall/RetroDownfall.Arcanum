@@ -102,7 +102,48 @@ ArcanumInvocationContext invocation = CovenantWorkloadBed.Unwrap(ArcanumInvocati
     ToolPolicy.AllTools,
     CovenantWorkloadBed.Unwrap(CovenantReadAuthorityEpoch.Create(bed.Authority.Current))));
 
-CovenantTurnPlan admissionPlan = await BuildPlanAsync();
+CovenantTurnPlan admissionPlan;
+
+await using (CovenantTurnContext startup = CovenantWorkloadBed.Unwrap(
+    await bed.Context.BeginTurnAsync(invocation, Guid.CreateVersion7(), CancellationToken.None)))
+{
+
+    admissionPlan = startup.Plan
+        ?? throw new InvalidOperationException(
+            $"The benchmark bed produced no turn plan ({startup.Absence}), so there is nothing to measure.");
+
+}
+
+// The corpus digest pins what was written; it says nothing about what the store and the linker hand
+// back. This invocation can stage, so the provider returns a plan even when the link found nothing,
+// and a store or linker regression that returned zero entries would make turn.plan dramatically
+// faster while every ceiling passed. Fail closed on the counts, exactly as the digest mismatch does.
+int expectedGlobal = manifest.Corpus.GlobalConfirmedEntries;
+
+int expectedCampaign = manifest.Corpus.CampaignConfirmedEntriesPerCampaign;
+
+if (admissionPlan.GlobalConfirmedSection.Candidates.Length != expectedGlobal
+    || admissionPlan.CampaignConfirmedSection.Candidates.Length != expectedCampaign)
+{
+
+    Console.Error.WriteLine(
+        $"The linked plan holds {admissionPlan.GlobalConfirmedSection.Candidates.Length} Global and "
+        + $"{admissionPlan.CampaignConfirmedSection.Candidates.Length} Campaign Confirmed entries; the "
+        + $"manifest seeds {expectedGlobal} and {expectedCampaign}.");
+
+    return 2;
+
+}
+
+if (admissionPlan.GlobalConfirmedSection.RenderedBytes.Length == 0
+    || admissionPlan.CampaignConfirmedSection.RenderedBytes.Length == 0)
+{
+
+    Console.Error.WriteLine("The linked plan rendered an empty Confirmed section, so the measured turn carries no Covenant.");
+
+    return 2;
+
+}
 
 // The control is measured first, because every allocation number below is a difference against it.
 double[] controlSamples = await BenchmarkHarness.MeasureControlAsync(manifest.Measurement);
@@ -137,8 +178,23 @@ BenchmarkRun run = new(
     manifest.SchemaVersion,
     RuntimeInformation.RuntimeIdentifier,
     bed.CorpusDigest,
+    BenchmarkManifestDigest.Of(manifest),
     [.. measured],
     control);
+
+// Every turn the measured loop opened has been disposed, so the gate should hold nothing. A leaked
+// registration is not a hang here — ordinary acquisitions never drain — but it is a measurement of a
+// gate that grows all run, and it would have to be found by reading numbers rather than by a check.
+if (bed.Gate.LiveRegistrationCount != 0)
+{
+
+    Console.Error.WriteLine(
+        $"The operation gate still holds {bed.Gate.LiveRegistrationCount} registrations after the "
+        + "measured loop, so the run measured a gate that grew under it.");
+
+    return 2;
+
+}
 
 if (outputPath is { Length: > 0 })
 {
@@ -156,26 +212,36 @@ int exit = 0;
 if (baselinePath is { Length: > 0 })
 {
 
-    exit = Math.Max(exit, Compare(run, baselinePath));
+    exit = Math.Max(
+        exit,
+        BenchmarkBaselineComparison.Compare(
+            run,
+            JsonSerializer.Deserialize(
+                File.ReadAllText(baselinePath),
+                BenchmarkJsonContext.Default.BenchmarkRun),
+            Console.Error));
 
 }
 
 if (gate)
 {
 
-    exit = Math.Max(exit, BenchmarkGate.Evaluate(run, manifest, Console.Error));
+    exit = Math.Max(exit, BenchmarkGate.Evaluate(run, manifest.Operations, Console.Error));
 
 }
 
 return exit;
 
-async Task<CovenantTurnPlan> BuildPlanAsync()
+// Production disposes the turn context at the end of the turn, which is what releases the turn lease
+// and removes the gate registration the provider took. An iteration that kept it would measure a gate
+// whose registration list grew on every one of the roughly nine hundred turns this run opens.
+async Task MeasuredPlanAsync()
 {
 
-    CovenantTurnContext context = CovenantWorkloadBed.Unwrap(
+    await using CovenantTurnContext context = CovenantWorkloadBed.Unwrap(
         await bed.Context.BeginTurnAsync(invocation, Guid.CreateVersion7(), CancellationToken.None));
 
-    return context.Plan
+    _ = context.Plan
         ?? throw new InvalidOperationException(
             $"The benchmark bed produced no turn plan ({context.Absence}), so there is nothing to measure.");
 
@@ -184,7 +250,7 @@ async Task<CovenantTurnPlan> BuildPlanAsync()
 Func<Task> Operation(string id) => id switch
 {
 
-    "turn.plan" => async () => _ = await BuildPlanAsync(),
+    "turn.plan" => MeasuredPlanAsync,
 
     "turn.admission" => () =>
     {
@@ -283,71 +349,5 @@ async Task MeasuredCommitAsync()
         CancellationToken.None));
 
     commitRevision = expected + 1;
-
-}
-
-// The manifest restates the regression rule so a reader of the workload can see it, but it is not a
-// knob: the thresholds live in BenchmarkRatioInterval and the ordinary suite asserts the two agree.
-// Reading them from the file here would make the restatement configuration, and a workload edit could
-// then move the gate without moving any code.
-static int Compare(BenchmarkRun run, string baselinePath)
-{
-
-    BenchmarkRun? baseline = JsonSerializer.Deserialize(
-        File.ReadAllText(baselinePath),
-        BenchmarkJsonContext.Default.BenchmarkRun);
-
-    if (baseline is null)
-    {
-
-        Console.Error.WriteLine($"The baseline at {baselinePath} could not be read.");
-
-        return 2;
-
-    }
-
-    if (!string.Equals(baseline.CorpusDigest, run.CorpusDigest, StringComparison.Ordinal))
-    {
-
-        Console.Error.WriteLine("The baseline was recorded against a different corpus; the comparison would be meaningless.");
-
-        return 2;
-
-    }
-
-    int exit = 0;
-
-    foreach (BenchmarkOperationResult candidate in run.Operations)
-    {
-
-        BenchmarkOperationResult? recorded = baseline.Operations
-            .FirstOrDefault(entry => string.Equals(entry.Id, candidate.Id, StringComparison.Ordinal));
-
-        if (recorded is null)
-        {
-
-            Console.Error.WriteLine($"  {candidate.Id}: no baseline, not compared");
-
-            continue;
-
-        }
-
-        BenchmarkRatioInterval interval = BenchmarkComparison.Compare(recorded.Batches, candidate.Batches);
-
-        Console.Error.WriteLine(
-            $"  {candidate.Id,-18} ratio {interval.ObservedRatio:F3} "
-            + $"[{interval.LowerBound:F3}, {interval.UpperBound:F3}]"
-            + (interval.IsRegression ? "  REGRESSION" : string.Empty));
-
-        if (interval.IsRegression)
-        {
-
-            exit = 1;
-
-        }
-
-    }
-
-    return exit;
 
 }

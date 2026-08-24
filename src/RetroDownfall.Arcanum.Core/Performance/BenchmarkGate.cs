@@ -1,4 +1,4 @@
-namespace RetroDownfall.Arcanum.Covenant.Benchmarks;
+namespace RetroDownfall.Arcanum.Core.Performance;
 
 /// <summary>
 /// The absolute bounds a run has to clear, independent of any baseline.
@@ -7,16 +7,29 @@ namespace RetroDownfall.Arcanum.Covenant.Benchmarks;
 /// Absolute ceilings are the authoritative half of the gate. A comparison against a baseline only
 /// says a revision did not make things worse, which stays true all the way down a long slow slide of
 /// individually-acceptable steps; a ceiling says what the product may cost.
+///
+/// <para>The arithmetic lives in Core rather than in the benchmark host so that the exit mapping is
+/// something a test can call. In the host it was the only decision surface in the repository with no
+/// caller under test: replacing this method's body with <c>return 0</c> left every lane green.</para>
 /// </remarks>
 internal static class BenchmarkGate
 {
 
-    internal static int Evaluate(BenchmarkRun run, WorkloadManifest manifest, TextWriter report)
+    internal static int Evaluate(
+        BenchmarkRun run,
+        IReadOnlyList<WorkloadOperation> operations,
+        TextWriter report)
     {
+
+        ArgumentNullException.ThrowIfNull(run);
+
+        ArgumentNullException.ThrowIfNull(operations);
+
+        ArgumentNullException.ThrowIfNull(report);
 
         int exit = 0;
 
-        foreach (WorkloadOperation operation in manifest.Operations)
+        foreach (WorkloadOperation operation in operations)
         {
 
             BenchmarkOperationResult? measured = run.Operations
@@ -97,7 +110,7 @@ internal static class BenchmarkGate
             report.WriteLine(
                 $"  control: spread {run.Control.SpreadBytes:F0}B, "
                 + $"MAD {run.Control.MedianAbsoluteDeviationBytes:F0}B, "
-                + $"negative {run.Control.NegativeFraction:P1} — too noisy to subtract.");
+                + $"negative {run.Control.NegativeFraction:P1} - too noisy to subtract.");
 
             exit = Math.Max(exit, 1);
 

@@ -1,17 +1,15 @@
 using System.Diagnostics;
 
-using RetroDownfall.Arcanum.Core.Performance;
-
-namespace RetroDownfall.Arcanum.Covenant.Benchmarks;
+namespace RetroDownfall.Arcanum.Core.Performance;
 
 /// <summary>
 /// The measurement loop, and the only place a duration or an allocation is recorded.
 /// </summary>
 /// <remarks>
 /// Every statistic it reports comes from <see cref="NearestRankPercentile"/> and
-/// <see cref="BenchmarkControlNoise"/> in Core, which the ordinary suite already covers. Computing a
-/// percentile here would mean the gate's arithmetic had no tests and the tested arithmetic had no
-/// caller.
+/// <see cref="BenchmarkControlNoise"/>, and the loop itself lives beside them rather than in the
+/// benchmark host so the ordinary suite can drive it. A control measured in an assembly no lane
+/// compiles is a control nothing can prove is measuring anything.
 /// </remarks>
 internal static class BenchmarkHarness
 {
@@ -24,8 +22,17 @@ internal static class BenchmarkHarness
     /// the same loop rather than estimated: a control taken any other way would subtract a number the
     /// measured runs never paid.
     /// </remarks>
-    internal static async Task<double[]> MeasureControlAsync(WorkloadMeasurement measurement)
+    internal static Task<double[]> MeasureControlAsync(WorkloadMeasurement measurement) =>
+        MeasureControlAsync(measurement, EmptyAsync);
+
+    internal static async Task<double[]> MeasureControlAsync(
+        WorkloadMeasurement measurement,
+        Func<Task> operation)
     {
+
+        ArgumentNullException.ThrowIfNull(measurement);
+
+        ArgumentNullException.ThrowIfNull(operation);
 
         double[] samples = new double[measurement.AllocationControlIterations];
 
@@ -36,7 +43,7 @@ internal static class BenchmarkHarness
 
             long start = Stopwatch.GetTimestamp();
 
-            await EmptyAsync().ConfigureAwait(false);
+            await operation().ConfigureAwait(false);
 
             _ = Stopwatch.GetElapsedTime(start);
 
@@ -55,6 +62,10 @@ internal static class BenchmarkHarness
         Func<Task> operation)
     {
 
+        ArgumentNullException.ThrowIfNull(measurement);
+
+        ArgumentNullException.ThrowIfNull(operation);
+
         // Warmup retires costs the shipped binary pays once per process — first statement preparation,
         // first buffer growth, first page read. It is not a device for reaching a state the product
         // never runs in, which is why the count is pinned in the manifest rather than tuned until the
@@ -68,6 +79,16 @@ internal static class BenchmarkHarness
 
         double[][] batches = new double[measurement.Batches][];
 
+        // The sample buffers are allocated before the snapshot rather than inside the loop. They are
+        // the harness's own storage, the control never pays for them, and leaving them inside the
+        // measured window would charge every operation for bytes its own control could not subtract.
+        for (int batch = 0; batch < measurement.Batches; batch++)
+        {
+
+            batches[batch] = new double[measurement.IterationsPerBatch];
+
+        }
+
         long allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
 
         long totalIterations = 0;
@@ -75,7 +96,7 @@ internal static class BenchmarkHarness
         for (int batch = 0; batch < measurement.Batches; batch++)
         {
 
-            double[] samples = new double[measurement.IterationsPerBatch];
+            double[] samples = batches[batch];
 
             for (int iteration = 0; iteration < measurement.IterationsPerBatch; iteration++)
             {
@@ -87,8 +108,6 @@ internal static class BenchmarkHarness
                 samples[iteration] = Stopwatch.GetElapsedTime(start).TotalMicroseconds;
 
             }
-
-            batches[batch] = samples;
 
             totalIterations += measurement.IterationsPerBatch;
 
@@ -123,6 +142,8 @@ internal static class BenchmarkHarness
         IReadOnlyList<BenchmarkOperationResult> operations)
     {
 
+        ArgumentNullException.ThrowIfNull(operations);
+
         BenchmarkControlNoise noise = BenchmarkControlNoise.Measure(
             controlSamples,
             [.. operations.Select(static operation => operation.AllocationBytes)]);
@@ -135,6 +156,16 @@ internal static class BenchmarkHarness
 
     }
 
-    private static Task EmptyAsync() => Task.CompletedTask;
+    /// <summary>
+    /// An operation that does nothing, and pays what the loop pays around one that does something.
+    /// </summary>
+    /// <remarks>
+    /// It has to suspend. Returning <see cref="Task.CompletedTask"/> made every control sample exactly
+    /// zero: the await completed synchronously, no per-iteration state machine was ever boxed, and the
+    /// subtraction that the allocation ceilings and the negative-correction check are both built on
+    /// became a subtraction of nothing. Measured operations reach real asynchronous work through this
+    /// same delegate, so the control has to reach a suspension through it too.
+    /// </remarks>
+    private static async Task EmptyAsync() => await Task.Yield();
 
 }

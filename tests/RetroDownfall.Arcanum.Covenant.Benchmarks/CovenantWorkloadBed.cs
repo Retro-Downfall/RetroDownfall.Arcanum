@@ -228,7 +228,7 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             new CovenantCompiler(),
             codec,
             new FixedConnectionSource(_connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(CovenantSqliteConnectionInitializer.Instance)),
             Authority,
             TimeProvider.System);
 
@@ -241,10 +241,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
     private async Task SeedAsync(WorkloadManifest manifest, CancellationToken cancellationToken)
     {
 
-        // The generator is the one the comparative statistics already pin, so the corpus a baseline
-        // was recorded against and the corpus a candidate is measured against are the same bytes.
-        Pcg32 random = new(BenchmarkComparison.Seed);
-
         Campaigns = [.. Enumerable.Range(0, manifest.Corpus.Campaigns).Select(CampaignIdentity)];
 
         foreach (Guid campaignId in Campaigns)
@@ -256,38 +252,22 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         using IncrementalHash digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        for (int ordinal = 0; ordinal < manifest.Corpus.GlobalConfirmedEntries; ordinal++)
+        // The expansion comes from Core rather than from a copy here, so the digest the ordinary suite
+        // recomputes from the manifest and the digest this run reports over what it actually wrote are
+        // the same arithmetic. Two copies would agree with each other and drift from the file.
+        foreach (BenchmarkCorpusEntry entry in BenchmarkCorpus.Entries(manifest.Corpus))
         {
+
+            digest.AppendData(Encoding.UTF8.GetBytes(entry.Key));
+
+            digest.AppendData(Encoding.UTF8.GetBytes(entry.Content));
 
             await WriteAsync(
-                manifest,
-                random,
-                digest,
-                CovenantScope.Global,
-                campaignId: null,
-                "global",
-                ordinal,
+                entry.CampaignOrdinal < 0 ? CovenantScope.Global : CovenantScope.Campaign,
+                entry.CampaignOrdinal < 0 ? null : Campaigns[entry.CampaignOrdinal],
+                entry.Key,
+                entry.Content,
                 cancellationToken).ConfigureAwait(false);
-
-        }
-
-        for (int campaign = 0; campaign < Campaigns.Length; campaign++)
-        {
-
-            for (int ordinal = 0; ordinal < manifest.Corpus.CampaignConfirmedEntriesPerCampaign; ordinal++)
-            {
-
-                await WriteAsync(
-                    manifest,
-                    random,
-                    digest,
-                    CovenantScope.Campaign,
-                    Campaigns[campaign],
-                    $"campaign{campaign}",
-                    ordinal,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
 
         }
 
@@ -296,27 +276,12 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
     }
 
     private async Task WriteAsync(
-        WorkloadManifest manifest,
-        Pcg32 random,
-        IncrementalHash digest,
         CovenantScope scope,
         Guid? campaignId,
-        string scopeLabel,
-        int ordinal,
+        string key,
+        string content,
         CancellationToken cancellationToken)
     {
-
-        string key = Expand(manifest.Corpus.KeyTemplate, scopeLabel, ordinal, filler: null);
-
-        string content = Expand(
-            manifest.Corpus.ContentTemplate,
-            scopeLabel,
-            ordinal,
-            Filler(manifest.Corpus, random));
-
-        digest.AppendData(Encoding.UTF8.GetBytes(key));
-
-        digest.AppendData(Encoding.UTF8.GetBytes(content));
 
         CovenantOperationScope operationScope = campaignId is { } campaign
             ? CovenantOperationScope.ForCampaign(campaign)
@@ -360,35 +325,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             cancellationToken).ConfigureAwait(false));
 
     }
-
-    private static string Filler(WorkloadCorpus corpus, Pcg32 random)
-    {
-
-        StringBuilder builder = new();
-
-        for (int word = 0; word < corpus.FillerWordsPerEntry; word++)
-        {
-
-            if (word > 0)
-            {
-
-                _ = builder.Append(' ');
-
-            }
-
-            _ = builder.Append(corpus.FillerWords[(int)random.NextBelow((uint)corpus.FillerWords.Length)]);
-
-        }
-
-        return builder.ToString();
-
-    }
-
-    private static string Expand(string template, string scope, int ordinal, string? filler) =>
-        template
-            .Replace("{scope}", scope, StringComparison.Ordinal)
-            .Replace("{ordinal:00}", ordinal.ToString("00", CultureInfo.InvariantCulture), StringComparison.Ordinal)
-            .Replace("{filler}", filler ?? string.Empty, StringComparison.Ordinal);
 
     /// <summary>A stable Campaign identity per ordinal, so two runs seed the same installation.</summary>
     private static Guid CampaignIdentity(int ordinal)
@@ -462,11 +398,21 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
     }
 
     /// <summary>Hands every service the one open connection this benchmark installation has.</summary>
+    /// <remarks>
+    /// One long-lived connection rather than the per-scope one production resolves, because a
+    /// benchmark process has no request scope to resolve it from. It is one of the four substituted
+    /// seams DESIGN enumerates, and the residence latch below is why the substitution does not also
+    /// move work out of the measured path.
+    /// </remarks>
     private sealed class FixedConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
 
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
         {
+
+            // The production source latches this on every acquisition, so a bed that skipped it would
+            // measure a canonical read that costs slightly less than the one the product performs.
+            CovenantProcessResidence.MarkOpened();
 
             cancellationToken.ThrowIfCancellationRequested();
 

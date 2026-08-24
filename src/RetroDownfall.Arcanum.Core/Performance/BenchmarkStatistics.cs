@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Core.Performance;
 /// contract: a future build that upgraded a dependency and silently changed the stream would
 /// invalidate every recorded baseline without touching a single measurement.</para>
 /// </remarks>
-public sealed class Pcg32
+internal sealed class Pcg32
 {
 
     private const ulong DefaultIncrement = 1442695040888963407UL;
@@ -94,7 +94,7 @@ public sealed class Pcg32
 /// run produced, and trimming outliers removes exactly the samples a latency gate exists to catch —
 /// the slow tail is the measurement, not noise around it.
 /// </remarks>
-public static class NearestRankPercentile
+internal static class NearestRankPercentile
 {
 
     /// <summary>
@@ -177,19 +177,31 @@ public static class NearestRankPercentile
 /// <summary>
 /// The comparative verdict: how this revision's p95 compares with the base revision's.
 /// </summary>
-public sealed record BenchmarkRatioInterval(double ObservedRatio, double LowerBound, double UpperBound)
+internal sealed record BenchmarkRatioInterval(double ObservedRatio, double LowerBound, double UpperBound)
 {
+
+    /// <summary>The observed p95 ratio a comparison has to exceed before it can block a merge.</summary>
+    /// <remarks>
+    /// Named rather than written inline because the workload manifest restates it for a reader, and
+    /// the ordinary suite asserts the restatement against this constant. A literal here would let the
+    /// rule move to 1.20 while the manifest kept advertising 1.10 and every test stayed green.
+    /// </remarks>
+    public const double ObservedRatioThreshold = 1.10d;
+
+    /// <summary>The bootstrap interval's lower bound a comparison has to exceed as well.</summary>
+    public const double IntervalLowerBoundThreshold = 1.05d;
 
     /// <summary>
     /// Whether this comparison is a regression under the published rule.
     /// </summary>
     /// <remarks>
-    /// Both conditions, deliberately. A single noisy run can push the observed ratio past 1.10 on its
-    /// own; requiring the interval's lower bound to also clear 1.05 means the comparison has to be
-    /// confident as well as large before it blocks a merge. Absolute ceilings stay authoritative
-    /// regardless of what this says.
+    /// Both conditions, deliberately. A single noisy run can push the observed ratio past the first
+    /// threshold on its own; requiring the interval's lower bound to also clear the second means the
+    /// comparison has to be confident as well as large before it blocks a merge. Absolute ceilings
+    /// stay authoritative regardless of what this says.
     /// </remarks>
-    public bool IsRegression => ObservedRatio > 1.10d && LowerBound > 1.05d;
+    public bool IsRegression =>
+        ObservedRatio > ObservedRatioThreshold && LowerBound > IntervalLowerBoundThreshold;
 
 }
 
@@ -201,7 +213,7 @@ public sealed record BenchmarkRatioInterval(double ObservedRatio, double LowerBo
 /// batch cancels the drift a machine accumulates over a long run, which comparing pooled samples
 /// would leave in the answer.
 /// </remarks>
-public static class BenchmarkComparison
+internal static class BenchmarkComparison
 {
 
     /// <summary>The pinned seed. ASCII <c>ARCANUMt</c>, so a reader can tell it was chosen, not found.</summary>
@@ -286,12 +298,13 @@ public static class BenchmarkComparison
 /// Whether an allocation run's empty-harness control was quiet enough to subtract.
 /// </summary>
 /// <remarks>
-/// The allocation numbers are paired differences against a byte-identical empty harness. That
+/// The allocation numbers are paired differences against an empty operation driven through the same
+/// measurement loop, invoked through the same delegate and accounted across the same boundaries. That
 /// subtraction is only meaningful while the control itself is stable; a noisy control turns a
 /// difference of two large numbers into a measurement of the noise. These bounds are the published
 /// ones, and a run that breaches any of them is failed rather than reported with a caveat.
 /// </remarks>
-public sealed record BenchmarkControlNoise(double SpreadBytes, double MedianAbsoluteDeviationBytes, double NegativeFraction)
+internal sealed record BenchmarkControlNoise(double SpreadBytes, double MedianAbsoluteDeviationBytes, double NegativeFraction)
 {
 
     public const double MaximumSpreadBytes = 8 * 1024;

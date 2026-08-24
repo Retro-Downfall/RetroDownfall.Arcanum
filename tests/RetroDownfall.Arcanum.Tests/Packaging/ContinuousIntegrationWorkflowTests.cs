@@ -307,6 +307,62 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     }
 
+    /// <summary>
+    /// The one step that runs the Covenant release gate, and the artifact it has to leave behind.
+    /// </summary>
+    /// <remarks>
+    /// Nothing else pins this step. The benchmark project is deliberately outside the solution so the
+    /// every-test-project rule does not demand a <c>dotnet test</c> line for a console host, and that
+    /// removes the only other way the lane could be held in place: the manifest tests parse the
+    /// workload off disk and survive this step's deletion intact. Deleting the run line, or dropping
+    /// <c>--gate</c> from it, would leave a repository that measures nothing and reports success.
+    /// </remarks>
+    [Fact]
+    public void Ci_runs_the_covenant_benchmark_gate_and_keeps_the_run_it_measured()
+    {
+
+        string repositoryRoot = FindRepositoryRoot();
+
+        Assert.True(
+            File.Exists(Path.Combine(repositoryRoot, "scripts", "benchmark-covenant.sh")),
+            "The Covenant benchmark script is missing, so the gate step in ci.yml cannot run.");
+
+        Assert.True(
+            File.Exists(FullPath(
+                repositoryRoot,
+                "tests/RetroDownfall.Arcanum.Covenant.Benchmarks/RetroDownfall.Arcanum.Covenant.Benchmarks.csproj")),
+            "The Covenant benchmark host is missing, so the gate step in ci.yml cannot publish it.");
+
+        IReadOnlyList<WorkflowJob> jobs = JobsIn(
+            Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml"));
+
+        WorkflowJob gate = Assert.Single(
+            jobs,
+            static job => job.Body.Contains("benchmark-covenant.sh", StringComparison.Ordinal));
+
+        Assert.Contains("./scripts/benchmark-covenant.sh --gate", gate.Body, StringComparison.Ordinal);
+
+        // Recorded as well as gated. Without the run JSON the lane produces no fingerprint for a
+        // release checklist to match and no observed distribution to justify the ceilings' headroom
+        // against, so the comparative half of the gate never executes outside a hand run.
+        Assert.Contains("--record covenant-benchmark-run.json", gate.Body, StringComparison.Ordinal);
+
+        Assert.Contains("actions/upload-artifact", gate.Body, StringComparison.Ordinal);
+
+        Assert.Contains("path: covenant-benchmark-run.json", gate.Body, StringComparison.Ordinal);
+
+        Assert.Contains("retention-days:", gate.Body, StringComparison.Ordinal);
+
+        // A conditional job is a gate that can be turned off by editing a condition rather than by
+        // deleting a step, and the parser above cannot tell a job-level condition from a step-level
+        // one, so a condition anywhere in this job would also exempt it from the native-SQLCipher
+        // runner check.
+        Assert.False(
+            gate.IsConditional,
+            "The Covenant benchmark lane is conditional, so it can report success without running.");
+
+    }
+
     private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {
 
@@ -453,6 +509,12 @@ public sealed class ContinuousIntegrationWorkflowTests
     [InlineData("src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj")]
 
     [InlineData("src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj")]
+
+    // Not shipped, but in the same position: the benchmark host is outside the solution, so no
+    // build of RetroDownfall.Arcanum.slnx and no dotnet test compiles it. Without a step that names
+    // it, a change to a Covenant service that broke the host merges green and surfaces only when
+    // somebody reaches for the gate to qualify a release.
+    [InlineData("tests/RetroDownfall.Arcanum.Covenant.Benchmarks/RetroDownfall.Arcanum.Covenant.Benchmarks.csproj")]
 
     public void Ci_compiles_every_project_the_release_workflows_ship(string relativeProjectPath)
     {

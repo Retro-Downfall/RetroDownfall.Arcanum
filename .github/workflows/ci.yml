@@ -190,12 +190,35 @@ jobs:
         run: ./scripts/verify-aot-il-warnings.sh
 
       # The benchmark host is outside RetroDownfall.Arcanum.slnx, so nothing else in this workflow
-      # compiles it. Without this step a change to a Covenant service that broke the host would merge
-      # green and only surface when somebody reached for the gate to qualify a release. The gate runs
-      # here too: its absolute ceilings carry enough headroom for a shared runner, and a breach on
-      # this lane is the signal it exists to give.
+      # compiles it. The gate below publishes it in Release, but a publish that fails reports as a
+      # gate failure rather than as a compile break, and an incremental build hides the analyzer
+      # diagnostics a clean one raises. Naming the project here is also what puts it inside the
+      # compiled-project closure ContinuousIntegrationWorkflowTests walks.
+      - name: Build the Covenant benchmark host
+        run: |
+          dotnet build tests/RetroDownfall.Arcanum.Covenant.Benchmarks/RetroDownfall.Arcanum.Covenant.Benchmarks.csproj \
+            -c Debug \
+            --no-incremental
+
+      # The gate runs here too: its absolute ceilings carry enough headroom for a shared runner, and a
+      # breach on this lane is the signal it exists to give. The run is recorded as well as gated, so
+      # the lane leaves behind the observed distribution its headroom is justified against; without an
+      # artifact the margin between what a shared runner measures and what the ceilings allow is a
+      # claim nobody can check.
       - name: Covenant benchmark gate
-        run: ./scripts/benchmark-covenant.sh --gate
+        run: ./scripts/benchmark-covenant.sh --gate --record covenant-benchmark-run.json
+
+      # Retention-pinned, and deliberately without a step-level condition: the job parser
+      # ContinuousIntegrationWorkflowTests uses treats any `if:` inside a job body as a job-level one
+      # and then exempts that job from the native-SQLCipher runner check, so an `if: always()` here
+      # would quietly retire an unrelated guard to save an artifact on a failed run.
+      - name: Upload the Covenant benchmark run
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: covenant-benchmark-run
+          path: covenant-benchmark-run.json
+          if-no-files-found: warn
+          retention-days: 90
 
   windows-suite:
     # Every Windows-only test guards itself with Skip.IfNot(OperatingSystem.IsWindows(), ...), so on

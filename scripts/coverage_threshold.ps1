@@ -56,7 +56,10 @@ $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
         "IdempotencyClaimStore",
         "BudgetReservationService",
         "WardGate",
-        "WorkspacePathPolicy"
+        "WorkspacePathPolicy",
+        # The authenticated-envelope codec. It seals and opens every Covenant fragment, so a branch it
+        # never exercises is an authentication path nothing has proved refuses.
+        "CovenantEnvelopeCodec"
     ),
     [System.StringComparer]::Ordinal
 )

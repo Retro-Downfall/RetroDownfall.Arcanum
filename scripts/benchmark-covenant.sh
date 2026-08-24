@@ -21,6 +21,17 @@
 #
 # Exit codes come from the host and are the contract: 0 within every stated bound, 1 a breach, 2 the
 # run could not be made. A breach and an unmeasurable run are different answers.
+#
+# Ceiling headroom, and what is not yet known about it. The latency ceilings are set at roughly four
+# times what an Apple-silicon developer machine measures, on the reasoning that a shared CI runner is
+# slower and a gate that failed on a busy one would be turned off. That factor is an estimate. No
+# observed distribution from a shared runner has been recorded anywhere in this repository, so the
+# margin between what the CI lane actually measures and what these ceilings allow is unverified.
+#
+# The CI lane now records its run and uploads it as covenant-benchmark-run.json with ninety days of
+# retention, which is where that evidence comes from. Before any ceiling is tightened, read several of
+# those artifacts, and state the observed p95 and p99 per operation and the date of the runs here, so
+# the next person tightening a ceiling can see how much room they are taking away rather than guessing.
 
 set -euo pipefail
 

@@ -36,14 +36,14 @@
   "operations": [
     {
       "id": "turn.plan",
-      "$comment": "The cost the Covenant adds to every live turn: one snapshot read and one link over the whole corpus. This is the number an operator feels.",
+      "$comment": "The cost the Covenant adds to every live turn: one snapshot read and one link over the whole corpus. This is the number an operator feels. Measurement boundary: the Confirmed lane only. campaignProposedEntriesPerCampaign is zero and the bed has no retire path, so the linker's Retired-tombstone filtering and its Proposed-lane work are outside this number and this ceiling does not bound them.",
       "p95CeilingMicroseconds": 600.0,
       "p99CeilingMicroseconds": 1500.0,
       "allocationCeilingBytes": 160000
     },
     {
       "id": "turn.admission",
-      "$comment": "One provider attempt's admission over a reused plan. Pure and provider-independent, and re-run per fallback candidate, so its cost multiplies by the number of candidates a turn tries.",
+      "$comment": "One provider attempt's admission over a reused plan. Pure and provider-independent, and re-run per fallback candidate, so its cost multiplies by the number of candidates a turn tries. Two measurement boundaries: the Confirmed lane only, as above, and no tokenizer — the host measures sections and fragments with a fixed four-bytes-per-token estimate, because the planner takes its measurement as a delegate precisely so it stays provider-independent and folding a real tokenizer's cost in here would gate the tokenizer.",
       "p95CeilingMicroseconds": 15.0,
       "p99CeilingMicroseconds": 30.0,
       "allocationCeilingBytes": 48000

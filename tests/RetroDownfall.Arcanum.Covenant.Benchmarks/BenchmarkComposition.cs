@@ -11,13 +11,17 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 namespace RetroDownfall.Arcanum.Covenant.Benchmarks;
 
 /// <summary>
-/// The three ambient providers a live host supplies from its own runtime.
+/// Three of the four seams a live host supplies from its own runtime, and the whole of what this file
+/// holds; the fourth is <c>CovenantWorkloadBed.FixedConnectionSource</c>.
 /// </summary>
 /// <remarks>
 /// These are adapters, not stand-ins for anything measured. Availability and authority come from the
 /// process's own runtime generation in a real host, and Campaign scope comes from the core registry;
 /// a benchmark process has neither, so it states them. Nothing here decides, compiles, links, admits,
 /// or stores — every one of those is the production service under measurement.
+///
+/// <para>The count matters because DESIGN enumerates the substituted seams, and an inventory that is
+/// short by one is a reader's assurance that something is production when it is not.</para>
 /// </remarks>
 internal sealed class BenchmarkAvailability(Guid datasetGeneration) : ICovenantAvailability
 {
