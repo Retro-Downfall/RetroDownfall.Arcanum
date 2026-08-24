@@ -1103,7 +1103,90 @@ internal static class InstallationResetActiveRecordAuthenticator
 
         }
 
-        return ValidateManagedFileCheckpoint(checkpoint);
+        Result managedFile = ValidateManagedFileCheckpoint(checkpoint);
+
+        return managedFile.IsFailure
+            ? managedFile
+            : ValidateRestoreCredentialCleanup(checkpoint);
+
+    }
+
+    /// <summary>
+    /// Validates when the restore-credential cleanup phase may appear at all.
+    /// </summary>
+    /// <remarks>
+    /// Only beside a managed-file checkpoint at <c>TerminalInventoryVerified</c>. The three
+    /// profile-namespaced restore credentials are the last evidence that could finish an interrupted
+    /// restore, and the operation is only entitled to touch them once every managed file this
+    /// installation still recorded has been accounted for. A record claiming their removal without
+    /// that behind it is claiming an authorization it never earned.
+    ///
+    /// <para>All four phases are persisted, in order, because each one records an irreversible
+    /// removal. A resume reads the last one reached and continues from the next, and it compares each
+    /// surviving account against the projection persisted beside the phase — which is why the
+    /// projection is required whenever a phase is present. Without it a resumed removal would have to
+    /// re-derive a proof from a credential set it has already started taking, and that set no longer
+    /// has the shape the proof was made from.</para>
+    /// </remarks>
+    private static Result ValidateRestoreCredentialCleanup(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint)
+    {
+
+        // The projection may exist alone — it is published before the first removal, which is what
+        // makes that removal resumable — but a phase without it is a record claiming progress against
+        // evidence it cannot produce.
+        if (checkpoint.RestoreTerminal is not { } terminal)
+        {
+
+            return checkpoint.RestoreCredentialCleanup is null
+                ? Result.Success()
+                : InvalidResult();
+
+        }
+
+        if (terminal.Version != 1
+            || !Enum.IsDefined(terminal.Arm)
+            || checkpoint.ManagedFile is not
+            {
+                Phase: FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified,
+            })
+        {
+
+            return InvalidResult();
+
+        }
+
+        // The two arms differ in exactly what they may have observed. Absence commits to no closed
+        // anchor and no account values; a closed anchor commits to all of both.
+        bool closedShape =
+            terminal.ClosedOperationId is not null
+            && terminal.ClosedRevision is not null
+            && terminal.ClosedEnvelopeDigest is not null
+            && terminal.ClosedJournalLocationDigest is not null
+            && terminal.InstallationAccountValueDigest is not null
+            && terminal.JournalKeyAccountValueDigest is not null
+            && terminal.AnchorAccountValueDigest is not null;
+
+        bool absenceShape =
+            terminal.ClosedOperationId is null
+            && terminal.ClosedRevision is null
+            && terminal.ClosedEnvelopeDigest is null
+            && terminal.ClosedJournalLocationDigest is null
+            && terminal.InstallationAccountValueDigest is null
+            && terminal.JournalKeyAccountValueDigest is null
+            && terminal.AnchorAccountValueDigest is null;
+
+        bool coherent = terminal.Arm switch
+        {
+            BackupRestoreFullResetTerminalArm.NeverRestoredAbsence => absenceShape,
+            BackupRestoreFullResetTerminalArm.ClosedAnchor => closedShape,
+            _ => false,
+        };
+
+        return coherent
+            && (checkpoint.RestoreCredentialCleanup is not { } phase || Enum.IsDefined(phase))
+                ? Result.Success()
+                : InvalidResult();
 
     }
 

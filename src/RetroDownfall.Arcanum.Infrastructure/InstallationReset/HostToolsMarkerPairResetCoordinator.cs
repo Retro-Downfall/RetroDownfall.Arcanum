@@ -1507,9 +1507,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         _ = reconciled;
 
-        // Recovery is still required on the success path. Restore-credential removal and
-        // installation-identity rotation are not part of this operation, so a durable terminal receipt
-        // and a verified managed-file inventory are progress rather than a finished reset.
+        // Recovery is still required on the success path, and that is this operation's answer rather
+        // than the reset's. Everything past the managed-file inventory — deleting the Grimoire,
+        // removing the restore credentials, and reporting the installation clean — belongs to the
+        // locked service that called in here, which reads the checkpoint this published rather than
+        // this return value.
         return Inert<InstallationResetActivePublication>();
 
     }
@@ -2439,7 +2441,39 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 right.MarkerIntentVectorDigest)
             && left.DeletedCount == right.DeletedCount
             && left.OrphanCount == right.OrphanCount
-            && ManagedFileCheckpointEquals(left.ManagedFile, right.ManagedFile);
+            && ManagedFileCheckpointEquals(left.ManagedFile, right.ManagedFile)
+            && RestoreTerminalEquals(left.RestoreTerminal, right.RestoreTerminal)
+            && left.RestoreCredentialCleanup == right.RestoreCredentialCleanup;
+
+    /// <summary>
+    /// Compares the persisted terminal restore projection field by field.
+    /// </summary>
+    private static bool RestoreTerminalEquals(
+        BackupRestoreFullResetTerminalProjectionV1? left,
+        BackupRestoreFullResetTerminalProjectionV1? right) =>
+        left is null && right is null
+        || left is not null
+            && right is not null
+            && left.Version == right.Version
+            && left.Arm == right.Arm
+            && DigestEquals(left.ProfileNamespaceDigest, right.ProfileNamespaceDigest)
+            && left.InstallationId == right.InstallationId
+            && left.ClosedOperationId == right.ClosedOperationId
+            && left.ClosedRevision == right.ClosedRevision
+            && OptionalDigestEquals(left.ClosedEnvelopeDigest, right.ClosedEnvelopeDigest)
+            && OptionalDigestEquals(
+                left.ClosedJournalLocationDigest,
+                right.ClosedJournalLocationDigest)
+            && OptionalDigestEquals(
+                left.InstallationAccountValueDigest,
+                right.InstallationAccountValueDigest)
+            && OptionalDigestEquals(
+                left.JournalKeyAccountValueDigest,
+                right.JournalKeyAccountValueDigest)
+            && OptionalDigestEquals(
+                left.AnchorAccountValueDigest,
+                right.AnchorAccountValueDigest)
+            && DigestEquals(left.TerminalEvidenceDigest, right.TerminalEvidenceDigest);
 
     /// <summary>
     /// Compares the nested managed-file checkpoint field by field.

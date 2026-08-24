@@ -207,7 +207,8 @@ internal sealed class InstallationResetService(
     IInstallationResetDatabaseIdentityReader? identityReader = null,
     IInstallationResetHostProcessToolsPairReader? pairReader = null,
     IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
-    Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null)
+    Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null,
+    Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null)
     : IInstallationResetService,
       IInstallationResetOnlineDataHandoff,
       IInstallationResetLockedService
@@ -780,7 +781,10 @@ internal sealed class InstallationResetService(
                 request.ExternalRemediation,
                 cancellationToken).ConfigureAwait(false);
 
-            return FullAdmissionAccepted(existing);
+            return await ContinueFullAsync(
+                heldInstallationLock,
+                existing,
+                cancellationToken).ConfigureAwait(false);
 
         }
 
@@ -884,7 +888,101 @@ internal sealed class InstallationResetService(
             request.ExternalRemediation,
             cancellationToken).ConfigureAwait(false);
 
-        return FullAdmissionAccepted(active);
+        return await ContinueFullAsync(
+            heldInstallationLock,
+            active,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Continues an attested full reset past its marker-pair boundary, or reports it admitted.
+    /// </summary>
+    /// <remarks>
+    /// The decision is made from the durable record rather than from what the coordinator returned,
+    /// because the coordinator deliberately returns recovery-required on every path — the progress it
+    /// makes is the checkpoint it publishes, and this is the reader of that checkpoint.
+    ///
+    /// <para>Only a managed-file reconciliation at <c>TerminalInventoryVerified</c> unlocks the rest.
+    /// Short of that the installation still records files nothing has accounted for, and deleting the
+    /// database that describes them would strand them with no record they ever existed. Anything less
+    /// reports the operation admitted and recovery required, exactly as it did before this
+    /// continuation existed.</para>
+    /// </remarks>
+    private async Task<Result<InstallationResetResult>> ContinueFullAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        InstallationResetActiveRecord admitted,
+        CancellationToken cancellationToken)
+    {
+
+        if (terminalContinuation is null)
+        {
+
+            return FullAdmissionAccepted(admitted);
+
+        }
+
+        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
+            .RecoverAsync(heldInstallationLock, cancellationToken).ConfigureAwait(false);
+
+        if (recovered.IsFailure
+            || recovered.Value.Outcome
+                is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
+            || recovered.Value.Publication is not { } publication
+            || publication.Payload.FullInstallationResetRemediationClaim is not { } claim
+            || publication.Payload.HostToolsMarkerPairReset?.ManagedFile is not
+            {
+                Phase: FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified,
+            })
+        {
+
+            return FullAdmissionAccepted(admitted);
+
+        }
+
+        InstallationResetActiveRecord active = publication.Payload.ToRecord();
+
+        // The installation identity comes from the authenticated claim rather than the anchor beside
+        // it. The claim is what the operator's signed statement was bound to, and it is the field
+        // every other step of this operation has already been checked against.
+        AuthenticatedActiveWriter writer = new(
+            activeStore,
+            heldInstallationLock,
+            activeStore.GuardedRoot,
+            claim.InstallationId,
+            publication);
+
+        IFullInstallationResetTerminalContinuation terminal = terminalContinuation();
+
+        return await ContinueApplyAsync(
+            writer,
+            new InstallationResetApplyProgress(active),
+            ReproduceAcceptedPlan(active),
+            cancellationToken,
+            async token =>
+            {
+
+                Result<FullInstallationResetTerminalOutcome> completed =
+                    await terminal.CompleteAsync(
+                        heldInstallationLock,
+                        writer.Publication ?? publication,
+                        token).ConfigureAwait(false);
+
+                if (completed.IsFailure)
+                {
+
+                    return Result<InstallationResetActiveRecord>.Failure(completed.Error);
+
+                }
+
+                // Whatever it published is now the current record, and the next thing this writer does
+                // is publish verification on top of it.
+                writer.Adopt(completed.Value.Publication);
+
+                return Result<InstallationResetActiveRecord>.Success(
+                    completed.Value.Publication.Payload.ToRecord());
+
+            }).ConfigureAwait(false);
 
     }
 
@@ -1187,11 +1285,20 @@ internal sealed class InstallationResetService(
 
     }
 
+    /// <param name="terminalGate">
+    /// An extra step the attested full-reset arm inserts between offline cleanup and verification.
+    /// Null for every ordinary reset, which has nothing to do there.
+    ///
+    /// <para>It returns the record to continue from rather than nothing, because it publishes durable
+    /// state of its own. Continuing from the record this method was already holding would write that
+    /// state straight back out of existence on the very next checkpoint.</para>
+    /// </param>
     private async Task<Result<InstallationResetResult>> ContinueApplyAsync(
         IInstallationResetActiveWriter writer,
         InstallationResetApplyProgress progress,
         InstallationResetPlan plan,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<Result<InstallationResetActiveRecord>>>? terminalGate = null)
     {
 
         InstallationResetActiveRecord active = progress.Active;
@@ -1506,6 +1613,53 @@ internal sealed class InstallationResetService(
                         active.AcceptedBinding.PreservedBackups,
                         credentialVerification,
                         resumeRequired: true));
+
+            }
+
+            // The attested arm's last authorized effect, and it goes exactly here. The Grimoire is
+            // gone and the ordinary accepted credentials — including the Campaign root-identity key —
+            // are removed, which is the earliest point at which the three restore credentials may be
+            // taken; and it is before Verified, which is the latest point at which the installation
+            // may still be reported as needing recovery.
+            if (terminalGate is not null)
+            {
+
+                Result<InstallationResetActiveRecord> terminal =
+                    await terminalGate(cancellationToken).ConfigureAwait(false);
+
+                if (terminal.IsFailure)
+                {
+
+                    active = active with { LastErrorCode = terminal.Error.Code };
+
+                    progress.Active = active;
+
+                    Result terminalCheckpoint = await writer.WriteAsync(
+                        active,
+                        cancellationToken).ConfigureAwait(false);
+
+                    return terminalCheckpoint.IsFailure
+                        ? Resumable(active, terminalCheckpoint.Error)
+                        : Resumable(active, terminal.Error);
+
+                }
+
+                // Continue from what it published, not from what this method remembered. The step
+                // records each irreversible credential removal durably, and carrying the older record
+                // forward would erase that record on the next checkpoint — leaving an installation
+                // whose credentials are gone and whose evidence says they never were.
+                active = terminal.Value with
+                {
+                    Phase = active.Phase,
+                    PointOfNoReturn = active.PointOfNoReturn,
+                    RowsDeleted = active.RowsDeleted,
+                    FilesDeleted = active.FilesDeleted,
+                    EstimatedBytesDeleted = active.EstimatedBytesDeleted,
+                    CredentialResults = active.CredentialResults,
+                    LastErrorCode = active.LastErrorCode,
+                };
+
+                progress.Active = active;
 
             }
 
@@ -2575,6 +2729,26 @@ internal sealed class InstallationResetService(
 
         /// <summary>The publication this writer last made durable, or the one it started from.</summary>
         internal InstallationResetActivePublication? Publication => _publication;
+
+        /// <summary>
+        /// Adopts a publication a collaborator made durable under the same held lock.
+        /// </summary>
+        /// <remarks>
+        /// The attested arm's last step publishes through the store directly, because it has to record
+        /// each irreversible credential removal before issuing the next one. Every one of those
+        /// publications advances the authenticated envelope revision, so a writer still holding the one
+        /// it started from would conflict on its very next write — and its very next write is the one
+        /// that says the reset is verified. Adopting is how the two stay the same operation rather than
+        /// two writers racing for the same record.
+        /// </remarks>
+        internal void Adopt(InstallationResetActivePublication published)
+        {
+
+            ArgumentNullException.ThrowIfNull(published);
+
+            _publication = published;
+
+        }
 
         public async Task<Result> RetireAsync(
             Guid operationId,

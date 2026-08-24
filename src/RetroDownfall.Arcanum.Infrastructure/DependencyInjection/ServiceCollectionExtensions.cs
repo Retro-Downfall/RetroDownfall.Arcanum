@@ -524,6 +524,27 @@ public static class ServiceCollectionExtensions
             new InstallationResetRestoreCredentialCleanup(
                 provider.GetRequiredService<IOsCredentialStore>()));
 
+        // Scoped alongside the active store it authenticates against. It is handed the database path
+        // rather than deriving one, because the whole point of the step is to observe that exact file
+        // is gone before the last restore credentials are removed.
+        services.TryAddScoped<IFullInstallationResetTerminalContinuation>(provider =>
+            new FullInstallationResetTerminalContinuation(
+                provider.GetRequiredService<IInstallationResetActiveStore>(),
+                new Backup.BackupRestoreJournalAnchorStore(
+                    provider.GetRequiredService<IOsCredentialStore>(),
+                    new Backup.BackupRestoreJournalKeyProvider(
+                        provider.GetRequiredService<IOsCredentialStore>()),
+                    new Backup.BackupRestoreJournalInstallationIdentityProvider(
+                        provider.GetRequiredService<IOsCredentialStore>())),
+                provider.GetRequiredService<InstallationResetRestoreCredentialCleanup>(),
+                provider.GetRequiredService<IOsCredentialStore>(),
+                ArcanumPaths.GrimoireDatabaseFile));
+
+        // A deferred resolution for the same reason the marker-pair coordinator is one: planning and
+        // the ordinary reset paths must keep working on an installation this graph cannot serve.
+        services.TryAddScoped<Func<IFullInstallationResetTerminalContinuation>>(provider =>
+            provider.GetRequiredService<IFullInstallationResetTerminalContinuation>);
+
         // A deferred resolution, not a constructor dependency. The reset service must resolve and
         // plan on an installation whose Grimoire is absent or locked, and the coordinator's graph
         // reaches the encrypted database; binding it eagerly would make every restricted path
