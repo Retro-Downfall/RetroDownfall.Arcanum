@@ -1097,6 +1097,8 @@ public static class ApiBootstrapper
 
         apiGroup.MapConfigurationEndpoints();
 
+        apiGroup.MapCovenantInspectionEndpoints();
+
         apiGroup.MapCovenantMutationEndpoints();
 
         apiGroup.MapDataRetentionEndpoints();

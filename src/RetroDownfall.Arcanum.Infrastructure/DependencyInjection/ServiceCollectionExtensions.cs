@@ -1625,6 +1625,15 @@ public static class ServiceCollectionExtensions
 
         // The turn-plan seam. Scoped because it reads through the scoped store and hands back a
         // lease the turn owns for its whole lifetime (§10.13).
+        // The operator's read path. Scoped for the same reason as the write path below: it answers one
+        // request under one caller-owned lease.
+        services.AddScoped<ICovenantManagementService>(static sp => new CovenantManagementService(
+            sp.GetRequiredService<ICovenantStore>(),
+            sp.GetRequiredService<ICovenantLinker>(),
+            sp.GetRequiredService<ICovenantOperationGate>(),
+            sp.GetRequiredService<ICovenantAvailability>(),
+            sp.GetRequiredService<ICovenantEnvelopeCodec>()));
+
         // The operator's write path. Scoped because it borrows the caller's own connection and lease
         // for the life of one request; a singleton would outlive both.
         services.AddScoped<ICovenantMutationService>(static sp => new CovenantMutationService(
