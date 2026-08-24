@@ -308,28 +308,27 @@ internal sealed class CovenantManagementService(
 
         CovenantScopeCensus census = CovenantScopeCensus.Empty;
 
-        if (snapshot.Canonical is CovenantCapabilityState.Healthy)
+        // The census is attempted unconditionally rather than gated on reported health. The gate
+        // already refuses a capability over a tier it cannot serve, so a health check here would only
+        // duplicate that refusal — and it would suppress the counts of a degraded-but-readable tier,
+        // telling an operator they held nothing when the truth was that search was slower.
+        Result<CovenantInstallationReadLease> lease = await gate
+            .AcquireInstallationReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (lease.IsSuccess)
         {
 
-            Result<CovenantInstallationReadLease> lease = await gate
-                .AcquireInstallationReadAsync(cancellationToken)
+            await using CovenantInstallationReadLease owned = lease.Value;
+
+            Result<CovenantScopeCensus> read = await store
+                .ReadScopeCensusAsync(owned, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (lease.IsSuccess)
+            if (read.IsSuccess)
             {
 
-                await using CovenantInstallationReadLease owned = lease.Value;
-
-                Result<CovenantScopeCensus> read = await store
-                    .ReadScopeCensusAsync(owned, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (read.IsSuccess)
-                {
-
-                    census = read.Value;
-
-                }
+                census = read.Value;
 
             }
 
