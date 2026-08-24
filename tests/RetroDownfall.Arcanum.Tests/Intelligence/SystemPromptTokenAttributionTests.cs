@@ -15,6 +15,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// <summary>
 /// One-pass typed token attribution over the rendered system prompt (§10.13).
 /// </summary>
+[Trait("Suite", "Dci")]
 public sealed class SystemPromptTokenAttributionTests
 {
 

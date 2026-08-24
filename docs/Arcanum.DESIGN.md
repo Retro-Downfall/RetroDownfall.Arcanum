@@ -2740,8 +2740,6 @@ Agent-originated retirement is absent, and with it the Ward flow, the retirement
 
 Campaign path-identity administration, Session-binding resolution, the schema repair and family-reinitialize routes, and a `doctor` verb are described in the public contract and are not implemented here. Turn-time Campaign resolution already works without them, and none of them is required for an operator to write or retire an entry.
 
-## 11. Local API security
-
 ### 10.23 What an installation holds, and what a turn had to drop
 
 Two surfaces reported a number nobody had measured. Both are answers to "why is my preference not being honored", which is the question this capability has to be able to answer or it is not worth having.
@@ -2783,6 +2781,8 @@ A recorded baseline is comparable only on the host that recorded it. Pairing can
 **Latency and allocation get different headroom, deliberately.** Latency ceilings carry roughly four times what a developer machine measures, because a shared runner is slower and a gate that failed on a busy one would be turned off. Allocation ceilings are far tighter, because allocations are deterministic and machine-independent and their headroom only has to absorb a code change. Each allocation number is a difference against a control measured through the same loop, and a correction below zero is failed rather than reported as a very good result: it means the subtraction is not measuring what it claims to.
 
 **Published AOT, measured as published.** The shipped CLI is Native AOT and the JIT-warmed host reported turn planning at roughly twice the published binary's cost, so a ceiling set from one would be meaningless against the other. The host is outside the solution, following the regex smoke host, because the workflow gate demands a `dotnet test` line for every `tests/` entry the solution carries and this is a console host rather than a test project. That leaves nothing else compiling it, so CI runs the gate directly and the ordinary suite asserts the manifest the gate reads — a ceiling reverted to null or an operation the host cannot run would otherwise leave a gate that runs, reports, and gates nothing.
+
+## 11. Local API security
 
 ### 11.1 Threat model
 

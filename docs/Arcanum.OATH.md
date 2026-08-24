@@ -1132,7 +1132,7 @@ Stop memory extracted inside one Campaign from being retrieved inside another. T
 
 **Authority.** Session scope comes from exactly one immutable `GlobalOnly | Campaign | LegacyUnresolved` binding. Working-directory scope comes from an opened physical root identity and protected marker, never a path prefix. Null, ambiguous, or unresolved legacy ownership never becomes installation-global by default; protected continuation fails until the binding is resolved. Campaign deletion never converts historical Sessions into Global authority.
 
-One feature gate, default off. Off means today's behavior exactly, proven by the DCI regression suite.
+One feature gate, default off. Off means today's behavior exactly, proven by the DCI regression suite. That suite is the set of test classes carrying `[Trait("Suite", "Dci")]` — the rendered prompt goldens, the stable/volatile segmentation the cache plan is cut from, and the per-source token attribution — and it is run with `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --filter "Suite=Dci"`. `DciRegressionSuiteTests` pins that membership from outside the filter, because a filter that has quietly stopped selecting anything still prints `Passed!` and would let an empty run stand in for the proof.
 
 ### 20.3 Campaign rollup (#77, XL)
 

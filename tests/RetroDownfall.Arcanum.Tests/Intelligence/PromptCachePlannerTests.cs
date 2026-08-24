@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
+[Trait("Suite", "Dci")]
 public sealed class PromptCachePlannerTests
 {
     [Fact]

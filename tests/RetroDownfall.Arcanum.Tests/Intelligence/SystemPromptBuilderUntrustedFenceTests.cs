@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
+[Trait("Suite", "Dci")]
 public sealed class SystemPromptBuilderUntrustedFenceTests
 {
 

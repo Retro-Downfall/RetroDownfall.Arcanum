@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
+[Trait("Suite", "Dci")]
 public sealed class ModelTokenEstimatorTests
 {
     [Fact]

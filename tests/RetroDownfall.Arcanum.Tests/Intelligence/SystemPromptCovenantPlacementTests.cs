@@ -20,6 +20,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// cache plan exactly as they were; otherwise every existing golden and every provider prefix cache
 /// changes the moment the runtime is registered, and no one finds out until a bill arrives.
 /// </remarks>
+[Trait("Suite", "Dci")]
 public sealed class SystemPromptCovenantPlacementTests
 {
 
