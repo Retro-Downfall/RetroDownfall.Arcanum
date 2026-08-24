@@ -137,6 +137,138 @@ public sealed class CovenantAcrossSessionsTests
 
     }
 
+    [Fact]
+    public async Task A_retired_key_refuses_to_come_back_without_an_explicit_operator_action()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(SessionBCampaign, "Session B", Token);
+
+        FakeCovenantAvailability availability = new();
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
+
+        await WriteGlobalAsync(fixture, gate);
+
+        await RetireGlobalAsync(fixture, gate);
+
+        // Retirement is the operator saying "stop honoring this". A later write that silently revived
+        // the key would make the retirement a suggestion, and the operator would have no way to tell
+        // that the thing they withdrew is being honored again.
+        Result<CovenantMutationResultDto> revived = await SetGlobalAsync(
+            fixture,
+            gate,
+            expectedRevision: 2,
+            reactivate: false,
+            "Quietly back again.");
+
+        Assert.True(revived.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, revived.Error.Code);
+
+        CovenantTurnContext still = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+
+        Assert.DoesNotContain("Quietly back again.", still.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task An_operator_who_asks_for_reactivation_gets_it()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(SessionBCampaign, "Session B", Token);
+
+        FakeCovenantAvailability availability = new();
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
+
+        await WriteGlobalAsync(fixture, gate);
+
+        await RetireGlobalAsync(fixture, gate);
+
+        // The refusal above has to be a gate rather than a wall: an operator who states the intent
+        // gets the key back, or retiring one would be a decision they could never undo.
+        Result<CovenantMutationResultDto> revived = await SetGlobalAsync(
+            fixture,
+            gate,
+            expectedRevision: 2,
+            reactivate: true,
+            "Deliberately back again.");
+
+        Assert.True(revived.IsSuccess, revived.IsFailure ? revived.Error.Message : string.Empty);
+
+        CovenantTurnContext after = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+
+        Assert.Contains("Deliberately back again.", after.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
+
+    }
+
+    private static async Task<Result<CovenantMutationResultDto>> SetGlobalAsync(
+        CovenantCanonicalFixture fixture,
+        CovenantOperationGate gate,
+        long expectedRevision,
+        bool reactivate,
+        string content)
+    {
+
+        CovenantMutationService service = Service(fixture);
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        string preflight;
+
+        await using (CovenantInstallationReadLease read =
+            (await gate.AcquireInstallationReadAsync(Token)).Value)
+        {
+
+            Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
+                new CovenantSetPrepareRequest(
+                    CovenantScope.Global,
+                    null,
+                    "preference.builds",
+                    content,
+                    expectedRevision,
+                    mutationId,
+                    reactivate),
+                read,
+                Token);
+
+            if (prepared.IsFailure)
+            {
+
+                return prepared.Error;
+
+            }
+
+            preflight = prepared.Value.PreflightToken;
+
+        }
+
+        await using CovenantWriteLease write =
+            (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        return await service.SetAsync(
+            new CovenantSetRequest(
+                CovenantScope.Global,
+                null,
+                "preference.builds",
+                content,
+                expectedRevision,
+                mutationId,
+                reactivate,
+                preflight),
+            write,
+            Token);
+
+    }
+
     private static async Task WriteGlobalAsync(CovenantCanonicalFixture fixture, CovenantOperationGate gate)
     {
 
