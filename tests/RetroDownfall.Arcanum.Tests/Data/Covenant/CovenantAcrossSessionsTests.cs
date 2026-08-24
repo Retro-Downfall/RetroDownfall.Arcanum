@@ -89,7 +89,7 @@ public sealed class CovenantAcrossSessionsTests
         // a Global arm that had quietly acquired a Campaign predicate pass, because every such arm
         // is correct for exactly one Campaign.
         CovenantTurnContext elsewhere =
-            await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+            await BeginTurnAsync(fixture.Store, gate, availability, authority, SessionACampaign);
 
         Assert.Contains(GlobalPreference, elsewhere.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
 
@@ -113,7 +113,7 @@ public sealed class CovenantAcrossSessionsTests
 
         await WriteCampaignAsync(fixture, gate, SessionACampaign);
 
-        CovenantTurnContext turn = await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+        CovenantTurnContext turn = await BeginTurnAsync(fixture.Store, gate, availability, authority, SessionACampaign);
 
         // The two sections coexist. Every other test here populates one of them, so a linker that
         // let a Campaign Confirmed head suppress the Global section — or the reverse — would still
@@ -143,7 +143,7 @@ public sealed class CovenantAcrossSessionsTests
         await WriteCampaignAsync(fixture, gate, SessionACampaign, GlobalKey, CampaignOverride);
 
         CovenantTurnContext shadowed =
-            await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+            await BeginTurnAsync(fixture.Store, gate, availability, authority, SessionACampaign);
 
         Assert.Contains(CampaignOverride, shadowed.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
 
@@ -152,7 +152,7 @@ public sealed class CovenantAcrossSessionsTests
         await RetireCampaignAsync(fixture, gate, SessionACampaign, GlobalKey);
 
         CovenantTurnContext restored =
-            await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+            await BeginTurnAsync(fixture.Store, gate, availability, authority, SessionACampaign);
 
         // A Campaign tombstone withdraws the override, not the Global statement underneath it. If a
         // tombstone kept shadowing, an operator could silence a Global preference in one Campaign

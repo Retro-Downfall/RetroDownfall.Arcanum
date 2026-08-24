@@ -98,9 +98,9 @@ public sealed class CovenantScopeCensusTests
 
         Assert.NotEqual(campaignConfirmedBytes, campaignProposedBytes);
 
-        Assert.Equal(campaignConfirmedBytes, census.CampaignConfirmedRenderedBytes);
+        Assert.Equal(campaignConfirmedBytes, census.MaxCampaignConfirmedRenderedBytes);
 
-        Assert.Equal(campaignProposedBytes, census.CampaignProposedRenderedBytes);
+        Assert.Equal(campaignProposedBytes, census.MaxCampaignProposedRenderedBytes);
 
         Assert.Equal(
             RowBytes(census, CovenantScope.Global, CovenantLane.Confirmed),
