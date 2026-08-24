@@ -47,6 +47,13 @@ public sealed class FullInstallationResetManagedFileCallSiteTests
     private const string KeyProviderPath =
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournalKeyProvider.cs";
 
+    private const string TerminalContinuationPath =
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+        + "FullInstallationResetTerminalContinuation.cs";
+
+    private const string ServicePath =
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs";
+
     private const string InstallationIdentityProviderPath =
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/"
         + "BackupRestoreJournalInstallationIdentityProvider.cs";
@@ -152,6 +159,62 @@ public sealed class FullInstallationResetManagedFileCallSiteTests
         AssertNamedOnlyBy(
             "new InstallationResetRestoreCredentialCleanup(",
             CompositionRootPath);
+
+        // And the removal itself is invoked from exactly one place: the step that has already proven
+        // the managed-file inventory verified and the database file gone. Both the per-step removal
+        // and the final absence check are named, because a caller that took the steps without the
+        // check would publish VerifiedAbsent over an observation nobody made.
+        AssertNamedOnlyBy("_credentials.RemoveStep(", TerminalContinuationPath);
+
+        AssertNamedOnlyBy("_credentials.VerifyAllAbsent(", TerminalContinuationPath);
+
+    }
+
+    [Fact]
+    public void The_locked_reset_service_is_the_only_production_caller_of_the_terminal_continuation()
+    {
+
+        AssertNamedOnlyBy(
+            "IFullInstallationResetTerminalContinuation",
+            TerminalContinuationPath,
+            ServicePath,
+            CompositionRootPath);
+
+        AssertNamedOnlyBy(
+            "new FullInstallationResetTerminalContinuation(",
+            CompositionRootPath);
+
+        // Asserted positively too: a service that stopped calling it would satisfy every negative
+        // rule above while silently restoring an ending that never removed the restore credentials.
+        ProductionSource service = ProductionSourceInventory.Sources()
+            .Single(source => source.IsExactOwner(ServicePath));
+
+        Assert.True(service.Names("terminal.CompleteAsync("));
+
+    }
+
+    [Fact]
+    public void Only_the_terminal_continuation_gates_the_ending_on_a_verified_managed_file_inventory()
+    {
+
+        // Two gates, in two files, and both have to stay. The service refuses to continue past
+        // admission without a terminal reconciliation; the continuation refuses to remove a restore
+        // credential without one. Either alone would let a partially reconciled installation lose the
+        // evidence that could have finished its interrupted restore.
+        ProductionSource service = ProductionSourceInventory.Sources()
+            .Single(source => source.IsExactOwner(ServicePath));
+
+        ProductionSource continuation = ProductionSourceInventory.Sources()
+            .Single(source => source.IsExactOwner(TerminalContinuationPath));
+
+        Assert.All(
+            new[] { service, continuation },
+            static source => Assert.True(
+                source.Names(
+                    "Phase: FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified,")));
+
+        // And the continuation observes the database rather than trusting a report of its removal.
+        Assert.True(continuation.Names("File.Exists(_grimoireDatabaseFile)"));
 
     }
 

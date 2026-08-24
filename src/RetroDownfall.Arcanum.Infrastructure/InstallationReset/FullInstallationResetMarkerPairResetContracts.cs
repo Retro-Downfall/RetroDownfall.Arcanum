@@ -2,6 +2,8 @@ using System.Collections.Immutable;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -110,7 +112,9 @@ internal sealed record HostToolsMarkerPairResetCheckpointV1(
     CovenantDigest? MarkerIntentVectorDigest,
     ulong? DeletedCount,
     ulong? OrphanCount,
-    FullInstallationResetManagedFileCheckpointV1? ManagedFile = null);
+    FullInstallationResetManagedFileCheckpointV1? ManagedFile = null,
+    BackupRestoreFullResetTerminalProjectionV1? RestoreTerminal = null,
+    InstallationResetRestoreCredentialCleanupPhase? RestoreCredentialCleanup = null);
 
 internal static class HostToolsMarkerPairResetCheckpointBounds
 {

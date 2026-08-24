@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -43,6 +45,20 @@ internal enum InstallationResetRestoreCredentialCleanupPhase : byte
 /// these three names are the only handle anything has on them — and a bare prefix, an unnamespaced
 /// alias, or another profile's suffix is a different account that this installation has no claim to.
 /// </remarks>
+/// <summary>
+/// One ordered removal step: which phase it completes, which account, and what it must still hold.
+/// </summary>
+/// <remarks>
+/// The projected digest travels with the step because a resumed removal cannot re-derive it. Once the
+/// anchor is gone the credential set no longer has the shape the terminal proof was made from, so the
+/// proof is persisted with the operation and each surviving account is still compared against the
+/// value that was projected for it while all three were there.
+/// </remarks>
+internal sealed record InstallationResetRestoreCredentialStep(
+    InstallationResetRestoreCredentialCleanupPhase CompletedPhase,
+    string Account,
+    CovenantDigest? ProjectedValueDigest);
+
 internal sealed record InstallationResetRestoreCredentialTrio(
     string InstallationAccount,
     string JournalKeyAccount,
@@ -91,43 +107,134 @@ internal sealed class InstallationResetRestoreCredentialCleanup(IOsCredentialSto
     }
 
     /// <summary>
-    /// Removes the three accounts in the one legal order and proves all three absent.
+    /// The three accounts in the one legal removal order, paired with the digests projected for them.
     /// </summary>
     /// <remarks>
-    /// The projection is the authorization. Its arm decides what may be there at all: an installation
-    /// that never restored must have all three absent already, and one whose last restore closed must
-    /// have all three present with exactly the projected values.
+    /// Anchor, then key, then installation identity — the reverse of the order the credentials
+    /// authorize each other in. Removing the anchor first means no surviving journal can authenticate
+    /// from that moment on, so no partially removed state can be mistaken for a restore in progress;
+    /// reversing it would leave a profile whose key is gone while its anchor still claims an
+    /// operation, which is a state no recovery can either finish or safely abandon.
     /// </remarks>
-    internal Result<InstallationResetRestoreCredentialCleanupPhase> Remove(
+    internal static Result<ImmutableArray<InstallationResetRestoreCredentialStep>> OrderedSteps(
         BackupRestoreFullResetTerminalProjectionV1 terminal)
     {
 
         ArgumentNullException.ThrowIfNull(terminal);
 
-        if (terminal.Version != 1
-            || !Enum.IsDefined(terminal.Arm))
+        if (terminal.Version != 1 || !Enum.IsDefined(terminal.Arm))
         {
 
-            return Blocked();
+            return Result<ImmutableArray<InstallationResetRestoreCredentialStep>>.Failure(
+                BlockedError());
 
         }
 
         InstallationResetRestoreCredentialTrio trio = Derive(terminal.ProfileNamespaceDigest);
 
-        // Anchor, then key, then installation identity. Reversing this would leave an installation
-        // whose journal key is gone but whose anchor still claims an operation, which is a state no
-        // recovery can either finish or safely abandon.
-        (string Account, CovenantDigest? Projected)[] ordered =
+        ImmutableArray<InstallationResetRestoreCredentialStep> steps =
         [
-            (trio.AnchorAccount, terminal.AnchorAccountValueDigest),
-            (trio.JournalKeyAccount, terminal.JournalKeyAccountValueDigest),
-            (trio.InstallationAccount, terminal.InstallationAccountValueDigest),
+            new InstallationResetRestoreCredentialStep(
+                InstallationResetRestoreCredentialCleanupPhase.AnchorRemoved,
+                trio.AnchorAccount,
+                terminal.AnchorAccountValueDigest),
+            new InstallationResetRestoreCredentialStep(
+                InstallationResetRestoreCredentialCleanupPhase.JournalKeyRemoved,
+                trio.JournalKeyAccount,
+                terminal.JournalKeyAccountValueDigest),
+            new InstallationResetRestoreCredentialStep(
+                InstallationResetRestoreCredentialCleanupPhase.InstallationIdentityRemoved,
+                trio.InstallationAccount,
+                terminal.InstallationAccountValueDigest),
         ];
 
-        foreach ((string account, CovenantDigest? projected) in ordered)
+        return Result<ImmutableArray<InstallationResetRestoreCredentialStep>>.Success(steps);
+
+    }
+
+    /// <summary>
+    /// Performs one ordered step: compare-removes its account, or observes it already gone.
+    /// </summary>
+    internal Result RemoveStep(InstallationResetRestoreCredentialStep step)
+    {
+
+        ArgumentNullException.ThrowIfNull(step);
+
+        return CompareRemove(step.Account, step.ProjectedValueDigest);
+
+    }
+
+    /// <summary>
+    /// Rereads all three and reports whether every one is gone.
+    /// </summary>
+    /// <remarks>
+    /// An observation rather than a conclusion. <c>VerifiedAbsent</c> is what everything downstream
+    /// acts on, and inferring it from the deletes that were just issued would make it a restatement of
+    /// the intent rather than of the outcome.
+    /// </remarks>
+    internal Result VerifyAllAbsent(BackupRestoreFullResetTerminalProjectionV1 terminal)
+    {
+
+        Result<ImmutableArray<InstallationResetRestoreCredentialStep>> steps =
+            OrderedSteps(terminal);
+
+        if (steps.IsFailure)
         {
 
-            Result removed = CompareRemove(account, projected);
+            return Result.Failure(steps.Error);
+
+        }
+
+        foreach (InstallationResetRestoreCredentialStep step in steps.Value)
+        {
+
+            Result<bool> absent = IsAbsent(step.Account);
+
+            if (absent.IsFailure)
+            {
+
+                return Result.Failure(absent.Error);
+
+            }
+
+            if (!absent.Value)
+            {
+
+                return Result.Failure(BlockedError());
+
+            }
+
+        }
+
+        return Result.Success();
+
+    }
+
+    /// <summary>
+    /// Removes all three in order and proves them absent, in one call.
+    /// </summary>
+    /// <remarks>
+    /// The uninterrupted path. A caller that has to publish a durable checkpoint between steps drives
+    /// <see cref="OrderedSteps"/> and <see cref="RemoveStep"/> itself instead.
+    /// </remarks>
+    internal Result<InstallationResetRestoreCredentialCleanupPhase> Remove(
+        BackupRestoreFullResetTerminalProjectionV1 terminal)
+    {
+
+        Result<ImmutableArray<InstallationResetRestoreCredentialStep>> steps =
+            OrderedSteps(terminal);
+
+        if (steps.IsFailure)
+        {
+
+            return Result<InstallationResetRestoreCredentialCleanupPhase>.Failure(steps.Error);
+
+        }
+
+        foreach (InstallationResetRestoreCredentialStep step in steps.Value)
+        {
+
+            Result removed = RemoveStep(step);
 
             if (removed.IsFailure)
             {
@@ -138,31 +245,12 @@ internal sealed class InstallationResetRestoreCredentialCleanup(IOsCredentialSto
 
         }
 
-        // Reread rather than inferred from the deletes above. VerifiedAbsent is what everything
-        // downstream is allowed to act on, so it has to be an observation rather than a conclusion.
-        foreach ((string account, _) in ordered)
-        {
+        Result verified = VerifyAllAbsent(terminal);
 
-            Result<bool> absent = IsAbsent(account);
-
-            if (absent.IsFailure)
-            {
-
-                return Result<InstallationResetRestoreCredentialCleanupPhase>.Failure(absent.Error);
-
-            }
-
-            if (!absent.Value)
-            {
-
-                return Blocked();
-
-            }
-
-        }
-
-        return Result<InstallationResetRestoreCredentialCleanupPhase>.Success(
-            InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent);
+        return verified.IsFailure
+            ? Result<InstallationResetRestoreCredentialCleanupPhase>.Failure(verified.Error)
+            : Result<InstallationResetRestoreCredentialCleanupPhase>.Success(
+                InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent);
 
     }
 

@@ -2787,7 +2787,8 @@ public sealed partial class InstallationResetServiceTests
         IInstallationResetDatabaseIdentityReader? identityReader = null,
         IInstallationResetHostProcessToolsPairReader? pairReader = null,
         IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
-        Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null) =>
+        Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null,
+        Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null) =>
         new(
             dataService,
             credentialService,
@@ -2801,7 +2802,8 @@ public sealed partial class InstallationResetServiceTests
             identityReader,
             pairReader ?? CleanPairReader(),
             remediationVerifier,
-            markerPairReset);
+            markerPairReset,
+            terminalContinuation);
 
     private static async Task<Result<InstallationResetResult>>
         ApplyUnderTestLockAsync(
@@ -3372,6 +3374,20 @@ public sealed partial class InstallationResetServiceTests
 
         public Func<InstallationResetActiveRecord, Result>? WriteOverride { get; set; }
 
+        /// <summary>
+        /// Rewrites what the store durably keeps, so a test can seed state a collaborator would have
+        /// published under the same lock.
+        /// </summary>
+        /// <remarks>
+        /// Distinct from <see cref="WriteOverride"/>, which decides whether a write succeeds. This one
+        /// runs after a successful write and owns what the next read sees, which is how a test stands
+        /// in for a component that publishes into the same record from outside this writer.
+        /// </remarks>
+        public Action<InstallationResetActiveRecord>? OnWrite { get; set; }
+
+        /// <summary>Records a publication a collaborator made under the same held lock.</summary>
+        public void Publish(InstallationResetActiveRecord record) => Record = record;
+
         public List<Guid> RetiredOperationIds { get; } = [];
 
         public Result RetireResult { get; set; } = Result.Success();
@@ -3506,6 +3522,8 @@ public sealed partial class InstallationResetServiceTests
             }
 
             Record = record;
+
+            OnWrite?.Invoke(record);
 
             return Task.FromResult(Result.Success());
 

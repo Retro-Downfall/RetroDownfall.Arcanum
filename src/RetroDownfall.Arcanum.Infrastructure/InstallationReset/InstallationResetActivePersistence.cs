@@ -8,6 +8,12 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using BackupRestoreFullResetTerminalArm =
+    RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreFullResetTerminalArm;
+
+using BackupRestoreFullResetTerminalProjectionV1 =
+    RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreFullResetTerminalProjectionV1;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal sealed record InstallationResetActiveLocation(
@@ -331,7 +337,9 @@ internal sealed record InstallationResetActivePayloadV2(
                 : null,
             checkpoint.DeletedCount,
             checkpoint.OrphanCount,
-            CopyManagedFileCheckpoint(checkpoint.ManagedFile));
+            CopyManagedFileCheckpoint(checkpoint.ManagedFile),
+            CopyRestoreTerminal(checkpoint.RestoreTerminal),
+            checkpoint.RestoreCredentialCleanup);
 
     }
 
@@ -373,6 +381,53 @@ internal sealed record InstallationResetActivePayloadV2(
 
     }
 
+    /// <summary>
+    /// Deep-copies the terminal restore projection a resumed credential removal compares against.
+    /// </summary>
+    /// <remarks>
+    /// The projection is persisted rather than re-derived because a removal that has already started
+    /// cannot prove itself again: the credential set it is midway through taking no longer has the
+    /// shape the proof was made from. So the proof travels with the operation, and a resume compares
+    /// each surviving account against the digest that was projected for it while all three were still
+    /// there.
+    /// </remarks>
+    private static BackupRestoreFullResetTerminalProjectionV1? CopyRestoreTerminal(
+        BackupRestoreFullResetTerminalProjectionV1? terminal)
+    {
+
+        if (terminal is null)
+        {
+
+            return null;
+
+        }
+
+        return new BackupRestoreFullResetTerminalProjectionV1(
+            terminal.Version,
+            terminal.Arm,
+            CopyDigest(terminal.ProfileNamespaceDigest),
+            terminal.InstallationId,
+            terminal.ClosedOperationId,
+            terminal.ClosedRevision,
+            terminal.ClosedEnvelopeDigest is { } closedEnvelope
+                ? CopyDigest(closedEnvelope)
+                : null,
+            terminal.ClosedJournalLocationDigest is { } closedLocation
+                ? CopyDigest(closedLocation)
+                : null,
+            terminal.InstallationAccountValueDigest is { } installation
+                ? CopyDigest(installation)
+                : null,
+            terminal.JournalKeyAccountValueDigest is { } journalKey
+                ? CopyDigest(journalKey)
+                : null,
+            terminal.AnchorAccountValueDigest is { } anchor
+                ? CopyDigest(anchor)
+                : null,
+            CopyDigest(terminal.TerminalEvidenceDigest));
+
+    }
+
     private static CovenantDigest CopyDigest(CovenantDigest digest) =>
         new(digest.Bytes);
 
@@ -407,6 +462,9 @@ internal sealed record InstallationResetActivePayloadV2(
 [JsonSerializable(typeof(HostToolsMarkerPairResetPhase))]
 [JsonSerializable(typeof(FullInstallationResetManagedFileCheckpointV1))]
 [JsonSerializable(typeof(FullInstallationResetManagedFileReconciliationPhase))]
+[JsonSerializable(typeof(InstallationResetRestoreCredentialCleanupPhase))]
+[JsonSerializable(typeof(BackupRestoreFullResetTerminalProjectionV1))]
+[JsonSerializable(typeof(BackupRestoreFullResetTerminalArm))]
 [JsonSerializable(typeof(FullInstallationResetRestartProofV1))]
 [JsonSerializable(typeof(FullInstallationResetSignedAttestationProjectionV1))]
 [JsonSerializable(typeof(CampaignMarkerInventoryEntryV1))]

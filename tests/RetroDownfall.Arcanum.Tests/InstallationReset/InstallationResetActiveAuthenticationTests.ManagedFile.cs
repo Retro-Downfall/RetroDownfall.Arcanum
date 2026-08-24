@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
@@ -251,6 +252,187 @@ public sealed partial class InstallationResetActiveAuthenticationTests
                 InstallationResetActiveRecordAuthenticator
                     .ValidatePayload(WithManagedFile(candidate))
                     .IsFailure));
+
+    }
+
+    [Fact]
+    public void The_restore_credential_cleanup_phase_requires_the_projection_it_compares_against()
+    {
+
+        FullInstallationResetManagedFileCheckpointV1 terminalInventory = TerminalManagedFile();
+
+        // The projection alone is legal: it is published before the first removal, which is exactly
+        // what makes that removal resumable.
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator
+                .ValidatePayload(WithRestore(terminalInventory, ClosedProjection(), phase: null))
+                .IsSuccess);
+
+        Assert.All(
+            Enum.GetValues<InstallationResetRestoreCredentialCleanupPhase>(),
+            phase => Assert.True(
+                InstallationResetActiveRecordAuthenticator
+                    .ValidatePayload(WithRestore(terminalInventory, ClosedProjection(), phase))
+                    .IsSuccess));
+
+        // A phase with no projection is a record claiming progress against evidence it cannot
+        // produce, and a resumed removal would have nothing to compare a surviving account against.
+        Assert.All(
+            Enum.GetValues<InstallationResetRestoreCredentialCleanupPhase>(),
+            phase => Assert.True(
+                InstallationResetActiveRecordAuthenticator
+                    .ValidatePayload(WithRestore(terminalInventory, terminal: null, phase))
+                    .IsFailure));
+
+        // And neither may exist before the managed files are accounted for.
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator
+                .ValidatePayload(
+                    WithRestore(
+                        ManagedFile(),
+                        ClosedProjection(),
+                        InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent))
+                .IsFailure);
+
+    }
+
+    [Fact]
+    public void A_persisted_projection_must_match_the_shape_its_own_arm_commits_to()
+    {
+
+        FullInstallationResetManagedFileCheckpointV1 terminalInventory = TerminalManagedFile();
+
+        BackupRestoreFullResetTerminalProjectionV1 closed = ClosedProjection();
+
+        BackupRestoreFullResetTerminalProjectionV1[] invalid =
+        [
+            // A closed anchor that forgot what it closed.
+            closed with { ClosedOperationId = null },
+            closed with { ClosedRevision = null },
+            closed with { AnchorAccountValueDigest = null },
+            closed with { JournalKeyAccountValueDigest = null },
+            closed with { InstallationAccountValueDigest = null },
+
+            // An absence arm carrying observations only a closed anchor could have made.
+            closed with { Arm = BackupRestoreFullResetTerminalArm.NeverRestoredAbsence },
+
+            closed with { Version = 2 },
+        ];
+
+        Assert.All(
+            invalid,
+            candidate => Assert.True(
+                InstallationResetActiveRecordAuthenticator
+                    .ValidatePayload(WithRestore(terminalInventory, candidate, phase: null))
+                    .IsFailure));
+
+        // The absence arm's own coherent shape does validate.
+        Assert.True(
+            InstallationResetActiveRecordAuthenticator
+                .ValidatePayload(
+                    WithRestore(
+                        terminalInventory,
+                        new BackupRestoreFullResetTerminalProjectionV1(
+                            Version: 1,
+                            BackupRestoreFullResetTerminalArm.NeverRestoredAbsence,
+                            Digest(0x77),
+                            Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+                            ClosedOperationId: null,
+                            ClosedRevision: null,
+                            ClosedEnvelopeDigest: null,
+                            ClosedJournalLocationDigest: null,
+                            InstallationAccountValueDigest: null,
+                            JournalKeyAccountValueDigest: null,
+                            AnchorAccountValueDigest: null,
+                            Digest(0x78)),
+                        phase: null))
+                .IsSuccess);
+
+    }
+
+    [Fact]
+    public void The_projection_and_phase_survive_the_persistence_projection_intact()
+    {
+
+        InstallationResetActivePayloadV2 payload = WithRestore(
+            TerminalManagedFile(),
+            ClosedProjection(),
+            InstallationResetRestoreCredentialCleanupPhase.JournalKeyRemoved);
+
+        // Through ToRecord and back, which is the deep-copying projection every publication takes.
+        // A field dropped here silently re-runs an irreversible removal on the next resume.
+        InstallationResetActivePayloadV2 round =
+            InstallationResetActivePayloadV2.FromRecord(payload.ToRecord());
+
+        HostToolsMarkerPairResetCheckpointV1 marker = round.HostToolsMarkerPairReset!;
+
+        Assert.Equal(
+            InstallationResetRestoreCredentialCleanupPhase.JournalKeyRemoved,
+            marker.RestoreCredentialCleanup);
+
+        Assert.NotNull(marker.RestoreTerminal);
+
+        Assert.Equal(ClosedProjection(), marker.RestoreTerminal);
+
+    }
+
+    private static CovenantDigest Digest(byte value) =>
+        new([.. Enumerable.Repeat(value, 32)]);
+
+    private static BackupRestoreFullResetTerminalProjectionV1 ClosedProjection() =>
+        new(
+            Version: 1,
+            BackupRestoreFullResetTerminalArm.ClosedAnchor,
+            Digest(0x71),
+            Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+            Guid.Parse("99998888-7777-4666-8555-444433332222"),
+            ClosedRevision: 4,
+            Digest(0x72),
+            Digest(0x73),
+            Digest(0x74),
+            Digest(0x75),
+            Digest(0x76),
+            Digest(0x79));
+
+    private static FullInstallationResetManagedFileCheckpointV1 TerminalManagedFile()
+    {
+
+        ImmutableArray<Guid> empty = [];
+
+        return ManagedFile(
+            FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified) with
+        {
+            LocalErasureWorkItemCount = 0,
+            OrderedLocalErasureWorkItemIds = empty,
+            LocalErasureWorkItemVectorDigest =
+                FullInstallationResetManagedFileDigests.LocalErasureWorkItemVector(empty).Value,
+            SafeTerminalWriteIntentCount = 0,
+            ManualWriteOrphanCount = 0,
+            CompletedWorkItemCount = 0,
+            ManualWorkItemOrphanCount = 0,
+            TerminalClassificationDigest =
+                FullInstallationResetManagedFileDigests.TerminalClassification([], []).Value,
+        };
+
+    }
+
+    private static InstallationResetActivePayloadV2 WithRestore(
+        FullInstallationResetManagedFileCheckpointV1 managedFile,
+        BackupRestoreFullResetTerminalProjectionV1? terminal,
+        InstallationResetRestoreCredentialCleanupPhase? phase)
+    {
+
+        InstallationResetActivePayloadV2 payload = TerminalReceiptPayload();
+
+        return payload with
+        {
+            HostToolsMarkerPairReset = payload.HostToolsMarkerPairReset! with
+            {
+                ManagedFile = managedFile,
+                RestoreTerminal = terminal,
+                RestoreCredentialCleanup = phase,
+            },
+        };
 
     }
 
