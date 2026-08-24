@@ -206,7 +206,8 @@ internal sealed class InstallationResetService(
     InstallationResetControlPaths? controlPaths = null,
     IInstallationResetDatabaseIdentityReader? identityReader = null,
     IInstallationResetHostProcessToolsPairReader? pairReader = null,
-    IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null)
+    IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
+    Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null)
     : IInstallationResetService,
       IInstallationResetOnlineDataHandoff,
       IInstallationResetLockedService
@@ -772,6 +773,13 @@ internal sealed class InstallationResetService(
 
             }
 
+            await RunMarkerPairResetAsync(
+                heldInstallationLock,
+                publication,
+                existing,
+                request.ExternalRemediation,
+                cancellationToken).ConfigureAwait(false);
+
             return FullAdmissionAccepted(existing);
 
         }
@@ -862,9 +870,82 @@ internal sealed class InstallationResetService(
         Result published = await writer.WriteAsync(active, cancellationToken)
             .ConfigureAwait(false);
 
-        return published.IsFailure
-            ? Result<InstallationResetResult>.Failure(published.Error)
-            : FullAdmissionAccepted(active);
+        if (published.IsFailure)
+        {
+
+            return Result<InstallationResetResult>.Failure(published.Error);
+
+        }
+
+        await RunMarkerPairResetAsync(
+            heldInstallationLock,
+            writer.Publication,
+            active,
+            request.ExternalRemediation,
+            cancellationToken).ConfigureAwait(false);
+
+        return FullAdmissionAccepted(active);
+
+    }
+
+    /// <summary>
+    /// Hands the authenticated claim to the marker-pair coordinator, and to nothing else.
+    /// </summary>
+    /// <remarks>
+    /// This is the one production caller. It runs after the remediation claim is durable, because
+    /// the coordinator authenticates against that published record rather than against anything this
+    /// service tells it, and before any later terminalization, because a reset that reported itself
+    /// finished while both host-tools markers were still present would be reporting the one thing it
+    /// cannot yet prove.
+    ///
+    /// <para>It passes only the authorization it already holds: the held lock, the publication it
+    /// just read or wrote, and the operator's own signed statement. It mints no authority, supplies
+    /// no identity of its own, and derives nothing — everything the coordinator acts on it proves
+    /// again from the durable record.</para>
+    ///
+    /// <para>The admission outcome does not depend on the answer, and that is deliberate rather than
+    /// an oversight. An externally authorized full reset is incomplete either way — the operator is
+    /// told recovery is required whatever happened here — so letting a marker-pair refusal replace an
+    /// accepted admission would report the operation as never having been admitted while its claim
+    /// sits durable on disk. The progress this call makes is the checkpoint it publishes, and the
+    /// next resume reads that rather than a status code.</para>
+    /// </remarks>
+    private async Task RunMarkerPairResetAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        InstallationResetActivePublication? publication,
+        InstallationResetActiveRecord record,
+        FullInstallationResetExternalRemediationAttestation attestation,
+        CancellationToken cancellationToken)
+    {
+
+        if (markerPairReset is null || publication is null)
+        {
+
+            return;
+
+        }
+
+        // Resolved here rather than taken as a constructor dependency. Planning, reporting, and the
+        // ordinary reset paths must keep working on an installation whose Grimoire is absent, locked,
+        // or unopenable, and the coordinator's graph reaches the Covenant tier and the encrypted
+        // database behind it — so binding it at construction would make every one of those paths
+        // require a database they were specifically built not to need.
+        IHostToolsMarkerPairResetCoordinator coordinator = markerPairReset();
+
+        // A record already carrying a pair checkpoint is resumed rather than begun. Beginning would
+        // refuse it anyway — the coordinator admits a begin only for a record that has no checkpoint
+        // at all — but asking for the wrong one would turn a resumable operation into a refusal that
+        // reads like corruption.
+        _ = record.HostToolsMarkerPairReset is null
+            ? await coordinator.BeginAsync(
+                heldInstallationLock,
+                publication,
+                attestation,
+                cancellationToken).ConfigureAwait(false)
+            : await coordinator.ResumeAsync(
+                heldInstallationLock,
+                publication,
+                cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -2491,6 +2572,9 @@ internal sealed class InstallationResetService(
                 : Result.Failure(written.Error);
 
         }
+
+        /// <summary>The publication this writer last made durable, or the one it started from.</summary>
+        internal InstallationResetActivePublication? Publication => _publication;
 
         public async Task<Result> RetireAsync(
             Guid operationId,

@@ -16,7 +16,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
-public sealed class InstallationResetServiceTests
+public sealed partial class InstallationResetServiceTests
 {
 
     [Fact]
@@ -2786,7 +2786,8 @@ public sealed class InstallationResetServiceTests
         InstallationResetControlPaths? controlPaths = null,
         IInstallationResetDatabaseIdentityReader? identityReader = null,
         IInstallationResetHostProcessToolsPairReader? pairReader = null,
-        IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null) =>
+        IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
+        Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null) =>
         new(
             dataService,
             credentialService,
@@ -2799,7 +2800,8 @@ public sealed class InstallationResetServiceTests
             controlPaths,
             identityReader,
             pairReader ?? CleanPairReader(),
-            remediationVerifier);
+            remediationVerifier,
+            markerPairReset);
 
     private static async Task<Result<InstallationResetResult>>
         ApplyUnderTestLockAsync(
@@ -3363,7 +3365,8 @@ public sealed class InstallationResetServiceTests
 
         public int RecoverCount { get; private set; }
 
-        public InstallationResetActiveRecord? Record { get; private set; }
+        /// <summary>Settable so a test can seed the durable state a resumed attempt would find.</summary>
+        public InstallationResetActiveRecord? Record { get; set; }
 
         public List<InstallationResetActiveRecord> Writes { get; } = [];
 

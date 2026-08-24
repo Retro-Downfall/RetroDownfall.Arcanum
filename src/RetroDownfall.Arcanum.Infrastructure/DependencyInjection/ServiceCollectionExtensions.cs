@@ -471,6 +471,52 @@ public static class ServiceCollectionExtensions
                     IFullInstallationResetRemediationTrustRootProvider>(),
                 provider.GetService<TimeProvider>() ?? TimeProvider.System));
 
+        // The marker-pair reset boundary, one production implementation per port. Registered here
+        // rather than beside the Covenant tier because this is the only composition that has a
+        // full-reset entry at all, and a port with two implementations is a coordinator that can be
+        // handed a second opinion about which marker it is deleting.
+        //
+        // The gate is a singleton because it is the process-wide exclusion the taint transition and
+        // this reset share; two instances exclude nothing from each other. The operating-system
+        // adapter is a singleton for the same structural reason: it refuses a capability minted by
+        // any other instance, so a second adapter would be a second authority over the same slot.
+        services.TryAddSingleton<HostProcessToolsMarkerMutationGate>();
+
+        services.TryAddSingleton<IHostToolsMarkerPairResetOsPort>(provider =>
+            new HostProcessToolsMarkerResetAdapter(
+                new HostProcessToolsMarkerCredentialCapabilitySource(),
+                provider.GetRequiredService<HostProcessToolsMarkerMutationGate>()));
+
+        services.TryAddSingleton<IHostToolsMarkerPairResetDatabase>(provider =>
+            new HostToolsMarkerPairResetDatabase(
+                provider.GetRequiredService<ICovenantMaintenanceConnectionFactory>(),
+                provider.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.TryAddSingleton<IFullInstallationResetCampaignSchemaReadiness>(provider =>
+            new FullInstallationResetCampaignSchemaReadiness(
+                provider.GetRequiredService<GrimoireSchemaManifestInspector>()));
+
+        // Scoped, because the active store and the Campaign marker lifecycle it authenticates
+        // against are scoped: a singleton coordinator would outlive the connection its lifecycle
+        // writes through and keep an authority bound to a journal nobody can still read.
+        services.TryAddScoped<IHostToolsMarkerPairResetCoordinator>(provider =>
+            new HostToolsMarkerPairResetCoordinator(
+                provider.GetRequiredService<IInstallationResetActiveStore>(),
+                provider.GetRequiredService<IHostToolsMarkerPairResetDatabase>(),
+                provider.GetRequiredService<IFullInstallationResetCampaignSchemaReadiness>(),
+                provider.GetRequiredService<IHostProcessToolsMarkerPairJoiner>(),
+                provider.GetRequiredService<
+                    IFullInstallationResetRemediationAttestationVerifier>(),
+                provider.GetRequiredService<ICampaignPathMarkerLifecycle>(),
+                provider.GetRequiredService<IHostToolsMarkerPairResetOsPort>()));
+
+        // A deferred resolution, not a constructor dependency. The reset service must resolve and
+        // plan on an installation whose Grimoire is absent or locked, and the coordinator's graph
+        // reaches the encrypted database; binding it eagerly would make every restricted path
+        // require what only the full-reset path actually needs.
+        services.TryAddScoped<Func<IHostToolsMarkerPairResetCoordinator>>(provider =>
+            provider.GetRequiredService<IHostToolsMarkerPairResetCoordinator>);
+
         services.TryAddScoped(static _ =>
             new InstallationResetControlPaths(ArcanumPaths.GrimoireDirectory));
 
