@@ -3668,7 +3668,8 @@ public sealed partial class WizardIntelligenceProvider(
                     await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(
                         grimoireTurn,
                         streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                        CancellationToken.None).ConfigureAwait(false);
+                        CancellationToken.None,
+                        covenantScope?.DerivedSensitivity).ConfigureAwait(false);
                 }
 
                 yield return new IntelligenceEvent(
@@ -4136,7 +4137,8 @@ public sealed partial class WizardIntelligenceProvider(
                 await grimoireTurnWriter
                     .TryResolveInterruptedOnStreamExitAsync(
                         grimoireTurn,
-                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null)
+                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
+                        covenantScope?.DerivedSensitivity)
                     .ConfigureAwait(false);
             }
         }
@@ -6845,6 +6847,22 @@ public sealed partial class WizardIntelligenceProvider(
         }
 
         SystemPromptBuildResult built = systemPromptDocument.BuildResult();
+
+        // The envelope freezes the document this method was handed, while the transcript's own system
+        // message is rewritten independently by compression and by the materialization rebuilds. If the
+        // two ever diverge, the receipt would describe a prompt the provider never saw — so the whole
+        // class of drift is turned into one fail-closed comparison rather than a set of invariants each
+        // rebuild has to remember.
+        if (messages.Count > 0
+            && messages[0].Role == ChatRole.System
+            && !string.Equals(messages[0].Text, built.Prompt, StringComparison.Ordinal))
+        {
+
+            return Result.Failure(new Error(
+                ErrorCodes.Covenant.StaleSnapshot,
+                "The frozen system prompt does not match the transcript this dispatch would send."));
+
+        }
 
         ProviderCallSensitivity sensitivity = CovenantDispatchGate.ResolveSensitivity(scope, dispatch);
 

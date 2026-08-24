@@ -10,7 +10,7 @@
 
 **Document status:** current as of **2026-08-24**, reconciled through GitHub issue #128 and issue #123's complete attested full installation reset.
 
-**Branch status.** This #122 update is intentionally branch-local on `long-term-memory` until the normal project mirror reaches `main`; delivery of this issue does not merge or rewrite `main`. Read this copy together with the implementation branch. The implementation and the `Arcanum.DESIGN.md` sections it cites (§10.10–§10.21.6) live on `long-term-memory`; §22 marks those links.
+**Branch status.** This #122 update is intentionally branch-local on `long-term-memory` until the normal project mirror reaches `main`; delivery of this issue does not merge or rewrite `main`. Read this copy together with the implementation branch. The implementation and the `Arcanum.DESIGN.md` sections it cites (§10.10–§10.21.7) live on `long-term-memory`; §22 marks those links.
 
 ---
 
@@ -108,7 +108,7 @@ The shared persistence graph is registered in CLI and host with host-only initia
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.21.6 own the Covenant slices.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.21.7 own the Covenant slices.
 3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation authority.
@@ -1274,7 +1274,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` through the project's normal mirror. This #122 delivery does not itself merge `main`.
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.21.6 **(branch)**:
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.21.7 **(branch)**:
   - §10.10 Core protocol foundation
   - §10.11 Canonical persistence and inspection search
   - §10.12 Invocation authority and Campaign binding
@@ -1286,7 +1286,7 @@ The following documents own or explain the detailed contracts summarized here. D
   - §10.18 Operator surfaces, configuration, and the pre-binding authority boundary
   - §10.19.1–§10.19.13 Backup, restore, and protected transfer
   - §10.20.1–§10.20.14 Retention, reset, and full erasure
-  - §10.21.1–§10.21.6 The live turn's adoption of the Covenant
+  - §10.21.1–§10.21.7 The live turn's adoption of the Covenant
 - [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): the shared model/tool-loop and attachment continuation ordering that the OATH runtime integration extends.

@@ -128,7 +128,8 @@ public sealed class GrimoireTurnWriter(
     public async Task<bool> ResolveInterruptedAsync(
         TurnHandle handle,
         string? streamedContent,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ProviderCallSensitivity? sensitivity = null)
     {
 
         if (handle.AssistantEntryId is not { } entryId)
@@ -144,9 +145,37 @@ public sealed class GrimoireTurnWriter(
             if (!string.IsNullOrEmpty(streamedContent))
             {
 
-                await grimoire
-                    .FinalizeAssistantEntryAsync(entryId, streamedContent, cancellationToken)
+                // An interrupted protected stream is the case most likely to lose its label: the reply
+                // is partial, the turn is unwinding, and the obvious thing to do is persist what
+                // arrived. Persisting it unlabelled would launder exactly the taint the completed path
+                // is careful to record, so the partial content takes the same committed arm.
+                Result<bool> committed = await TryCommitProtectedAsync(
+                        handle,
+                        entryId,
+                        streamedContent,
+                        sensitivity,
+                        cancellationToken)
                     .ConfigureAwait(false);
+
+                if (committed.IsFailure)
+                {
+
+                    logger.LogError(
+                        "An interrupted Covenant-derived reply could not be committed with its label: {ErrorCode}.",
+                        committed.Error.Code);
+
+                    return false;
+
+                }
+
+                if (!committed.Value)
+                {
+
+                    await grimoire
+                        .FinalizeAssistantEntryAsync(entryId, streamedContent, cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
 
             }
             else
@@ -183,7 +212,8 @@ public sealed class GrimoireTurnWriter(
     public async Task<bool> ResolveInterruptedAndMarkFinalizedAsync(
         TurnHandle handle,
         string? streamedContent,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ProviderCallSensitivity? sensitivity = null)
     {
 
         if (handle.IsFinalized)
@@ -196,7 +226,8 @@ public sealed class GrimoireTurnWriter(
         bool resolved = await ResolveInterruptedAsync(
             handle,
             streamedContent,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            sensitivity).ConfigureAwait(false);
 
         if (resolved)
         {
@@ -209,7 +240,8 @@ public sealed class GrimoireTurnWriter(
 
     public async Task TryResolveInterruptedOnStreamExitAsync(
         TurnHandle handle,
-        string? streamedContent)
+        string? streamedContent,
+        ProviderCallSensitivity? sensitivity = null)
     {
 
         if (handle.IsFinalized || handle.AssistantEntryId is null)
@@ -225,7 +257,8 @@ public sealed class GrimoireTurnWriter(
             _ = await ResolveInterruptedAndMarkFinalizedAsync(
                 handle,
                 streamedContent,
-                CancellationToken.None).ConfigureAwait(false);
+                CancellationToken.None,
+                sensitivity).ConfigureAwait(false);
 
         }
         catch (Exception ex)
