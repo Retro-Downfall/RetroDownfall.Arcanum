@@ -126,6 +126,19 @@ public sealed class MemoryCommands(
             + $"{(covenant.Available ? "available" : "unavailable")}"
             + (covenant.DegradationCode is { Length: > 0 } code ? $" ({code})" : string.Empty));
 
+        // An unread census is reported as unread. Every count and byte total below it is zero in that
+        // case, and "you have no standing preferences" is the one sentence this surface must never say
+        // about an installation nobody counted.
+        if (covenant.Census is not CovenantCensusReadState.Read)
+        {
+
+            dispatcher.WritePayload(
+                $"  Covenant entries were not counted ({covenant.Census}). This is not a report that you have none.");
+
+            return;
+
+        }
+
         if (covenant.Counts.Length == 0)
         {
 
@@ -158,10 +171,13 @@ public sealed class MemoryCommands(
 
         AnsiConsole.Write(covenantTable);
 
+        // The two Campaign figures are the largest single Campaign's, which is what makes them
+        // comparable to the ceiling beside them. Printing installation-wide sums here read as nearly
+        // full whenever enough Campaigns each held a little.
         dispatcher.WritePayload(
             $"  Rendered bytes — Global Confirmed {covenant.GlobalConfirmedRenderedBytes}, "
-            + $"Campaign Confirmed {covenant.CampaignConfirmedRenderedBytes}, "
-            + $"Campaign Proposed {covenant.CampaignProposedRenderedBytes} "
+            + $"largest Campaign Confirmed {covenant.MaxCampaignConfirmedRenderedBytes}, "
+            + $"largest Campaign Proposed {covenant.MaxCampaignProposedRenderedBytes} "
             + $"(ceiling {covenant.RenderedByteCeilingPerSection} per section)");
 
     }

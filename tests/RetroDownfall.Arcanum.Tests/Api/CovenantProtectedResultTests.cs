@@ -27,10 +27,11 @@ public sealed class CovenantProtectedResultTests
     private static readonly CovenantStatusDto Payload = new(
         Enabled: true,
         Available: true,
+        Census: CovenantCensusReadState.Read,
         Counts: [],
         GlobalConfirmedRenderedBytes: 0,
-        CampaignConfirmedRenderedBytes: 0,
-        CampaignProposedRenderedBytes: 0,
+        MaxCampaignConfirmedRenderedBytes: 0,
+        MaxCampaignProposedRenderedBytes: 0,
         RenderedByteCeilingPerSection: CovenantLimits.MaxGlobalConfirmedRenderedBytes,
         Search: new CovenantSearchHealthDto(
             CovenantSearchHealthState.Healthy,

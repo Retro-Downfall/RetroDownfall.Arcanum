@@ -725,6 +725,11 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
     /// <para>Requires the installation read capability because it crosses every Campaign. A scoped
     /// lease could only ever answer for its own scope, and a census that silently omitted the rest
     /// would understate what an operator holds.</para>
+    ///
+    /// <para>Two scans, because the two answers are shaped differently. The bucket counts fold every
+    /// Campaign together; the Campaign byte totals must not, since the ceiling they are read against
+    /// bounds one Campaign's rendered section on one turn. A second grouped scan takes the largest
+    /// single Campaign per lane, which is the only Campaign figure that number actually bounds.</para>
     /// </remarks>
     public async ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
         ICovenantSnapshotReadLease readLease,
@@ -771,10 +776,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
             long globalConfirmed = 0;
 
-            long campaignConfirmed = 0;
-
-            long campaignProposed = 0;
-
             await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false))
             {
@@ -809,16 +810,52 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                         globalConfirmed += bytes;
 
                     }
-                    else if (lane is CovenantLane.Confirmed)
+
+                }
+
+            }
+
+            await using SqliteCommand campaignPeak = connection.CreateCommand();
+
+            campaignPeak.Transaction = transaction;
+
+            // Summed inside one Campaign, then maximised across Campaigns. The inner sum is what a
+            // single turn would render for that Campaign's lane; the outer maximum is the worst case
+            // an operator can act on. Doing it in SQL keeps the per-Campaign totals out of the
+            // projection, which has to stay content-free — a Campaign identity is a pointer to
+            // protected content even when no byte of it travels.
+            campaignPeak.CommandText = """
+                SELECT LaneCode, COALESCE(MAX(LaneBytes), 0)
+                FROM (
+                    SELECT LaneCode, CampaignId, SUM(CompiledByteCost) AS LaneBytes
+                    FROM covenant_heads
+                    WHERE ScopeCode = 2
+                    GROUP BY LaneCode, CampaignId
+                )
+                GROUP BY LaneCode;
+                """;
+
+            long maxCampaignConfirmed = 0;
+
+            long maxCampaignProposed = 0;
+
+            await using (SqliteDataReader reader = await campaignPeak.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false))
+            {
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    if ((CovenantLane)reader.GetInt64(0) is CovenantLane.Confirmed)
                     {
 
-                        campaignConfirmed += bytes;
+                        maxCampaignConfirmed = reader.GetInt64(1);
 
                     }
                     else
                     {
 
-                        campaignProposed += bytes;
+                        maxCampaignProposed = reader.GetInt64(1);
 
                     }
 
@@ -829,8 +866,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             return new CovenantScopeCensus(
                 rows.ToImmutable(),
                 globalConfirmed,
-                campaignConfirmed,
-                campaignProposed);
+                maxCampaignConfirmed,
+                maxCampaignProposed);
 
         }
         finally

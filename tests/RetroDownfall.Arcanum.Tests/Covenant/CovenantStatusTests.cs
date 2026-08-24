@@ -78,9 +78,9 @@ public sealed class CovenantStatusTests
         // have to be the real cost of the real content rather than a placeholder beside real counts.
         Assert.True(status.GlobalConfirmedRenderedBytes > 0);
 
-        Assert.True(status.CampaignProposedRenderedBytes > 0);
+        Assert.True(status.MaxCampaignProposedRenderedBytes > 0);
 
-        Assert.Equal(0, status.CampaignConfirmedRenderedBytes);
+        Assert.Equal(0, status.MaxCampaignConfirmedRenderedBytes);
 
         Assert.Equal(CovenantLimits.MaxGlobalConfirmedRenderedBytes, status.RenderedByteCeilingPerSection);
 
@@ -97,6 +97,10 @@ public sealed class CovenantStatusTests
         // "Nothing stored" and "could not be read" are different sentences and only one of them is an
         // emergency. An empty count is only honest while the tier reports itself healthy.
         Assert.True(status.Available);
+
+        // The distinction the whole field exists for: this zero is a measurement, so it reads as
+        // emptiness. Nothing else in the block can say that.
+        Assert.Equal(CovenantCensusReadState.Read, status.Census);
 
         Assert.Empty(status.Counts);
 
@@ -129,13 +133,66 @@ public sealed class CovenantStatusTests
 
         CovenantStatusDto status = await StatusAsync(fixture, availability);
 
-        // The count is zero because nothing could be counted, and the operator has an entry. The zero
-        // is only defensible because the health fields beside it refuse to claim the tier was read.
+        // The count is zero because nothing could be counted, and the operator has an entry. Refused
+        // is the mechanism, not a summary: the gate declined the installation capability over a tier
+        // it cannot serve, so the store was never asked. A test that only checked the empty array
+        // would pass just as well if the census had run and lost the rows.
+        Assert.Equal(CovenantCensusReadState.Refused, status.Census);
+
         Assert.Empty(status.Counts);
 
         Assert.False(status.Available);
 
         Assert.Equal("canonical-unavailable", status.DegradationCode);
+
+    }
+
+    /// <summary>
+    /// A healthy tier whose capability was declined is never reported as an empty one.
+    /// </summary>
+    /// <remarks>
+    /// This is the branch health cannot cover. An exclusive operation closes the scope and the gate
+    /// then refuses every ordinary capability over it — while the canonical tier goes on reporting
+    /// itself Healthy, because nothing about it broke. Every count and byte total is zero for the
+    /// duration, and without the census state the operator is told, in the same breath, that their
+    /// Covenant is available and that it holds nothing.
+    /// </remarks>
+    [Fact]
+    public async Task A_closing_exclusive_operation_is_not_reported_as_an_installation_holding_nothing()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "preference.builds",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Run build commands from the repository root.",
+            Token);
+
+        FakeCovenantAvailability availability = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
+
+        await using CovenantExclusiveLease closing = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair),
+            Token)).Value;
+
+        Result<CovenantStatusDto> status = await Management(fixture, gate, availability).StatusAsync(Token);
+
+        Assert.True(status.IsSuccess, status.IsFailure ? status.Error.Message : string.Empty);
+
+        // Healthy, enabled, and zero — which is exactly what an empty installation reports. Only the
+        // census state separates the two, and this is the one that must not read as emptiness.
+        Assert.True(status.Value.Available);
+
+        Assert.Null(status.Value.DegradationCode);
+
+        Assert.Empty(status.Value.Counts);
+
+        Assert.NotEqual(CovenantCensusReadState.Read, status.Value.Census);
 
     }
 

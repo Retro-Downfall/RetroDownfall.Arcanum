@@ -224,7 +224,8 @@ public sealed class CliContractTests
             dispatcher,
             options,
             new StringReader("y" + global::System.Environment.NewLine),
-            isOutputRedirected: static () => true);
+            isOutputRedirected: static () => true,
+            isInputRedirected: static () => false);
 
         await Assert.ThrowsAsync<NonInteractiveConfirmationException>(
             () => prompt.PromptForConfirmationAsync(
@@ -234,6 +235,62 @@ public sealed class CliContractTests
         Assert.Empty(standardOutput.ToString());
 
         Assert.Empty(standardError.ToString());
+
+    }
+
+    /// <summary>
+    /// A pipe an operator cannot answer through is refused, not read.
+    /// </summary>
+    /// <remarks>
+    /// The reader is empty on purpose: that is the state a redirected stdin is actually in by the time
+    /// a verb which consumed the pipe asks for confirmation. Reading it returns null, which the answer
+    /// comparison below turns into "no" — so a command that could not ask reports a decision the
+    /// operator never made, and exits successfully having done nothing.
+    /// </remarks>
+    [Fact]
+    public async Task Confirmation_fails_closed_when_input_is_redirected_without_yes()
+    {
+
+        StringWriter standardOutput = new();
+
+        StringWriter standardError = new();
+
+        CliInvocationOptions options = new(Json: false, Plain: true, Yes: false);
+
+        ConsoleDispatcher dispatcher = new(standardOutput, standardError, options);
+
+        ConfirmationPrompt prompt = new(
+            dispatcher,
+            options,
+            new StringReader(string.Empty),
+            isOutputRedirected: static () => false,
+            isInputRedirected: static () => true);
+
+        await Assert.ThrowsAsync<NonInteractiveConfirmationException>(
+            () => prompt.PromptForConfirmationAsync(
+                "Delete everything?",
+                CancellationToken.None));
+
+        // The question is never asked either. Printing it to a terminal whose stdin the operator
+        // cannot type into would leave a prompt on screen that nothing is waiting on.
+        Assert.Empty(standardOutput.ToString());
+
+        Assert.Empty(standardError.ToString());
+
+    }
+
+    [Fact]
+    public void A_non_interactive_confirmation_exits_as_a_configuration_error_naming_yes()
+    {
+
+        CliFailure failure = CliFailureMapper.Map(new NonInteractiveConfirmationException());
+
+        // The exit code is the whole point of the refusal: a false cancellation exits zero, and a
+        // script that only checks the exit code cannot tell "the operator declined" from "the write
+        // never happened".
+        Assert.Equal(CliExitCode.ConfigurationError, failure.ExitCode);
+
+        Assert.Contains("--yes", failure.SafeMessage, StringComparison.Ordinal);
 
     }
 
@@ -253,7 +310,8 @@ public sealed class CliContractTests
             dispatcher,
             options,
             new ThrowingTextReader(),
-            isOutputRedirected: static () => true);
+            isOutputRedirected: static () => true,
+            isInputRedirected: static () => true);
 
         bool confirmed = await prompt.PromptForConfirmationAsync(
             "Delete everything?",

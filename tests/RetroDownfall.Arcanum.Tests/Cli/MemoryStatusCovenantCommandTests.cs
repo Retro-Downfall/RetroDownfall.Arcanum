@@ -84,7 +84,7 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
 
         Assert.Contains("Global Confirmed 1200", rendered, StringComparison.Ordinal);
 
-        Assert.Contains("Campaign Proposed 900", rendered, StringComparison.Ordinal);
+        Assert.Contains("largest Campaign Proposed 900", rendered, StringComparison.Ordinal);
 
         // The ceiling travels with the totals. A byte count with nothing to compare it against tells
         // an operator nothing about whether they are near the limit.
@@ -116,9 +116,39 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
 
         Assert.Contains("unavailable (canonical-unavailable)", rendered, StringComparison.Ordinal);
 
-        // The zero beside an unavailable arm has to be readable as "not counted", which is what the
-        // degradation code on the same line supplies.
+        // A degraded tier is still a readable one. This census was taken and found nothing, so the
+        // empty answer is a measurement and says so.
         Assert.Contains("No Covenant entries.", rendered, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// An uncounted installation is never reported as an empty one.
+    /// </summary>
+    /// <remarks>
+    /// This is the shape the surface got wrong: the gate refuses the installation capability while an
+    /// exclusive operation is closing the scope, and it does that with the canonical tier reporting
+    /// itself perfectly healthy. Every count and byte total is then zero, and the operator was shown
+    /// "enabled, available, no Covenant entries" for an installation full of preferences.
+    /// </remarks>
+    [Fact]
+    public async Task A_census_that_could_not_be_taken_is_never_rendered_as_an_empty_installation()
+    {
+
+        RecordingDispatcher dispatcher = await StatusAsync(
+            Covenant([]) with { Census = CovenantCensusReadState.Refused });
+
+        string rendered = string.Join("\n", dispatcher.Payloads);
+
+        Assert.DoesNotContain("No Covenant entries.", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("were not counted", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("Refused", rendered, StringComparison.Ordinal);
+
+        // The byte line is withheld too. Printing "Global Confirmed 0 (ceiling 4096)" beside an
+        // uncounted census would be a second, quieter claim that the installation is empty.
+        Assert.DoesNotContain("Rendered bytes", rendered, StringComparison.Ordinal);
 
     }
 
@@ -139,10 +169,11 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         new(
             Enabled: true,
             Available: true,
+            CovenantCensusReadState.Read,
             counts,
             GlobalConfirmedRenderedBytes: 1200,
-            CampaignConfirmedRenderedBytes: 0,
-            CampaignProposedRenderedBytes: 900,
+            MaxCampaignConfirmedRenderedBytes: 0,
+            MaxCampaignProposedRenderedBytes: 900,
             RenderedByteCeilingPerSection: 4096,
             new CovenantSearchHealthDto(
                 CovenantSearchHealthState.Healthy,

@@ -2789,11 +2789,27 @@
                 {
                   "name": "--lane",
                   "aliases": [],
-                  "description": "Confirmed (operator-authored) or Proposed (agent-suggested).",
+                  "description": "Confirmed (operator-authored) or Proposed (agent-suggested). Omit for both.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
-                  "values": []
+                  "values": [
+                    "Confirmed",
+                    "Proposed"
+                  ]
+                },
+                {
+                  "name": "--lifecycle",
+                  "aliases": [],
+                  "description": "Set (the default), Retired, or Any.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "Any",
+                    "Retired",
+                    "Set"
+                  ]
                 }
               ],
               "examples": [
@@ -2828,6 +2844,15 @@
                   "repeatable": false,
                   "values": [],
                   "completion": "campaign"
+                },
+                {
+                  "name": "--history",
+                  "aliases": [],
+                  "description": "Also print each lane\u0027s version history, newest revision first.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
                 }
               ],
               "examples": [
@@ -2870,7 +2895,10 @@
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
-                  "values": []
+                  "values": [
+                    "Confirmed",
+                    "Proposed"
+                  ]
                 },
                 {
                   "name": "--expected-revision",

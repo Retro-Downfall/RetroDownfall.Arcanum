@@ -235,12 +235,18 @@ public readonly record struct CovenantScopeCensusRow(
 /// Buckets rather than one total, because "you have forty retired Campaign proposals" and "you have
 /// forty confirmed Global preferences" are different facts about the same number, and an operator
 /// deciding whether to prune needs the difference.
+///
+/// <para>The Global figure is a sum and the two Campaign figures are maxima, because that is what
+/// makes all three comparable to the same number. There is one Global Confirmed section per turn, so
+/// its sum is what that section costs; a Campaign section is rendered for one Campaign, so summing
+/// every Campaign's would compare ten Campaigns at ten percent against a ceiling one of them would
+/// have to breach alone.</para>
 /// </remarks>
 public sealed record CovenantScopeCensus(
     ImmutableArray<CovenantScopeCensusRow> Rows,
     long GlobalConfirmedRenderedBytes,
-    long CampaignConfirmedRenderedBytes,
-    long CampaignProposedRenderedBytes)
+    long MaxCampaignConfirmedRenderedBytes,
+    long MaxCampaignProposedRenderedBytes)
 {
 
     public static CovenantScopeCensus Empty { get; } = new([], 0, 0, 0);

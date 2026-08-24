@@ -31,6 +31,15 @@ public sealed class CovenantCommands(
 {
 
     /// <summary>
+    /// The page size every cursor walk asks for.
+    /// </summary>
+    /// <remarks>
+    /// A request size, not a total. Both catalogs are followed to exhaustion, so this only decides how
+    /// many round trips a long history costs.
+    /// </remarks>
+    private const int PageSize = 50;
+
+    /// <summary>
     /// Writes one standing preference the operator wants honored.
     /// </summary>
     /// <remarks>
@@ -158,10 +167,24 @@ public sealed class CovenantCommands(
 
     }
 
+    /// <summary>
+    /// Lists one scope's heads, following the server's cursor until the catalog is exhausted.
+    /// </summary>
+    /// <remarks>
+    /// Every page is followed rather than announced. A single page that ended with "more entries
+    /// exist" left the rest unreachable: the continuation is an AEAD-sealed cursor, so there is no
+    /// value an operator could type to ask for the next one. Following it here matches every other
+    /// cursor catalog the CLI walks.
+    ///
+    /// <para>A cursor that comes back unchanged is a refusal to advance, not a page. Following it
+    /// again would loop forever printing the same entries, so it stops and says the listing is
+    /// partial.</para>
+    /// </remarks>
     public async Task<int> List(
         Guid? campaignId,
         bool allScopes,
         CovenantLane? lane,
+        CovenantLifecycle lifecycle,
         CancellationToken cancellationToken)
     {
 
@@ -171,36 +194,85 @@ public sealed class CovenantCommands(
                 ? CovenantCursorScopeSelection.Global
                 : CovenantCursorScopeSelection.Campaign;
 
-        Result<CovenantPageDto> page = await apiClient
-            .ListCovenantAsync(
-                new CovenantListRequest(
-                    selection,
-                    campaignId,
-                    lane,
-                    CovenantLifecycle.Set,
-                    EffectiveForCampaignId: campaignId,
-                    Limit: 50,
-                    Cursor: null),
-                cancellationToken)
-            .ConfigureAwait(false);
+        List<CovenantHeadDto> items = [];
 
-        if (page.IsFailure)
+        string? cursor = null;
+
+        CovenantPageDto last;
+
+        bool stalled;
+
+        while (true)
         {
 
-            return Fail(page.Error, CliExitCode.GenericError);
+            Result<CovenantPageDto> page = await apiClient
+                .ListCovenantAsync(
+                    new CovenantListRequest(
+                        selection,
+                        campaignId,
+                        lane,
+                        lifecycle,
+                        EffectiveForCampaignId: campaignId,
+                        Limit: PageSize,
+                        Cursor: cursor),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.IsFailure)
+            {
+
+                return Fail(page.Error, CliExitCode.GenericError);
+
+            }
+
+            items.AddRange(page.Value.Items);
+
+            if (page.Value.NextCursor is not { Length: > 0 } next)
+            {
+
+                last = page.Value;
+
+                stalled = false;
+
+                break;
+
+            }
+
+            if (string.Equals(next, cursor, StringComparison.Ordinal))
+            {
+
+                last = page.Value;
+
+                stalled = true;
+
+                break;
+
+            }
+
+            cursor = next;
 
         }
 
         if (invocationContext.Options.Json)
         {
 
-            dispatcher.WriteJson(page.Value, ArcanumJsonContext.Default.CovenantPageDto);
+            // The last page's own search health and filter digest are carried through rather than
+            // invented. Only the items and the continuation are this loop's to replace: it holds every
+            // page, so there is nothing left for a caller to continue from.
+            dispatcher.WriteJson(
+                last with
+                {
+                    Items = [.. items],
+                    NextCursor = null,
+                    Truncated = stalled,
+                },
+                ArcanumJsonContext.Default.CovenantPageDto);
 
             return (int)CliExitCode.Success;
 
         }
 
-        if (page.Value.Items.Length == 0)
+        if (items.Count == 0)
         {
 
             dispatcher.WritePayload("No Covenant entries in that scope.");
@@ -209,7 +281,7 @@ public sealed class CovenantCommands(
 
         }
 
-        foreach (CovenantHeadDto item in page.Value.Items)
+        foreach (CovenantHeadDto item in items)
         {
 
             dispatcher.WritePayload(
@@ -217,10 +289,10 @@ public sealed class CovenantCommands(
 
         }
 
-        if (page.Value.Truncated)
+        if (stalled)
         {
 
-            dispatcher.WriteDiagnostic("More entries exist than this page shows.");
+            dispatcher.WriteDiagnostic("The server stopped advancing its cursor; this listing is incomplete.");
 
         }
 
@@ -228,7 +300,7 @@ public sealed class CovenantCommands(
 
     }
 
-    public async Task<int> Show(string key, Guid? campaignId, CancellationToken cancellationToken)
+    public async Task<int> Show(string key, Guid? campaignId, bool history, CancellationToken cancellationToken)
     {
 
         Result<CovenantDetailDto> detail = await apiClient
@@ -269,7 +341,113 @@ public sealed class CovenantCommands(
 
         WriteHead("Proposed", detail.Value.Proposed);
 
+        if (!history)
+        {
+
+            return (int)CliExitCode.Success;
+
+        }
+
+        // Only lanes that have a head are asked about. A version page is keyed by entry and lane, and
+        // asking for the history of a lane that was never written would spend an authenticated
+        // installation read to be told nothing.
+        foreach (CovenantLane lane in Lanes(detail.Value))
+        {
+
+            int written = await WriteHistoryAsync(
+                    detail.Value.EntryId.Value,
+                    lane,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (written != (int)CliExitCode.Success)
+            {
+
+                return written;
+
+            }
+
+        }
+
         return (int)CliExitCode.Success;
+
+    }
+
+    private static IEnumerable<CovenantLane> Lanes(CovenantDetailDto detail)
+    {
+
+        if (detail.Confirmed is not null)
+        {
+
+            yield return CovenantLane.Confirmed;
+
+        }
+
+        if (detail.Proposed is not null)
+        {
+
+            yield return CovenantLane.Proposed;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Prints one lane's history, newest revision first, following the server's cursor.
+    /// </summary>
+    /// <remarks>
+    /// Operation, origin, and mutation identity are printed beside the revision because those are the
+    /// three fields that answer "who changed this preference, and when". The authored content is not
+    /// printed and is not in the payload: a history is a record of changes, not a second way to read
+    /// what a key says.
+    /// </remarks>
+    private async Task<int> WriteHistoryAsync(
+        Guid entryId,
+        CovenantLane lane,
+        CancellationToken cancellationToken)
+    {
+
+        dispatcher.WritePayload($"{lane} history:");
+
+        string? cursor = null;
+
+        while (true)
+        {
+
+            Result<CovenantVersionPageDto> page = await apiClient
+                .ListCovenantVersionsAsync(
+                    new CovenantVersionsRequest(entryId, lane, PageSize, cursor),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.IsFailure)
+            {
+
+                return Fail(page.Error, CliExitCode.GenericError);
+
+            }
+
+            foreach (CovenantVersionDto version in page.Value.Items)
+            {
+
+                dispatcher.WritePayload(
+                    $"  revision {version.LaneRevision}  {version.Operation}  {version.Origin}  "
+                    + $"{version.CompiledByteCost} bytes  mutation {version.MutationId}  "
+                    + $"{version.CreatedAtUtc:u}");
+
+            }
+
+            if (page.Value.NextCursor is not { Length: > 0 } next
+                || string.Equals(next, cursor, StringComparison.Ordinal))
+            {
+
+                return (int)CliExitCode.Success;
+
+            }
+
+            cursor = next;
+
+        }
 
     }
 
@@ -292,6 +470,11 @@ public sealed class CovenantCommands(
     /// A Global mutation reports how many Campaigns it reaches before the question, because "this
     /// applies everywhere" is the fact most likely to surprise someone who meant to change one
     /// project's preference.
+    ///
+    /// <para>The lane is the server's, read off the preflight rather than off the flag this process
+    /// parsed. It is the field that says which of the two standings is about to change, and a
+    /// confirmation screen that omitted it could not show an operator that their <c>--lane</c> named
+    /// something other than what the request carries.</para>
     /// </remarks>
     private async Task<bool> ConfirmAsync(
         CovenantMutationPreflightDto preflight,
@@ -299,7 +482,8 @@ public sealed class CovenantCommands(
         CancellationToken cancellationToken)
     {
 
-        dispatcher.WritePayload($"{verb} '{preflight.NormalizedKey}' in {preflight.Scope} scope.");
+        dispatcher.WritePayload(
+            $"{verb} '{preflight.NormalizedKey}' in the {preflight.Lane} lane, {preflight.Scope} scope.");
 
         dispatcher.WritePayload($"  Current revision: {preflight.CurrentLaneRevision}");
 

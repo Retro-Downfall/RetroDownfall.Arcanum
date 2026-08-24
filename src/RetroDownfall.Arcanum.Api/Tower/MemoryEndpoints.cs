@@ -768,9 +768,11 @@ internal static class MemoryEndpoints
     /// the turn path refuses to touch it.
     ///
     /// <para>Aggregate counts are deliberately absent here and arrive with the bounded canonical count
-    /// read. When canonical state is degraded or unavailable this reports that state rather than
-    /// inventing a zero: "you have no Covenant entries" and "your Covenant could not be read" are
-    /// different sentences, and only one of them is an emergency (§10.18).</para>
+    /// read. "You have no Covenant entries" and "your Covenant could not be read" are different
+    /// sentences, and only one of them is an emergency (§10.18). The census state carries that
+    /// difference, because health cannot: a healthy tier still refuses the installation capability
+    /// while an exclusive operation is closing the scope, and every count and byte total below is zero
+    /// in exactly that case.</para>
     /// </remarks>
     private static async Task<CovenantStatusDto?> BuildCovenantStatusAsync(
         ICovenantAvailability? availability,
@@ -800,10 +802,14 @@ internal static class MemoryEndpoints
         return new CovenantStatusDto(
             Enabled: features.Covenant && snapshot.FeatureEnabled,
             Available: snapshot.Canonical is CovenantCapabilityState.Healthy,
+
+            // The port's own verdict is carried through rather than recomputed. Coalescing an absent
+            // answer to Read would republish the zeros below as a measurement nobody took.
+            Census: counted?.Census ?? CovenantCensusReadState.Failed,
             Counts: counted?.Counts ?? [],
             GlobalConfirmedRenderedBytes: counted?.GlobalConfirmedRenderedBytes ?? 0,
-            CampaignConfirmedRenderedBytes: counted?.CampaignConfirmedRenderedBytes ?? 0,
-            CampaignProposedRenderedBytes: counted?.CampaignProposedRenderedBytes ?? 0,
+            MaxCampaignConfirmedRenderedBytes: counted?.MaxCampaignConfirmedRenderedBytes ?? 0,
+            MaxCampaignProposedRenderedBytes: counted?.MaxCampaignProposedRenderedBytes ?? 0,
             RenderedByteCeilingPerSection: CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             Search: new CovenantSearchHealthDto(
                 ToSearchHealth(snapshot.Accelerator, snapshot.FtsSynchronization),

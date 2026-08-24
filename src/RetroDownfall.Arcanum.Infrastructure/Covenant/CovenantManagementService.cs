@@ -297,9 +297,14 @@ internal sealed class CovenantManagementService(
     ///
     /// <para>A census that cannot be read reports zero counts beside honest health rather than
     /// failing the whole status call. An operator asking "is my memory working" is entitled to the
-    /// health answer even when the count behind it is momentarily unavailable — and the health fields
-    /// say plainly that the canonical tier is not healthy, so the zero cannot be mistaken for
-    /// emptiness.</para>
+    /// health answer even when the count behind it is momentarily unavailable.</para>
+    ///
+    /// <para>The zero is only defensible because <see cref="CovenantStatusDto.Census"/> says whether
+    /// it is a measurement. Canonical health cannot carry that sentence on its own: the gate refuses
+    /// the installation capability whenever an exclusive operation is closing the scope, and refuses
+    /// the census on any authority, dataset, or capability-generation move — all of which happen while
+    /// the tier reports itself Healthy. Without the field an operator was shown "available, no
+    /// entries" for an installation that was simply not read.</para>
     /// </remarks>
     public async ValueTask<Result<CovenantStatusDto>> StatusAsync(CancellationToken cancellationToken)
     {
@@ -307,6 +312,8 @@ internal sealed class CovenantManagementService(
         CovenantAvailabilitySnapshot snapshot = availability.Current;
 
         CovenantScopeCensus census = CovenantScopeCensus.Empty;
+
+        CovenantCensusReadState state = CovenantCensusReadState.Refused;
 
         // The census is attempted unconditionally rather than gated on reported health. The gate
         // already refuses a capability over a tier it cannot serve, so a health check here would only
@@ -330,6 +337,14 @@ internal sealed class CovenantManagementService(
 
                 census = read.Value;
 
+                state = CovenantCensusReadState.Read;
+
+            }
+            else
+            {
+
+                state = CovenantCensusReadState.Failed;
+
             }
 
         }
@@ -337,6 +352,7 @@ internal sealed class CovenantManagementService(
         return new CovenantStatusDto(
             snapshot.FeatureEnabled,
             snapshot.Canonical is CovenantCapabilityState.Healthy,
+            state,
             [
                 .. census.Rows.Select(static row => new CovenantScopeCountDto(
                     row.Scope,
@@ -345,8 +361,8 @@ internal sealed class CovenantManagementService(
                     row.Count)),
             ],
             census.GlobalConfirmedRenderedBytes,
-            census.CampaignConfirmedRenderedBytes,
-            census.CampaignProposedRenderedBytes,
+            census.MaxCampaignConfirmedRenderedBytes,
+            census.MaxCampaignProposedRenderedBytes,
             CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             new CovenantSearchHealthDto(
                 snapshot.Accelerator is CovenantCapabilityState.Healthy

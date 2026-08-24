@@ -286,6 +286,31 @@ public sealed record CovenantScopeCountDto(
     long Count);
 
 /// <summary>
+/// Whether the census behind a status block was actually taken.
+/// </summary>
+/// <remarks>
+/// Every count and byte total in the block is zero when the census could not be taken, and zero is
+/// also what a genuinely empty installation reports. Without this field the two are the same answer,
+/// and only one of them means "you have no standing preferences" — the most damaging sentence this
+/// surface can say wrongly. Canonical health does not stand in for it: a healthy tier still refuses
+/// the installation capability while an exclusive operation is closing the scope.
+/// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantCensusReadState>))]
+public enum CovenantCensusReadState : byte
+{
+
+    /// <summary>The census was taken. The counts beside it are a measurement.</summary>
+    Read = 1,
+
+    /// <summary>The installation read capability was declined, so nothing was counted.</summary>
+    Refused = 2,
+
+    /// <summary>The capability was held and the read itself failed, so nothing was counted.</summary>
+    Failed = 3,
+
+}
+
+/// <summary>
 /// The content-free Covenant capability health, aggregate counts, retention, and degradation the
 /// existing memory-status surface gains.
 /// </summary>
@@ -293,14 +318,20 @@ public sealed record CovenantScopeCountDto(
 /// Counts and ceilings only. This block is reachable wherever <c>/api/memory/status</c> is, so it may
 /// never carry a key, a fragment, or a raw content hash; the exact per-entry surfaces are the typed
 /// Covenant routes, which require Covenant read authority of their own.
+///
+/// <para>The two Campaign byte totals are the largest single Campaign's, not a sum over every
+/// Campaign. They sit beside a ceiling that bounds one Campaign's rendered section on one turn, and a
+/// sum would exceed it while every Campaign was well inside it — telling an operator they were nearly
+/// full when nothing was.</para>
 /// </remarks>
 public sealed record CovenantStatusDto(
     bool Enabled,
     bool Available,
+    CovenantCensusReadState Census,
     CovenantScopeCountDto[] Counts,
     long GlobalConfirmedRenderedBytes,
-    long CampaignConfirmedRenderedBytes,
-    long CampaignProposedRenderedBytes,
+    long MaxCampaignConfirmedRenderedBytes,
+    long MaxCampaignProposedRenderedBytes,
     long RenderedByteCeilingPerSection,
     CovenantSearchHealthDto Search,
     string Retention,

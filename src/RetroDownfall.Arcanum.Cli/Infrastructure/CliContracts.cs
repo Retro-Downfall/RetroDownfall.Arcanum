@@ -813,6 +813,8 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
 
     private readonly Func<bool> _isOutputRedirected;
 
+    private readonly Func<bool> _isInputRedirected;
+
     public ConfirmationPrompt(
         IConsoleDispatcher dispatcher,
         ICliInvocationContext invocationContext)
@@ -821,7 +823,8 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
             invocationContext,
             fixedOptions: null,
             Console.In,
-            static () => Console.IsOutputRedirected)
+            static () => Console.IsOutputRedirected,
+            static () => Console.IsInputRedirected)
     {
 
     }
@@ -830,13 +833,15 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
         IConsoleDispatcher dispatcher,
         CliInvocationOptions options,
         TextReader input,
-        Func<bool> isOutputRedirected)
+        Func<bool> isOutputRedirected,
+        Func<bool> isInputRedirected)
         : this(
             dispatcher,
             invocationContext: null,
             options,
             input,
-            isOutputRedirected)
+            isOutputRedirected,
+            isInputRedirected)
     {
 
     }
@@ -846,7 +851,8 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
         ICliInvocationContext? invocationContext,
         CliInvocationOptions? fixedOptions,
         TextReader input,
-        Func<bool> isOutputRedirected)
+        Func<bool> isOutputRedirected,
+        Func<bool> isInputRedirected)
     {
 
         _dispatcher = dispatcher;
@@ -858,6 +864,8 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
         _input = input;
 
         _isOutputRedirected = isOutputRedirected;
+
+        _isInputRedirected = isInputRedirected;
 
     }
 
@@ -876,7 +884,12 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
 
         }
 
-        if (_isOutputRedirected())
+        // Both halves of the console have to be a terminal, not just the half that shows the question.
+        // A redirected stdin is usually already exhausted by the command that consumed it — `covenant
+        // set` reads the whole pipe as authored content — so the read below returns null immediately
+        // and the caller reports a cancellation the operator never made. Refusing here turns that
+        // silent success into the typed refusal that names --yes.
+        if (_isOutputRedirected() || _isInputRedirected())
         {
 
             throw new NonInteractiveConfirmationException();

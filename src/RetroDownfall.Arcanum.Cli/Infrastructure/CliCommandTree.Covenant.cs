@@ -1,5 +1,7 @@
 using System.CommandLine;
 
+using System.CommandLine.Parsing;
+
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Cli.Commands.Tower;
@@ -83,9 +85,13 @@ internal static partial class CliCommandTree
             Description = "List Global and every Campaign scope together.",
         };
 
-        Option<string?> listLane = new("--lane")
+        Option<CovenantLane?> listLane = LaneOption(
+            "Confirmed (operator-authored) or Proposed (agent-suggested). Omit for both.");
+
+        Option<CovenantLifecycle?> listLifecycle = new("--lifecycle")
         {
-            Description = "Confirmed (operator-authored) or Proposed (agent-suggested).",
+            Description = "Set (the default), Retired, or Any.",
+            CustomParser = static result => Parse<CovenantLifecycle>(result, "Covenant lifecycle"),
         };
 
         list.Add(campaign);
@@ -94,37 +100,45 @@ internal static partial class CliCommandTree
 
         list.Add(listLane);
 
+        list.Add(listLifecycle);
+
         list.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
                 await handler.List(
                     pr.GetValue(campaign),
                     pr.GetValue(allScopes),
-                    ParseLane(pr.GetValue(listLane)),
+                    pr.GetValue(listLane),
+                    pr.GetValue(listLifecycle) ?? CovenantLifecycle.Set,
                     ct).ConfigureAwait(false));
 
         Command show = new("show", "Show both lane heads for one preference key.");
 
         Argument<string> showKey = new("key") { Description = "The preference key." };
 
+        Option<bool> history = new("--history")
+        {
+            Description = "Also print each lane's version history, newest revision first.",
+        };
+
         show.Add(showKey);
 
         show.Add(campaign);
+
+        show.Add(history);
 
         show.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
                 await handler.Show(
                     pr.GetValue(showKey)!,
                     pr.GetValue(campaign),
+                    pr.GetValue(history),
                     ct).ConfigureAwait(false));
 
         Command retire = new("retire", "Retire one preference so it is honored on no later turn.");
 
         Argument<string> retireKey = new("key") { Description = "The preference key." };
 
-        Option<string?> retireLane = new("--lane")
-        {
-            Description = "Confirmed or Proposed. Defaults to Confirmed.",
-        };
+        Option<CovenantLane?> retireLane = LaneOption("Confirmed or Proposed. Defaults to Confirmed.");
 
         Option<long> retireRevision = new("--expected-revision")
         {
@@ -144,7 +158,7 @@ internal static partial class CliCommandTree
                 await handler.Retire(
                     pr.GetValue(retireKey)!,
                     pr.GetValue(campaign),
-                    ParseLane(pr.GetValue(retireLane)) ?? CovenantLane.Confirmed,
+                    pr.GetValue(retireLane) ?? CovenantLane.Confirmed,
                     pr.GetValue(retireRevision),
                     ct).ConfigureAwait(false));
 
@@ -160,15 +174,53 @@ internal static partial class CliCommandTree
 
     }
 
+    private static Option<CovenantLane?> LaneOption(string description) =>
+        new("--lane")
+        {
+            Description = description,
+            CustomParser = static result => Parse<CovenantLane>(result, "Covenant lane"),
+        };
+
     /// <summary>
-    /// Reads a lane name, treating anything unrecognized as unspecified.
+    /// Reads one enum-valued option, failing the command on a value the vocabulary does not contain.
     /// </summary>
     /// <remarks>
-    /// A misspelled lane becomes "no lane filter" rather than an error here, because the server
-    /// validates the request it actually receives; refusing locally would put a second, drifting copy
-    /// of the lane vocabulary in the CLI.
+    /// An unrecognized value used to become absence, and absence is a different instruction on every
+    /// verb that reads one: <c>list</c> treats it as no filter, and <c>retire</c> coalesced it to the
+    /// operator-authored Confirmed lane — so <c>retire my.key --lane propsed</c> sent a well-formed
+    /// request that retired the wrong lane and reported success. Refusing here puts no second copy of
+    /// the vocabulary in the CLI, because the names are read off the enum itself.
+    ///
+    /// <para>Absence still means absence: an option nobody typed carries no tokens, and the caller's
+    /// own default applies.</para>
     /// </remarks>
-    private static CovenantLane? ParseLane(string? value) =>
-        Enum.TryParse(value, ignoreCase: true, out CovenantLane lane) ? lane : null;
+    private static TValue? Parse<TValue>(ArgumentResult result, string subject)
+        where TValue : struct, Enum
+    {
+
+        if (result.Tokens.Count == 0)
+        {
+
+            return null;
+
+        }
+
+        string value = result.Tokens[0].Value;
+
+        // Enum.TryParse accepts any numeric string, including one naming no member at all, so the
+        // defined check is what makes this a vocabulary rather than a cast.
+        if (Enum.TryParse(value, ignoreCase: true, out TValue parsed) && Enum.IsDefined(parsed))
+        {
+
+            return parsed;
+
+        }
+
+        result.AddError(
+            $"'{value}' is not a {subject}. Valid values: {string.Join(", ", Enum.GetNames<TValue>())}.");
+
+        return null;
+
+    }
 
 }

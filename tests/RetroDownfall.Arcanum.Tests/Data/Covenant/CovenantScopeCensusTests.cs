@@ -187,6 +187,76 @@ public sealed class CovenantScopeCensusTests
 
     }
 
+    /// <summary>
+    /// The Campaign figure is the largest Campaign's, because that is what the ceiling bounds.
+    /// </summary>
+    /// <remarks>
+    /// The number is printed beside a per-placement, per-turn ceiling over one Campaign's rendered
+    /// section. Summing every Campaign's bytes into it made ten Campaigns at ten percent read as
+    /// nearly full — an operator would go pruning entries that were never close to the limit, and
+    /// would have no way to find out which Campaign the figure was even about.
+    /// </remarks>
+    [Fact]
+    public async Task Two_campaigns_under_the_ceiling_never_sum_into_a_figure_that_reads_as_breaching_it()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignOne, "First", Token);
+
+        await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignTwo, "Second", Token);
+
+        // Two entries per Campaign rather than one large one: a single authored value is capped well
+        // below the section ceiling, so one entry per Campaign could never build a sum that crosses it.
+        string content = new('x', 1_500);
+
+        foreach ((Guid campaignId, string prefix) in new[]
+        {
+            (CovenantOperationGateFixture.CampaignOne, "first"),
+            (CovenantOperationGateFixture.CampaignTwo, "second"),
+        })
+        {
+
+            for (int index = 0; index < 2; index++)
+            {
+
+                _ = await fixture.SeedHeadAsync(
+                    CovenantScope.Campaign,
+                    campaignId,
+                    $"preference.{prefix}.{index}",
+                    CovenantLane.Confirmed,
+                    CovenantOperation.Set,
+                    content,
+                    Token);
+
+            }
+
+        }
+
+        CovenantScopeCensus census = await CensusAsync(fixture);
+
+        long installationWide = census.Rows
+            .Where(static row => row is { Scope: CovenantScope.Campaign, Lane: CovenantLane.Confirmed })
+            .Sum(static row => row.RenderedBytes);
+
+        // The precondition the case rests on: the old installation-wide figure breaches the ceiling
+        // printed beside it. Without this the assertion below would pass on an installation where
+        // nothing could have breached it either way.
+        Assert.True(
+            installationWide > CovenantLimits.MaxCampaignConfirmedRenderedBytes,
+            $"The two Campaigns must sum past the ceiling; they summed to {installationWide}.");
+
+        Assert.True(
+            census.MaxCampaignConfirmedRenderedBytes < CovenantLimits.MaxCampaignConfirmedRenderedBytes,
+            $"No single Campaign breaches the ceiling, so the reported figure must not: "
+            + $"{census.MaxCampaignConfirmedRenderedBytes}.");
+
+        // And it is a real Campaign's total, not a zero that would pass the line above for free. Two
+        // Campaigns hold equal shares, so the largest is at least half.
+        Assert.True(census.MaxCampaignConfirmedRenderedBytes >= installationWide / 2);
+
+    }
+
     [Fact]
     public async Task A_scoped_lease_cannot_take_a_census_that_crosses_every_campaign()
     {

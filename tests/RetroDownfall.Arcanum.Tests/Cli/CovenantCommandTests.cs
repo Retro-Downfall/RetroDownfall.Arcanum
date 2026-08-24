@@ -245,7 +245,12 @@ public sealed class CovenantCommandTests : IDisposable
 
         CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
 
-        int exitCode = await commands.List(campaignId: null, allScopes: false, lane: null, Token);
+        int exitCode = await commands.List(
+            campaignId: null,
+            allScopes: false,
+            lane: null,
+            CovenantLifecycle.Set,
+            Token);
 
         Assert.Equal(0, exitCode);
 
@@ -253,6 +258,291 @@ public sealed class CovenantCommandTests : IDisposable
             "No Covenant entries",
             string.Join("\n", dispatcher.Payloads),
             StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A reactivating write says so on both halves of the protocol.
+    /// </summary>
+    /// <remarks>
+    /// Reactivation is bound into the digest the preflight token seals, so a prepare and a commit that
+    /// disagree about it are refused rather than silently honoured. The failure this catches is the
+    /// quieter one: a flag that reached neither request would make <c>--reactivate</c> a word the
+    /// operator typed and nothing acted on, and the route sequence would look identical.
+    /// </remarks>
+    [Fact]
+    public async Task A_reactivating_write_carries_the_flag_into_both_the_prepare_and_the_commit()
+    {
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out _);
+
+        int exitCode = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile("Run build commands from the repository root."),
+            expectedRevision: 0,
+            reactivate: true,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Equal(
+            ["POST /api/memory/covenant/set/prepare", "PUT /api/memory/covenant"],
+            handler.Requests);
+
+        Assert.All(
+            handler.Bodies,
+            body => Assert.Contains("\"reactivate\":true", body, StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    /// <summary>
+    /// The lane the server resolved is the lane the operator is shown.
+    /// </summary>
+    /// <remarks>
+    /// The confirmation screen is the last place a mistyped <c>--lane</c> can be caught. Without the
+    /// lane on it, an operator asked to approve a retirement was shown the key, the revision, the cost
+    /// and the hash — every field except the one that says which of the two standings is about to be
+    /// withdrawn.
+    /// </remarks>
+    [Fact]
+    public async Task The_confirmation_screen_names_the_lane_the_server_resolved()
+    {
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: false, out RecordingDispatcher dispatcher);
+
+        _ = await commands.Retire(
+            "preference.builds",
+            campaignId: null,
+            CovenantLane.Confirmed,
+            expectedRevision: 1,
+            Token);
+
+        Assert.Contains(
+            "Confirmed lane",
+            string.Join("\n", dispatcher.Payloads),
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A misspelled lane fails the command instead of retiring the other one.
+    /// </summary>
+    /// <remarks>
+    /// <c>--lane propsed</c> used to parse as absence, which <c>retire</c> coalesced to Confirmed — so
+    /// a typo aimed at an agent's proposal sent a well-formed request that withdrew the operator's own
+    /// standing preference and exited zero. The route sequence is asserted alongside the exit code
+    /// because a refusal that still prepared would have taken a lease and measured an effect for a
+    /// command that was never valid.
+    /// </remarks>
+    [Fact]
+    public void A_misspelled_lane_fails_the_command_before_it_reaches_any_route()
+    {
+
+        RecordingHandler handler = new();
+
+        ParseResult parsed = Tree(handler).Parse(
+            "memory covenant retire preference.builds --lane propsed --expected-revision 1");
+
+        Assert.NotEmpty(parsed.Errors);
+
+        StringWriter output = new();
+
+        int exitCode = parsed.Invoke(new InvocationConfiguration
+        {
+            EnableDefaultExceptionHandler = false,
+            Output = output,
+            Error = output,
+        });
+
+        Assert.NotEqual(0, exitCode);
+
+        Assert.Empty(handler.Requests);
+
+        // The valid names travel with the refusal. "Not a Covenant lane" alone would leave an operator
+        // guessing at a vocabulary of exactly two words.
+        Assert.Contains("Confirmed", output.ToString(), StringComparison.Ordinal);
+
+        Assert.Contains("Proposed", output.ToString(), StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A correctly spelled lane still parses, in whatever case an operator typed it.
+    /// </summary>
+    /// <remarks>
+    /// Paired with the refusal above so the fix cannot be "reject everything": a check that failed
+    /// every value would satisfy the test that only asserts the typo is caught.
+    /// </remarks>
+    [Fact]
+    public void A_lane_named_in_any_casing_still_parses()
+    {
+
+        ParseResult parsed = Tree(new RecordingHandler()).Parse(
+            "memory covenant list --lane proposed");
+
+        Assert.Empty(parsed.Errors);
+
+    }
+
+    /// <summary>
+    /// A pipe already spent on content is not an answer to the confirmation question.
+    /// </summary>
+    /// <remarks>
+    /// <c>set</c> reads the whole pipe as authored content, so by the time it asks for confirmation
+    /// standard input is exhausted. The read returned null, which the prompt scored as "no", and the
+    /// command printed "cancelled" and exited zero — reporting a decision the operator never made and
+    /// giving a script no way to tell a refusal from a successful no-op.
+    /// </remarks>
+    [Fact]
+    public async Task A_write_that_cannot_ask_refuses_rather_than_reporting_a_cancellation()
+    {
+
+        RecordingHandler handler = new();
+
+        CliInvocationOptions options = new(Json: false, Plain: true, Yes: false);
+
+        ConfirmationPrompt prompt = new(
+            new ConsoleDispatcher(new StringWriter(), new StringWriter(), options),
+            options,
+            new StringReader(string.Empty),
+            isOutputRedirected: static () => false,
+            isInputRedirected: static () => true);
+
+        CovenantCommands commands = Commands(handler, prompt, out _);
+
+        await Assert.ThrowsAsync<NonInteractiveConfirmationException>(
+            () => commands.Set(
+                "preference.builds",
+                campaignId: null,
+                file: WriteTempFile("Run build commands from the repository root."),
+                expectedRevision: 0,
+                reactivate: false,
+                Token));
+
+        // The refusal has to land before the commit, not merely be reported after it.
+        Assert.Equal(["POST /api/memory/covenant/set/prepare"], handler.Requests);
+
+    }
+
+    /// <summary>
+    /// Every page is followed, because nothing an operator holds could ask for the next one.
+    /// </summary>
+    /// <remarks>
+    /// The continuation is an AEAD-sealed cursor minted by the server. A listing that stopped at the
+    /// first page and printed "more entries exist" announced entries no command could reach — and
+    /// among them are exactly the retired heads an operator needs to see before a reactivating write.
+    /// </remarks>
+    [Fact]
+    public async Task A_listing_follows_the_servers_cursor_rather_than_announcing_what_it_cannot_reach()
+    {
+
+        RecordingHandler handler = new() { ListPages = 3 };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.List(
+            campaignId: null,
+            allScopes: false,
+            lane: null,
+            CovenantLifecycle.Retired,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Equal(3, handler.Requests.Count);
+
+        string rendered = string.Join("\n", dispatcher.Payloads);
+
+        Assert.Contains("preference.page1", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("preference.page3", rendered, StringComparison.Ordinal);
+
+        // The second request has to carry the cursor the first one handed back; a client that dropped
+        // it would re-read page one forever or stop after it.
+        Assert.Contains("cursor-1", handler.Bodies[1], StringComparison.Ordinal);
+
+        // The lifecycle an operator asked for is the lifecycle that is sent. A hardcoded Set made
+        // retired heads unlistable, which is what blocks an informed reactivation.
+        Assert.All(
+            handler.Bodies,
+            body => Assert.Contains("\"lifecycle\":\"Retired\"", body, StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    /// <summary>
+    /// History answers "who changed this preference, and when".
+    /// </summary>
+    /// <remarks>
+    /// The version page has carried operation, origin, revision, and mutation identity since the route
+    /// shipped; there was no verb that asked for it. Nothing here prints authored content, because a
+    /// history is a record of changes rather than a second way to read what a key says.
+    /// </remarks>
+    [Fact]
+    public async Task History_prints_each_revisions_operation_and_origin()
+    {
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.Show("preference.builds", campaignId: null, history: true, Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Equal(
+            ["POST /api/memory/covenant/detail", "POST /api/memory/covenant/versions"],
+            handler.Requests);
+
+        string rendered = string.Join("\n", dispatcher.Payloads);
+
+        Assert.Contains("revision 2", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("Operator", rendered, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Without <c>--history</c> the version route is not touched at all.
+    /// </summary>
+    /// <remarks>
+    /// A version page costs an authenticated installation read. Spending one on every <c>show</c>
+    /// would make a lookup's cost depend on how many times the key had ever been written.
+    /// </remarks>
+    [Fact]
+    public async Task A_show_without_history_reads_no_version_page()
+    {
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out _);
+
+        _ = await commands.Show("preference.builds", campaignId: null, history: false, Token);
+
+        Assert.Equal(["POST /api/memory/covenant/detail"], handler.Requests);
+
+    }
+
+    private static RootCommand Tree(RecordingHandler handler)
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(handler));
+
+        services.AddSingleton<ISecretStore>(new FixedSecretStore());
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        return CliCommandTree.Build(provider, out _);
 
     }
 
@@ -305,6 +595,12 @@ public sealed class CovenantCommandTests : IDisposable
     private static CovenantCommands Commands(
         RecordingHandler handler,
         bool confirm,
+        out RecordingDispatcher dispatcher) =>
+        Commands(handler, new FixedConfirmation(confirm), out dispatcher);
+
+    private static CovenantCommands Commands(
+        RecordingHandler handler,
+        IConfirmationPrompt prompt,
         out RecordingDispatcher dispatcher)
     {
 
@@ -325,7 +621,7 @@ public sealed class CovenantCommandTests : IDisposable
         return new CovenantCommands(
             provider.GetRequiredService<ArcanumApiClient>(),
             dispatcher,
-            new FixedConfirmation(confirm),
+            prompt,
             new FixedInvocationContext());
 
     }
@@ -374,9 +670,21 @@ public sealed class CovenantCommandTests : IDisposable
 
         internal List<string> Requests { get; } = [];
 
+        /// <summary>Every request body, in the order it was sent.</summary>
+        /// <remarks>
+        /// The route sequence says which surfaces were reached; only the bodies say what was asked of
+        /// them. A flag that never left the client would produce exactly the same sequence.
+        /// </remarks>
+        internal List<string> Bodies { get; } = [];
+
         internal bool EmptyList { get; init; }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        /// <summary>How many list pages exist before the cursor runs out.</summary>
+        internal int ListPages { get; init; } = 1;
+
+        private int _listCalls;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
@@ -385,18 +693,119 @@ public sealed class CovenantCommandTests : IDisposable
 
             Requests.Add($"{request.Method} {path}");
 
-            string body = path.EndsWith("prepare", StringComparison.Ordinal)
-                ? Preflight()
-                : path.EndsWith("list", StringComparison.Ordinal)
-                    ? Page()
-                    : Mutation();
+            Bodies.Add(request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            string body;
+
+            if (path.EndsWith("prepare", StringComparison.Ordinal))
+            {
+
+                body = Preflight();
+
+            }
+            else if (path.EndsWith("list", StringComparison.Ordinal))
+            {
+
+                _listCalls++;
+
+                body = Page(_listCalls);
+
+            }
+            else if (path.EndsWith("versions", StringComparison.Ordinal))
+            {
+
+                body = Versions();
+
+            }
+            else if (path.EndsWith("detail", StringComparison.Ordinal))
+            {
+
+                body = Detail();
+
+            }
+            else
+            {
+
+                body = Mutation();
+
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            });
+            };
 
         }
+
+        private static CovenantHeadDto Head(string key) =>
+            new(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                CovenantScope.Global,
+                null,
+                key,
+                CovenantLane.Confirmed,
+                1,
+                CovenantLifecycle.Set,
+                CovenantOrigin.Operator,
+                "77",
+                "88",
+                64,
+                0,
+                "99",
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                CovenantEffectiveShadowState.NotEvaluated,
+                CovenantEffectiveMaterialization.NotEvaluated);
+
+        private static string Detail() =>
+            JsonSerializer.Serialize(
+                ApiResponse<CovenantDetailDto>.FromResult(
+                    Result<CovenantDetailDto>.Success(new CovenantDetailDto(
+                        CovenantScope.Global,
+                        null,
+                        "preference.builds",
+                        DetailEntryId,
+                        Head("preference.builds"),
+                        null,
+                        1,
+                        null,
+                        null)),
+                    "trace"),
+                ArcanumJsonContext.Default.ApiResponseCovenantDetailDto);
+
+        internal static readonly Guid DetailEntryId = new("44444444-4444-4444-8444-444444444444");
+
+        private static string Versions() =>
+            JsonSerializer.Serialize(
+                ApiResponse<CovenantVersionPageDto>.FromResult(
+                    Result<CovenantVersionPageDto>.Success(new CovenantVersionPageDto(
+                        [
+                            new CovenantVersionDto(
+                                Guid.NewGuid(),
+                                DetailEntryId,
+                                CovenantLane.Confirmed,
+                                2,
+                                CovenantOperation.Set,
+                                CovenantOrigin.Operator,
+                                "99",
+                                "aa",
+                                64,
+                                1,
+                                1,
+                                null,
+                                Guid.NewGuid(),
+                                0,
+                                "bb",
+                                DateTimeOffset.UtcNow),
+                        ],
+                        NextCursor: null,
+                        "cc",
+                        Truncated: false)),
+                    "trace"),
+                ArcanumJsonContext.Default.ApiResponseCovenantVersionPageDto);
 
         private static string Preflight() =>
             JsonSerializer.Serialize(
@@ -453,19 +862,29 @@ public sealed class CovenantCommandTests : IDisposable
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto);
 
-        private string Page() =>
+        /// <summary>
+        /// Answers one page, handing back a fresh cursor while pages remain.
+        /// </summary>
+        /// <remarks>
+        /// The cursor changes per page on purpose. A client that reused the previous one, or stopped
+        /// at the first page, would leave every entry after the first page unreachable — and the
+        /// cursor is AEAD-sealed, so there is no value an operator could supply themselves.
+        /// </remarks>
+        private string Page(int call) =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantPageDto>.FromResult(
                     Result<CovenantPageDto>.Success(new CovenantPageDto(
-                        EmptyList ? [] : [],
-                        null,
+                        EmptyList ? [] : [Head($"preference.page{call}")],
+                        call < ListPages ? $"cursor-{call}" : null,
                         "66",
                         new CovenantSearchHealthDto(
                             CovenantSearchHealthState.Healthy,
                             CovenantSearchExecutionMode.CanonicalFallback,
                             CovenantSearchRebuildGuidance.None),
-                        false,
-                        CovenantPageTruncation.None)),
+                        call < ListPages,
+                        call < ListPages
+                            ? CovenantPageTruncation.PageSizeReached
+                            : CovenantPageTruncation.None)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantPageDto);
 
