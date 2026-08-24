@@ -478,6 +478,116 @@ internal static class LocalErasureWorkItemStore
     }
 
     /// <summary>
+    /// Reads the complete work-item inventory in canonical identity order.
+    /// </summary>
+    /// <remarks>
+    /// Every row, including the terminal ones. The active-source uniqueness index is partial — it
+    /// constrains only <c>StateCode IN (1, 2)</c> — so refused work items from earlier operations
+    /// accumulate legitimately, and an inventory that counted only the unfinished ones could not state
+    /// that every work item this installation ever created has been accounted for.
+    ///
+    /// <para>Identities are stored as uppercase RFC-4122 text, whose lexicographic order is exactly the
+    /// network-byte order the inventory vector commits to. One row past the ceiling is read on purpose,
+    /// so an inventory too large to authenticate is detected rather than truncated.</para>
+    /// </remarks>
+    internal static async Task<Result<IReadOnlyList<LocalErasureWorkItemRow>>> ListInventoryAsync(
+        SqliteConnection connection,
+        int ceiling,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ceiling);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"{SelectColumns} ORDER BY WorkItemId LIMIT {ceiling + 1};";
+
+        List<LocalErasureWorkItemRow> rows = [];
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            Result<LocalErasureWorkItemRow> row = Read(reader);
+
+            if (row.IsFailure)
+            {
+
+                return Result<IReadOnlyList<LocalErasureWorkItemRow>>.Failure(row.Error);
+
+            }
+
+            rows.Add(row.Value);
+
+        }
+
+        return Result<IReadOnlyList<LocalErasureWorkItemRow>>.Success(rows);
+
+    }
+
+    /// <summary>
+    /// Reads the one active work item a producer already has, if it has one.
+    /// </summary>
+    /// <remarks>
+    /// Active means <c>Prepared</c> or <c>DeletionVerified</c>, which is exactly the predicate the
+    /// partial unique index constrains, so at most one row can answer. A caller that minted a fresh
+    /// identity instead of reusing this one would be asking the database to authorize a second effect
+    /// against a file the first one already committed to removing.
+    ///
+    /// <para>Two rows are read rather than one so a database that somehow holds both is refused rather
+    /// than silently resolved to whichever sorted first.</para>
+    /// </remarks>
+    internal static async Task<Result<Guid?>> TryReadActiveWorkItemIdForSourceAsync(
+        SqliteConnection connection,
+        Guid sourceWriteOperationId,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT WorkItemId
+            FROM local_erasure_work_items
+            WHERE SourceWriteOperationId = $source AND StateCode IN (1, 2)
+            ORDER BY WorkItemId
+            LIMIT 2;
+            """;
+
+        _ = command.Parameters.AddWithValue("$source", Format(sourceWriteOperationId));
+
+        List<Guid> identities = [];
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            identities.Add(Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture));
+
+        }
+
+        return identities.Count switch
+        {
+            0 => Result<Guid?>.Success(null),
+            1 => Result<Guid?>.Success(identities[0]),
+            _ => Result<Guid?>.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                    "A managed-file producer has more than one active local erasure work item.")),
+        };
+
+    }
+
+    /// <summary>
     /// Advances one work item, compare-and-swapping on its exact checkpoint revision and state.
     /// </summary>
     internal static async Task<bool> TryAdvanceAsync(

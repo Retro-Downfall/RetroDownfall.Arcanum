@@ -70,7 +70,22 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 
         // Only provider-perplexity-api-key.
         "src/RetroDownfall.Arcanum.Infrastructure/Security/WebResearchCredentialStore.cs",
+
+        // The one path that may remove the three restore-journal accounts, and the only entry in this
+        // inventory allowed to name them. It removes nothing else, it removes them only in the anchor,
+        // journal-key, installation-identity order, and it removes each one only when the account's
+        // current value reproduces the digest a terminal-state proof projected for that exact account
+        // name. Without that proof it deletes nothing at all, which is what keeps every ordinary
+        // cleanup, Covenant reset, family reinitialize, and restore retaining them byte-for-byte.
+        FullResetRestoreCredentialRemover,
     ];
+
+    /// <summary>
+    /// The single declared exception to the rule below, named once so both rules refer to the same file.
+    /// </summary>
+    private const string FullResetRestoreCredentialRemover =
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
+        + "InstallationResetRestoreCredentialCleanup.cs";
 
     [Fact]
     public void The_authenticator_is_the_only_production_caller_that_takes_a_journal_key()
@@ -165,13 +180,14 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
             + "accounts still survive it: "
             + string.Join(", ", offenders));
 
-        // And no decider can name a restore-journal account at all, which is what turns "absent from
-        // the catalog" into "unreachable by every deletion path".
+        // And no decider except the attested full-reset remover can name a restore-journal account at
+        // all, which is what turns "absent from the catalog" into "unreachable by every deletion path".
         List<string> naming =
         [
             .. ProductionSourceInventory.Sources()
                 .Where(source =>
                     CredentialDeletionDeciderOwners.Any(source.IsExactOwner)
+                    && !source.IsExactOwner(FullResetRestoreCredentialRemover)
                     && source.Names("ArcanumCredentialIdentity.BackupRestoreJournal"))
                 .Select(static source => source.RelativePath),
         ];
@@ -182,6 +198,16 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
             + "Ordinary cleanup, Covenant reset, family reinitialize, and restore must all retain the "
             + "three byte-for-byte: "
             + string.Join(", ", naming));
+
+        // The exception is only safe because it cannot act without a terminal-state proof. If the
+        // remover ever stops taking one, it becomes an unconditional deleter of the three accounts and
+        // this exemption has to be withdrawn.
+        ProductionSource remover = ProductionSourceInventory.Sources()
+            .Single(source => source.IsExactOwner(FullResetRestoreCredentialRemover));
+
+        Assert.True(remover.Names("BackupRestoreFullResetTerminalProjectionV1 terminal"));
+
+        Assert.True(remover.Names("AccountValueDigest(account, value) != expected"));
 
     }
 

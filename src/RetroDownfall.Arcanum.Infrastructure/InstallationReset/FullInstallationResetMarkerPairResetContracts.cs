@@ -109,7 +109,8 @@ internal sealed record HostToolsMarkerPairResetCheckpointV1(
     ImmutableArray<Guid>? OrderedMarkerIntentIds,
     CovenantDigest? MarkerIntentVectorDigest,
     ulong? DeletedCount,
-    ulong? OrphanCount);
+    ulong? OrphanCount,
+    FullInstallationResetManagedFileCheckpointV1? ManagedFile = null);
 
 internal static class HostToolsMarkerPairResetCheckpointBounds
 {
@@ -122,7 +123,10 @@ internal static class HostToolsMarkerPairResetCheckpointBounds
         && checkpoint.CampaignInventory.Length <= MaximumVectorCount
         && (checkpoint.OrderedMarkerIntentIds is not { } intents
             || !intents.IsDefault
-            && intents.Length <= MaximumVectorCount);
+            && intents.Length <= MaximumVectorCount)
+        && (checkpoint.ManagedFile is not { } managedFile
+            || FullInstallationResetManagedFileBounds.HasValidVectorShape(managedFile)
+                && FullInstallationResetManagedFileBounds.HasCoherentTerminalTail(managedFile));
 
     internal static void RequireValidVectorShapeBeforeCopy(
         HostToolsMarkerPairResetCheckpointV1 checkpoint)
@@ -134,7 +138,7 @@ internal static class HostToolsMarkerPairResetCheckpointBounds
         {
 
             throw new ArgumentException(
-                "Checkpoint inventory and optional intent vectors must be initialized and contain at most 4,096 entries.",
+                "Checkpoint inventory, optional intent vectors, and any nested managed-file inventory must be initialized, contain at most 4,096 entries, and carry a whole or absent terminal tail.",
                 nameof(checkpoint));
 
         }

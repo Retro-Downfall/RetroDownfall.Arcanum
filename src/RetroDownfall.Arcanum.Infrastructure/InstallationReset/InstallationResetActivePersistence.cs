@@ -330,7 +330,46 @@ internal sealed record InstallationResetActivePayloadV2(
                 ? CopyDigest(intentDigest)
                 : null,
             checkpoint.DeletedCount,
-            checkpoint.OrphanCount);
+            checkpoint.OrphanCount,
+            CopyManagedFileCheckpoint(checkpoint.ManagedFile));
+
+    }
+
+    private static FullInstallationResetManagedFileCheckpointV1? CopyManagedFileCheckpoint(
+        FullInstallationResetManagedFileCheckpointV1? checkpoint)
+    {
+
+        if (checkpoint is null)
+        {
+
+            return null;
+
+        }
+
+        FullInstallationResetManagedFileBounds.RequireValidVectorShapeBeforeCopy(checkpoint);
+
+        return new FullInstallationResetManagedFileCheckpointV1(
+            checkpoint.Version,
+            checkpoint.Phase,
+            checkpoint.SourceCount,
+            CopyIntentIds(checkpoint.OrderedSourceWriteOperationIds),
+            CopyDigest(checkpoint.SourceWriteIntentVectorDigest),
+            checkpoint.LocalErasureWorkItemCount,
+            checkpoint.OrderedLocalErasureWorkItemIds is { } workItems
+                ? workItems.IsDefault
+                    ? default(ImmutableArray<Guid>)
+                    : CopyIntentIds(workItems)
+                : null,
+            checkpoint.LocalErasureWorkItemVectorDigest is { } workItemDigest
+                ? CopyDigest(workItemDigest)
+                : null,
+            checkpoint.SafeTerminalWriteIntentCount,
+            checkpoint.ManualWriteOrphanCount,
+            checkpoint.CompletedWorkItemCount,
+            checkpoint.ManualWorkItemOrphanCount,
+            checkpoint.TerminalClassificationDigest is { } classification
+                ? CopyDigest(classification)
+                : null);
 
     }
 
@@ -366,6 +405,8 @@ internal sealed record InstallationResetActivePayloadV2(
 [JsonSerializable(typeof(FullInstallationResetRemediationClaimV1))]
 [JsonSerializable(typeof(HostToolsMarkerPairResetCheckpointV1))]
 [JsonSerializable(typeof(HostToolsMarkerPairResetPhase))]
+[JsonSerializable(typeof(FullInstallationResetManagedFileCheckpointV1))]
+[JsonSerializable(typeof(FullInstallationResetManagedFileReconciliationPhase))]
 [JsonSerializable(typeof(FullInstallationResetRestartProofV1))]
 [JsonSerializable(typeof(FullInstallationResetSignedAttestationProjectionV1))]
 [JsonSerializable(typeof(CampaignMarkerInventoryEntryV1))]
