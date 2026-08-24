@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol.Protocol;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
 using ArcanumJsonRpcRequest = RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol.JsonRpcRequest;
@@ -26,7 +27,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = request.Id.ToString();
-        BindRequestContexts(connectionKey, requestId);
+        BindRequestContexts(connectionKey, requestId, ReadSdkToolName(request.Params));
 
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
@@ -92,7 +93,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = NormalizeArcanumRequestId(request.Id);
-        BindRequestContexts(connectionKey, requestId);
+        BindRequestContexts(connectionKey, requestId, ReadArcanumToolName(request.Params));
 
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
@@ -149,12 +150,15 @@ internal static class SessionAttachmentAmbientSend
 
     private static void BindRequestContexts(
         string connectionKey,
-        string requestId)
+        string requestId,
+        string? toolName)
     {
         if (string.IsNullOrEmpty(requestId))
         {
             return;
         }
+
+        BindCovenantStaging(connectionKey, requestId, toolName);
 
         if (ApplyPatchInvocationAmbient.Current
             is ApplyPatchInvocationContext patchContext)
@@ -187,6 +191,64 @@ internal static class SessionAttachmentAmbientSend
                     BudgetReservationId = DelegatedSpendAttribution.BudgetReservationId,
                 });
         }
+    }
+
+    /// <summary>
+    /// Mints this tool call's single-use Covenant capability, or mints nothing.
+    /// </summary>
+    /// <remarks>
+    /// One capability per tool call, bound to the exact tool name and request identity, because a
+    /// capability minted per turn would authorize whatever arrived rather than what the turn planned
+    /// for. <c>TryAdd</c> semantics mean a duplicate request id is refused rather than overwriting a
+    /// live registration.
+    ///
+    /// <para>Proposal only. A retirement's capability additionally requires the preflight disclosure
+    /// its Ward showed the operator and the receipt proving they approved it, and neither exists yet;
+    /// minting one without them would produce a capability whose constructor refuses it anyway, so
+    /// the retirement path is left to fail closed where it already does.</para>
+    /// </remarks>
+    private static void BindCovenantStaging(
+        string connectionKey,
+        string requestId,
+        string? toolName)
+    {
+
+        if (toolName is not { Length: > 0 } name
+            || !string.Equals(name, CovenantToolNames.ProposeCovenant, StringComparison.Ordinal)
+            || CovenantToolStagingAmbient.Current is not { } staging)
+        {
+            return;
+        }
+
+        CovenantToolCapabilityNonce nonce = CovenantToolCapabilityNonce.Create();
+
+        CovenantToolInvocationContext capability;
+
+        try
+        {
+            capability = new CovenantToolInvocationContext(
+                staging.Collector,
+                staging.Campaign,
+                staging.ProducingAdmission,
+                staging.Materialization,
+                staging.HeadProbe,
+                nonce,
+                name,
+                requestId,
+                retirementPreflight: null,
+                wardReceipt: null,
+                staging.TurnCancellation);
+        }
+        catch (ArgumentException)
+        {
+            // The capability's own invariants refused this turn's material — an unbound Campaign, a
+            // plan the collector does not match. Mint nothing; the handler then fails closed on a
+            // missing capability, which is the same answer with none of the pretence.
+            return;
+        }
+
+        _ = staging.Registry.TryRegister(connectionKey, requestId, capability, nonce);
+
     }
 
     private static void UnbindRequestContexts(
@@ -240,6 +302,19 @@ internal static class SessionAttachmentAmbientSend
         return request with { Params = InjectOpaqueTokenIntoArcanumParams(request.Params, token) };
 
     }
+
+    /// <summary>Reads the tool name a <c>tools/call</c> names, or null when it names none.</summary>
+    private static string? ReadSdkToolName(JsonNode? paramsNode) =>
+        paramsNode is JsonObject root && root.TryGetPropertyValue("name", out JsonNode? name)
+            ? name?.GetValue<string>()
+            : null;
+
+    private static string? ReadArcanumToolName(JsonElement? paramsElement) =>
+        paramsElement is { ValueKind: JsonValueKind.Object } element
+            && element.TryGetProperty("name", out JsonElement name)
+            && name.ValueKind is JsonValueKind.String
+            ? name.GetString()
+            : null;
 
     private static JsonNode? InjectOpaqueTokenIntoSdkParams(JsonNode? paramsNode, string token)
     {

@@ -284,6 +284,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<MemoryCommands>();
 
+        services.AddTransient<CovenantCommands>();
+
         services.AddTransient<SpellCommands>();
 
         services.AddTransient<SpellVersionCommands>();

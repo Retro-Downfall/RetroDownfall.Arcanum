@@ -28,6 +28,21 @@ internal sealed partial class ArcanumInternalToolServer
 
     internal const string CovenantMutationFailedStatus = "failed";
 
+    /// <summary>
+    /// Whether retirement can actually be performed, rather than merely refused.
+    /// </summary>
+    /// <remarks>
+    /// Constant <see langword="false"/> in this build, and advertised accordingly. Retirement's
+    /// capability requires the preflight disclosure a Ward showed the operator and the receipt proving
+    /// they approved it; neither exists yet, so every call would be refused. Advertising a tool that
+    /// always refuses teaches a model the capability is broken rather than absent, and an unbuilt
+    /// capability must not look like a built one that happens to be failing.
+    ///
+    /// <para>The handler stays registered regardless, so a direct or stale invocation still fails
+    /// closed rather than reaching an unregistered name.</para>
+    /// </remarks>
+    private static bool CovenantRetirementAvailable => false;
+
     private bool CovenantToolsAvailable()
     {
 

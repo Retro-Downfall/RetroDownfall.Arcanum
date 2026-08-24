@@ -152,7 +152,12 @@ public sealed class CovenantContextProvider(
                 canStage
                     ? new CovenantMutationCollector(logicalTurnId, plan.Value.Digest, Guid.NewGuid())
                     : null,
-                logicalTurnId));
+                logicalTurnId,
+
+                // Built here because this is the one place that holds both the store and the turn's
+                // own lease. A probe assembled later would either need the lease handed out — which is
+                // how a turn ends up with two owners for one admission — or a second acquisition.
+                canStage ? new CovenantTurnHeadProbe(store, campaign, lease) : null));
 
     }
 
