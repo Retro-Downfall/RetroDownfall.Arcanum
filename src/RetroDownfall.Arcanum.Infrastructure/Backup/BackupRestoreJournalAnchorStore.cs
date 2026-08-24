@@ -71,7 +71,7 @@ internal sealed record BackupRestoreJournalRecoveryState(
 /// <see cref="ArcanumMaintenanceLock.AssertHeldFor(string)"/> and never calls <c>TryAcquire</c>,
 /// <c>IsHeld</c>, or <c>Dispose</c>.</para>
 /// </remarks>
-internal sealed class BackupRestoreJournalAnchorStore(
+internal sealed partial class BackupRestoreJournalAnchorStore(
     IOsCredentialStore credentials,
     BackupRestoreJournalKeyProvider keys,
     BackupRestoreJournalInstallationIdentityProvider identities)

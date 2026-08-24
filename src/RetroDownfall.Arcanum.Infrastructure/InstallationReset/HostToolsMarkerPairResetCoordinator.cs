@@ -26,6 +26,17 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
     private readonly IHostToolsMarkerPairResetOsPort _os;
 
+    /// <summary>
+    /// The managed-file reconciliation this coordinator hands off to once its receipt is terminal.
+    /// </summary>
+    /// <remarks>
+    /// Optional, and taken as a dependency rather than resolved, because the coordinator is already
+    /// only constructed on the one path where the Grimoire has to be reachable. A composition that
+    /// omits it leaves the reset exactly where the marker-pair boundary left it: recovery required,
+    /// with nothing after the Campaign receipt attempted.
+    /// </remarks>
+    private readonly IFullInstallationResetManagedFileReconciler? _managedFiles;
+
     internal HostToolsMarkerPairResetCoordinator(
         IInstallationResetActiveStore activeStore,
         IHostToolsMarkerPairResetDatabase database,
@@ -33,8 +44,12 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         IHostProcessToolsMarkerPairJoiner joiner,
         IFullInstallationResetRemediationAttestationVerifier verifier,
         ICampaignPathMarkerLifecycle lifecycle,
-        IHostToolsMarkerPairResetOsPort os)
+        IHostToolsMarkerPairResetOsPort os,
+        IFullInstallationResetManagedFileReconciler? managedFiles = null)
     {
+
+        _managedFiles = managedFiles;
+
 
         _activeStore = activeStore ?? throw new ArgumentNullException(nameof(activeStore));
 
@@ -1483,10 +1498,67 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         }
 
-        // Recovery is still required on the success path. Managed-file reconciliation, restore
-        // credential removal, and installation-identity rotation are not part of this operation, so a
-        // durable terminal receipt is progress rather than a finished reset.
+        // The Campaign receipt is terminal, which is the exact precondition the managed-file
+        // reconciliation authenticates against. It is handed the lock and the borrowed connection and
+        // nothing else: it reproves the publication, the receipt, and the database file identity from
+        // the durable record rather than from anything said here.
+        Result<InstallationResetActivePublication> reconciled =
+            await ReconcileManagedFilesAsync(heldInstallationLock, session).ConfigureAwait(false);
+
+        _ = reconciled;
+
+        // Recovery is still required on the success path. Restore-credential removal and
+        // installation-identity rotation are not part of this operation, so a durable terminal receipt
+        // and a verified managed-file inventory are progress rather than a finished reset.
         return Inert<InstallationResetActivePublication>();
+
+    }
+
+    /// <summary>
+    /// Hands the terminal receipt to the managed-file reconciliation, and to nothing else.
+    /// </summary>
+    /// <remarks>
+    /// The publication is reread rather than carried from the receipt publication above, because the
+    /// receipt may or may not have been republished depending on whether reconciliation of the
+    /// Campaign children changed it, and the reconciler compares what it is handed against what the
+    /// store reads back.
+    ///
+    /// <para>Its outcome does not change this operation's, for the same reason the marker-pair
+    /// admission does not depend on the coordinator's: the reset is incomplete either way and the
+    /// operator is told recovery is required either way. The progress it makes is the checkpoint it
+    /// publishes, and the next resume reads that rather than a status code.</para>
+    /// </remarks>
+    private async Task<Result<InstallationResetActivePublication>> ReconcileManagedFilesAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        HostToolsMarkerPairResetDatabaseSession session)
+    {
+
+        if (_managedFiles is null)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        Result<InstallationResetActiveRecoveryState> recovered = await _activeStore
+            .RecoverAsync(heldInstallationLock, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure
+            || recovered.Value.Outcome
+                is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
+            || recovered.Value.Publication is not { } current)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        return await _managedFiles.ReconcileAsync(
+            heldInstallationLock,
+            current,
+            session.BorrowCoreConnection(),
+            CancellationToken.None).ConfigureAwait(false);
 
     }
 
@@ -2366,7 +2438,47 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 left.MarkerIntentVectorDigest,
                 right.MarkerIntentVectorDigest)
             && left.DeletedCount == right.DeletedCount
-            && left.OrphanCount == right.OrphanCount;
+            && left.OrphanCount == right.OrphanCount
+            && ManagedFileCheckpointEquals(left.ManagedFile, right.ManagedFile);
+
+    /// <summary>
+    /// Compares the nested managed-file checkpoint field by field.
+    /// </summary>
+    /// <remarks>
+    /// Explicit rather than generated record equality, for the same reason every other comparer here
+    /// is: the identity vectors are <c>ImmutableArray</c>, whose default equality is reference
+    /// identity, so a generated comparison would report two structurally identical inventories as
+    /// different and a deep-copied one as unequal to its own source.
+    /// </remarks>
+    private static bool ManagedFileCheckpointEquals(
+        FullInstallationResetManagedFileCheckpointV1? left,
+        FullInstallationResetManagedFileCheckpointV1? right) =>
+        left is null && right is null
+        || left is not null
+            && right is not null
+            && left.Version == right.Version
+            && left.Phase == right.Phase
+            && left.SourceCount == right.SourceCount
+            && IntentIdsEqual(
+                left.OrderedSourceWriteOperationIds,
+                right.OrderedSourceWriteOperationIds)
+            && DigestEquals(
+                left.SourceWriteIntentVectorDigest,
+                right.SourceWriteIntentVectorDigest)
+            && left.LocalErasureWorkItemCount == right.LocalErasureWorkItemCount
+            && IntentIdsEqual(
+                left.OrderedLocalErasureWorkItemIds,
+                right.OrderedLocalErasureWorkItemIds)
+            && OptionalDigestEquals(
+                left.LocalErasureWorkItemVectorDigest,
+                right.LocalErasureWorkItemVectorDigest)
+            && left.SafeTerminalWriteIntentCount == right.SafeTerminalWriteIntentCount
+            && left.ManualWriteOrphanCount == right.ManualWriteOrphanCount
+            && left.CompletedWorkItemCount == right.CompletedWorkItemCount
+            && left.ManualWorkItemOrphanCount == right.ManualWorkItemOrphanCount
+            && OptionalDigestEquals(
+                left.TerminalClassificationDigest,
+                right.TerminalClassificationDigest);
 
     private static bool RestartProofEquals(
         FullInstallationResetRestartProofV1 left,

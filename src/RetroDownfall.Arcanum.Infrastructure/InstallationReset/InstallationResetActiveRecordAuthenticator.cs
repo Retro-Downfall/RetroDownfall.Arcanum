@@ -1103,7 +1103,131 @@ internal static class InstallationResetActiveRecordAuthenticator
 
         }
 
-        return Result.Success();
+        return ValidateManagedFileCheckpoint(checkpoint);
+
+    }
+
+    /// <summary>
+    /// Validates the nested managed-file reconciliation checkpoint, including when it may exist at all.
+    /// </summary>
+    /// <remarks>
+    /// It may exist only beside a terminal Campaign-marker receipt at <c>PairAbsenceVerified</c>. That
+    /// is the ordering the whole operation rests on: managed-file reconciliation runs on an
+    /// installation whose host-tools markers are provably gone and whose Campaign markers are already
+    /// accounted for, and a record carrying managed-file progress without that behind it would be
+    /// claiming a position in the sequence it never reached.
+    ///
+    /// <para>Both identity vectors are recomputed here rather than trusted, so a record whose counts
+    /// or digests were edited underneath the operation is refused before anything reads it. The four
+    /// terminal counters are checked to add up exactly against the two inventories — that arithmetic
+    /// is the acceptance criterion the reconciliation exists to satisfy, and validating it only where
+    /// it is produced would let a tampered record satisfy it by assertion.</para>
+    /// </remarks>
+    private static Result ValidateManagedFileCheckpoint(
+        HostToolsMarkerPairResetCheckpointV1 checkpoint)
+    {
+
+        if (checkpoint.ManagedFile is not { } managedFile)
+        {
+
+            return Result.Success();
+
+        }
+
+        bool terminalReceipt =
+            checkpoint.Phase is HostToolsMarkerPairResetPhase.PairAbsenceVerified
+            && checkpoint.MarkerIntentCount is { } markerIntentCount
+            && checkpoint.DeletedCount is { } markerDeleted
+            && checkpoint.OrphanCount is { } markerOrphan
+            && checked(markerDeleted + markerOrphan) == markerIntentCount;
+
+        if (!terminalReceipt
+            || managedFile.Version != 1
+            || !Enum.IsDefined(managedFile.Phase)
+            || !FullInstallationResetManagedFileBounds.HasValidVectorShape(managedFile)
+            || !FullInstallationResetManagedFileBounds.HasCoherentTerminalTail(managedFile)
+            || managedFile.SourceCount
+                != checked((ulong)managedFile.OrderedSourceWriteOperationIds.Length))
+        {
+
+            return InvalidResult();
+
+        }
+
+        Result<CovenantDigest> sourceVector =
+            FullInstallationResetManagedFileDigests.SourceWriteIntentVector(
+                CopyIdentities(managedFile.OrderedSourceWriteOperationIds));
+
+        if (sourceVector.IsFailure
+            || sourceVector.Value != managedFile.SourceWriteIntentVectorDigest)
+        {
+
+            return InvalidResult();
+
+        }
+
+        // The work-item head arrives at WorkItemsReconciled, because routing an adopted source is
+        // what creates its work item. Its absence before that phase is the expected shape; its
+        // absence at or after it is a record claiming progress it cannot account for.
+        if (managedFile.OrderedLocalErasureWorkItemIds is not { } workItemIds)
+        {
+
+            return managedFile.Phase
+                is FullInstallationResetManagedFileReconciliationPhase.WorkItemsReconciled
+                or FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified
+                    ? InvalidResult()
+                    : Result.Success();
+
+        }
+
+        Result<CovenantDigest> workItemVector =
+            FullInstallationResetManagedFileDigests.LocalErasureWorkItemVector(
+                CopyIdentities(workItemIds));
+
+        if (managedFile.Phase
+                is FullInstallationResetManagedFileReconciliationPhase.InventoryPrepared
+                or FullInstallationResetManagedFileReconciliationPhase.WriteIntentsReconciled
+            || managedFile.LocalErasureWorkItemCount != checked((ulong)workItemIds.Length)
+            || workItemVector.IsFailure
+            || workItemVector.Value != managedFile.LocalErasureWorkItemVectorDigest)
+        {
+
+            return InvalidResult();
+
+        }
+
+        if (managedFile.SafeTerminalWriteIntentCount is not { } safeWrites)
+        {
+
+            return managedFile.Phase
+                is FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified
+                    ? InvalidResult()
+                    : Result.Success();
+
+        }
+
+        return managedFile.Phase
+                is not FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified
+            || checked(safeWrites + managedFile.ManualWriteOrphanCount!.Value)
+                != managedFile.SourceCount
+            || checked(
+                    managedFile.CompletedWorkItemCount!.Value
+                    + managedFile.ManualWorkItemOrphanCount!.Value)
+                != managedFile.LocalErasureWorkItemCount!.Value
+                ? InvalidResult()
+                : Result.Success();
+
+    }
+
+    private static ImmutableArray<Guid> CopyIdentities(ImmutableArray<Guid> identities)
+    {
+
+        ImmutableArray<Guid>.Builder builder =
+            ImmutableArray.CreateBuilder<Guid>(identities.Length);
+
+        builder.AddRange(identities);
+
+        return builder.MoveToImmutable();
 
     }
 

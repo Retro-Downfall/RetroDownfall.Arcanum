@@ -114,6 +114,7 @@ internal sealed class CovenantLocalErasureStartupRecovery(ManagedFileErasureStat
                 connection,
                 item,
                 CovenantSqliteAuthorizationKind.SensitivityRetentionPurge,
+                revalidator: null,
                 cancellationToken).ConfigureAwait(false);
 
             if (resolved.IsFailure)

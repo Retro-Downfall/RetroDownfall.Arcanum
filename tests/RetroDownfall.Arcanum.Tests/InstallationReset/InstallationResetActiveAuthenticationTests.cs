@@ -28,7 +28,7 @@ using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
-public sealed class InstallationResetActiveAuthenticationTests : IDisposable
+public sealed partial class InstallationResetActiveAuthenticationTests : IDisposable
 {
 
     private readonly string _root = Path.Combine(

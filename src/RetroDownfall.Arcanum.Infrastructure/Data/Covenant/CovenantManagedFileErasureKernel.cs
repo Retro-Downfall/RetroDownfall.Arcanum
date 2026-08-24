@@ -22,6 +22,24 @@ internal sealed record ManagedFileProducerRow(
     CovenantOperationScope OwnerScope);
 
 /// <summary>
+/// Reasserts that whatever authorized this erasure is still current, immediately before an effect.
+/// </summary>
+/// <remarks>
+/// Deliberately not a lease, an authority, a scope, or anything the state machine could act on. It
+/// answers one question — may this still proceed — and answering it is the only thing a holder can
+/// make the machine do. The live kernel supplies none: its authority is revalidated once at entry and
+/// the operation runs inside a lease that is already being watched. A stopped-host full reset supplies
+/// one, because between two of its effects the authenticated journal it acts under can be superseded,
+/// and an effect issued after that would be authorized by a record that no longer exists.
+/// </remarks>
+internal interface IManagedFileErasureRevalidator
+{
+
+    ValueTask<Result> AssertCurrentAsync(CancellationToken cancellationToken);
+
+}
+
+/// <summary>
 /// The shared open, verify, compare-delete, evidence, and completion machine.
 /// </summary>
 /// <remarks>
@@ -61,6 +79,7 @@ internal sealed class ManagedFileErasureStateMachine(
         SqliteConnection connection,
         LocalErasureWorkItemRow item,
         CovenantSqliteAuthorizationKind authorization,
+        IManagedFileErasureRevalidator? revalidator,
         CancellationToken cancellationToken)
     {
 
@@ -77,6 +96,7 @@ internal sealed class ManagedFileErasureStateMachine(
                 connection,
                 current,
                 authorization,
+                revalidator,
                 cancellationToken).ConfigureAwait(false);
 
             if (verified.IsFailure)
@@ -109,7 +129,8 @@ internal sealed class ManagedFileErasureStateMachine(
 
         }
 
-        return await CompleteAsync(connection, current, authorization, cancellationToken).ConfigureAwait(false);
+        return await CompleteAsync(connection, current, authorization, revalidator, cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
@@ -120,6 +141,7 @@ internal sealed class ManagedFileErasureStateMachine(
         SqliteConnection connection,
         LocalErasureWorkItemRow item,
         CovenantSqliteAuthorizationKind authorization,
+        IManagedFileErasureRevalidator? revalidator,
         CancellationToken cancellationToken)
     {
 
@@ -137,8 +159,17 @@ internal sealed class ManagedFileErasureStateMachine(
         if (root.Value is not { } resolved)
         {
 
-            return await TerminalizeManualAsync(connection, item, authorization, cancellationToken)
+            return await TerminalizeManualAsync(connection, item, authorization, revalidator, cancellationToken)
                 .ConfigureAwait(false);
+
+        }
+
+        Result current = await StillCurrentAsync(revalidator, cancellationToken).ConfigureAwait(false);
+
+        if (current.IsFailure)
+        {
+
+            return Result<LocalErasureWorkItemRow>.Failure(current.Error);
 
         }
 
@@ -167,18 +198,36 @@ internal sealed class ManagedFileErasureStateMachine(
                         connection,
                         item,
                         authorization,
+                        revalidator,
                         LocalErasureWorkItemState.DeletionVerified,
                         LocalErasureDeletionEvidenceCode.AlreadyAbsent,
                         cancellationToken).ConfigureAwait(false);
 
                 case ManagedFileOpenKind.Mismatch:
 
-                    return await TerminalizeManualAsync(connection, item, authorization, cancellationToken)
+                    return await TerminalizeManualAsync(
+                            connection,
+                            item,
+                            authorization,
+                            revalidator,
+                            cancellationToken)
                         .ConfigureAwait(false);
 
                 default:
 
                     break;
+
+            }
+
+            // The compare, the unlink, the name-reuse recheck, and the parent flush are one
+            // indivisible effect, so this is the last point at which refusing costs nothing.
+            Result stillCurrent = await StillCurrentAsync(revalidator, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (stillCurrent.IsFailure)
+            {
+
+                return Result<LocalErasureWorkItemRow>.Failure(stillCurrent.Error);
 
             }
 
@@ -198,10 +247,16 @@ internal sealed class ManagedFileErasureStateMachine(
                     connection,
                     item,
                     authorization,
+                    revalidator,
                     LocalErasureWorkItemState.DeletionVerified,
                     LocalErasureDeletionEvidenceCode.SameHandleDeletedAndParentFsynced,
                     cancellationToken).ConfigureAwait(false)
-                : await TerminalizeManualAsync(connection, item, authorization, cancellationToken)
+                : await TerminalizeManualAsync(
+                        connection,
+                        item,
+                        authorization,
+                        revalidator,
+                        cancellationToken)
                     .ConfigureAwait(false);
 
         }
@@ -229,8 +284,18 @@ internal sealed class ManagedFileErasureStateMachine(
         SqliteConnection connection,
         LocalErasureWorkItemRow item,
         CovenantSqliteAuthorizationKind authorization,
+        IManagedFileErasureRevalidator? revalidator,
         CancellationToken cancellationToken)
     {
+
+        Result current = await StillCurrentAsync(revalidator, cancellationToken).ConfigureAwait(false);
+
+        if (current.IsFailure)
+        {
+
+            return Blocked(CovenantErasureBlocker.AuthorityStale);
+
+        }
 
         try
         {
@@ -317,10 +382,20 @@ internal sealed class ManagedFileErasureStateMachine(
         SqliteConnection connection,
         LocalErasureWorkItemRow item,
         CovenantSqliteAuthorizationKind authorization,
+        IManagedFileErasureRevalidator? revalidator,
         LocalErasureWorkItemState nextState,
         LocalErasureDeletionEvidenceCode? evidence,
         CancellationToken cancellationToken)
     {
+
+        Result current = await StillCurrentAsync(revalidator, cancellationToken).ConfigureAwait(false);
+
+        if (current.IsFailure)
+        {
+
+            return Result<LocalErasureWorkItemRow>.Failure(current.Error);
+
+        }
 
         try
         {
@@ -382,14 +457,27 @@ internal sealed class ManagedFileErasureStateMachine(
         SqliteConnection connection,
         LocalErasureWorkItemRow item,
         CovenantSqliteAuthorizationKind authorization,
+        IManagedFileErasureRevalidator? revalidator,
         CancellationToken cancellationToken) =>
         AdvanceAsync(
             connection,
             item,
             authorization,
+            revalidator,
             LocalErasureWorkItemState.ManualBlocker,
             evidence: null,
             cancellationToken);
+
+    /// <summary>
+    /// Answers "may this still proceed" for a caller that supplied a revalidator, and yes for one that
+    /// did not.
+    /// </summary>
+    private static ValueTask<Result> StillCurrentAsync(
+        IManagedFileErasureRevalidator? revalidator,
+        CancellationToken cancellationToken) =>
+        revalidator is null
+            ? ValueTask.FromResult(Result.Success())
+            : revalidator.AssertCurrentAsync(cancellationToken);
 
     private static async Task<int> ExecuteAsync(
         SqliteConnection connection,
@@ -489,7 +577,7 @@ internal static class ManagedFileRootResolver
 /// the producer's own durable row inside one immediate transaction, and the work item that authorizes
 /// the deletion is created from those reread values before the first syscall (§10.17).
 /// </remarks>
-internal sealed class CovenantManagedFileErasureKernel(
+internal sealed partial class CovenantManagedFileErasureKernel(
     ICovenantConnectionSource connections,
     ICovenantSqliteConnectionInitializer initializer,
     ManagedFileErasureStateMachine stateMachine,
@@ -536,7 +624,7 @@ internal sealed class CovenantManagedFileErasureKernel(
         Result<LocalErasureWorkItemRow> prepared = await PrepareAsync(
             connection,
             request,
-            authority,
+            authority.Covers,
             authorization,
             cancellationToken).ConfigureAwait(false);
 
@@ -549,7 +637,7 @@ internal sealed class CovenantManagedFileErasureKernel(
         }
 
         return await _stateMachine
-            .ResolveAsync(connection, prepared.Value, authorization, cancellationToken)
+            .ResolveAsync(connection, prepared.Value, authorization, revalidator: null, cancellationToken)
             .ConfigureAwait(false);
 
     }
@@ -560,7 +648,7 @@ internal sealed class CovenantManagedFileErasureKernel(
     private async Task<Result<LocalErasureWorkItemRow>> PrepareAsync(
         SqliteConnection connection,
         CovenantManagedFileErasureRequest request,
-        CovenantArtifactErasureAuthority authority,
+        Func<CovenantOperationScope, bool> covers,
         CovenantSqliteAuthorizationKind authorization,
         CancellationToken cancellationToken)
     {
@@ -622,7 +710,7 @@ internal sealed class CovenantManagedFileErasureKernel(
 
         }
 
-        if (!authority.Covers(row.OwnerScope))
+        if (!covers(row.OwnerScope))
         {
 
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);

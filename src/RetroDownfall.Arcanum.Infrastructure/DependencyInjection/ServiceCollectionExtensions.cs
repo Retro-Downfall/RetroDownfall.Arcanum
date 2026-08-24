@@ -508,7 +508,21 @@ public static class ServiceCollectionExtensions
                 provider.GetRequiredService<
                     IFullInstallationResetRemediationAttestationVerifier>(),
                 provider.GetRequiredService<ICampaignPathMarkerLifecycle>(),
-                provider.GetRequiredService<IHostToolsMarkerPairResetOsPort>()));
+                provider.GetRequiredService<IHostToolsMarkerPairResetOsPort>(),
+                provider.GetRequiredService<IFullInstallationResetManagedFileReconciler>()));
+
+        // Scoped for the same reason the coordinator is: the active store it authenticates against and
+        // the erasure kernel it routes through are scoped, and a singleton would outlive the connection
+        // both of them write through.
+        services.TryAddScoped<IFullInstallationResetManagedFileReconciler>(provider =>
+            new FullInstallationResetManagedFileReconciler(
+                provider.GetRequiredService<IInstallationResetActiveStore>(),
+                provider.GetRequiredService<CovenantManagedFileErasureKernel>(),
+                provider.GetRequiredService<ManagedFileWriteIntentRecoveryService>()));
+
+        services.TryAddScoped(provider =>
+            new InstallationResetRestoreCredentialCleanup(
+                provider.GetRequiredService<IOsCredentialStore>()));
 
         // A deferred resolution, not a constructor dependency. The reset service must resolve and
         // plan on an installation whose Grimoire is absent or locked, and the coordinator's graph
@@ -1784,11 +1798,24 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<TimeProvider>()));
 
-        services.AddScoped<ICovenantManagedFileErasureKernel>(
+        // The concrete kernel is registered as well as its port, because the two stopped-host overloads
+        // are deliberately not on the port: a full reset reaches them through the concrete type, and
+        // nothing that resolves the port can name them at all.
+        services.AddScoped(
             static sp => new CovenantManagedFileErasureKernel(
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ManagedFileErasureStateMachine>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddScoped<ICovenantManagedFileErasureKernel>(
+            static sp => sp.GetRequiredService<CovenantManagedFileErasureKernel>());
+
+        services.AddScoped(
+            static sp => new ManagedFileWriteIntentRecoveryService(
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<IManagedFileCapabilityOpener>(),
+                sp.GetRequiredService<IManagedFileOwnershipVerifier>(),
                 sp.GetRequiredService<TimeProvider>()));
 
         services.AddScoped(
