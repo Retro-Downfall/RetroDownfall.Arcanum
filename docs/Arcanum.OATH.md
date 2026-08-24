@@ -648,7 +648,7 @@ The database runtime contract pins **SQLCipher 4.17.0** on **SQLite 3.53.3** wit
 
 The shipping matrix is `osx-arm64`, `win-x64`, and `win-arm64`. The checked-in `osx-arm64` asset is **verified**; `win-x64` and `win-arm64` remain **pending**, their binaries are absent, and those RIDs intentionally fail the build until their Windows verification workflow supplies accepted assets.
 
-> Issue #92's acceptance criteria still name a five-RID matrix (`osx-arm64`, `osx-x64`, `linux-x64`, `linux-arm64`, `win-x64`). That predates the hermetic three-RID matrix `native-source-manifest.json` now declares. The manifest is the authority; #92's text needs amending before it can be closed.
+> Issue #92's acceptance criteria named a five-RID matrix (`osx-arm64`, `osx-x64`, `linux-x64`, `linux-arm64`, `win-x64`) that predated the hermetic matrix `native-source-manifest.json` declares. Its text has been amended to the manifest's three RIDs, naming the manifest as the authority: the three it dropped have no hermetic toolchain and are not shipping RIDs, and `win-arm64`, which it had omitted, is one.
 
 `SqliteNativeRuntime.Initialize()` freezes provider selection before SQLite use. `ICovenantSqliteConnectionInitializer` applies SQLCipher, foreign-key, busy, secure-delete, and closed authorization-function policy to every EF, raw, backup, restore, reset, worker, fixture, and benchmark connection.
 

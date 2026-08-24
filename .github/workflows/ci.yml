@@ -189,6 +189,14 @@ jobs:
       - name: Verify macOS AOT IL warnings and search regex smoke
         run: ./scripts/verify-aot-il-warnings.sh
 
+      # The benchmark host is outside RetroDownfall.Arcanum.slnx, so nothing else in this workflow
+      # compiles it. Without this step a change to a Covenant service that broke the host would merge
+      # green and only surface when somebody reached for the gate to qualify a release. The gate runs
+      # here too: its absolute ceilings carry enough headroom for a shared runner, and a breach on
+      # this lane is the signal it exists to give.
+      - name: Covenant benchmark gate
+        run: ./scripts/benchmark-covenant.sh --gate
+
   windows-suite:
     # Every Windows-only test guards itself with Skip.IfNot(OperatingSystem.IsWindows(), ...), so on
     # the Linux and macOS lanes they report green while asserting nothing. Without this job the whole

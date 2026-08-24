@@ -1,0 +1,79 @@
+{
+  "$comment": "The pinned Covenant benchmark workload. Every number the release gate reports was produced against exactly this corpus, so a baseline recorded under one revision and a candidate measured under another are comparable. The corpus is described rather than listed: templates plus the pinned generator expand to the same bytes on every host, and corpusDigest is what proves it — a template edit that changed the corpus without changing this file's version would otherwise silently invalidate every recorded baseline.",
+  "schemaVersion": 1,
+  "workloadId": "covenant-workload-v1",
+  "corpus": {
+    "$comment": "Sized to fill the per-section rendered ceilings rather than sit sparsely under them. A corpus that fit comfortably would measure the cheap case and gate nothing.",
+    "globalConfirmedEntries": 18,
+    "campaignConfirmedEntriesPerCampaign": 12,
+    "campaignProposedEntriesPerCampaign": 0,
+    "$campaignProposedComment": "Zero, and stated rather than quietly omitted. The Proposed lane is authored only by an agent tool call, whose invocation capability cannot be constructed outside a live turn without rebuilding several of its capability objects here — and a benchmark seeded through rebuilt scaffolding measures the scaffolding. Confirmed-lane cost is what a turn pays on every dispatch; Proposed-lane admission pressure is measured by CovenantContextPressureTests and is not gated here.",
+    "campaigns": 4,
+    "keyTemplate": "preference.{scope}.{ordinal:00}",
+    "contentTemplate": "Standing preference {ordinal:00} for {scope}: {filler}",
+    "fillerWords": [
+      "build",
+      "commit",
+      "review",
+      "migrate",
+      "publish",
+      "verify",
+      "profile",
+      "document"
+    ],
+    "fillerWordsPerEntry": 14,
+    "corpusDigest": "da36b50984f67ef5b6dc12cbb3d7a6efe3d186bc52863b7dc2b441d8b27476d2"
+  },
+  "measurement": {
+    "$comment": "Warmup exists to retire first-call costs the shipped binary pays once per process, never to reach a state the product does not run in. Batches are the pairing unit for the comparative bootstrap, so a batch has to be long enough to be a stable observation and short enough that a run holds many of them.",
+    "warmupIterations": 200,
+    "batches": 12,
+    "iterationsPerBatch": 60,
+    "allocationControlIterations": 400
+  },
+  "$ceilingsComment": "Latency ceilings carry roughly four times the headroom over what an Apple-silicon developer machine measures, because a shared CI runner is slower and a gate that failed on a busy runner would be turned off. Allocation ceilings are far tighter — allocations are deterministic and machine-independent, so their only headroom needs to absorb a code change, not a host. That asymmetry is deliberate: latency catches order-of-magnitude regressions and allocation catches the ordinary kind.",
+  "operations": [
+    {
+      "id": "turn.plan",
+      "$comment": "The cost the Covenant adds to every live turn: one snapshot read and one link over the whole corpus. This is the number an operator feels.",
+      "p95CeilingMicroseconds": 600.0,
+      "p99CeilingMicroseconds": 1500.0,
+      "allocationCeilingBytes": 160000
+    },
+    {
+      "id": "turn.admission",
+      "$comment": "One provider attempt's admission over a reused plan. Pure and provider-independent, and re-run per fallback candidate, so its cost multiplies by the number of candidates a turn tries.",
+      "p95CeilingMicroseconds": 15.0,
+      "p99CeilingMicroseconds": 30.0,
+      "allocationCeilingBytes": 48000
+    },
+    {
+      "id": "mutation.prepare",
+      "$comment": "The operator write path's measurement half. It scans dependent heads across every Campaign for a Global key, so it is the write-path cost that grows with the installation.",
+      "p95CeilingMicroseconds": 300.0,
+      "p99CeilingMicroseconds": 700.0,
+      "allocationCeilingBytes": 40000
+    },
+    {
+      "id": "mutation.commit",
+      "$comment": "The durable half: one serializable transaction appending one immutable version and advancing one head.",
+      "p95CeilingMicroseconds": 6000.0,
+      "p99CeilingMicroseconds": 12000.0,
+      "allocationCeilingBytes": 96000
+    },
+    {
+      "id": "status.census",
+      "$comment": "What memory status reads. Grouped and content-free, so it should stay flat as the corpus grows; a regression here means the grouping stopped happening in SQL.",
+      "p95CeilingMicroseconds": 100.0,
+      "p99CeilingMicroseconds": 200.0,
+      "allocationCeilingBytes": 8000
+    }
+  ],
+  "comparison": {
+    "$comment": "Both conditions have to hold before a comparison blocks a merge: a single noisy run can push an observed ratio past the threshold on its own, so the bootstrap interval's lower bound has to clear its own bar too. These mirror BenchmarkRatioInterval.IsRegression and are restated here so a reader of the manifest can see the rule without reading the code.",
+    "observedRatioThreshold": 1.1,
+    "intervalLowerBoundThreshold": 1.05,
+    "bootstrapReplicates": 10000,
+    "pairedBootstrapSeed": "0x415243414E554D74"
+  }
+}

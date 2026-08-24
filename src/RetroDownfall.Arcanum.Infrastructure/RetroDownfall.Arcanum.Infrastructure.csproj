@@ -55,6 +55,11 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.RegexAotSmoke" />
 
+    <!-- The benchmark host composes the same internal services a live host does. Measuring a public
+         facade instead would measure a facade, and rebuilding the composition against copies would
+         make the gate a test of the copies. -->
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Covenant.Benchmarks" />
+
   </ItemGroup>
 
   <ItemGroup>
