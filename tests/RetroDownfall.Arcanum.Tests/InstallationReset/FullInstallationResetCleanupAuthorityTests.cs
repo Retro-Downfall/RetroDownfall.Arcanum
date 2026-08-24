@@ -1559,6 +1559,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
             Directory.Delete(GuardedRoot, recursive: true);
 
+            // The maintenance lock lives beside the directory it guards, not inside it, so removing
+            // the guarded root leaves the lock file behind at the temp root. Enough of those and the
+            // suite stalls on lock contention rather than failing.
+            File.Delete(RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock.LockPathFor(GuardedRoot));
+
         }
 
     }

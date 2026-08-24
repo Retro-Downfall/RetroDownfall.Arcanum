@@ -3346,9 +3346,15 @@ public sealed partial class InstallationResetServiceTests
         public FakeActiveStore()
         {
 
-            string parent = Path.Combine(
-                Path.GetTempPath(),
-                $"arcanum-reset-service-{Guid.NewGuid():N}");
+            // Nested under the shared test shell rather than directly under the temp root. The
+            // maintenance lock deliberately lives beside the directory it guards, so a guarded root at
+            // the temp root leaves a lock file there too — and enough of those make the whole suite
+            // stall on lock contention rather than fail.
+            string shell = Path.Combine(Path.GetTempPath(), "arcanum-tests");
+
+            _ = Directory.CreateDirectory(shell);
+
+            string parent = Path.Combine(shell, $"reset-service-{Guid.NewGuid():N}");
 
             RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions
                 .CreateOwnerOnlyDirectoryAtPath(parent);
