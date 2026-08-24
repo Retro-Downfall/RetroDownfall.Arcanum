@@ -15,16 +15,22 @@ public sealed class WorkspaceCheckCapabilityReporter
         TimeSpan.FromSeconds(8);
     private readonly object _gate = new();
     private readonly IOptionsMonitor<ArcanumSettings> _settings;
+
     private readonly Func<string?, string> _generationProvider;
     private readonly Func<
         string?,
         CancellationToken,
         Task<WorkspaceCheckCapabilityStatus>> _probe;
     private readonly TimeProvider _timeProvider;
+
     private readonly TimeSpan _freshFor;
+
     private readonly TimeSpan _asyncWait;
+
     private readonly TimeSpan _probeTimeout;
+
     private CacheEntry? _cache;
+
     private RefreshEntry? _refresh;
 
     public WorkspaceCheckCapabilityReporter(

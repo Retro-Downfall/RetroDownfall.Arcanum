@@ -7,9 +7,13 @@ internal sealed class StreamingRenderCadence
     public const long DefaultIntervalMilliseconds = 75;
 
     private readonly Func<long> _elapsedMilliseconds;
+
     private readonly int _chunkThreshold;
+
     private readonly long _intervalMilliseconds;
+
     private int _chunksSinceRefresh;
+
     private long _lastRefreshMilliseconds;
 
     public StreamingRenderCadence(

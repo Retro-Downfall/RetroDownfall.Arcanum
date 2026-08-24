@@ -46,7 +46,6 @@ internal static class SseStreamWriter
                     await writeFrameAsync(item, cancellationToken).ConfigureAwait(false);
 
                 }
-
                 catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
                 {
 
@@ -104,7 +103,6 @@ internal static class SseStreamWriter
                         await WriteKeepAliveAsync(httpContext, cancellationToken).ConfigureAwait(false);
 
                     }
-
                     catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
                     {
 
@@ -135,7 +133,6 @@ internal static class SseStreamWriter
                     await writeFrameAsync(enumerator.Current, cancellationToken).ConfigureAwait(false);
 
                 }
-
                 catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
                 {
 
@@ -146,7 +143,6 @@ internal static class SseStreamWriter
             }
 
         }
-
         finally
         {
 
@@ -183,7 +179,6 @@ internal static class SseStreamWriter
                     await unwindSignal.CancelAsync().ConfigureAwait(false);
 
                 }
-
                 catch (ObjectDisposedException)
                 {
 
@@ -199,7 +194,6 @@ internal static class SseStreamWriter
                 _ = await pendingMove.ConfigureAwait(false);
 
             }
-
             catch
             {
 
@@ -234,7 +228,6 @@ internal static class SseStreamWriter
             await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
 
         }
-
         catch
         {
 

@@ -50,7 +50,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         _managedFiles = managedFiles;
 
-
         _activeStore = activeStore ?? throw new ArgumentNullException(nameof(activeStore));
 
         _database = database ?? throw new ArgumentNullException(nameof(database));
@@ -1310,7 +1309,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             heldInstallationLock,
             checkpoint,
             cancellationToken);
-
 
     /// <summary>
     /// Runs the Campaign cleanup once both host-tools markers are provably gone.

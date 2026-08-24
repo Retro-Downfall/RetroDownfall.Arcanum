@@ -6,6 +6,7 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 internal sealed class BoundedStreamingTextBuffer
 {
     private readonly int _maxChars;
+
     private readonly string _truncationMarker;
     private readonly StringBuilder _text = new();
     private bool _truncated;

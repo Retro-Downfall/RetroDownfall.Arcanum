@@ -574,7 +574,6 @@ internal sealed class BatchProcessingService(
                 await batches.DeleteLineCheckpointsAsync(batch.Id, CancellationToken.None).ConfigureAwait(false);
 
             }
-
             catch (Exception ex)
 
             {
@@ -1309,7 +1308,6 @@ internal sealed class BatchProcessingService(
                     await writers.WriteOutputLineAsync(checkpoint.JsonLine, cancellationToken).ConfigureAwait(false);
 
                 }
-
                 else
 
                 {

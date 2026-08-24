@@ -176,6 +176,7 @@ public sealed record ModelCallFailure(
 public sealed class ModelCallOutcome
 {
     private readonly ModelCallResult? _value;
+
     private readonly ModelCallFailure? _failure;
 
     private ModelCallOutcome(ModelCallResult? value, ModelCallFailure? failure)

@@ -15,7 +15,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 public sealed class LocalHttpWebProvider : IWebResearchProvider
 {
     private readonly IHttpClientFactory _httpClientFactory;
+
     private readonly WebPageContentExtractor _extractor;
+
     private readonly ILogger<LocalHttpWebProvider>? _logger;
 
     public LocalHttpWebProvider(

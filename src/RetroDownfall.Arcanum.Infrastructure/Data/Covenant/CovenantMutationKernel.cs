@@ -34,7 +34,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
     {
     }
 
-
     public async ValueTask<Result<IReadOnlyList<CovenantMutationReceipt>>> ApplyBatchAsync(
         CovenantMutationBatch batch,
         CovenantMutationTransaction transaction,

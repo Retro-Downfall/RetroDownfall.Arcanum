@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Logging;
 using Serilog.Core;
 using Serilog.Events;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 
 [ExcludeFromCodeCoverage] // Reason: Serilog sink adapter plumbing

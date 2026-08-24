@@ -91,7 +91,6 @@ public sealed partial class ModelsProvidersViewModel : ViewModelBase
             StatusText = $"{models.Count} model(s), {providers.Count} provider(s).";
 
         }
-
         catch (Exception ex)
         {
 
@@ -100,7 +99,6 @@ public sealed partial class ModelsProvidersViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Models/Providers refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -154,7 +152,6 @@ public sealed partial class ModelsProvidersViewModel : ViewModelBase
                 StatusText = r.IsReachable ? "Provider reachable." : "Provider unreachable.";
 
             }
-
             else
             {
 
@@ -169,7 +166,6 @@ public sealed partial class ModelsProvidersViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -178,7 +174,6 @@ public sealed partial class ModelsProvidersViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Models/Providers test error: {ex.Message}");
 
         }
-
         finally
         {
 

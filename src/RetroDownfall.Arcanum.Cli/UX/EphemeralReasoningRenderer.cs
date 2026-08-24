@@ -15,7 +15,9 @@ internal sealed class CliStreamContent
     private readonly StringBuilder _answer = new();
     private readonly StringBuilder _reasoning = new();
     private readonly int _maxReasoningChars;
+
     private bool _reasoningTruncated;
+
     private bool _answerLineBreakWritten;
 
     public CliStreamContent(int maxReasoningChars = DefaultMaxReasoningChars)

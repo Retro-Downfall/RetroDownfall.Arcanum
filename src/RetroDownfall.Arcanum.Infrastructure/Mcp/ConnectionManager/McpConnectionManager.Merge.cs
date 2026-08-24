@@ -166,5 +166,4 @@ public sealed partial class McpConnectionManager
         return internalTagged;
     }
 
-
 }

@@ -317,7 +317,6 @@ internal sealed class ApprenticeService(
                 await lease.Cts.CancelAsync().ConfigureAwait(false);
 
             }
-
             catch (ObjectDisposedException)
             {
 
@@ -1020,7 +1019,6 @@ internal sealed class ApprenticeService(
                     });
 
                 }
-
                 else
                 {
 
@@ -1473,7 +1471,6 @@ internal sealed class ApprenticeService(
                 }
 
             }
-
             catch (Exception inner)
             {
 

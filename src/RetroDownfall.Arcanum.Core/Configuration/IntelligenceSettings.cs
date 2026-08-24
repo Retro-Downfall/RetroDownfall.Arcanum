@@ -96,6 +96,7 @@ public sealed record IntelligenceSettings
     public int UnknownImageTokenReserve { get; set; } = 2048;
 
     public ReasoningEffortLevel? DefaultReasoningEffort { get; set; } = ReasoningEffortLevel.Medium;
+
     public int MaxOpenApiMessages { get; set; } = 1_000;
 
     public int MaxStatelessMessages { get; set; } = 100;

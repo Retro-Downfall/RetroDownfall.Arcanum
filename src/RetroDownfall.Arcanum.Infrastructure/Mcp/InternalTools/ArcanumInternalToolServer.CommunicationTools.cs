@@ -10,12 +10,10 @@ using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
-
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
 
     private async Task<McpToolsCallResultWire> ExecuteAskHumanAsync(JsonElement arguments, CancellationToken cancellationToken)
     {

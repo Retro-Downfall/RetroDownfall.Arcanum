@@ -174,7 +174,6 @@ internal static class BatchJsonlRecordReader
             }
 
         }
-
         finally
 
         {
@@ -282,7 +281,6 @@ internal static class BatchJsonlRecordReader
                 await _spillStream!.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
 
             }
-
             catch (Exception exception) when (
 
                 exception is IOException
@@ -362,7 +360,6 @@ internal static class BatchJsonlRecordReader
                         ArcanumJsonContext.Default.BatchJsonlRequestLine);
 
                 }
-
                 else
 
                 {
@@ -392,7 +389,6 @@ internal static class BatchJsonlRecordReader
                     Error: null);
 
             }
-
             catch (JsonException exception)
 
             {
@@ -406,7 +402,6 @@ internal static class BatchJsonlRecordReader
                     $"Batch JSONL protocol invariant failed on physical line {physicalLine}: the record is not strict UTF-8 JSON matching the batch request shape ({exception.Message}). This line will be checkpointed as an error and processing can continue with physical line {physicalLine + 1}.");
 
             }
-
             catch (Exception exception) when (
 
                 exception is IOException
@@ -426,7 +421,6 @@ internal static class BatchJsonlRecordReader
                     $"Batch JSONL physical resource protection failed on physical line {physicalLine}: the owner-only record spill could not be read after measuring {_physicalBytes} UTF-8 bytes. The record was not sent to a provider. This line will be checkpointed as an error and processing can continue with physical line {physicalLine + 1}. Restore temporary-disk capacity and permissions before retrying this line.");
 
             }
-
             finally
 
             {
@@ -536,7 +530,6 @@ internal static class BatchJsonlRecordReader
                 _spillStream?.Dispose();
 
             }
-
             finally
 
             {

@@ -193,7 +193,12 @@ def insert_blank_after_closing_braces(lines: list[str]) -> list[str]:
 
 
 def process_file(path: Path, dry_run: bool) -> bool:
-    raw = path.read_text(encoding="utf-8")
+    # `raw` loses its BOM below so the rules never have to special-case column 0, but the
+    # change comparison has to run against the untouched original -- comparing the re-prefixed
+    # result against the stripped copy reported every BOM file as dirty forever, which is why
+    # --check could never go green on the EF-generated migrations.
+    original = path.read_text(encoding="utf-8")
+    raw = original
     had_bom = raw.startswith("\ufeff")
     if had_bom:
         raw = raw[1:]
@@ -216,7 +221,7 @@ def process_file(path: Path, dry_run: bool) -> bool:
         text += "\n"
 
     new_raw = ("\ufeff" if had_bom else "") + text
-    if new_raw == raw:
+    if new_raw == original:
         return False
     if not dry_run:
         path.write_text(new_raw, encoding="utf-8", newline="\n")

@@ -396,7 +396,6 @@ internal static class CliCompletionScriptWriter
               compadd -- ${=_arcanum_children[$path]} ${=_arcanum_options[$path]} $argument_values
             }
 
-
             """);
 
         IReadOnlyList<CompletionNode> nodes = Flatten(map);
@@ -576,7 +575,6 @@ internal static class CliCompletionScriptWriter
               arcanum completion resolve $argv[1] 2>/dev/null
             end
 
-
             """);
 
         foreach (CompletionNode node in nodes)
@@ -690,7 +688,6 @@ internal static class CliCompletionScriptWriter
             $script:ArcanumProviders = @{}
             $script:ArcanumArguments = @{}
 
-
             """);
 
         IReadOnlyList<CompletionNode> nodes = Flatten(map);
@@ -747,6 +744,7 @@ internal static class CliCompletionScriptWriter
                     Where-Object { $_ -like "$wordToComplete*" } |
                     ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
                 }
+
                 return @()
               }
 

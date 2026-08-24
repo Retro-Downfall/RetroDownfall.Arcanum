@@ -385,7 +385,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = Workspaces.Count == 0 ? "No workspaces registered." : "The Weave Inspector ready.";
 
             }
-
             else
             {
 
@@ -407,7 +406,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -416,7 +414,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Weave Inspector refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -452,7 +449,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 Status = status;
 
             }
-
             else
             {
 
@@ -465,7 +461,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -522,7 +517,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = Chunks.Count == 0 ? "No indexed chunks." : ChunkRangeText;
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -530,7 +524,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = "Workspace indexing is disabled.";
 
             }
-
             else
             {
 
@@ -545,14 +538,12 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             OnPropertyChanged(nameof(ChunkRangeText));
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -652,7 +643,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 _whispers.Show(WhisperSeverity.Success, "Re-index triggered.");
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -661,7 +651,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = "Workspace indexing is disabled.";
 
             }
-
             else
             {
 
@@ -674,14 +663,12 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -754,7 +741,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = $"Reset complete. Deleted: {deleted}.";
 
             }
-
             else
             {
 
@@ -767,7 +753,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -776,7 +761,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Error, "Reset failed.");
 
         }
-
         finally
         {
 
@@ -838,7 +822,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = WorkspaceResults.Count == 0 ? "No workspace results." : $"{WorkspaceResults.Count} workspace results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -847,7 +830,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = "Workspace Divination disabled.";
 
             }
-
             else
             {
 
@@ -860,14 +842,12 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -922,7 +902,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = SagaResults.Count == 0 ? "No Saga results." : $"{SagaResults.Count} Saga results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -931,7 +910,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = "Saga Divination disabled.";
 
             }
-
             else
             {
 
@@ -944,14 +922,12 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -1004,7 +980,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = SessionResults.Count == 0 ? "No session results." : $"{SessionResults.Count} session results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -1013,7 +988,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
                 StatusText = "Session Divination disabled.";
 
             }
-
             else
             {
 
@@ -1026,14 +1000,12 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -1061,7 +1033,6 @@ public sealed partial class WeaveInspectorViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 

@@ -104,7 +104,6 @@ internal static class BatchListCursorCodec
             bytes = Convert.FromBase64String(normalized);
 
         }
-
         catch (FormatException)
 
         {

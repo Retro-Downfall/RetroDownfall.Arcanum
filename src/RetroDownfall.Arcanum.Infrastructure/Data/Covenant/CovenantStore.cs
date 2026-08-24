@@ -27,7 +27,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-
     public async ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
         CanonicalCampaignContext campaign,
         ICovenantSnapshotReadLease readLease,

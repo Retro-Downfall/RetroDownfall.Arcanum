@@ -23,6 +23,7 @@ internal sealed class CommandCenterWardCoordinator(CommandCenterHardModalArbiter
 {
     private readonly object _gate = new();
     private Action<WardApprovalRequest>? _onShow;
+
     private Action? _onHide;
     private readonly Dictionary<string, PendingWard> _pendingById = new(StringComparer.Ordinal);
     private string? _displayedWardId;
@@ -32,6 +33,7 @@ internal sealed class CommandCenterWardCoordinator(CommandCenterHardModalArbiter
         TaskCompletionSource<WardApprovalDecision> decision)
     {
         public WardApprovalRequest Request { get; } = request;
+
         public TaskCompletionSource<WardApprovalDecision> Decision { get; } = decision;
         public bool WasShown { get; set; }
     }

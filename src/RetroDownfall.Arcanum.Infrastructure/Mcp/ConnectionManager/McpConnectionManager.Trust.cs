@@ -90,6 +90,7 @@ public sealed partial class McpConnectionManager
         return Result.Success();
 
     }
+
     private async Task<bool> IsWorkspaceServerVisibleAsync(
         ManagedMcpServerEntry entry,
         CancellationToken cancellationToken)

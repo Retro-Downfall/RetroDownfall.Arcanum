@@ -204,7 +204,8 @@ publish_cli() {
   mkdir -p "$stage_dir"
   cp -a "$publish_dir/." "$stage_dir/"
 
-  local staged_host="$stage_dir/$(basename "$published")"
+  local staged_host
+  staged_host="$stage_dir/$(basename "$published")"
   if [[ "$staged_host" != "$stage_dir/arcanum" ]]; then
     mv "$staged_host" "$stage_dir/arcanum"
   fi

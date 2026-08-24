@@ -8,8 +8,11 @@ internal sealed class ExpiringRequestBindingStore<T>
         new(StringComparer.Ordinal);
 
     private readonly Func<long> _getTimestamp;
+
     private readonly long _ttl;
+
     private readonly long _sweepInterval;
+
     private long _nextSweepTimestamp;
 
     internal ExpiringRequestBindingStore(

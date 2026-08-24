@@ -228,7 +228,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         """;
 
                 }
-
                 else if (filtered && after is null)
 
                 {
@@ -245,7 +244,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         """;
 
                 }
-
                 else if (!filtered)
 
                 {
@@ -263,7 +261,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         """;
 
                 }
-
                 else
 
                 {

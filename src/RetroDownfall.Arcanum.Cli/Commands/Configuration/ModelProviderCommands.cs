@@ -77,6 +77,7 @@ public sealed class ModelCommands(
         {
             return 0;
         }
+
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
@@ -166,6 +167,7 @@ public sealed class ProviderCommands(
         {
             return 0;
         }
+
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));

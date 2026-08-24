@@ -430,7 +430,6 @@ internal static class SandboxedFileIo
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         }
-
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
         {
 

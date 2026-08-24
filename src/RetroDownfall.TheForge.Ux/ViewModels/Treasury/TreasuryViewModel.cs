@@ -157,7 +157,6 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
                 _foundryFloor.AppendLine("Treasury: budget unavailable.");
 
             }
-
             else
             {
 
@@ -166,7 +165,6 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -175,7 +173,6 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Treasury refresh error: {ex.Message}");
 
         }
-
         finally
         {
 

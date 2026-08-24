@@ -98,7 +98,6 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
             StatusText = NativeTools.Count == 0 ? "No built-in tools reported." : $"{NativeTools.Count} built-in tool(s).";
 
         }
-
         catch (Exception ex)
         {
 
@@ -109,7 +108,6 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Scrying Pool refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -159,7 +157,6 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
                 StatusText = "Invocation complete.";
 
             }
-
             else
             {
 
@@ -176,14 +173,12 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
             }
 
         }
-
         catch (JsonException ex)
         {
 
             LastError = $"Invalid arguments JSON: {ex.Message}";
 
         }
-
         catch (Exception ex)
         {
 
@@ -192,7 +187,6 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Scrying Pool invoke error: {ex.Message}");
 
         }
-
         finally
         {
 

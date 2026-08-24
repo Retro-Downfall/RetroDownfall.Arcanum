@@ -645,6 +645,7 @@ internal sealed class CliContextService(
             }
 
         }
+
         if (!noContext
             && (staleCampaign || staleWorkspace || staleModel || staleSession))
         {

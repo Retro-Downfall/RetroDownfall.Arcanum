@@ -14,10 +14,13 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         + "encrypted attachment, upload, or batch bytes as plaintext.";
 
     private readonly ISecretStore _secretStore;
+
     private readonly Func<bool> _encryptedBlobsExist;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Dictionary<string, FileEncryptionKeyMaterial>? _keys;
+
     private string? _activeKeyId;
+
     private bool _keysLoadedByPeek;
 
     /// <summary>

@@ -222,7 +222,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
                 StatusText = "Divination ready.";
 
             }
-
             else
             {
 
@@ -235,7 +234,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -244,7 +242,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Divination refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -297,7 +294,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
                 StatusText = SessionResults.Count == 0 ? "No session results." : $"{SessionResults.Count} session results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -306,7 +302,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
                 StatusText = "Session Divination disabled.";
 
             }
-
             else
             {
 
@@ -319,14 +314,12 @@ public sealed partial class DivinationViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -388,7 +381,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
                 StatusText = WorkspaceResults.Count == 0 ? "No workspace results." : $"{WorkspaceResults.Count} workspace results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -397,7 +389,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
                 StatusText = "Workspace Divination disabled.";
 
             }
-
             else
             {
 
@@ -410,14 +401,12 @@ public sealed partial class DivinationViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -470,7 +459,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
                 StatusText = SagaResults.Count == 0 ? "No Saga results." : $"{SagaResults.Count} Saga results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -479,7 +467,6 @@ public sealed partial class DivinationViewModel : ViewModelBase
                 StatusText = "Saga Divination disabled.";
 
             }
-
             else
             {
 
@@ -492,14 +479,12 @@ public sealed partial class DivinationViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 

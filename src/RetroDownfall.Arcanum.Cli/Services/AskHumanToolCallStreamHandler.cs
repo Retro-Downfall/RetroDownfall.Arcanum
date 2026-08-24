@@ -21,7 +21,6 @@ internal enum AskHumanResult
 
 }
 
-
 /// <summary>
 /// When NDJSON streaming exposes <see cref="IntelligenceEventType.ToolCall"/> for <c>ask_human</c>,
 /// submits the human answer (or unattended stub) to the API.

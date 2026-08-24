@@ -12,8 +12,11 @@ internal sealed class TurnEventEmitter : IAsyncDisposable
     private readonly Channel<TurnEvent> _channel;
     private readonly SemaphoreSlim _emitGate = new(1, 1);
     private readonly Guid _runId;
+
     private long _sequence;
+
     private int _terminalEmitted;
+
     private bool _completed;
 
     public TurnEventEmitter(Guid runId, int capacity = 256)

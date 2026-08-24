@@ -126,7 +126,6 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
                 StatusText = Lore.Count == 0 ? "No Lore entries yet." : $"{Lore.Count} Lore entries.";
 
             }
-
             else
             {
 
@@ -141,7 +140,6 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasNoLore));
 
         }
-
         catch (Exception ex)
         {
 
@@ -150,7 +148,6 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Lore refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -208,7 +205,6 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
                 await RefreshAsync(cancellationToken).ConfigureAwait(true);
 
             }
-
             else
             {
 
@@ -221,14 +217,12 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -289,7 +283,6 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
                 await RefreshAsync(cancellationToken).ConfigureAwait(true);
 
             }
-
             else
             {
 
@@ -302,14 +295,12 @@ public sealed partial class LoreBrowserViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 

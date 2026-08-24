@@ -79,7 +79,6 @@ public sealed partial class McpServersViewModel : ViewModelBase
             StatusText = Servers.Count == 0 ? "No MCP servers configured." : $"{Servers.Count} server(s).";
 
         }
-
         catch (Exception ex)
         {
 
@@ -90,7 +89,6 @@ public sealed partial class McpServersViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Arsenal MCP refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -151,7 +149,6 @@ public sealed partial class McpServersViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -160,7 +157,6 @@ public sealed partial class McpServersViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Arsenal MCP reload error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -208,7 +204,6 @@ public sealed partial class McpServersViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -217,7 +212,6 @@ public sealed partial class McpServersViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Arsenal MCP {verb} error: {ex.Message}");
 
         }
-
         finally
         {
 

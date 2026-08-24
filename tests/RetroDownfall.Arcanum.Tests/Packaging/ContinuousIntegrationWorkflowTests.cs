@@ -532,11 +532,230 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     }
 
+    [Fact]
+    public void Ci_runs_on_a_push_to_every_branch_the_project_integrates_on()
+    {
+
+        IReadOnlyList<string> branches = PushTriggerBranches(FindRepositoryRoot());
+
+        foreach (string branch in new[] { "main", "long-term-memory" })
+        {
+
+            Assert.True(
+                branches.Contains(branch, StringComparer.Ordinal),
+                $"A direct push to {branch} runs no CI at all: .github/workflows/ci.yml lists "
+                + $"on.push.branches as [{string.Join(", ", branches)}]. Every workstream lands on "
+                + "long-term-memory before main, so leaving it off means coverage, the Windows "
+                + "suite and the AOT IL gate never execute for the commits that integrate.");
+
+        }
+
+    }
+
+    [Theory]
+
+    [InlineData(
+        "scripts/align_csharp_blanklines.py --repo . --check",
+        "the C# blank-line formatter the repository ships")]
+
+    [InlineData(
+        "shellcheck -x -P SCRIPTDIR",
+        "shellcheck over every packaging and gate script")]
+
+    public void Ci_enforces_the_formatting_and_shell_validation_tools_the_repository_ships(
+        string invocation,
+        string description)
+    {
+
+        string workflow = WorkflowText(FindRepositoryRoot());
+
+        Assert.True(
+            workflow.Contains(invocation, StringComparison.Ordinal),
+            $"ci.yml never invokes {description} (`{invocation}`), so the repository ships a "
+            + "checker no lane runs and violations accumulate unnoticed.");
+
+    }
+
+    [Fact]
+    public void Ci_uploads_exactly_the_release_evidence_artifacts_the_readme_lists()
+    {
+
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlySet<string> produced = UploadedArtifactNames(repositoryRoot);
+
+        IReadOnlySet<string> documented = DocumentedReleaseEvidenceArtifacts(repositoryRoot);
+
+        Assert.True(
+            produced.SetEquals(documented),
+            "The release-qualification evidence list in README.md and the upload-artifact steps in "
+            + $".github/workflows/ci.yml disagree. README lists [{string.Join(", ", documented)}]; "
+            + $"the workflow produces [{string.Join(", ", produced)}]. A documented artifact with no "
+            + "producer cannot be cited as evidence, and an undocumented one is evidence nobody "
+            + "knows to collect.");
+
+    }
+
+    private static IReadOnlyList<string> PushTriggerBranches(string repositoryRoot)
+    {
+
+        string[] lines = WorkflowLines(repositoryRoot);
+
+        int push = Array.FindIndex(lines, line => line == "  push:");
+
+        Assert.True(push >= 0, "ci.yml has no top-level on.push trigger.");
+
+        int branches = -1;
+
+        for (int index = push + 1; index < lines.Length; index++)
+        {
+
+            string line = lines[index];
+
+            // A line at the `push:` indent or shallower has left the trigger block; anything
+            // deeper is a comment or a sibling key such as `paths-ignore`.
+            if (line.Length > 0 && !line.StartsWith("    ", StringComparison.Ordinal))
+            {
+
+                break;
+
+            }
+
+            if (line.Trim() == "branches:")
+            {
+
+                branches = index;
+
+                break;
+
+            }
+
+        }
+
+        Assert.True(branches >= 0, "ci.yml's on.push trigger names no branch list.");
+
+        List<string> named = [];
+
+        for (int index = branches + 1; index < lines.Length; index++)
+        {
+
+            string trimmed = lines[index].Trim();
+
+            if (!trimmed.StartsWith("- ", StringComparison.Ordinal))
+            {
+
+                break;
+
+            }
+
+            named.Add(trimmed[2..].Trim());
+
+        }
+
+        return named;
+
+    }
+
+    private static IReadOnlySet<string> UploadedArtifactNames(string repositoryRoot)
+    {
+
+        string[] lines = WorkflowLines(repositoryRoot);
+
+        HashSet<string> names = new(StringComparer.Ordinal);
+
+        for (int index = 0; index < lines.Length; index++)
+        {
+
+            if (!lines[index].Contains("uses: actions/upload-artifact", StringComparison.Ordinal))
+            {
+
+                continue;
+
+            }
+
+            for (int candidate = index + 1; candidate < lines.Length; candidate++)
+            {
+
+                string trimmed = lines[candidate].Trim();
+
+                // `- name:` starts the next step, so the `with:` block ended without naming the
+                // artifact and GitHub would upload it under its default name.
+                if (trimmed.StartsWith("- ", StringComparison.Ordinal))
+                {
+
+                    break;
+
+                }
+
+                if (trimmed.StartsWith("name:", StringComparison.Ordinal))
+                {
+
+                    names.Add(trimmed["name:".Length..].Trim());
+
+                    break;
+
+                }
+
+            }
+
+        }
+
+        Assert.NotEmpty(names);
+
+        return names;
+
+    }
+
+    private static IReadOnlySet<string> DocumentedReleaseEvidenceArtifacts(string repositoryRoot)
+    {
+
+        string[] lines = File.ReadAllLines(Path.Combine(repositoryRoot, "README.md"));
+
+        int heading = Array.FindIndex(
+            lines,
+            line => line.Trim() == "### Release-qualification evidence");
+
+        Assert.True(
+            heading >= 0,
+            "README.md carries no release-qualification evidence section, so nothing states which "
+            + "artifacts a qualified release must be able to produce.");
+
+        int fence = Array.FindIndex(lines, heading, line => line.Trim() == "```text");
+
+        Assert.True(fence >= 0, "The release-qualification evidence section lists no artifacts.");
+
+        HashSet<string> documented = new(StringComparer.Ordinal);
+
+        for (int index = fence + 1; index < lines.Length && lines[index].Trim() != "```"; index++)
+        {
+
+            string trimmed = lines[index].Trim();
+
+            if (trimmed.Length > 0)
+            {
+
+                documented.Add(trimmed);
+
+            }
+
+        }
+
+        Assert.NotEmpty(documented);
+
+        return documented;
+
+    }
+
+    private static string[] WorkflowLines(string repositoryRoot) =>
+        WorkflowText(repositoryRoot).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+    private static string WorkflowText(string repositoryRoot) =>
+        File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml"));
+
     private static IReadOnlySet<string> CompiledProjectClosure(string repositoryRoot)
     {
 
-        string workflow = File.ReadAllText(
-            Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml"));
+        string workflow = WorkflowText(repositoryRoot);
 
         HashSet<string> closure = new(StringComparer.Ordinal);
 

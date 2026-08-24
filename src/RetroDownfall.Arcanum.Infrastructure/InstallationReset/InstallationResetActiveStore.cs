@@ -2235,7 +2235,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
     private static CancellationTokenSource CreateCheckpointToken() =>
         new(TimeSpan.FromSeconds(5));
 
-
     private static Result Failure(
         string message,
         string code = ErrorCodes.Data.ControlPathUnavailable) =>

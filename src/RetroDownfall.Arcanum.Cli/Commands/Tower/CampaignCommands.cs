@@ -36,6 +36,7 @@ internal static class CampaignCommandSupport
         {
             return (false, true, default);
         }
+
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
@@ -220,6 +221,7 @@ public sealed class CampaignCommands(
             {
                 return 0;
             }
+
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));

@@ -257,6 +257,7 @@ internal sealed class ShellCommandDispatcher(
                     {
                         promptIndex--;
                     }
+
                     if (promptIndex < 0)
                     {
                         state.Log.Append(SessionLogEntryKind.Error, "No user prompt precedes the selected answer.");
@@ -266,6 +267,7 @@ internal sealed class ShellCommandDispatcher(
                     cutoff = state.LoadedTranscriptEntries[promptIndex].Id;
                     alternativePrompt = state.LoadedTranscriptEntries[promptIndex].Content;
                 }
+
                 if (parsed.SecondaryArgument == "selected")
                 {
                     cutoff = state.SelectedTranscriptEntryId;
@@ -277,11 +279,13 @@ internal sealed class ShellCommandDispatcher(
                         return ShellDispatchResult.Continue;
                     }
                 }
+
                 if (parsed.Argument is not null && !Guid.TryParse(parsed.Argument, out _))
                 {
                     state.Log.Append(SessionLogEntryKind.Error, "Usage: /fork [at <entry-id>]");
                     return ShellDispatchResult.Continue;
                 }
+
                 if (parsed.Argument is not null)
                 {
                     cutoff = Guid.Parse(parsed.Argument);
@@ -302,6 +306,7 @@ internal sealed class ShellCommandDispatcher(
                 {
                     state.PendingAlternativePrompt = alternativePrompt;
                 }
+
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.BranchParent:
@@ -310,6 +315,7 @@ internal sealed class ShellCommandDispatcher(
                     state.Log.Append(SessionLogEntryKind.Status, "This session has no parent branch.");
                     return ShellDispatchResult.Continue;
                 }
+
                 await sessionWorkspace.ResumeSessionAsync(state, parentId, cancellationToken).ConfigureAwait(false);
                 return ShellDispatchResult.Continue;
 
@@ -320,6 +326,7 @@ internal sealed class ShellCommandDispatcher(
                     state.Log.Append(SessionLogEntryKind.Status, "No child branch is visible in the recent session list.");
                     return ShellDispatchResult.Continue;
                 }
+
                 await sessionWorkspace.ResumeSessionAsync(state, child.Id, cancellationToken).ConfigureAwait(false);
                 return ShellDispatchResult.Continue;
 
@@ -334,7 +341,6 @@ internal sealed class ShellCommandDispatcher(
                     SessionLogEntryKind.Command,
                     await FormatToolsAsync(state, cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
-
 
             case ShellCommandKind.WardList:
                 state.Log.Append(
@@ -634,7 +640,6 @@ internal sealed class ShellCommandDispatcher(
             return ShellDispatchResult.Continue;
 
         }
-
         finally
 
         {
@@ -811,6 +816,7 @@ internal sealed class ShellCommandDispatcher(
             state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
             return ShellDispatchResult.Continue;
         }
+
         string[] lines = result.Value is { Length: > 0 } rows
             ? ["Pinned context:", .. rows.Select(pin =>
                 $"  {pin.Id:D}  {pin.Kind}  {pin.DisplayLabel}  version={pin.ContentVersion ?? "-"}")]
@@ -829,6 +835,7 @@ internal sealed class ShellCommandDispatcher(
         {
             return ShellDispatchResult.Continue;
         }
+
         if (!Enum.TryParse(kindText, ignoreCase: true, out SessionContextPinKind kind)
             || string.IsNullOrWhiteSpace(targetText))
         {
@@ -875,6 +882,7 @@ internal sealed class ShellCommandDispatcher(
         {
             return ShellDispatchResult.Continue;
         }
+
         if (!Guid.TryParse(idText, out Guid pinId))
         {
             state.Log.Append(SessionLogEntryKind.Error, UnpinUsageMessage);

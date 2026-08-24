@@ -147,7 +147,9 @@ public sealed class HumanPromptRegistry : IHumanPromptRegistry
     private sealed class Reservation : IHumanPromptReservation
     {
         private readonly HumanPromptRegistry _registry;
+
         private readonly TaskCompletionSource<string> _tcs;
+
         private int _disposed;
 
         public Reservation(

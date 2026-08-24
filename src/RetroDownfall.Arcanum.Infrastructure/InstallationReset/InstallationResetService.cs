@@ -2281,7 +2281,6 @@ internal sealed class InstallationResetService(
             ErrorCodes.Data.ReconciliationFailed,
             "The authenticated host data reset completion proof did not reconcile."));
 
-
     private static bool TryGetOnlineDataCompletion(
         InstallationResetActiveRecord active,
         out InstallationResetOnlineDataCompletion? completion)
@@ -2317,7 +2316,6 @@ internal sealed class InstallationResetService(
         && !string.IsNullOrWhiteSpace(active.AcceptedBinding.DataPlanIds[0])
         && (active.OnlineDataCompletion is null
             || TryGetOnlineDataCompletion(active, out _));
-
 
     private static bool SameAcceptedInstallationPlan(
         InstallationResetPlan current,

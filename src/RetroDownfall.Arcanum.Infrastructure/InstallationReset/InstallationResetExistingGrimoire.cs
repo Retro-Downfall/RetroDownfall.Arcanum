@@ -28,7 +28,6 @@ using RetroDownfall.Arcanum.Infrastructure.Generated;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal sealed class InstallationResetExistingGrimoire(

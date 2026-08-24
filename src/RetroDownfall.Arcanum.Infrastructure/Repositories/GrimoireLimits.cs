@@ -4,7 +4,6 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
-
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public static class GrimoireLimits

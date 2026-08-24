@@ -124,7 +124,6 @@ public sealed partial class McpConnectionManager
         eventBus.Publish(ev);
     }
 
-
     /// <summary>
     /// Per-partition registry of live MCP clients and their advertised server metadata. Both
     /// collections are mutated under three disjoint locks — the per-workspace merge lock, the global

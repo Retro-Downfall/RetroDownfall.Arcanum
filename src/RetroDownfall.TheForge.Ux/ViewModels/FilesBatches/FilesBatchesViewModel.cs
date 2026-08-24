@@ -220,7 +220,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                     : $"{Files.Count} file(s).";
 
             }
-
             else
             {
 
@@ -316,7 +315,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                     : $"{Batches.Count} batch(es).";
 
             }
-
             else
             {
 
@@ -403,7 +401,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 SelectedFile = Files.FirstOrDefault(f => string.Equals(f.Id, file.Id, StringComparison.Ordinal));
 
             }
-
             else
             {
 
@@ -478,7 +475,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Success, "File downloaded.");
 
             }
-
             else
             {
 
@@ -553,7 +549,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 await RefreshFilesAsync(cancellationToken).ConfigureAwait(true);
 
             }
-
             else
             {
 
@@ -628,7 +623,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                     : $"Preview {preview.Lines.Count} line(s).";
 
             }
-
             else
             {
 
@@ -707,7 +701,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 SelectedBatch = Batches.FirstOrDefault(b => string.Equals(b.Id, batch.Id, StringComparison.Ordinal));
 
             }
-
             else
             {
 
@@ -767,7 +760,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 StatusText = $"Batch {batch.Id}: {batch.Status}.";
 
             }
-
             else
             {
 
@@ -840,7 +832,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Success, "Batch cancelled.");
 
             }
-
             else
             {
 
@@ -917,7 +908,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Success, "Batch reset.");
 
             }
-
             else
             {
 
@@ -1034,7 +1024,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Success, "Download complete.");
 
             }
-
             else
             {
 
@@ -1117,7 +1106,6 @@ public sealed partial class FilesBatchesViewModel : ViewModelBase, IDisposable
             StartPolling();
 
         }
-
         else
         {
 

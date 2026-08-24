@@ -3,8 +3,12 @@ name: CI
 on:
   pull_request:
   push:
+    # long-term-memory is the integration branch every workstream lands on before main, so
+    # omitting it meant a direct push there ran no gate at all -- coverage, the Windows suite
+    # and the AOT IL closure analysis only ever executed on pull requests.
     branches:
       - main
+      - long-term-memory
   workflow_dispatch:
 
 permissions:
@@ -337,3 +341,28 @@ jobs:
 
       - name: Verify AOT IL warnings and regex smoke (host RID)
         run: ./scripts/verify-aot-il-warnings.sh
+
+  static-analysis:
+    # Both tools ship in the repository but nothing invoked them, so the formatter and every
+    # packaging script drifted with no lane to catch it. This job compiles nothing and runs in
+    # under a minute, which is what makes it affordable to gate on.
+    name: Formatting and shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verify C# blank-line formatting
+        run: python3 scripts/align_csharp_blanklines.py --repo . --check
+
+      # The runner image ships shellcheck today, but a gate that silently vanishes when the
+      # image changes is worse than no gate, so install it when it is missing.
+      - name: Install shellcheck
+        run: command -v shellcheck >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y shellcheck)
+
+      # -P SCRIPTDIR resolves `source "$SCRIPT_DIR/common.sh"` the way bash will at runtime;
+      # find rather than a glob so a script added in a new packaging directory cannot escape.
+      - name: Validate shell scripts
+        run: |
+          set -euo pipefail
+          find scripts -name '*.sh' -print0 | xargs -0 shellcheck -x -P SCRIPTDIR

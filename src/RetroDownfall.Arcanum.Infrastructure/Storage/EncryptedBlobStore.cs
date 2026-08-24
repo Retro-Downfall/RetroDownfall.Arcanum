@@ -16,20 +16,31 @@ public sealed class EncryptedBlobStoreOptions
 public sealed class EncryptedBlobStore : IEncryptedBlobStore
 {
     private const int MagicLength = 8;
+
     private const int FixedHeaderLength = 37;
+
     private const int NoncePrefixLength = 8;
+
     private const int NonceLength = 12;
+
     private const int TagLength = 16;
+
     private const int MaximumMetadataLength = 16 * 1024;
+
     private const int MaximumKeyIdLength = 64;
+
     private const int MinimumChunkSize = 16;
+
     private const int MaximumChunkSize = 16 * 1024 * 1024;
+
     private const int LegacyAadSuffixLength = 8;
+
     private const int LengthBoundAadSuffixLength = 17;
     private const string KeyDerivationLabel = "Arcanum.EncryptedBlob.v1:";
     private static ReadOnlySpan<byte> Magic => "ARCABLOB"u8;
 
     private readonly IFileEncryptionKeyProvider _keyProvider;
+
     private readonly int _chunkSize;
 
     public EncryptedBlobStore(
@@ -464,6 +475,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 remaining -= expected;
                 chunkIndex++;
             }
+
             while (remaining > 0);
 
             byte[] extra = new byte[1];
@@ -636,18 +648,29 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
     private sealed class EncryptedBlobReadStream : EncryptedBlobReader
     {
         private readonly FileStream _input;
+
         private readonly byte[] _header;
+
         private readonly byte[] _noncePrefix;
+
         private readonly byte[] _purposeKey;
+
         private readonly AesGcm _aes;
+
         private readonly byte[] _cipherBuffer;
+
         private readonly byte[] _plainBuffer;
         private readonly byte[] _tag = new byte[TagLength];
         private readonly byte[] _aad;
+
         private long _remaining;
+
         private uint _chunkIndex;
+
         private int _plainOffset;
+
         private int _plainCount;
+
         private bool _disposed;
 
         public EncryptedBlobReadStream(
@@ -878,22 +901,35 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
     private sealed class StreamingEncryptedBlobWriter : EncryptedBlobWriter
     {
         private readonly EncryptedBlobStore _store;
+
         private readonly FileStream _output;
+
         private readonly string _tempPath;
+
         private readonly string _destinationPath;
+
         private readonly EncryptedBlobPurpose _purpose;
+
         private readonly byte[] _header;
+
         private readonly byte[] _purposeKey;
+
         private readonly AesGcm _aes;
+
         private readonly byte[] _plainBuffer;
+
         private readonly byte[] _cipherBuffer;
         private readonly byte[] _tag = new byte[TagLength];
         private readonly byte[] _aad;
         private readonly byte[] _nonce = new byte[NonceLength];
         private int _bufferCount;
+
         private long _plaintextLength;
+
         private uint _chunkIndex;
+
         private bool _completed;
+
         private bool _disposed;
 
         public StreamingEncryptedBlobWriter(

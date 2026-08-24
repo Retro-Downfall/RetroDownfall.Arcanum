@@ -12,12 +12,17 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
     public static readonly TimeSpan DefaultFlushInterval = TimeSpan.FromMilliseconds(50);
 
     private readonly ChannelWriter<CommandCenterUiUpdate> _ui;
+
     private readonly TimeSpan _flushInterval;
+
     private readonly Func<DateTimeOffset> _utcNow;
+
     private readonly Action? _beforeFlush;
     private readonly object _gate = new();
     private bool _dirty;
+
     private DateTimeOffset _lastFlushUtc;
+
     private bool _disposed;
 
     public StreamingUiCoalescer(

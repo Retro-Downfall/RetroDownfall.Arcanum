@@ -29,15 +29,23 @@ internal sealed class ConsoleAskHumanCoordinator
 
     private readonly object _gate = new();
     private readonly ArcanumApiClient _apiClient;
+
     private readonly IThemePalette _palette;
+
     private readonly IAnsiConsole _diagnosticConsole;
+
     private readonly Func<string, bool, CancellationToken, Task<string?>> _readLineAsync;
+
     private readonly Action? _onOperatorInterrupt;
 
     private PendingHitl? _pending;
+
     private Task? _raceTask;
+
     private Task<string?>? _disownedRead;
+
     private AskHumanResult? _settledResult;
+
     private int _generation;
 
     private sealed class PendingHitl(
@@ -48,9 +56,13 @@ internal sealed class ConsoleAskHumanCoordinator
         TaskCompletionSource dismissTcs)
     {
         public string PromptId { get; } = promptId;
+
         public string? CallId { get; } = callId;
+
         public string Question { get; } = question;
+
         public int Generation { get; } = generation;
+
         public TaskCompletionSource DismissTcs { get; } = dismissTcs;
         public bool SubmitStarted { get; set; }
     }

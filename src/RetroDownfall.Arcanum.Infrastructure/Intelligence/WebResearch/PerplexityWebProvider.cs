@@ -25,7 +25,9 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
         StringComparer.OrdinalIgnoreCase);
 
     private readonly IHttpClientFactory _httpClientFactory;
+
     private readonly IWebResearchApiKeyResolver _apiKeyResolver;
+
     private readonly ILogger<PerplexityWebProvider>? _logger;
 
     public PerplexityWebProvider(

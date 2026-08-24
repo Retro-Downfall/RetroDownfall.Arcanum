@@ -261,7 +261,6 @@ internal static class CliApplicationFactory
 
         services.AddTransient<IRunExecutionDispatcher, RunExecutionDispatcher>();
 
-
         services.AddTransient<LookCommand>();
 
         services.AddArcanumDoctorDiagnostics();

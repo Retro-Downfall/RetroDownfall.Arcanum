@@ -113,6 +113,7 @@ public sealed class PromptCommands(
             {
                 return 0;
             }
+
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
@@ -739,6 +740,7 @@ public sealed class PromptCommands(
         {
             return (false, true, default);
         }
+
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));

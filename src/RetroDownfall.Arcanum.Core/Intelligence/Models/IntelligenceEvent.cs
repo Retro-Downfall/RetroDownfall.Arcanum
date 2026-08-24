@@ -58,7 +58,6 @@ public sealed record IntelligenceEvent(
 
 }
 
-
 /// <summary>
 /// Structured payload for <see cref="IntelligenceEventType.ToolCall"/> and
 /// <see cref="IntelligenceEventType.ToolResult"/> frames. Lets OpenAI-compatible bridges

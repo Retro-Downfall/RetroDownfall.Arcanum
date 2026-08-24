@@ -3,7 +3,6 @@ using SQLitePCL;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;

@@ -177,7 +177,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
                 StatusText = Memories.Count == 0 ? "No Saga memories yet." : $"{Memories.Count} Saga memories.";
 
             }
-
             else
             {
 
@@ -199,7 +198,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasNoMemories));
 
         }
-
         catch (Exception ex)
         {
 
@@ -208,7 +206,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Archive refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -263,7 +260,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
                 StatusText = Memories.Count == 0 ? "No results." : $"{Memories.Count} results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -272,7 +268,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
                 StatusText = "Divination disabled.";
 
             }
-
             else
             {
 
@@ -287,14 +282,12 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasNoMemories));
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -367,7 +360,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
                 await RefreshAsync(cancellationToken).ConfigureAwait(true);
 
             }
-
             else
             {
 
@@ -382,7 +374,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -391,7 +382,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Error, "Delete failed.");
 
         }
-
         finally
         {
 
@@ -444,7 +434,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
                 await RefreshAsync(cancellationToken).ConfigureAwait(true);
 
             }
-
             else
             {
 
@@ -459,7 +448,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -470,7 +458,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Error, "Delete all failed.");
 
         }
-
         finally
         {
 
@@ -499,7 +486,6 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 

@@ -14,6 +14,7 @@ public sealed class RecentResourceStore : IRecentResourceStore
     private const int MaxEntries = 50;
     private readonly object _gate = new();
     private readonly string _path;
+
     private readonly IArcanumClientMutationBoundary _mutationBoundary;
 
     public RecentResourceStore(IArcanumClientMutationBoundary mutationBoundary)

@@ -1395,6 +1395,7 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+
     /// <summary>
     /// The Covenant authority boundary: one authority issuer, one envelope key generation, one codec,
     /// one diagnostic tagger, and the single publisher that swaps them all at once.

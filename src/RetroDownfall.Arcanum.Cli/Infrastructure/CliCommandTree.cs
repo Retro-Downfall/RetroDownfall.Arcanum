@@ -183,7 +183,6 @@ internal static partial class CliCommandTree
 
         root.Add(help);
 
-
         return root;
     }
 

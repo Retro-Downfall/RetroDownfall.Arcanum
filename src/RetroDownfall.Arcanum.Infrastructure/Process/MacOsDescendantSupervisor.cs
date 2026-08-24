@@ -8,16 +8,23 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         TimeSpan.FromMilliseconds(10);
 
     private readonly int _rootPid;
+
     private readonly ProcessIdentity _rootIdentity;
+
     private readonly int _kernelQueue;
+
     private readonly IntPtr _eventBuffer;
     private readonly object _gate = new();
     private readonly HashSet<ProcessIdentity> _tracked = [];
     private readonly CancellationTokenSource _monitorCts = new();
     private readonly Func<Task>? _monitorTickHold;
+
     private readonly Task _monitorTask;
+
     private long _fullScanCount;
+
     private long _monitorTickCount;
+
     private bool _stopped;
 
     private MacOsDescendantSupervisor(
@@ -112,6 +119,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
             {
                 _ = Close(queue);
             }
+
             return null;
         }
         finally
@@ -410,6 +418,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                     process.Identity.Pid);
             }
         }
+
         while (changed);
     }
 
@@ -667,10 +676,15 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     private struct KeventRecord
     {
         internal nuint Ident;
+
         internal short Filter;
+
         internal ushort Flags;
+
         internal uint FilterFlags;
+
         internal nint Data;
+
         internal IntPtr UserData;
     }
 
@@ -678,6 +692,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     private struct Timespec
     {
         internal long Seconds;
+
         internal long Nanoseconds;
     }
 }

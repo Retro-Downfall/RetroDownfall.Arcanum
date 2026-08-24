@@ -6,9 +6,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
 
-
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
-
 
 /// <summary>
 /// Stateless merge of MCP tool rows into a workspace tool surface: internal → global → local with local-wins dedup (Ordinal tool names).
@@ -34,7 +32,6 @@ internal static class McpToolMerger
         Dictionary<string, LoadedMcpToolRow> FirstByToolName,
 
         IReadOnlyList<AITool> SurfaceTools);
-
 
     /// <summary>
     /// First-seen dedup of global-partition tool rows by <see cref="AITool.Name"/> (<see cref="StringComparer.Ordinal"/>).
@@ -72,7 +69,6 @@ internal static class McpToolMerger
         return new GlobalDedupResult(byName, surface);
 
     }
-
 
     /// <summary>
     /// Merges internal in-process tools, global profile tools, and workspace-local tools into one surface.
@@ -136,7 +132,6 @@ internal static class McpToolMerger
         return ApplyLocalOverrides(surface, mergedByName, workspaceLocalTagged, bridgeFallbackLogger);
 
     }
-
 
     private static IReadOnlyList<AITool> ApplyLocalOverrides(
 
@@ -240,7 +235,6 @@ internal static class McpToolMerger
 
     private static bool IsIntrinsicInternalName(string name) =>
         IntrinsicInternalToolNames.Contains(name);
-
 
     private static void LogExternalCollision(
         ILogger? logger,

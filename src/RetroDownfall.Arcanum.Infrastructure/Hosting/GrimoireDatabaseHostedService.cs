@@ -718,7 +718,6 @@ public sealed class GrimoireDatabaseHostedService(
 
         }
 
-
     }
 
     private async Task ActivatePostRestoreTopologyAsync(

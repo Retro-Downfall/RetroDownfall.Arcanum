@@ -1536,7 +1536,6 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-
         if (closed.IsFailure)
         {
 

@@ -38,10 +38,15 @@ internal sealed class CommandCenterHumanPromptCoordinator(
 {
     private readonly object _gate = new();
     private Action<HumanPromptRequest, string?>? _onShow;
+
     private Action<HumanPromptCloseReason, string?>? _onHide;
+
     private Action<string?>? _onStatus;
+
     private HumanPromptRequest? _pending;
+
     private bool _submitInFlight;
+
     private string? _statusMessage;
     private readonly List<HumanPromptRequest> _queued = [];
 

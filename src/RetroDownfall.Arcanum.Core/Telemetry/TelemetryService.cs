@@ -53,31 +53,53 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
     private readonly object _decimalGate = new();
 
     private long _inputTokens;
+
     private long _inputCacheHits;
+
     private long _outputTokens;
+
     private long _outputReasoningTokens;
+
     private long _cumulativeLatencyTicks;
 
     private long _webRequests;
+
     private long _webSuccessfulRequests;
+
     private long _webFailedRequests;
+
     private long _webPromptTokens;
+
     private long _webCompletionTokens;
+
     private long _webTotalTokens;
+
     private long _webReasoningTokens;
+
     private long _webCitationTokens;
+
     private long _webSearchQueries;
+
     private long _webCumulativeLatencyTicks;
+
     private decimal _webCostUsd;
 
     private long _subagentRuns;
+
     private long _subagentCompleted;
+
     private long _subagentFailed;
+
     private long _subagentBudgetExhausted;
+
     private long _subagentTokens;
+
     private long _subagentLatencyTicks;
+
     private decimal _subagentCostUsd;
+
     private int _started;
+
     private int _disposed;
 
     public event EventHandler<TelemetrySnapshot>? SnapshotUpdated;

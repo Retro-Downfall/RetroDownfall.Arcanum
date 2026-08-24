@@ -18,9 +18,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 
 using Spectre.Console;
 
-
 namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
-
 
 public sealed class WorkspaceCommands(
     ArcanumApiClient apiClient,
@@ -71,7 +69,6 @@ public sealed class WorkspaceCommands(
         return 0;
 
     }
-
 
     public async Task<int> Current(CancellationToken cancellationToken)
     {
@@ -153,7 +150,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     public async Task<int> Register(
         string? path,
         string? name,
@@ -205,7 +201,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     public async Task<int> Show(
         string? identifier,
         CancellationToken cancellationToken)
@@ -240,7 +235,6 @@ public sealed class WorkspaceCommands(
         return 0;
 
     }
-
 
     public async Task<int> Tree(
         string? identifier,
@@ -323,7 +317,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     public async Task<int> Info(
         string relativePath,
         string? identifier,
@@ -381,7 +374,6 @@ public sealed class WorkspaceCommands(
         return 0;
 
     }
-
 
     public async Task<int> Read(
         string relativePath,
@@ -467,7 +459,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     public async Task<int> Search(
         string query,
         string? identifier,
@@ -527,7 +518,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     public async Task<int> Index(
         string? identifier,
         CancellationToken cancellationToken)
@@ -565,7 +555,6 @@ public sealed class WorkspaceCommands(
         return 0;
 
     }
-
 
     public async Task<int> IndexStatus(
         string? identifier,
@@ -625,7 +614,6 @@ public sealed class WorkspaceCommands(
         return 0;
 
     }
-
 
     public async Task<int> Chunks(
         string? identifier,
@@ -694,7 +682,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     public async Task<int> Unregister(
         string? identifier,
         CancellationToken cancellationToken)
@@ -732,7 +719,6 @@ public sealed class WorkspaceCommands(
         return 0;
 
     }
-
 
     private async Task<WorkspaceResolution> ResolveWorkspaceAsync(
         string? identifier,
@@ -804,7 +790,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     private async Task<Result<CampaignDto[]>> GetAllCampaignsAsync(
         CancellationToken cancellationToken)
     {
@@ -859,7 +844,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     private void WriteWorkspace(WorkspaceInfo workspace)
     {
 
@@ -884,7 +868,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     private int WriteError(Error error)
     {
 
@@ -893,7 +876,6 @@ public sealed class WorkspaceCommands(
         return 1;
 
     }
-
 
     private static T? FindContaining<T>(
         string candidatePath,
@@ -906,7 +888,6 @@ public sealed class WorkspaceCommands(
                 getPath(value)))
             .OrderByDescending(value => getPath(value).Length)
             .FirstOrDefault();
-
 
     private static bool TryParseWorkspaceType(
         string? value,
@@ -927,7 +908,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     private static string InferName(string path)
     {
 
@@ -947,7 +927,6 @@ public sealed class WorkspaceCommands(
 
     }
 
-
     private static Table DetailTable()
     {
 
@@ -960,7 +939,6 @@ public sealed class WorkspaceCommands(
         return table;
 
     }
-
 
     private sealed record WorkspaceResolution(
         WorkspaceInfo? Workspace,

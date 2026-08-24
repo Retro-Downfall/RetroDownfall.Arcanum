@@ -216,7 +216,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
                     : $"{InferenceRecords.Count} inference audit record(s).";
 
             }
-
             else
             {
 
@@ -231,7 +230,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasNoInferenceRecords));
 
         }
-
         catch (Exception ex)
         {
 
@@ -240,7 +238,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Audit Browser inference error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -302,7 +299,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
                     : $"{GuardrailRecords.Count} guardrails audit record(s).";
 
             }
-
             else
             {
 
@@ -317,7 +313,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasNoGuardrailRecords));
 
         }
-
         catch (Exception ex)
         {
 
@@ -326,7 +321,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Audit Browser guardrails error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -404,7 +398,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Success, "Inference audit exported.");
 
         }
-
         catch (Exception ex)
         {
 
@@ -489,7 +482,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Success, "Inference audit exported.");
 
         }
-
         catch (Exception ex)
         {
 
@@ -543,7 +535,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Success, "Guardrails audit exported.");
 
         }
-
         catch (Exception ex)
         {
 
@@ -614,7 +605,6 @@ public sealed partial class AuditBrowserViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Success, "Guardrails audit exported.");
 
         }
-
         catch (Exception ex)
         {
 

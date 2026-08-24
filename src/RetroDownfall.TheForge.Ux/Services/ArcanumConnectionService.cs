@@ -239,6 +239,7 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
                 await PollOnceAsync(cancellationToken).ConfigureAwait(false);
 
             }
+
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false));
 
         }

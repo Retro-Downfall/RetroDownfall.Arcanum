@@ -752,6 +752,21 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 
 ---
 
+### Release-qualification evidence
+
+A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete set of artifacts `.github/workflows/ci.yml` uploads, and it is the checklist a release qualification is read against:
+
+```text
+arcanum-coverage-report
+covenant-benchmark-run
+```
+
+`arcanum-coverage-report` carries the Cobertura XML plus the rendered HTML report for the run. `covenant-benchmark-run` carries the measured Covenant benchmark run the gate was evaluated against, so a later comparison can be made against the numbers a specific commit actually produced rather than against a recollection of them; because a recorded baseline is only comparable on the host that recorded it, that artifact is what makes a same-lane comparison possible at all. `ContinuousIntegrationWorkflowTests` asserts this list and the workflow's upload steps are the same set in both directions, so an artifact that stops being produced fails the suite instead of quietly disappearing from a release's evidence, and an artifact added to the workflow has to be written down here before it counts.
+
+Every other lane publishes nothing on purpose and proves itself only by exiting non-zero: the Windows suite, the macOS workspace-check jail, and the two AOT IL gates. Their evidence is the run conclusion itself. In particular `verify-aot-il-warnings.sh` keeps its publish logs in `mktemp` files it deletes on the way out, so there is no AOT log artifact to cite — treat the gate's exit status as the record.
+
+---
+
 ## CLI quick reference
 
 This section is intentionally condensed. See [`Arcanum.Command.Reference.md`](docs/Arcanum.Command.Reference.md) for the complete command tree and option-by-option behavior.

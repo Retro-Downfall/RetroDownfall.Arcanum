@@ -81,7 +81,6 @@ internal static class SqliteBusyRetry
         }
     }
 
-
     private static bool IsBusyOrLocked(Exception exception)
     {
         if (exception is OperationCanceledException)

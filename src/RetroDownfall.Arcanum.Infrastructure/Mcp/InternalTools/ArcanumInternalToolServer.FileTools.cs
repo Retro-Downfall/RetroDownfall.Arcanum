@@ -7,7 +7,6 @@ using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer

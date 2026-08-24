@@ -21,9 +21,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 internal static partial class WindowsAppContainerLauncher
 {
     private const uint CreateSuspended = 0x00000004;
+
     private const uint ExtendedStartupInfoPresent = 0x00080000;
+
     private const uint ProcThreadAttributeSecurityCapabilities = 0x00020005;
+
     private const uint ProcThreadAttributeHandleList = 0x00020002;
+
     private const int StartupInfoStdHandles = 0x00000100;
     private const int Infinite = -1;
 
@@ -69,6 +73,7 @@ internal static partial class WindowsAppContainerLauncher
             {
                 Grant(journalPath, root, identity, FileSystemRights.Modify | FileSystemRights.ReadAndExecute, aclBackups);
             }
+
             foreach (string root in payload.ReadOnlyRoots.Concat(payload.ReadExecuteRoots))
             {
                 Grant(journalPath, root, identity, FileSystemRights.ReadAndExecute, aclBackups);
@@ -102,6 +107,7 @@ internal static partial class WindowsAppContainerLauncher
             {
                 FreeSid(sid);
             }
+
             if (profileCreated)
             {
                 undone &= DeleteProfile(payload.WindowsProfileName);
@@ -259,10 +265,12 @@ internal static partial class WindowsAppContainerLauncher
                 DeleteProcThreadAttributeList(attributes);
                 Marshal.FreeHGlobal(attributes);
             }
+
             if (capabilitiesPtr != 0)
             {
                 Marshal.FreeHGlobal(capabilitiesPtr);
             }
+
             if (handlesPtr != 0)
             {
                 Marshal.FreeHGlobal(handlesPtr);

@@ -520,7 +520,6 @@ internal static class ApprenticeEndpoints
                         await pumpTask.ConfigureAwait(false);
 
                     }
-
                     catch (OperationCanceledException)
                     {
 

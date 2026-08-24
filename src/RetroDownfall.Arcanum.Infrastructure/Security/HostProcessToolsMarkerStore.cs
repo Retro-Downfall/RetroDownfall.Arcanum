@@ -189,6 +189,7 @@ internal sealed class HostProcessToolsMarkerStore(IOsCredentialStore credentials
     }
 
 }
+
 /// <summary>
 /// The reset-only view of the same slot: open a retained record, compare-delete it, prove it gone.
 /// </summary>

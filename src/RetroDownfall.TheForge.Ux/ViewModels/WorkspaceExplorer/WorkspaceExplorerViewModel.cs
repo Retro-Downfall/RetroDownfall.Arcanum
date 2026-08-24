@@ -217,7 +217,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             _ = RefreshDirectoryAsync(CancellationToken.None);
 
         }
-
         else
         {
 
@@ -242,7 +241,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             _ = OpenFileAsync(CancellationToken.None);
 
         }
-
         else
         {
 
@@ -298,7 +296,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 StatusText = Workspaces.Count == 0 ? "No workspaces registered." : $"{Workspaces.Count} workspaces.";
 
             }
-
             else
             {
 
@@ -313,7 +310,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasNoWorkspaces));
 
         }
-
         catch (Exception ex)
         {
 
@@ -322,7 +318,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Workspace Explorer refresh error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -421,7 +416,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                     : $"{Entries.Count} entries in {CurrentRelativePath}.";
 
             }
-
             else
             {
 
@@ -436,14 +430,12 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasNoEntries));
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -531,7 +523,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 FileInfo = infoResult.Data;
 
             }
-
             else
             {
 
@@ -558,7 +549,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 StatusText = $"Opened {entry.RelativePath} ({read.Size} bytes).";
 
             }
-
             else
             {
 
@@ -573,14 +563,12 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -705,7 +693,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 StatusText = "Workspace re-index requested.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -714,7 +701,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 StatusText = "Indexing disabled.";
 
             }
-
             else
             {
 
@@ -727,14 +713,12 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -796,7 +780,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 StatusText = DivinationResults.Count == 0 ? "No Divination results." : $"{DivinationResults.Count} Divination results.";
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Embeddings.FeatureDisabled)
             {
 
@@ -805,7 +788,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 StatusText = "Workspace Divination disabled.";
 
             }
-
             else
             {
 
@@ -818,14 +800,12 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
             LastError = ex.Message;
 
         }
-
         finally
         {
 
@@ -867,7 +847,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 _whispers.Show(WhisperSeverity.Success, "File saved.");
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Workspace.FileWriteDisabled)
             {
 
@@ -876,7 +855,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 _whispers.Show(WhisperSeverity.Warning, "Writes disabled.");
 
             }
-
             else
             {
 
@@ -891,7 +869,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -900,7 +877,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Error, "Save failed.");
 
         }
-
         finally
         {
 
@@ -969,7 +945,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 await RefreshDirectoryAsync(cancellationToken).ConfigureAwait(true);
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Workspace.FileWriteDisabled)
             {
 
@@ -978,7 +953,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 _whispers.Show(WhisperSeverity.Warning, "Writes disabled.");
 
             }
-
             else
             {
 
@@ -993,7 +967,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -1002,7 +975,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Error, "Delete failed.");
 
         }
-
         finally
         {
 
@@ -1063,7 +1035,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 await RefreshDirectoryAsync(cancellationToken).ConfigureAwait(true);
 
             }
-
             else if (result.ErrorCode == ErrorCodes.Workspace.FileWriteDisabled)
             {
 
@@ -1072,7 +1043,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
                 _whispers.Show(WhisperSeverity.Warning, "Writes disabled.");
 
             }
-
             else
             {
 
@@ -1087,7 +1057,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -1096,7 +1065,6 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Error, "Create directory failed.");
 
         }
-
         finally
         {
 

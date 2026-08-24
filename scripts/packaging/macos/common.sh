@@ -5,6 +5,9 @@
 set -euo pipefail
 
 PACKAGING_MACOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Consumed by build-arcanum.sh and build-app-dmg.sh after they source this file; shellcheck
+# cannot see those readers when it lints common.sh on its own.
+# shellcheck disable=SC2034
 REPO_ROOT="$(cd "$PACKAGING_MACOS_DIR/../../.." && pwd)"
 
 require_cmd() {

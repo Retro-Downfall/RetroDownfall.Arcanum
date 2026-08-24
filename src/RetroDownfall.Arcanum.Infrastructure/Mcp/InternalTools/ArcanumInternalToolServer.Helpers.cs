@@ -11,7 +11,6 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
@@ -165,6 +164,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         return true;
     }
+
     private static McpToolsCallResultWire PrefixToolError(string toolName, McpToolsCallResultWire error)
     {
 

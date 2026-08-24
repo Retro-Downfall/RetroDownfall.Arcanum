@@ -114,7 +114,6 @@ public sealed partial class CodexViewModel : ViewModelBase
                 StatusText = Exists ? "Loaded." : "Codex not found — empty editor ready.";
 
             }
-
             else if (result.Success)
             {
 
@@ -127,7 +126,6 @@ public sealed partial class CodexViewModel : ViewModelBase
                 StatusText = "Codex not found — empty editor ready.";
 
             }
-
             else
             {
 
@@ -140,7 +138,6 @@ public sealed partial class CodexViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -149,7 +146,6 @@ public sealed partial class CodexViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Codex load error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -182,7 +178,6 @@ public sealed partial class CodexViewModel : ViewModelBase
                 StatusText = "Saved.";
 
             }
-
             else if (result.Success)
             {
 
@@ -191,7 +186,6 @@ public sealed partial class CodexViewModel : ViewModelBase
                 StatusText = "Saved.";
 
             }
-
             else
             {
 
@@ -204,7 +198,6 @@ public sealed partial class CodexViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -213,7 +206,6 @@ public sealed partial class CodexViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Codex save error: {ex.Message}");
 
         }
-
         finally
         {
 
@@ -267,7 +259,6 @@ public sealed partial class CodexViewModel : ViewModelBase
                 StatusText = "Deleted.";
 
             }
-
             else
             {
 
@@ -280,7 +271,6 @@ public sealed partial class CodexViewModel : ViewModelBase
             }
 
         }
-
         catch (Exception ex)
         {
 
@@ -289,7 +279,6 @@ public sealed partial class CodexViewModel : ViewModelBase
             _foundryFloor.AppendLine($"Codex delete error: {ex.Message}");
 
         }
-
         finally
         {
 
