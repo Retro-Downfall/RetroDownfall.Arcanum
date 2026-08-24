@@ -277,7 +277,7 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         try
         {
 
-            if (!Base64Url.TryDecodeFromChars(token, wireBuffer, out int wireLength))
+            if (!TryDecodeWire(token, wireBuffer, out int wireLength))
             {
                 return Invalid();
             }
@@ -533,6 +533,31 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
     }
 
+    /// <remarks>
+    /// The filter above admits tokens whose final group sets bits a two- or three-character group
+    /// cannot represent — <c>"AB"</c> is one — and the framework decoder raises
+    /// <see cref="FormatException"/> for those rather than reporting failure. Letting it escape would
+    /// hand anyone who can reach a token-bearing route an unhandled exception, and would single that
+    /// token out from every other refusal, which is the oracle this codec exists to deny.
+    /// </remarks>
+    private static bool TryDecodeWire(string token, Span<byte> destination, out int wireLength)
+    {
+
+        try
+        {
+            return Base64Url.TryDecodeFromChars(token, destination, out wireLength);
+        }
+        catch (FormatException)
+        {
+
+            wireLength = 0;
+
+            return false;
+
+        }
+
+    }
+
     private void ZeroAndObserve(
         Span<byte> buffer,
         CovenantEnvelopeCodecBufferKind kind)
@@ -544,22 +569,13 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
     }
 
-    private static bool IsZero(ReadOnlySpan<byte> buffer)
-    {
-
-        foreach (byte value in buffer)
-        {
-
-            if (value != 0)
-            {
-                return false;
-            }
-
-        }
-
-        return true;
-
-    }
+    /// <remarks>
+    /// A search rather than a hand-rolled loop, because that loop's early-out could never be taken: the
+    /// only caller zeroes this buffer on the line above, and a stack span has no second writer. Dead
+    /// code on a security path is worse than none — it reads as a refusal someone has proved.
+    /// </remarks>
+    private static bool IsZero(ReadOnlySpan<byte> buffer) =>
+        buffer.IndexOfAnyExcept((byte)0) < 0;
 
     private static Result<T> Stale<T>() =>
         Result<T>.Failure(

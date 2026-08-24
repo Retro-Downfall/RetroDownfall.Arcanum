@@ -295,72 +295,80 @@ public sealed class CovenantEnvelopeCodecTests
 
         using CodecHarness harness = CodecHarness.Create();
 
-        // Forge a token whose plaintext times disagree with its header. The forger has the key, which
-        // is the strongest attacker this check is meant to catch: an internal caller assembling a body
-        // against one deadline while framing a header against another.
-        byte[] payload = [9, 9, 9];
-
-        Span<byte> header = stackalloc byte[CovenantEnvelopeLimits.HeaderBytes];
-
-        long issuedMs = Now.ToUnixTimeMilliseconds();
-
-        long headerExpiresMs = Now.AddMinutes(1).ToUnixTimeMilliseconds();
-
-        long bodyExpiresMs = Now.AddHours(24).ToUnixTimeMilliseconds();
-
-        Encoding.ASCII.GetBytes("ACVE").CopyTo(header);
-
-        header[4] = CovenantEnvelopeLimits.Version;
-
-        header[5] = (byte)CovenantEnvelopePurpose.Cursor;
-
-        BinaryPrimitives.WriteUInt32BigEndian(header[6..], 7);
-
-        BinaryPrimitives.WriteInt64BigEndian(header[10..], 3);
-
-        BinaryPrimitives.WriteUInt64BigEndian(header[18..], 99);
-
-        BinaryPrimitives.WriteInt64BigEndian(header[26..], issuedMs);
-
-        BinaryPrimitives.WriteInt64BigEndian(header[34..], headerExpiresMs);
-
-        BinaryPrimitives.WriteUInt32BigEndian(
-            header[42..],
-            (uint)(CovenantEnvelopeLimits.BodyTimeBytes + payload.Length));
-
-        Span<byte> plaintext = stackalloc byte[CovenantEnvelopeLimits.BodyTimeBytes + payload.Length];
-
-        BinaryPrimitives.WriteInt64BigEndian(plaintext, issuedMs);
-
-        BinaryPrimitives.WriteInt64BigEndian(plaintext[8..], bodyExpiresMs);
-
-        payload.CopyTo(plaintext[CovenantEnvelopeLimits.BodyTimeBytes..]);
-
-        Span<byte> nonce = stackalloc byte[CovenantEnvelopeLimits.NonceBytes];
-
-        BinaryPrimitives.WriteUInt32BigEndian(nonce, (uint)CovenantEnvelopePurpose.Cursor);
-
-        BinaryPrimitives.WriteUInt64BigEndian(nonce[4..], 99);
-
-        Span<byte> wire = stackalloc byte[
-            CovenantEnvelopeLimits.HeaderBytes + plaintext.Length + CovenantEnvelopeLimits.TagBytes];
-
-        header.CopyTo(wire);
-
-        using AesGcm aes = new(harness.CursorKey, CovenantEnvelopeLimits.TagBytes);
-
-        aes.Encrypt(
-            nonce,
-            plaintext,
-            wire.Slice(CovenantEnvelopeLimits.HeaderBytes, plaintext.Length),
-            wire[(CovenantEnvelopeLimits.HeaderBytes + plaintext.Length)..],
-            header);
+        // Only the expiry halves disagree, and the body claims the longer life. Without the equality
+        // proof the caller would act on a deadline the authenticated header never covered.
+        string token = Forge(
+            harness.CursorKey,
+            counter: 99,
+            headerIssuedMs: Now.ToUnixTimeMilliseconds(),
+            headerExpiresMs: Now.AddMinutes(1).ToUnixTimeMilliseconds(),
+            bodyIssuedMs: Now.ToUnixTimeMilliseconds(),
+            bodyExpiresMs: Now.AddHours(24).ToUnixTimeMilliseconds(),
+            payload: [9, 9, 9]);
 
         Result<CovenantEnvelopeBody> decoded =
-            harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, Base64Url.EncodeToString(wire));
+            harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token);
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
+
+    }
+
+    [Fact]
+    public void A_body_issued_instant_that_differs_from_the_header_is_refused()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        long expiresMs = Now.AddMinutes(1).ToUnixTimeMilliseconds();
+
+        // The expiry halves agree here, so the issued comparison is the only thing that can refuse this
+        // token: drop that half of the check and a live envelope reports an origin it never had.
+        string token = Forge(
+            harness.CursorKey,
+            counter: 98,
+            headerIssuedMs: Now.ToUnixTimeMilliseconds(),
+            headerExpiresMs: expiresMs,
+            bodyIssuedMs: Now.AddMinutes(-1).ToUnixTimeMilliseconds(),
+            bodyExpiresMs: expiresMs,
+            payload: [5]);
+
+        Result<CovenantEnvelopeBody> decoded =
+            harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token);
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
+
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void An_envelope_that_expires_no_later_than_it_was_issued_is_refused(int expiryOffsetMinutes)
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        DateTimeOffset issuedAt = Now.AddMinutes(10);
+
+        DateTimeOffset expiresAt = issuedAt.AddMinutes(expiryOffsetMinutes);
+
+        // Both instants sit ahead of the clock, so an ordering the header states but the framing never
+        // produces would otherwise authenticate and hand back a body inside its window.
+        string token = Forge(
+            harness.CursorKey,
+            counter: 97,
+            headerIssuedMs: issuedAt.ToUnixTimeMilliseconds(),
+            headerExpiresMs: expiresAt.ToUnixTimeMilliseconds(),
+            bodyIssuedMs: issuedAt.ToUnixTimeMilliseconds(),
+            bodyExpiresMs: expiresAt.ToUnixTimeMilliseconds(),
+            payload: [6]);
+
+        Result<CovenantEnvelopeBody> decoded =
+            harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token);
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
 
     }
 
@@ -812,8 +820,287 @@ public sealed class CovenantEnvelopeCodecTests
 
     }
 
+    [Fact]
+    public void A_codec_refuses_to_exist_without_keys_a_clock_or_a_checkpoint()
+    {
+
+        using CovenantEnvelopeMasterKeyProvider keys = new();
+
+        FakeTimeProvider time = FakeClock(Now);
+
+        // Named one by one rather than in a loop: a guard that reports the wrong parameter is a guard
+        // that was pasted, and pasted guards are how one of the three ends up checking another.
+        Assert.Equal(
+            "keys",
+            Assert.Throws<ArgumentNullException>(
+                () => new CovenantEnvelopeCodec(null!, time, CovenantEnvelopeCodecCheckpoint.None))
+                .ParamName);
+
+        Assert.Equal(
+            "timeProvider",
+            Assert.Throws<ArgumentNullException>(
+                () => new CovenantEnvelopeCodec(keys, null!, CovenantEnvelopeCodecCheckpoint.None))
+                .ParamName);
+
+        Assert.Equal(
+            "checkpoint",
+            Assert.Throws<ArgumentNullException>(
+                () => new CovenantEnvelopeCodec(keys, time, null!))
+                .ParamName);
+
+    }
+
+    [Fact]
+    public void The_key_snapshot_is_empty_until_a_generation_is_published()
+    {
+
+        using CovenantEnvelopeMasterKeyProvider uninitialized = new();
+
+        CovenantEnvelopeCodec codec = new(uninitialized, FakeClock(Now));
+
+        CovenantEnvelopeKeySnapshot before = codec.KeySnapshot;
+
+        // A zeroed identity rather than a throw or a null: diagnostics read this on a surface that has
+        // to answer before initialization, and an epoch of zero matches no envelope this build issues.
+        Assert.Equal(0u, before.MasterKeyVersion);
+        Assert.Equal(0, before.CanonicalEnvelopeEpoch);
+        Assert.Equal(0, before.RecoveryEnvelopeEpoch);
+        Assert.Equal(string.Empty, before.InstallationIdentity);
+        Assert.Null(before.DatasetGeneration);
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        CovenantEnvelopeKeySnapshot published = harness.Codec.KeySnapshot;
+
+        Assert.Equal(7u, published.MasterKeyVersion);
+        Assert.Equal(3, published.CanonicalEnvelopeEpoch);
+        Assert.Equal(2, published.RecoveryEnvelopeEpoch);
+        Assert.Equal(Installation.ToString().ToUpperInvariant(), published.InstallationIdentity);
+        Assert.Equal(Dataset, published.DatasetGeneration);
+
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    [InlineData(200)]
+    public void An_undefined_purpose_cannot_be_issued(byte code)
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        // Every purpose indexes the key table by its own code, so an undefined one reads outside that
+        // table. This guard is the difference between a refusal and an unhandled index.
+        Result<string> refused = harness.Codec.Encode(
+            (CovenantEnvelopePurpose)code,
+            [1],
+            TimeSpan.FromMinutes(1));
+
+        Assert.True(refused.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.InvalidCursor, refused.Error.Code);
+
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    [InlineData(200)]
+    public void A_route_that_names_an_undefined_purpose_learns_only_that_the_token_is_invalid(byte code)
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        string token = harness.Codec
+            .Encode(CovenantEnvelopePurpose.Cursor, [2], TimeSpan.FromMinutes(1))
+            .Value;
+
+        // The token is genuine, so without this guard the decoder would reach the purpose comparison
+        // and answer "not issued for this operation" — confirming the token is well formed and current,
+        // which is the one thing a refusal must never give away.
+        Result<CovenantEnvelopeBody> decoded = harness.Codec.Decode((CovenantEnvelopePurpose)code, token);
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
+
+    }
+
+    [Fact]
+    public void A_purpose_that_has_spent_its_issuance_counter_must_re_key_rather_than_continue()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        CovenantEnvelopeCodec codec = new(new ExhaustedCounterKeys(harness.Keys), harness.Time);
+
+        Result<string> refused = codec.Encode(
+            CovenantEnvelopePurpose.Cursor,
+            [1],
+            TimeSpan.FromMinutes(1));
+
+        Assert.True(refused.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refused.Error.Code);
+
+    }
+
+    [Fact]
+    public void A_token_longer_than_this_framing_can_produce_is_refused_before_it_is_decoded()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        int maxWireBytes = CovenantEnvelopeLimits.HeaderBytes
+            + CovenantEnvelopeLimits.BodyTimeBytes
+            + CovenantEnvelopeLimits.MaxPayloadBytes
+            + CovenantEnvelopeLimits.TagBytes;
+
+        string token = new('A', Base64Url.GetEncodedLength(maxWireBytes) + 1);
+
+        // Well inside the character ceiling, so this exercises the tighter wire bound rather than the
+        // one an oversized-token test already covers.
+        Assert.True(token.Length <= CovenantEnvelopeLimits.MaxTokenCharacters);
+
+        Result<CovenantEnvelopeBody> decoded = harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token);
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
+
+    }
+
+    [Theory]
+    [InlineData("AB")]
+    [InlineData("AAB")]
+    [InlineData("AAAAAB")]
+    public void A_token_whose_last_group_sets_bits_no_encoder_emits_is_refused_rather_than_thrown(
+        string token)
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        // These are base64url's own alphabet at a legal unpadded length, so the character filter passes
+        // them, but their final character sets bits a short group cannot carry. The framework decoder
+        // raises FormatException for exactly this shape instead of reporting failure, and an escape
+        // would both fault the route and mark these tokens out from every other refusal.
+        Result<CovenantEnvelopeBody> decoded = harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token);
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
+
+    }
+
     private static ulong Counter(string token) =>
         BinaryPrimitives.ReadUInt64BigEndian(Base64Url.DecodeFromChars(token).AsSpan(18));
+
+    /// <summary>
+    /// Frames one cursor token the way the codec would, with header and body times stated separately.
+    /// </summary>
+    /// <remarks>
+    /// The forger holds the purpose key, which is the strongest attacker these consistency checks exist
+    /// to catch: an internal caller assembling a body against one deadline while framing a header
+    /// against another. Nothing weaker could produce a token that authenticates at all, so a test that
+    /// only flipped bytes could never reach the checks that run after decryption.
+    /// </remarks>
+    private static string Forge(
+        byte[] cursorKey,
+        ulong counter,
+        long headerIssuedMs,
+        long headerExpiresMs,
+        long bodyIssuedMs,
+        long bodyExpiresMs,
+        byte[] payload)
+    {
+
+        Span<byte> header = stackalloc byte[CovenantEnvelopeLimits.HeaderBytes];
+
+        Encoding.ASCII.GetBytes(CovenantEnvelopeLimits.Magic).CopyTo(header);
+
+        header[4] = CovenantEnvelopeLimits.Version;
+
+        header[5] = (byte)CovenantEnvelopePurpose.Cursor;
+
+        BinaryPrimitives.WriteUInt32BigEndian(header[6..], 7);
+
+        BinaryPrimitives.WriteInt64BigEndian(header[10..], 3);
+
+        BinaryPrimitives.WriteUInt64BigEndian(header[18..], counter);
+
+        BinaryPrimitives.WriteInt64BigEndian(header[26..], headerIssuedMs);
+
+        BinaryPrimitives.WriteInt64BigEndian(header[34..], headerExpiresMs);
+
+        BinaryPrimitives.WriteUInt32BigEndian(
+            header[42..],
+            (uint)(CovenantEnvelopeLimits.BodyTimeBytes + payload.Length));
+
+        Span<byte> plaintext = stackalloc byte[CovenantEnvelopeLimits.BodyTimeBytes + payload.Length];
+
+        BinaryPrimitives.WriteInt64BigEndian(plaintext, bodyIssuedMs);
+
+        BinaryPrimitives.WriteInt64BigEndian(plaintext[8..], bodyExpiresMs);
+
+        payload.CopyTo(plaintext[CovenantEnvelopeLimits.BodyTimeBytes..]);
+
+        Span<byte> nonce = stackalloc byte[CovenantEnvelopeLimits.NonceBytes];
+
+        BinaryPrimitives.WriteUInt32BigEndian(nonce, (uint)CovenantEnvelopePurpose.Cursor);
+
+        BinaryPrimitives.WriteUInt64BigEndian(nonce[4..], counter);
+
+        Span<byte> wire = stackalloc byte[
+            CovenantEnvelopeLimits.HeaderBytes + plaintext.Length + CovenantEnvelopeLimits.TagBytes];
+
+        header.CopyTo(wire);
+
+        using AesGcm aes = new(cursorKey, CovenantEnvelopeLimits.TagBytes);
+
+        aes.Encrypt(
+            nonce,
+            plaintext,
+            wire.Slice(CovenantEnvelopeLimits.HeaderBytes, plaintext.Length),
+            wire[(CovenantEnvelopeLimits.HeaderBytes + plaintext.Length)..],
+            header);
+
+        return Base64Url.EncodeToString(wire);
+
+    }
+
+    /// <summary>
+    /// A key provider that reports its issuance counter spent, which no live one will do under test.
+    /// </summary>
+    /// <remarks>
+    /// The real provider returns this only past four billion issuances on a single purpose, so the
+    /// refusal has no reachable fixture. Everything but the reservation is delegated, so the codec still
+    /// runs against real key material and a real generation.
+    /// </remarks>
+    private sealed class ExhaustedCounterKeys(ICovenantEnvelopeMasterKeyProvider inner)
+        : ICovenantEnvelopeMasterKeyProvider
+    {
+
+        public CovenantEnvelopeKeyGeneration? Current => inner.Current;
+
+        public CovenantEnvelopeKeyCopyStatus TryCopyPurposeKeyAndReserve(
+            CovenantEnvelopePurpose purpose,
+            Span<byte> destination,
+            out CovenantEnvelopeKeyReservation reservation)
+        {
+
+            reservation = default;
+
+            return CovenantEnvelopeKeyCopyStatus.CounterExhausted;
+
+        }
+
+        public CovenantEnvelopeKeyCopyStatus TryCopyPurposeKey(
+            CovenantEnvelopePurpose purpose,
+            Span<byte> destination,
+            out CovenantEnvelopeKeyCapture capture) =>
+            inner.TryCopyPurposeKey(purpose, destination, out capture);
+
+        public CovenantEnvelopeMaterializationLease AcquireMaterializationLease(
+            long runtimeAuthorityGeneration,
+            CovenantEnvelopeKeyGenerationIdentity identity) =>
+            inner.AcquireMaterializationLease(runtimeAuthorityGeneration, identity);
+
+    }
 
     private sealed class CodecHarness : IDisposable
     {
