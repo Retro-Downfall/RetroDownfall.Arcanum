@@ -121,6 +121,8 @@ Unless a section explicitly says **landed**, the implementation descriptions bel
 
 The Covenant integration is disabled by default through `Arcanum:Features:Covenant`. While disabled, an untainted call receives no Covenant prompt bytes, tools, canonical reads, accelerator reads, or feature-specific allocation. The one storage read the disabled path still takes is the Session sensitivity projection, over an always-present core table rather than either Covenant tier, and it takes the connection accessor that does not latch this process as having held Covenant material — the sentence below is why it is taken at all, since untaintedness cannot be known without reading. Authenticated management remains available for inspection, seeding, repair, reset, and erasure. Previously tainted Session history keeps its protected-read and propagation requirements after disablement.
 
+**One gate-off DCI byte change was deliberate, and is recorded here rather than left to be rediscovered.** The Covenant era hardened the CONTEXT workspace block against a filename that forges a section header, and that hardening runs whether the feature gate is on or off. Where the workspace `RootPath` line and every Table of Contents entry were previously rendered verbatim — `sb.AppendLine(snapshot.RootPath)` and `sb.AppendLine(thread)` — they now pass through `SystemPromptBuilder.HardenWorkspacePathLine`, which substitutes `_` for every `char.IsControl` scalar and then trims the result. A path of `/work\nspace` therefore renders as `RootPath: /work_space` where it once broke the line, and a benign path carrying leading or trailing whitespace renders trimmed where it once did not. Prompt bytes for a workspace whose paths contain neither a control character nor surrounding whitespace are unchanged, which is every ordinary installation; the two cases above are the exception and are the whole of it. Per §20.3's rule that a change to DCI bytes records old and new text in the same change, both renderings are stated above, and `SystemPromptBuilderTests.Build_ContextSnapshotWithHeadingMarkers_CannotForgeAnInstructionsSection` pins the new one.
+
 ## 3. Why an ordinary memory store is insufficient
 
 A vector database can retrieve similar text. A transcript can preserve what was said. A summary can compress old turns. None of those mechanisms answers the harder questions:
@@ -345,10 +347,12 @@ Every intelligence entry point must classify its execution surface explicitly. S
 | Session-backed, attended, operator-facing turn | Global plus the immutable canonical Campaign | Single-use staged tools when otherwise eligible |
 | Tool continuation, retry, fallback, or compression within that logical turn | Reuses the same turn plan and derives a new physical-attempt admission | Reuses the same branch-aware collector |
 | Stateless native turn | Global plus a canonically resolved Campaign when supplied | None, because no durable assistant finalization owns publication |
-| OpenAI-compatible `/v1/chat/completions` | Global only | None |
+| OpenAI-compatible `/v1/chat/completions` | None | None |
 | Context preview or protected explain | Fresh snapshot, plan, and preview admission | None |
 | Explicit no-context execution | None | None |
 | Subagent, A2A, batch, daemon, recovery, apprentice, or unattended background inference | None | None |
+
+The OpenAI-compatible completion surface is recorded as `None` rather than as the Global-only reach originally planned for it, because that is what it does. Both of its handlers — buffered and streaming — build their invocation context with `ForStatelessTurn` and no Campaign, and the context provider answers a Campaign-less turn with `Absent(NoCampaign)` before it reads any Covenant state, so neither Global nor Campaign content has ever applied there. The route accordingly no longer declares the Covenant context policy meaningful, and `X-Arcanum-Context-Policy` is refused on it rather than accepted: a caller that sent `none` to a surface that injects nothing would believe it had suppressed something that was never going to happen. Restoring the planned Global-only reach is a deliberate decision to resolve a Campaign context on that surface, not a matter of re-attaching route metadata.
 
 ### 6.4 Derived and discovery layer
 

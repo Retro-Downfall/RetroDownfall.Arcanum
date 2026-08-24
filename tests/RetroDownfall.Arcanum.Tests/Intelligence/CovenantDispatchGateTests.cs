@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 
+using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -15,6 +17,8 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -406,14 +410,15 @@ public sealed class CovenantDispatchGateTests
         ICovenantContextProvider contextProvider,
         ICovenantDisclosureJournal journal,
         IArtifactSensitivityLedger ledger,
-        ICovenantAuthoritySnapshotProvider? authority = null) =>
+        ICovenantAuthoritySnapshotProvider? authority = null,
+        ILogger<CovenantDispatchGate>? logger = null) =>
         new(
             contextProvider,
             journal,
             ledger,
             authority ?? new FakeAuthority(InstallationId.ToString()),
             TimeProvider.System,
-            NullLogger<CovenantDispatchGate>.Instance);
+            logger ?? NullLogger<CovenantDispatchGate>.Instance);
 
     private static ProviderCallEnvelope ProviderCall(ProviderCallSensitivity sensitivity) =>
         new(
@@ -452,6 +457,66 @@ public sealed class CovenantDispatchGateTests
             [],
             [],
             null);
+
+    [Fact]
+    public async Task A_turn_that_resolved_to_no_campaign_says_so_once_in_a_content_free_record()
+    {
+
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+
+        CovenantDispatchGate gate = CreateGate(
+            new AbsentContextProvider(CovenantTurnAbsence.NoCampaign),
+            new RecordingJournal(),
+            new RecordingSensitivityLedger(),
+            logger: logger);
+
+        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+            ArcanumInvocationContext.None,
+            Guid.NewGuid(),
+            sessionId: null,
+            CancellationToken.None);
+
+        Assert.Equal(CovenantTurnAbsence.NoCampaign, scope.Absence);
+
+        // The reason a preference was not injected is decided once per turn. Without a record of it
+        // the operator's question has a typed answer that only a debugger can read.
+        TestLogEntry entry = Assert.Single(logger.Entries);
+
+        Assert.Contains(nameof(CovenantTurnAbsence.NoCampaign), entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains("sensitivity=none", entry.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task A_turn_that_did_adopt_a_plan_records_no_byte_of_what_it_adopted()
+    {
+
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+
+        CovenantTurnPlan plan = Plan(confirmed: 2, proposed: 2);
+
+        CovenantDispatchGate gate = CreateGate(
+            new PlanningContextProvider(plan),
+            new RecordingJournal(),
+            new RecordingSensitivityLedger(),
+            logger: logger);
+
+        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+            ArcanumInvocationContext.None,
+            Guid.NewGuid(),
+            sessionId: null,
+            CancellationToken.None);
+
+        Assert.True(scope.HasPlan);
+
+        TestLogEntry entry = Assert.Single(logger.Entries);
+
+        Assert.DoesNotContain(scope.PlanContent.GlobalConfirmed, entry.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(scope.PlanContent.CampaignProposed, entry.Message, StringComparison.Ordinal);
+
+    }
 
     private static CovenantTurnPlan Plan(int confirmed, int proposed)
     {
@@ -495,6 +560,18 @@ public sealed class CovenantDispatchGateTests
             + content.CampaignProposed.Length);
 
     private static ulong FragmentCost(string fragment) => (ulong)fragment.Length;
+
+    /// <summary>Reports one named absence, which is what the provider does for every reason but failure.</summary>
+    private sealed class AbsentContextProvider(CovenantTurnAbsence absence) : ICovenantContextProvider
+    {
+
+        public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(
+            ArcanumInvocationContext invocation,
+            Guid logicalTurnId,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CovenantTurnContext>.Success(CovenantTurnContext.Absent(absence)));
+
+    }
 
     private sealed class RefusingContextProvider : ICovenantContextProvider
     {

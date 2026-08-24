@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -60,12 +62,18 @@ public sealed class CovenantAcrossSessionsTests
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
 
+        // The reading session holds its own handle to the same file. Sharing the writer's connection
+        // would let a mutation that never committed still be visible to the read that has to find it.
+        await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+
         await WriteGlobalAsync(fixture, gate);
 
         // Session B shares nothing with the turn that wrote: a different logical turn, and a different
         // Campaign entirely. A Global preference that only came back inside its author's own Campaign
         // would be a scoped preference wearing the wrong label.
-        CovenantTurnContext session = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+        CovenantTurnContext session = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         Assert.True(session.HasPlan);
 
@@ -171,13 +179,19 @@ public sealed class CovenantAcrossSessionsTests
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
 
+        // The reading session holds its own handle to the same file. Sharing the writer's connection
+        // would let a mutation that never committed still be visible to the read that has to find it.
+        await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+
         await WriteCampaignAsync(fixture, gate, SessionACampaign);
 
-        CovenantTurnContext own = await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+        CovenantTurnContext own = await BeginTurnAsync(reader, gate, availability, authority, SessionACampaign);
 
         Assert.Contains(CampaignPreference, own.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
 
-        CovenantTurnContext other = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+        CovenantTurnContext other = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         // Scope is a promise in both directions. A Campaign preference leaking across Campaigns is the
         // same failure as a Global one failing to travel, and it is the one an operator cannot see.
@@ -201,15 +215,21 @@ public sealed class CovenantAcrossSessionsTests
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
 
+        // The reading session holds its own handle to the same file. Sharing the writer's connection
+        // would let a mutation that never committed still be visible to the read that has to find it.
+        await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+
         await WriteGlobalAsync(fixture, gate);
 
-        CovenantTurnContext before = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+        CovenantTurnContext before = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         Assert.Contains(GlobalPreference, before.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
 
         await RetireGlobalAsync(fixture, gate);
 
-        CovenantTurnContext after = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+        CovenantTurnContext after = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         // Withdrawal has to travel exactly as far as the statement did. A preference an operator
         // retired and a model still honors is worse than one that never arrived.
@@ -231,6 +251,12 @@ public sealed class CovenantAcrossSessionsTests
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
 
+        // The reading session holds its own handle to the same file. Sharing the writer's connection
+        // would let a mutation that never committed still be visible to the read that has to find it.
+        await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+
         await WriteGlobalAsync(fixture, gate);
 
         await RetireGlobalAsync(fixture, gate);
@@ -249,7 +275,7 @@ public sealed class CovenantAcrossSessionsTests
 
         Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, revived.Error.Code);
 
-        CovenantTurnContext still = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+        CovenantTurnContext still = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         Assert.DoesNotContain("Quietly back again.", still.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
 
@@ -269,6 +295,12 @@ public sealed class CovenantAcrossSessionsTests
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
 
+        // The reading session holds its own handle to the same file. Sharing the writer's connection
+        // would let a mutation that never committed still be visible to the read that has to find it.
+        await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+
         await WriteGlobalAsync(fixture, gate);
 
         await RetireGlobalAsync(fixture, gate);
@@ -284,7 +316,7 @@ public sealed class CovenantAcrossSessionsTests
 
         Assert.True(revived.IsSuccess, revived.IsFailure ? revived.Error.Message : string.Empty);
 
-        CovenantTurnContext after = await BeginTurnAsync(fixture, gate, availability, authority, SessionBCampaign);
+        CovenantTurnContext after = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         Assert.Contains("Deliberately back again.", after.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
 
@@ -558,8 +590,18 @@ public sealed class CovenantAcrossSessionsTests
 
     }
 
+    /// <summary>
+    /// Begins one reading turn over the store it is handed, which is never the writer's own.
+    /// </summary>
+    /// <remarks>
+    /// The store is a parameter rather than the fixture's because the reading turn opens its
+    /// transaction on whatever connection its source hands it. Reading back through the same
+    /// connection the mutation used would see that connection's own uncommitted state, so every
+    /// assertion below would hold just as well for a Covenant that was never durably committed —
+    /// which is the one thing this suite exists to prove.
+    /// </remarks>
     private static async Task<CovenantTurnContext> BeginTurnAsync(
-        CovenantCanonicalFixture fixture,
+        ICovenantStore store,
         ICovenantOperationGate gate,
         ICovenantAvailability availability,
         FakeCovenantAuthorityProvider authority,
@@ -569,7 +611,7 @@ public sealed class CovenantAcrossSessionsTests
         CovenantContextProvider provider = new(
             availability,
             gate,
-            fixture.Store,
+            store,
             new CovenantLinker());
 
         CovenantAuthoritySnapshot live = authority.Current!;

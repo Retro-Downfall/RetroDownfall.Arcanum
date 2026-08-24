@@ -760,93 +760,41 @@ internal static class MemoryEndpoints
     }
 
     /// <summary>
-    /// Copies the typed, content-free Covenant availability fields into the status block.
+    /// Reports the Covenant block exactly as the management port composed it, or nothing at all.
     /// </summary>
     /// <remarks>
-    /// Copied, never computed. The snapshot is the one published capability truth every gate reads,
-    /// and a status surface that derived its own view could tell an operator Covenant is healthy while
-    /// the turn path refuses to touch it.
+    /// Transferred, never rebuilt. <c>CovenantStatusDto</c> is one frozen contract with several
+    /// producers reading it, and this surface once composed its own copy from the availability
+    /// snapshot: four of its fields — search state, execution mode, rebuild guidance, and the
+    /// degradation code — then meant different things depending on which producer had answered. The
+    /// port reads the same published snapshot and owns the one content-free census, so it is the only
+    /// place any of them is decided (§10.18).
     ///
-    /// <para>Aggregate counts are deliberately absent here and arrive with the bounded canonical count
-    /// read. "You have no Covenant entries" and "your Covenant could not be read" are different
-    /// sentences, and only one of them is an emergency (§10.18). The census state carries that
-    /// difference, because health cannot: a healthy tier still refuses the installation capability
-    /// while an exclusive operation is closing the scope, and every count and byte total below is zero
-    /// in exactly that case.</para>
+    /// <para>A host with no Covenant arm, and an installation whose census could not be read, both
+    /// report absence rather than a block of zeroes. A zero is a measurement, and the honest rendering
+    /// of something never measured is nothing: "you have no Covenant entries" and "your Covenant could
+    /// not be read" are different sentences, and only one of them is an emergency.</para>
     /// </remarks>
     private static async Task<CovenantStatusDto?> BuildCovenantStatusAsync(
         ICovenantAvailability? availability,
         ICovenantManagementService? management,
-        FeatureSettings features,
         CancellationToken cancellationToken)
     {
 
-        if (availability is null)
+        if (availability is null || management is null)
         {
 
             return null;
 
         }
 
-        CovenantAvailabilitySnapshot snapshot = availability.Current;
+        Result<CovenantStatusDto> status = await management
+            .StatusAsync(cancellationToken)
+            .ConfigureAwait(false);
 
-        // Counts come from the management port, which owns the one content-free census. A status
-        // surface that counted rows itself would be a second reader of protected storage, and the
-        // two would eventually disagree about what "retired" means.
-        CovenantStatusDto? counted = management is null
-            ? null
-            : (await management.StatusAsync(cancellationToken).ConfigureAwait(false)) is { IsSuccess: true } read
-                ? read.Value
-                : null;
-
-        return new CovenantStatusDto(
-            Enabled: features.Covenant && snapshot.FeatureEnabled,
-            Available: snapshot.Canonical is CovenantCapabilityState.Healthy,
-
-            // The port's own verdict is carried through rather than recomputed. Coalescing an absent
-            // answer to Read would republish the zeros below as a measurement nobody took.
-            Census: counted?.Census ?? CovenantCensusReadState.Failed,
-            Counts: counted?.Counts ?? [],
-            GlobalConfirmedRenderedBytes: counted?.GlobalConfirmedRenderedBytes ?? 0,
-            MaxCampaignConfirmedRenderedBytes: counted?.MaxCampaignConfirmedRenderedBytes ?? 0,
-            MaxCampaignProposedRenderedBytes: counted?.MaxCampaignProposedRenderedBytes ?? 0,
-            RenderedByteCeilingPerSection: CovenantLimits.MaxGlobalConfirmedRenderedBytes,
-            Search: new CovenantSearchHealthDto(
-                ToSearchHealth(snapshot.Accelerator, snapshot.FtsSynchronization),
-                CovenantSearchExecutionMode.Fts,
-                ToRebuildGuidance(snapshot)),
-            Retention: CovenantRetention,
-            DegradationCode: snapshot.CanonicalDiagnosticCode ?? snapshot.AcceleratorDiagnosticCode);
+        return status.IsSuccess ? status.Value : null;
 
     }
-
-    /// <summary>
-    /// The one remediation this snapshot actually calls for, most specific first.
-    /// </summary>
-    /// <remarks>
-    /// Order matters. An unavailable accelerator cannot be waited out, so reporting "wait for
-    /// synchronization" there would send an operator to sit through a state that will never change.
-    /// </remarks>
-    private static CovenantSearchRebuildGuidance ToRebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
-        snapshot.Accelerator is CovenantCapabilityState.Unavailable
-            ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
-            : snapshot.RebuildRequired
-                ? CovenantSearchRebuildGuidance.RebuildRequired
-                : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                    ? CovenantSearchRebuildGuidance.None
-                    : CovenantSearchRebuildGuidance.WaitForSynchronization;
-
-    private static CovenantSearchHealthState ToSearchHealth(
-        CovenantCapabilityState accelerator,
-        CovenantFtsSynchronizationState synchronization) =>
-        accelerator switch
-        {
-            CovenantCapabilityState.Unavailable => CovenantSearchHealthState.Unavailable,
-            CovenantCapabilityState.Degraded => CovenantSearchHealthState.Degraded,
-            _ => synchronization is CovenantFtsSynchronizationState.Synchronized
-                ? CovenantSearchHealthState.Healthy
-                : CovenantSearchHealthState.Synchronizing,
-        };
 
     private static async Task<Result<MemoryStatusDto>> BuildStatusAsync(
         Guid? sessionId,
@@ -992,7 +940,7 @@ internal static class MemoryEndpoints
                 sessionId,
                 session?.Title,
                 stores,
-                await BuildCovenantStatusAsync(availability, management, features, cancellationToken)
+                await BuildCovenantStatusAsync(availability, management, cancellationToken)
                     .ConfigureAwait(false)));
 
     }

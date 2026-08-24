@@ -365,15 +365,66 @@ internal sealed class CovenantManagementService(
             census.MaxCampaignProposedRenderedBytes,
             CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             new CovenantSearchHealthDto(
-                snapshot.Accelerator is CovenantCapabilityState.Healthy
-                    ? CovenantSearchHealthState.Healthy
-                    : CovenantSearchHealthState.Degraded,
-                CovenantSearchExecutionMode.CanonicalFallback,
-                CovenantSearchRebuildGuidance.None),
+                SearchHealth(snapshot),
+                ExecutionMode(snapshot),
+                RebuildGuidance(snapshot)),
             CovenantRetentionSummary,
-            snapshot.CanonicalDiagnosticCode);
+
+            // Canonical first because it is the more severe of the two: a caller that cannot read the
+            // canonical tier has a worse problem than one whose search is slow, and reporting only the
+            // canonical code would leave an accelerator failure with no code at all.
+            snapshot.CanonicalDiagnosticCode ?? snapshot.AcceleratorDiagnosticCode);
 
     }
+
+    /// <summary>
+    /// The four states search can actually be in, from the published availability snapshot.
+    /// </summary>
+    /// <remarks>
+    /// Derived rather than named, and derived here rather than at each caller. This DTO is frozen and
+    /// reaches an operator through the API, the CLI, and the ordinary memory status block alike; a
+    /// second producer computing its own answer would give one contract four fields that mean
+    /// different things depending on which of them replied.
+    /// </remarks>
+    private static CovenantSearchHealthState SearchHealth(CovenantAvailabilitySnapshot snapshot) =>
+        snapshot.Accelerator switch
+        {
+            CovenantCapabilityState.Unavailable => CovenantSearchHealthState.Unavailable,
+            CovenantCapabilityState.Degraded => CovenantSearchHealthState.Degraded,
+            _ => snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
+                ? CovenantSearchHealthState.Healthy
+                : CovenantSearchHealthState.Synchronizing,
+        };
+
+    /// <summary>
+    /// How the next query would run, by the same rule the store itself applies.
+    /// </summary>
+    /// <remarks>
+    /// The store answers from the accelerator only while it is healthy and synchronized, and falls
+    /// back to the bounded canonical scan otherwise. Reporting a fixed mode here would tell an
+    /// operator their search was indexed while it was in fact scanning, or the reverse.
+    /// </remarks>
+    private static CovenantSearchExecutionMode ExecutionMode(CovenantAvailabilitySnapshot snapshot) =>
+        snapshot.Accelerator is CovenantCapabilityState.Healthy
+            && snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
+            ? CovenantSearchExecutionMode.Fts
+            : CovenantSearchExecutionMode.CanonicalFallback;
+
+    /// <summary>
+    /// The one remediation this snapshot actually calls for, most specific first.
+    /// </summary>
+    /// <remarks>
+    /// Order matters. An unavailable accelerator cannot be waited out, so reporting "wait for
+    /// synchronization" there would send an operator to sit through a state that will never change.
+    /// </remarks>
+    private static CovenantSearchRebuildGuidance RebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
+        snapshot.Accelerator is CovenantCapabilityState.Unavailable
+            ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
+            : snapshot.RebuildRequired
+                ? CovenantSearchRebuildGuidance.RebuildRequired
+                : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
+                    ? CovenantSearchRebuildGuidance.None
+                    : CovenantSearchRebuildGuidance.WaitForSynchronization;
 
     private static CovenantExplainDto Explain(
         CovenantExplainRequest request,

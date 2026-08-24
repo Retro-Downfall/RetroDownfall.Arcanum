@@ -277,6 +277,46 @@ public sealed class BenchmarkStatisticsTests
 
     }
 
+    /// <summary>
+    /// A control that hitches between three levels fails on deviation alone, inside the spread bound.
+    /// </summary>
+    /// <remarks>
+    /// The three bounds are a conjunction and every other case here breaches spread and deviation
+    /// together or leaves deviation at zero, so deleting the deviation conjunct changed no verdict.
+    /// A control whose whole 5th-to-95th range fits inside 8 KiB while a third of its samples sit a
+    /// full 3 KiB from the median is exactly the shape the deviation bound exists for: the subtraction
+    /// is against the median, so a run this unsteady measures its own scheduling rather than the
+    /// operation.
+    /// </remarks>
+    [Fact]
+    public void A_control_that_hitches_between_levels_fails_on_deviation_alone()
+    {
+
+        double[] control =
+        [
+            .. Enumerable.Repeat(0d, 34),
+            .. Enumerable.Repeat(3000d, 33),
+            .. Enumerable.Repeat(6000d, 33),
+        ];
+
+        BenchmarkControlNoise noise = BenchmarkControlNoise.Measure(
+            control,
+            [.. Enumerable.Repeat(4096d, 100)]);
+
+        Assert.True(
+            noise.SpreadBytes <= BenchmarkControlNoise.MaximumSpreadBytes,
+            $"Spread of {noise.SpreadBytes} must stay inside its bound, or the spread term carries this case.");
+
+        Assert.Equal(0, noise.NegativeFraction);
+
+        Assert.True(
+            noise.MedianAbsoluteDeviationBytes > BenchmarkControlNoise.MaximumMedianAbsoluteDeviationBytes,
+            $"Deviation of {noise.MedianAbsoluteDeviationBytes} must breach its bound.");
+
+        Assert.False(noise.IsAcceptable);
+
+    }
+
     [Fact]
     public void More_than_one_percent_negative_corrections_fails_the_run()
     {

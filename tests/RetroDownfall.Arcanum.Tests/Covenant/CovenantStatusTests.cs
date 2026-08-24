@@ -197,6 +197,77 @@ public sealed class CovenantStatusTests
     }
 
     [Fact]
+    public async Task A_synchronized_accelerator_is_reported_as_healthy_indexed_search()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        CovenantStatusDto status = await StatusAsync(fixture);
+
+        // The port used to name a fixed pair here while the memory status route named a different
+        // fixed pair, so one frozen contract answered differently depending on who asked it.
+        Assert.Equal(CovenantSearchHealthState.Healthy, status.Search.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, status.Search.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.None, status.Search.Guidance);
+
+    }
+
+    [Fact]
+    public async Task An_accelerator_that_needs_rebuilding_says_so_rather_than_reporting_none()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(static current => current with
+        {
+            FtsSynchronization = CovenantFtsSynchronizationState.Dirty,
+            RebuildRequired = true,
+            AcceleratorDiagnosticCode = "accelerator-dirty",
+        });
+
+        CovenantStatusDto status = await StatusAsync(fixture, availability);
+
+        Assert.Equal(CovenantSearchHealthState.Synchronizing, status.Search.State);
+
+        // A dirty index is not answering queries from the index, whatever its capability state
+        // says, so a status that still reported Fts would send an operator looking for the wrong fault.
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, status.Search.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, status.Search.Guidance);
+
+        // The accelerator code is the only one there is here, and reporting only the canonical code
+        // would leave a real degradation with no code at all beside it.
+        Assert.Equal("accelerator-dirty", status.DegradationCode);
+
+    }
+
+    [Fact]
+    public async Task An_unavailable_accelerator_is_never_reported_as_something_to_wait_out()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(static current => current with
+        {
+            Accelerator = CovenantCapabilityState.Unavailable,
+            FtsSynchronization = CovenantFtsSynchronizationState.Dirty,
+        });
+
+        CovenantStatusDto status = await StatusAsync(fixture, availability);
+
+        Assert.Equal(CovenantSearchHealthState.Unavailable, status.Search.State);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.AcceleratorUnavailable, status.Search.Guidance);
+
+    }
+
+    [Fact]
     public async Task Status_does_not_hold_the_installation_capability_after_it_answers()
     {
 

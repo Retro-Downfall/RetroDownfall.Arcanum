@@ -249,13 +249,18 @@ public sealed class ContextMaterializationLedger
     /// Called once per provider attempt, with that attempt's own decision. A retry under a different
     /// budget reaches a different admission, and the ledger reports the attempt that actually
     /// dispatched rather than accumulating every attempt's pressure into one inflated total.
+    ///
+    /// <para>Both arguments are recorded as given. The planner's removal count is a loop counter
+    /// bounded by its own maximum or a candidate-array length, and the token total is a narrowed
+    /// unsigned sum, so neither can arrive negative — and a clamp here would read as though a
+    /// negative count were a state some caller defends against rather than one none can produce.</para>
     /// </remarks>
     public void RecordCovenantPressure(int droppedEntries, int droppedTokens)
     {
 
-        _droppedCovenantProposed = Math.Max(0, droppedEntries);
+        _droppedCovenantProposed = droppedEntries;
 
-        _droppedCovenantProposedTokens = Math.Max(0, droppedTokens);
+        _droppedCovenantProposedTokens = droppedTokens;
 
         _covenantConfirmedNoFit = false;
 

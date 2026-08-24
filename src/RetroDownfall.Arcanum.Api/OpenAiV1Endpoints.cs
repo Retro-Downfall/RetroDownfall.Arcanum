@@ -51,11 +51,16 @@ internal static partial class OpenAiV1Endpoints
         "developer",
     };
 
+    // No .AllowCovenantContext() here. Both handlers below build their invocation context with
+    // ForStatelessTurn and no Campaign, so the context provider short-circuits to Absent(NoCampaign)
+    // and neither Global nor Campaign Covenant content can ever apply on this surface. Declaring the
+    // route Covenant-bearing would make X-Arcanum-Context-Policy meaningful here, and a caller that
+    // sent `none` would believe it had suppressed something that was never going to happen; without
+    // the declaration the header is refused outright, which is the true answer.
     internal static void MapOpenAiV1ChatCompletions(this RouteGroupBuilder v1)
     {
         _ = v1.MapPost("/chat/completions", HandleChatCompletionsAsync)
             .WithName("PostOpenAiChatCompletions")
-            .AllowCovenantContext()
             .WithLargeRequestBody()
             .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
     }

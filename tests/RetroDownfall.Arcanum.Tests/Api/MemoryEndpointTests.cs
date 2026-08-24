@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Api.Tower;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Lexicon;
 
 using RetroDownfall.Arcanum.Core.Weave;
@@ -19,6 +21,12 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -436,6 +444,140 @@ public sealed class MemoryEndpointTests
             ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
 
         Assert.Equal(ErrorCodes.Validation.InvalidBody, envelope?.Error?.Code);
+
+    }
+
+    /// <summary>
+    /// The Covenant block reaches the wire carrying what the installation actually holds.
+    /// </summary>
+    /// <remarks>
+    /// Through the real host and over the real encrypted canonical tier, because the two suites either
+    /// side of this one both skip it: the port suite drives the service directly, and the CLI suite
+    /// drives a recorded response. Between them the projection this route performs was never executed
+    /// at all, and reverting its counts and byte totals to constants left every suite green.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task Status_carries_the_covenant_census_the_installation_actually_holds()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using CovenantCanonicalFixture covenant =
+            await CovenantCanonicalFixture.CreateAsync(CancellationToken.None);
+
+        _ = await covenant.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "preference.builds",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Run build commands from the repository root.",
+            CancellationToken.None);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                services.RemoveAll<ICovenantManagementService>();
+
+                services.AddSingleton(Management(covenant));
+
+            },
+        };
+
+        CovenantStatusDto? status = await CovenantStatusAsync(factory);
+
+        Assert.NotNull(status);
+
+        CovenantScopeCountDto count = Assert.Single(status.Counts);
+
+        Assert.Equal(CovenantScope.Global, count.Scope);
+
+        Assert.Equal(CovenantLane.Confirmed, count.Lane);
+
+        Assert.Equal(1, count.Count);
+
+        // The byte totals are what an operator compares against the ceiling beside them, so a constant
+        // here reads exactly like a real measurement of an installation that holds nothing.
+        Assert.True(status.GlobalConfirmedRenderedBytes > 0);
+
+        Assert.Equal(CovenantLimits.MaxGlobalConfirmedRenderedBytes, status.RenderedByteCeilingPerSection);
+
+    }
+
+    /// <summary>
+    /// A host with no Covenant management arm reports absence, not an installation holding nothing.
+    /// </summary>
+    /// <remarks>
+    /// A zero is a measurement. Composing the block from availability alone when nothing could count
+    /// tells an operator their preferences are gone, which is the single most damaging sentence this
+    /// surface can say wrongly.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task Status_omits_the_covenant_block_entirely_when_nothing_can_answer_for_it()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = static services => services.RemoveAll<ICovenantManagementService>(),
+        };
+
+        Assert.Null(await CovenantStatusAsync(factory));
+
+    }
+
+    private static async Task<CovenantStatusDto?> CovenantStatusAsync(ArcanumWebApplicationFactory factory)
+    {
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/memory/status");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemoryStatusDto>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.NotNull(envelope?.Data);
+
+        return envelope.Data.Covenant;
+
+    }
+
+    private static ICovenantManagementService Management(CovenantCanonicalFixture fixture) =>
+        new CovenantManagementService(
+            fixture.Store,
+            new CovenantLinker(),
+            CovenantOperationGateFixture.CreateGate(),
+            new FakeCovenantAvailability(),
+            new UnusedEnvelopeCodec());
+
+    /// <summary>A codec that fails loudly, because a status read issues and accepts no envelope.</summary>
+    private sealed class UnusedEnvelopeCodec : ICovenantEnvelopeCodec
+    {
+
+        public CovenantEnvelopeKeySnapshot KeySnapshot =>
+            throw new NotSupportedException("A status read touches no envelope.");
+
+        public Result<string> Encode(
+            CovenantEnvelopePurpose purpose,
+            ReadOnlySpan<byte> payload,
+            TimeSpan lifetime,
+            DateTimeOffset? issuedAtUtc = null) =>
+            throw new NotSupportedException("A status read issues no envelope.");
+
+        public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
+            throw new NotSupportedException("A status read accepts no envelope.");
 
     }
 

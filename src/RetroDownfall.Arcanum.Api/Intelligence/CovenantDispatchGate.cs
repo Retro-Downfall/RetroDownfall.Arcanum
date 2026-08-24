@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
 
+using RetroDownfall.Arcanum.Core.Logging;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -189,11 +191,11 @@ public sealed class CovenantDispatchGate(
         if (logicalTurnId == Guid.Empty)
         {
 
-            return new CovenantTurnScope(
+            return Record(new CovenantTurnScope(
                 CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible),
                 Guid.Empty,
                 sessionId,
-                tainted);
+                tainted));
 
         }
 
@@ -208,15 +210,49 @@ public sealed class CovenantDispatchGate(
                 "Covenant turn acquisition failed with {ErrorCode}; the turn proceeds without Covenant content.",
                 begun.Error.Code);
 
-            return new CovenantTurnScope(
+            return Record(new CovenantTurnScope(
                 CovenantTurnContext.Absent(CovenantTurnAbsence.CapabilityUnavailable),
                 logicalTurnId,
                 sessionId,
-                tainted);
+                tainted));
 
         }
 
-        return new CovenantTurnScope(begun.Value, logicalTurnId, sessionId, tainted);
+        return Record(new CovenantTurnScope(begun.Value, logicalTurnId, sessionId, tainted));
+
+    }
+
+    /// <summary>
+    /// Emits this turn's single content-free participation record and returns the scope unchanged.
+    /// </summary>
+    /// <remarks>
+    /// The typed answer to "why was my preference not injected this turn" is decided once per turn and
+    /// was previously readable only by holding the scope, which nothing outside the dispatch path
+    /// does. One record per turn makes it answerable from a log without a debugger attached.
+    ///
+    /// <para>Debug rather than Information because it fires on every live turn, including the
+    /// overwhelmingly common one where a plan was present and nothing was wrong; a per-turn
+    /// Information line would drown the warnings above it. The payload is a
+    /// <see cref="CovenantProtectedLogScope"/> so the type, not this call site, is what guarantees
+    /// no Covenant key, fragment, or content digest can ever be added to it.</para>
+    /// </remarks>
+    /// <summary>The empty provenance every absence record carries, allocated once rather than per turn.</summary>
+    private static readonly GenerationProvenance NoProvenance = GenerationProvenance.CreateExact([]);
+
+    private CovenantTurnScope Record(CovenantTurnScope scope)
+    {
+
+        logger.LogDebug(
+            "Covenant turn {LogicalTurnId} resolved to {CovenantAbsence} ({CovenantScope}), history tainted {HistoryTainted}.",
+            scope.LogicalTurnId,
+            scope.Absence,
+            CovenantProtectedLogScope.FromSensitivity(
+                ContentSensitivity.None,
+                NoProvenance,
+                scope.SessionId),
+            scope.HistoryTainted);
+
+        return scope;
 
     }
 

@@ -1,3 +1,5 @@
+using System.Text;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -8,7 +10,11 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Tests.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -25,6 +31,10 @@ public sealed class CovenantMutationServiceTests
 {
 
     private static CancellationToken Token => CancellationToken.None;
+
+    private const string Installation = "3F6C1A20-77B4-4E19-9C2D-8A5E0B14D763";
+
+    private static readonly Guid DatasetGeneration = Guid.Parse("5B2E9C41-08D3-4A7F-B6E5-2C1908FA4D77");
 
     [Fact]
     public async Task A_prepared_set_commits_and_becomes_the_confirmed_head()
@@ -305,6 +315,10 @@ public sealed class CovenantMutationServiceTests
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, committed.Error.Code);
 
+        // The kernel answers StaleSnapshot from four separate guards, so the shared code alone would
+        // stay green if the registry comparison were deleted and some other epoch happened to move.
+        Assert.Contains("Campaign registry epoch", committed.Error.Message, StringComparison.Ordinal);
+
     }
 
     [Fact]
@@ -339,6 +353,128 @@ public sealed class CovenantMutationServiceTests
         Result<CovenantMutationResultDto> committed = await service.SetAsync(request, write, Token);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+    }
+
+    [Theory]
+    [InlineData(CovenantScope.Global)]
+    [InlineData(CovenantScope.Campaign)]
+    public async Task A_prepared_set_commits_against_the_real_envelope_codec(CovenantScope scope)
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignOne, "First", Token);
+
+        // Every other case here substitutes a codec written to honour the instant the service states,
+        // which is the agreement under test — so a service that stopped stating it, or a codec that
+        // truncated it differently, would fail nothing. This composes the real keyed codec on the
+        // service's own stepping clock, where the two can only agree if the instant is carried.
+        using CovenantEnvelopeMasterKeyProvider keys = new();
+
+        SteppingTimeProvider clock = new();
+
+        Assert.True(CovenantEnvelopeRuntimeTestHarness.Initialize(
+            keys,
+            Encoding.UTF8.GetBytes("covenant-mutation-service-master-key"),
+            new CovenantEnvelopeBootstrapKeyInput(
+                Installation,
+                masterKeyVersion: 1,
+                canonicalEnvelopeEpoch: 1,
+                recoveryEnvelopeEpoch: 1,
+                DatasetGeneration)).IsSuccess);
+
+        CovenantMutationService service = new(
+            fixture.Store,
+            new CovenantCompiler(),
+            new CovenantEnvelopeCodec(keys, clock),
+            new FixedCovenantConnectionSource(fixture.Connection),
+            new CovenantMutationKernel(),
+            new StubAuthority(),
+            clock);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Guid? campaignId = scope is CovenantScope.Campaign ? CovenantOperationGateFixture.CampaignOne : null;
+
+        CovenantOperationScope operationScope = campaignId is { } owner
+            ? CovenantOperationScope.ForCampaign(owner)
+            : CovenantOperationScope.Global;
+
+        const string Key = "preference.builds";
+
+        const string Content = "Run build commands from the repository root.";
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        string preflight;
+
+        // A Global mutation's effect reaches every Campaign, so it measures under installation-wide
+        // read authority; a Campaign one measures under the scoped lease that covers exactly its own.
+        if (campaignId is null)
+        {
+
+            await using CovenantInstallationReadLease read =
+                (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+            preflight = await PrepareAsync(service, read, scope, campaignId, Key, Content, mutationId);
+
+        }
+        else
+        {
+
+            await using CovenantReadLease read = (await gate.AcquireReadAsync(operationScope, Token)).Value;
+
+            preflight = await PrepareAsync(service, read, scope, campaignId, Key, Content, mutationId);
+
+        }
+
+        await using CovenantWriteLease write = (await gate.AcquireWriteAsync(operationScope, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await service.SetAsync(
+            new CovenantSetRequest(
+                scope,
+                campaignId,
+                Key,
+                Content,
+                ExpectedRevision: 0,
+                mutationId,
+                Reactivate: false,
+                preflight),
+            write,
+            Token);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+        Assert.Equal(CovenantMutationOutcome.Applied, committed.Value.Outcome);
+
+    }
+
+    private static async Task<string> PrepareAsync(
+        CovenantMutationService service,
+        ICovenantSnapshotReadLease read,
+        CovenantScope scope,
+        Guid? campaignId,
+        string key,
+        string content,
+        Guid mutationId)
+    {
+
+        Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
+            new CovenantSetPrepareRequest(
+                scope,
+                campaignId,
+                key,
+                content,
+                ExpectedRevision: 0,
+                mutationId,
+                Reactivate: false),
+            read,
+            Token);
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        return prepared.Value.PreflightToken;
 
     }
 
