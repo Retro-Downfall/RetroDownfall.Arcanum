@@ -41,6 +41,9 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Security;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -437,6 +440,17 @@ public static class ApiBootstrapper
                 sp,
                 new Lazy<ITurnExecutionFacade>(
                     sp.GetRequiredService<ITurnExecutionFacade>)));
+
+        // The one seam through which a live turn reaches the Covenant. Registered in the API rather
+        // than the shared Infrastructure composition because its whole job is per-turn: it exists only
+        // where there is an invocation context, and the CLI bootstrap has no turn to adopt.
+        services.AddScoped<CovenantDispatchGate>(static sp => new CovenantDispatchGate(
+            sp.GetRequiredService<ICovenantContextProvider>(),
+            sp.GetRequiredService<ICovenantDisclosureJournal>(),
+            sp.GetRequiredService<IArtifactSensitivityLedger>(),
+            sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<CovenantDispatchGate>>()));
 
         services.AddScoped<WizardIntelligenceProvider>(static sp =>
             ActivatorUtilities.CreateInstance<WizardIntelligenceProvider>(

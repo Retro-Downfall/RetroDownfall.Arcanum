@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -25,7 +27,8 @@ public sealed class GrimoireTurnWriter(
     IGrimoireRepository grimoire,
     ISessionTurnBeginStore turnBeginStore,
     SessionEventHub sessionEventHub,
-    ILogger<GrimoireTurnWriter> logger)
+    ILogger<GrimoireTurnWriter> logger,
+    IGrimoireTurnCommitter? turnCommitter = null)
 {
 
     public const string PublicFinalizeFailureMessage =
@@ -89,7 +92,8 @@ public sealed class GrimoireTurnWriter(
         TurnHandle handle,
         string finalText,
         string targetModel,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ProviderCallSensitivity? sensitivity = null)
     {
 
         return await TryFinalizeAssistantEntryCoreAsync(
@@ -97,7 +101,8 @@ public sealed class GrimoireTurnWriter(
             finalText,
             targetModel,
             cancellationToken,
-            "Grimoire could not finalize assistant entry for model {ModelName}.").ConfigureAwait(false);
+            "Grimoire could not finalize assistant entry for model {ModelName}.",
+            sensitivity).ConfigureAwait(false);
 
     }
 
@@ -106,7 +111,8 @@ public sealed class GrimoireTurnWriter(
         TurnHandle handle,
         string finalText,
         string targetModel,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ProviderCallSensitivity? sensitivity = null)
     {
 
         return await TryFinalizeAssistantEntryCoreAsync(
@@ -114,7 +120,8 @@ public sealed class GrimoireTurnWriter(
             finalText,
             targetModel,
             cancellationToken,
-            "Grimoire could not finalize streamed assistant entry for model {ModelName}.").ConfigureAwait(false);
+            "Grimoire could not finalize streamed assistant entry for model {ModelName}.",
+            sensitivity).ConfigureAwait(false);
 
     }
 
@@ -786,12 +793,80 @@ public sealed class GrimoireTurnWriter(
 
     }
 
+    /// <summary>
+    /// Commits a Covenant-derived reply and its sensitivity label in one transaction.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="false"/> — "not mine" — for the ordinary reply, which continues through the
+    /// unchanged finalize path. Only a reply the turn already proved Covenant-derived comes here, and
+    /// for that reply the label is not optional decoration: the next turn decides whether it owes a
+    /// disclosure by reading exactly this row, so a response persisted without its label is a response
+    /// that silently launders taint out of the Session.
+    ///
+    /// <para>Failure is a refusal, not a downgrade. Writing the content without the label would be the
+    /// one outcome worse than losing the reply.</para>
+    /// </remarks>
+    private async Task<Result<bool>> TryCommitProtectedAsync(
+        TurnHandle handle,
+        Guid finalizeId,
+        string finalText,
+        ProviderCallSensitivity? sensitivity,
+        CancellationToken cancellationToken)
+    {
+
+        if (turnCommitter is null
+            || sensitivity is not { Level: ContentSensitivity.CovenantDerived }
+            || handle.SessionId is not { } sessionId)
+        {
+
+            return Result<bool>.Success(false);
+
+        }
+
+        Result<TurnCommitReceipt> committed = await turnCommitter
+            .CommitTurnAsync(
+                new TurnCommitRequest(
+                    finalizeId,
+                    sessionId,
+                    AssistantFinalizationOutcome.Committed,
+                    finalText,
+                    RequestIdentity(sessionId, finalizeId),
+                    sensitivity.Level,
+                    sensitivity.Provenance),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return committed.IsFailure
+            ? Result<bool>.Failure(committed.Error)
+            : Result<bool>.Success(true);
+
+    }
+
+    /// <summary>
+    /// The content-free identity this finalization replays against.
+    /// </summary>
+    /// <remarks>
+    /// Derived from the Session and the assistant placeholder rather than from the reply text, because
+    /// the whole point of the one-shot guard is that a retry of the same turn resolves through the
+    /// stored outcome instead of running a second turn — and a digest over the text would make every
+    /// regenerated wording look like a different request.
+    /// </remarks>
+    private static CovenantDigest RequestIdentity(Guid sessionId, Guid assistantEntryId) =>
+        new(System.Security.Cryptography.SHA256.HashData(
+        [
+            .. System.Text.Encoding.ASCII.GetBytes("Arcanum.Covenant.TurnCommitRequestIdentity.v1"),
+            0x00,
+            .. sessionId.ToByteArray(),
+            .. assistantEntryId.ToByteArray(),
+        ]));
+
     private async Task<bool> TryFinalizeAssistantEntryCoreAsync(
         TurnHandle handle,
         string finalText,
         string targetModel,
         CancellationToken cancellationToken,
-        string finalizeFailureLogMessage)
+        string finalizeFailureLogMessage,
+        ProviderCallSensitivity? sensitivity = null)
     {
 
         if (handle.AssistantEntryId is not { } finalizeId)
@@ -804,9 +879,33 @@ public sealed class GrimoireTurnWriter(
         try
         {
 
-            await grimoire
-                .FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken)
+            Result<bool> committed = await TryCommitProtectedAsync(
+                    handle,
+                    finalizeId,
+                    finalText,
+                    sensitivity,
+                    cancellationToken)
                 .ConfigureAwait(false);
+
+            if (committed.IsFailure)
+            {
+
+                logger.LogError(
+                    "A Covenant-derived reply could not be committed with its label: {ErrorCode}.",
+                    committed.Error.Code);
+
+                return false;
+
+            }
+
+            if (!committed.Value)
+            {
+
+                await grimoire
+                    .FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
 
             // Persistence succeeded — mark immediately so callers treat the turn as saved even if
             // hub publication fails below.

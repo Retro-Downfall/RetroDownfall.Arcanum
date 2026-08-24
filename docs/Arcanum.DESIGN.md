@@ -1835,7 +1835,7 @@ Turning a linked Covenant plan into prompt bytes, and a completed response into 
 | Provisional staging and branch lineage | `ICovenantMutationCollector` |
 | Atomic response and mutation publication | `IGrimoireTurnCommitter` on `GrimoireRepository` |
 
-**Deferred.** The MCP `propose_covenant` and `retire_covenant` tools and their sensitive-argument transport are described in §10.14; the public contract those surfaces are built from is described in §10.16, while the operator API, CLI, and the `Arcanum:Features:Covenant` key are described in §10.17; durable public turn claims with lease adoption, maintenance-step checkpointing, and prior-boot recovery belong to the recovery surfaces. The components in this section are composed and registered, and the live provider loop adopts them as those surfaces land.
+**Deferred.** The MCP `propose_covenant` and `retire_covenant` tools and their sensitive-argument transport are described in §10.14; the public contract those surfaces are built from is described in §10.16, while the operator API, CLI, and the `Arcanum:Features:Covenant` key are described in §10.17; durable public turn claims with lease adoption, maintenance-step checkpointing, and prior-boot recovery belong to the recovery surfaces. The live provider loop now adopts the components in this section — one plan per logical turn, one admission per attempt, and a disclosure receipt before every protected dispatch; §10.21 describes that adoption and what it still does not reach.
 
 ### 10.14 Covenant MCP mutation and sensitive-egress controls
 
@@ -2627,6 +2627,60 @@ Whole-Session retention still does not return turn capacity. `CovenantQuotaGuard
 The planning lease §10.20.1 takes is retained through serialization. `DataRetentionEndpoints` hands Covenant-bearing reset and factory plans to `CovenantProtectedJsonResult<DataRetentionPlan>`, which revalidates immediately before the first byte and applies the exact `Cache-Control: no-store, private`, `Pragma: no-cache`, `Expires: 0` tuple while removing `ETag` and `Last-Modified`. Both destructive endpoints require `LifecycleManage`, await `IDataRetentionService` fully, and rely on the same protected tuple for success and typed failure without carrying an ordinary Covenant lease into response writing.
 
 Installation reset rests on the authenticated V2 active record, host-owned publication and proof, bounded V1 migration, exact-lock offline continuation, and closed retirement protocol. Above that sits the CLI-only externally signed remediation entry, its independent code-pinned verification root, exact live marker-evidence binding, signed operation identity, and encrypted one-way authorization claim. An externally authorized full installation reset is complete end to end. The coordinator compare-deletes both host-tools markers, terminalizes every Campaign cleanup child, publishes the receipt of §10.20.9, and reconciles every managed workspace file to the verified inventory of §10.20.11; the locked service then continues into the ordinary ending of §10.20.13, deleting the Grimoire and with it the joined nonrevocable disclosure evidence, proving the restore history terminal and removing the three profile credentials of §10.20.12, and retiring the active record. The Linux arm of the operating-system capability still refuses outright rather than deleting by attributes, so a full reset cannot complete on Linux at all — that refusal is the one remaining reason an attested reset can be admitted and never finish. Nothing here weakens the ordinary paths: every other cleanup, Covenant reset, factory erasure, and family reinitialize still retains the three restore credentials, the Campaign path markers, and both host-tools markers byte-for-byte, and only the externally signed remediation statement reaches the operation that does not.
+
+### 10.21 The live turn adopts the Covenant
+
+Every component in §10.10 through §10.20 was composed, registered, and reachable by nothing: the provider loop built its prompt without asking whether the operator had a standing agreement, and the one seam that would have answered had no caller. This section is the adoption. It is what turns a Covenant that exists in storage into a Covenant that reaches a model, and it carries the two obligations that come with that — evidence before egress, and a label on what comes back.
+
+#### 10.21.1 One scope for a logical run, and why not one per attempt
+
+`CovenantDispatchGate.BeginTurnAsync` is called once per logical turn, at the top of both the buffered and the streaming core, and its `CovenantTurnScope` is threaded through provider fallback, every retry, and every tool round. A second acquisition inside the same run would open a second bounded canonical read, and two reads can straddle a mutation another turn published in between — so a retry could answer from a profile the first attempt never saw, with no way for either receipt to say which one the operator actually got.
+
+The scope is deliberately a value rather than a nullable plan. A host that composed no Covenant arm receives the inert scope, so the dispatch path reads one shape whether or not the capability exists, and "this turn never asked" stays distinguishable from "this turn asked and was told there is nothing". Disposal releases the turn lease and is bound to the enumerator on the streaming path, so an abandoned stream returns its lease as reliably as a completed one — which matters because a destructive operation drains live leases before it reports that it may change anything.
+
+`BeginTurnAsync` never fails a turn. Every absence the context provider reports is a fact about Covenant state that an inference is entitled to proceed without, and a genuine storage or authority failure is logged and degraded rather than taking down a call the operator never asked to be Covenant-bearing. The obligation that is *not* degraded is disclosure, below.
+
+#### 10.21.2 One admission per attempt, measured against that attempt's own head-room
+
+Admission runs once per provider attempt, at the first point where that attempt's tool surface and options exist. Measuring earlier would understate the prompt and overstate what fits; measuring per tool round would let the admitted prefix move underneath a receipt that already named it.
+
+The budget is the head-room the rest of the prompt leaves: the transcript is estimated through the same estimator the context gate uses, with no Covenant bytes in it, and the remainder is what Covenant may occupy. That is the only measurement that is not circular. Both delegates the planner receives run through that same estimator, so a section the planner believes fits is a section the gate will also accept. The framing the prompt builder owns — headings, the untrusted-data notice, the fences — is charged as a fixed per-section allowance rather than measured, because it is not visible from the turn loop; the allowance is generous on purpose, since a budget that guessed low would admit a section the context gate then had to evict, turning an admission receipt into a description of a prompt that never went out.
+
+Confirmed admission stays all-or-fail and Proposed keeps the longest prefix that fits, exactly as §10.13 specifies. What this section adds is that the decision now reaches `SystemPromptBuilder`, through the `covenant` argument that had been present and unused since the placement rules were written.
+
+#### 10.21.3 Disclosure precedes egress, once per physical dispatch
+
+Both the buffered and the streaming path pass through one context gate before the executor is reached, and the Covenant acknowledgement sits immediately after it. That single insertion covers both dispatch modes and every tool round, and it is where the frozen provider call and its durable receipt are produced.
+
+A dispatch earns a receipt when it carries admitted Covenant content **or** when the Session's history is already tainted. The second arm is the one that is easy to miss and the one that matters most: a turn that admits nothing is still showing the provider a transcript an earlier turn tainted, and an installation that only counted the turns which added content would under-report what left. The reverse case is equally deliberate — a clean call on a clean Session performs no database read, freezes no envelope, allocates no receipt, and is byte-for-byte the call that existed before any of this. That absence is the disabled-path guarantee, not an oversight.
+
+Everything else fails closed. An envelope that cannot be frozen, an installation with no established authority to disclose under, and a journal that cannot commit are all refusals, because each of them means the receipt an operator would later read would not describe what went out. Two physical attempts are two effects with two identities: collapsing them would let a retried dispatch hide behind the first one's receipt.
+
+#### 10.21.4 Freezing the exact bytes, or refusing to send them
+
+`CovenantProviderCallFreezer` translates the attempt's messages, options, tool surface, and rendered prompt into the `ProviderCallEnvelope` the admission receipt signs. The translation is total and failing by design: a message part or a role this build cannot freeze produces a refusal rather than a silently narrower envelope, because an envelope that quietly omits a content kind would let a payload leave under evidence that does not describe it.
+
+Two normalizations exist so that an identical call keeps an identical identity. Tool-call arguments are canonicalized before they are bound, since two providers may serialize the same arguments with different key order and different number formatting, and freezing the raw text would make a replayed call look like a new one. Tool definitions are ordered by name, because the set is what the model was offered and the enumeration order the surface happened to be assembled in is not part of what it saw.
+
+Only the Covenant spans of the prompt's attribution partition travel with the envelope. The rest of the partition describes ordinary context whose placement the prompt bytes already imply, while the Covenant spans are what a later reader needs in order to say which region the admitted sections occupied — without re-parsing headings out of text an untrusted source may have influenced.
+
+#### 10.21.5 The reply inherits what the turn was shown
+
+A turn that showed the provider protected content produces a protected answer, and that answer's label is read by the next turn to decide whether it in turn owes a disclosure. Persisting the reply without its label would silently launder taint out of the Session, so a Covenant-derived reply is finalized through `IGrimoireTurnCommitter`, which writes the content and the sensitivity label inside one transaction. Failure there is a refusal rather than a downgrade: writing the content without the label is the one outcome worse than losing the reply.
+
+The ordinary reply is unchanged and still takes the existing finalize path. That split is a narrowing, not the end state — the committer's own contract describes it as the single writer of every finalization, and the remaining paths have not moved onto it.
+
+The Session's current taint is read once per turn, before the first dispatch, through the content-free projection the sensitivity ledger publishes. A read that fails is treated as tainted: "we could not read the label" and "there is no label" are different facts, and treating the first as the second is exactly how an unlabelled protected dispatch would leave without a receipt.
+
+#### 10.21.6 What is deliberately absent
+
+Agent-originated mutation is not yet live. The MCP proposal and retirement tools remain registered inert: no turn mints a tool capability, the staging collector this turn owns is never handed to one, and the committer's mutation arm therefore always receives an empty batch. Nothing in this section lets a model write.
+
+The operator surfaces are also absent. There is no Covenant management route, no mutation route, and no command, so the only content a turn can inject is content some other path put in the canonical store. Until those land, the adoption described here is complete and exercised only where canonical state already exists.
+
+Attachment provenance is frozen as an empty materialization snapshot. The turn does not yet bind the exact materialized attachment sources into the provider-call envelope, so a proposal derived from an attachment could not prove its provenance through this path.
+
+The compression rebuild in `InferenceContextBuilder` does not carry Covenant content: its request type has no field for it, and a compressed transcript therefore renders without the profile. The context-preview surface likewise builds its prompt without a plan of its own.
 
 ## 11. Local API security
 

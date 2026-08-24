@@ -10,7 +10,7 @@
 
 **Document status:** current as of **2026-08-24**, reconciled through GitHub issue #128 and issue #123's complete attested full installation reset.
 
-**Branch status.** This #122 update is intentionally branch-local on `long-term-memory` until the normal project mirror reaches `main`; delivery of this issue does not merge or rewrite `main`. Read this copy together with the implementation branch. The implementation and the `Arcanum.DESIGN.md` sections it cites (§10.10–§10.20.14) live on `long-term-memory`; §22 marks those links.
+**Branch status.** This #122 update is intentionally branch-local on `long-term-memory` until the normal project mirror reaches `main`; delivery of this issue does not merge or rewrite `main`. Read this copy together with the implementation branch. The implementation and the `Arcanum.DESIGN.md` sections it cites (§10.10–§10.21.6) live on `long-term-memory`; §22 marks those links.
 
 ---
 
@@ -81,16 +81,14 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#122** | Landed | Exact host-tools marker-pair compare-deletion and Campaign-marker cleanup: the authenticated four-phase checkpoint and its restart proof, the signed-attestation, pair-evidence, Campaign-inventory, and effect digests, kind-four Campaign cleanup children with write-once companion observation evidence, the retained native operating-system marker capability and the shared process-wide mutation gate, reconciliation of every child to a terminal phase with a receipt whose deleted and orphaned counts add up under a checked addition, and composition through the one locked full-reset seam authorized to reach it. |
 | **#123** | Landed | The complete attested full installation reset. Managed-file reconciliation: the four-phase authenticated checkpoint nested in the marker-pair checkpoint and null until the Campaign receipt is terminal, the source and work-item inventory vectors, the terminal classification and content-free per-arm blocker digests, the write-intent recovery that terminalizes every unfinished managed write by created-child physical identity, two stopped-host overloads on the existing erasure kernel adding no second opener or delete algorithm, and a journal proof and one-shot authority reasserted before every transaction and filesystem effect. The ending: the locked service continues into the ordinary reset sequence only when that reconciliation is terminal, deleting the Grimoire and with it the joined nonrevocable disclosure evidence, then — between the sweep and verification — observing the database file absent, proving the restore history terminal, and compare-removing the three profile credentials in anchor, journal-key, installation-identity order. The terminal projection is persisted before the first removal and each completed phase is published after it, so a crash mid-trio resumes against the proof made while all three were present rather than re-deriving one from a credential set it has already started taking; a surviving Campaign root-identity key refuses the whole step before anything is removed; and the publication is handed back so the reset's own writer adopts it rather than conflicting on the record it just superseded. The active record is retired and the installation reports clean. |
 | **#128** | Implemented | Dedicated Covenant reset preview; lifecycle authority and protected plan serialization; direct V3 reset coordinator entry; healthy-catalog V1 factory composition with ordinary cleanup between `ManagedArtifactsProcessed` and `HandlesClosed`; authenticated global/all plan rebinding; owner-only `Prepared + HostFactoryErasure` replay handoff and monotonic proof-before-shutdown; exact-owner lease maintenance through direct and recovered terminalization; and shared reset/global-factory external-retention disclosure before confirmation. |
+| **#74** | Landed | The live turn's adoption: `CovenantDispatchGate` (one `CovenantTurnScope` per logical run, one admission per provider attempt against the head-room the rest of the prompt leaves, and one durable disclosure receipt before every dispatch carrying admitted content or tainted history), `CovenantProviderCallFreezer` (the exact messages, options, name-ordered tool surface, canonicalized tool-call arguments, and rendered prompt frozen into the signed `ProviderCallEnvelope`, refusing any content kind it cannot bind), the `covenant` argument finally reaching `SystemPromptBuilder` from the live loop, and Covenant-derived replies finalized through `IGrimoireTurnCommitter` so content and sensitivity label share one transaction. |
 
-The shared persistence graph is registered in CLI and host with host-only initiation and recovery handlers. The existing `/api/data` reset/factory lifecycle is activated, including `arcanum data reset-memory --scope covenant`; the dedicated Covenant inspection/mutation/repair routes and commands remain unmapped. The feature remains off by default.
+The shared persistence graph is registered in CLI and host with host-only initiation and recovery handlers. The existing `/api/data` reset/factory lifecycle is activated, including `arcanum data reset-memory --scope covenant`; the dedicated Covenant inspection/mutation/repair routes and commands remain unmapped. The inference path is now wired end to end — a turn with canonical content admits it, discloses it, injects it, and labels the reply it produces — but nothing an operator or an agent can reach writes that content yet: the management and mutation routes and commands are unbuilt, and no turn mints an MCP tool capability, so both agent tools stay inert. The feature remains off by default.
 
 ### 2.2 What remains open
 
 | Issue | Size | Role |
 |---|---|---|
-| **#119** | XL | Reset/factory-erasure implementation through the #128 contract is present; parent completion remains. |
-| **#120** | L | The authenticated V2 installation-reset active record and its anti-rollback anchor. |
-| **#121** | L | CLI-only independently rooted external remediation verification and one-way full-reset authorization claim; no marker deletion or identity rotation. |
 | **#92** | XL | Performance, Native AOT, documentation, and release qualification — the #74 acceptance gate. |
 | **#102** | XL | Resumable raw-SQL feature-schema evolution and backfills. Shared prerequisite for #75–#78. |
 | **#105** | XL | Bitemporal validity and dependency-aware claims across durable memory stores. |
@@ -110,7 +108,7 @@ The shared persistence graph is registered in CLI and host with host-only initia
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.20.14 own the Covenant slices.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.21.6 own the Covenant slices.
 3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation authority.
@@ -1276,7 +1274,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` through the project's normal mirror. This #122 delivery does not itself merge `main`.
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.20.14 **(branch)**:
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.21.6 **(branch)**:
   - §10.10 Core protocol foundation
   - §10.11 Canonical persistence and inspection search
   - §10.12 Invocation authority and Campaign binding
@@ -1288,6 +1286,7 @@ The following documents own or explain the detailed contracts summarized here. D
   - §10.18 Operator surfaces, configuration, and the pre-binding authority boundary
   - §10.19.1–§10.19.13 Backup, restore, and protected transfer
   - §10.20.1–§10.20.14 Retention, reset, and full erasure
+  - §10.21.1–§10.21.6 The live turn's adoption of the Covenant
 - [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): the shared model/tool-loop and attachment continuation ordering that the OATH runtime integration extends.
