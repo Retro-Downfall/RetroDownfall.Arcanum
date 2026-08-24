@@ -34,6 +34,7 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
@@ -91,8 +92,19 @@ public sealed partial class WizardIntelligenceProvider(
     ISubagentRunner? subagentRunner = null,
     ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
     IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null,
-    ITapestryStore? tapestryStore = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
+    ITapestryStore? tapestryStore = null,
+    CovenantDispatchGate? covenantDispatch = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
 {
+    /// <summary>
+    /// The token allowance charged for one emitted Covenant section's headings, notice, and fences.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately generous. The exact framing lives inside the prompt builder, and a budget that
+    /// guessed low would admit a section the context gate then had to evict, turning an admission
+    /// receipt into a description of a prompt that never went out.
+    /// </remarks>
+    private const ulong CovenantSectionFramingTokenAllowance = 64;
+
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
             modelTokenEstimator,
@@ -168,6 +180,30 @@ public sealed partial class WizardIntelligenceProvider(
 
         return new TurnExecutionCoordinator(new TurnEngine.TurnEngine(this));
     }
+
+    /// <summary>
+    /// Acquires this logical run's one Covenant scope, or the inert one.
+    /// </summary>
+    /// <remarks>
+    /// Called once per logical turn and shared by every provider candidate, every retry, and every
+    /// tool round. A second acquisition inside the run would open a second bounded read, and the two
+    /// could straddle a mutation another turn published in between — which is exactly the drift the
+    /// single-plan rule exists to prevent.
+    ///
+    /// <para>A host that composed no Covenant arm gets the inert scope rather than a null, so the
+    /// dispatch path below reads one shape whether or not the gate exists.</para>
+    /// </remarks>
+    private ValueTask<CovenantTurnScope> BeginCovenantTurnAsync(
+        PingRequest request,
+        ArcanumInvocationContext invocationContext,
+        CancellationToken cancellationToken) =>
+        covenantDispatch is null
+            ? ValueTask.FromResult(CovenantTurnScope.NotEligible())
+            : covenantDispatch.BeginTurnAsync(
+                invocationContext,
+                Guid.NewGuid(),
+                request.SessionId,
+                cancellationToken);
 
     async Task ITurnPipelineRunner.RunBufferedIntoEmitterAsync(
         TurnExecutionRequest request,
@@ -607,58 +643,74 @@ public sealed partial class WizardIntelligenceProvider(
 
         bool resilienceEnabled = healthTracker is not null;
 
-        if (!resilienceEnabled)
+        CovenantTurnScope covenantScope = await BeginCovenantTurnAsync(request, invocationContext, cancellationToken)
+            .ConfigureAwait(false);
+
+        try
         {
-            ChatClientLease singleLease;
 
-            try
+            if (!resilienceEnabled)
             {
-                singleLease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException ex)
-            {
-                logger.LogWarning(
-                    "Hub model resolution failed; exception type {ExceptionType}.",
-                    ex.GetType().FullName);
+                ChatClientLease singleLease;
 
-                return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
-            }
-
-            using (singleLease)
-            {
-                Result reasoningValidation = ValidateReasoningForCandidate(
-                    request,
-                    singleLease.Provider,
-                    singleLease.ResolvedModel,
-                    settings.Value.Features.Reasoning);
-
-                if (reasoningValidation.IsFailure)
+                try
                 {
-                    return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
+                    singleLease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    logger.LogWarning(
+                        "Hub model resolution failed; exception type {ExceptionType}.",
+                        ex.GetType().FullName);
+
+                    return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
                 }
 
-                InferenceAttemptResult single = await DrainBufferedInferenceAttemptAsync(
-                        singleLease,
+                using (singleLease)
+                {
+                    Result reasoningValidation = ValidateReasoningForCandidate(
                         request,
-                        invocationContext,
-                        inferenceToken,
-                        callerToken,
-                        auditContext,
-                        eventSink)
-                    .ConfigureAwait(false);
+                        singleLease.Provider,
+                        singleLease.ResolvedModel,
+                        settings.Value.Features.Reasoning);
 
-                return single.Result;
+                    if (reasoningValidation.IsFailure)
+                    {
+                        return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
+                    }
+
+                    InferenceAttemptResult single = await DrainBufferedInferenceAttemptAsync(
+                            singleLease,
+                            request,
+                            invocationContext,
+                            inferenceToken,
+                            callerToken,
+                            auditContext,
+                            eventSink,
+                            covenantScope: covenantScope)
+                        .ConfigureAwait(false);
+
+                    return single.Result;
+                }
             }
-        }
 
-        return await ExecutePromptWithFallbackAsync(
-                request,
-                invocationContext,
-                inferenceToken,
-                callerToken,
-                auditContext,
-                eventSink)
-            .ConfigureAwait(false);
+            return await ExecutePromptWithFallbackAsync(
+                    request,
+                    invocationContext,
+                    inferenceToken,
+                    callerToken,
+                    auditContext,
+                    eventSink,
+                    covenantScope)
+                .ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            await covenantScope.DisposeAsync().ConfigureAwait(false);
+
+        }
     }
 
     private async Task<Result<PromptTurnResult>> ExecutePromptWithFallbackAsync(
@@ -668,7 +720,8 @@ public sealed partial class WizardIntelligenceProvider(
         CancellationToken callerToken,
         InferenceAuditContext? auditContext,
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
-            eventSink)
+            eventSink,
+        CovenantTurnScope? covenantScope = null)
     {
 
         IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
@@ -761,7 +814,8 @@ public sealed partial class WizardIntelligenceProvider(
                             auditContext,
                             eventSink,
                             seed,
-                            canFallBack: !isLastAttempt)
+                            canFallBack: !isLastAttempt,
+                            covenantScope)
                         .ConfigureAwait(false);
 
                     if (attempt.IsConnectivityFailure)
@@ -842,7 +896,8 @@ public sealed partial class WizardIntelligenceProvider(
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
             eventSink,
         TurnContextSeed? seed = null,
-        bool canFallBack = false)
+        bool canFallBack = false,
+        CovenantTurnScope? covenantScope = null)
     {
 
         StreamFailureClassification classification = new();
@@ -858,7 +913,8 @@ public sealed partial class WizardIntelligenceProvider(
                 callerToken,
                 auditContext,
                 seed,
-                canFallBack)
+                canFallBack,
+                covenantScope)
             .ConfigureAwait(false))
         {
             if (eventSink is not null)
@@ -937,6 +993,11 @@ public sealed partial class WizardIntelligenceProvider(
 
         bool resilienceEnabled = healthTracker is not null;
 
+        // One scope for the whole streamed run, disposed with the enumerator so that an abandoned
+        // stream releases the turn lease as reliably as a completed one.
+        await using CovenantTurnScope streamCovenantScope =
+            await BeginCovenantTurnAsync(request, invocationContext, cancellationToken).ConfigureAwait(false);
+
         if (!resilienceEnabled)
         {
             InvalidOperationException? resolveFailure = null;
@@ -994,7 +1055,8 @@ public sealed partial class WizardIntelligenceProvider(
                 singleClassification,
                 inferenceToken,
                 callerToken,
-                auditContext).GetAsyncEnumerator(inferenceToken);
+                auditContext,
+                covenantScope: streamCovenantScope).GetAsyncEnumerator(inferenceToken);
 
             Exception? singleMoveFailure = null;
 
@@ -1151,7 +1213,8 @@ public sealed partial class WizardIntelligenceProvider(
                     callerToken,
                     auditContext,
                     streamSeed,
-                    canFallBack: !isLastAttempt).GetAsyncEnumerator();
+                    canFallBack: !isLastAttempt,
+                    streamCovenantScope).GetAsyncEnumerator();
 
                 Exception? moveNextFailure = null;
 
@@ -1489,7 +1552,8 @@ public sealed partial class WizardIntelligenceProvider(
         CancellationToken callerToken,
         InferenceAuditContext? auditContext,
         TurnContextSeed? seed = null,
-        bool canFallBack = false)
+        bool canFallBack = false,
+        CovenantTurnScope? covenantScope = null)
 #pragma warning restore CS8425
     {
 
@@ -2121,6 +2185,13 @@ public sealed partial class WizardIntelligenceProvider(
         int streamMaxIndexBytes = ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(
             streamAttachmentSettings.MaxIndexBytesInPrompt);
 
+        // Declared here so that every prompt build in this attempt reads the same admitted content,
+        // and resolved once below, at the first point where the attempt's own tool surface and options
+        // exist: measuring head-room without them would overstate what fits.
+        CovenantDispatchPlan streamCovenantDispatch = CovenantDispatchPlan.Empty;
+
+        CovenantPromptContent? streamCovenantContent = null;
+
         SystemPromptDocument baseSystemPromptDocument = SystemPromptBuilder.BuildDocument(
             request,
             streamCodexContent,
@@ -2138,7 +2209,8 @@ public sealed partial class WizardIntelligenceProvider(
             maxIndexItems: streamMaxIndexItems,
             maxIndexBytes: streamMaxIndexBytes,
             sessionAttachmentContext: streamAttachmentContext,
-            tapestryContext: streamTapestryContext);
+            tapestryContext: streamTapestryContext,
+            covenant: streamCovenantContent);
         SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
         string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
@@ -2167,7 +2239,8 @@ public sealed partial class WizardIntelligenceProvider(
                 maxIndexItems: streamMaxIndexItems,
                 maxIndexBytes: streamMaxIndexBytes,
                 sessionAttachmentContext: streamAttachmentContext,
-                tapestryContext: streamTapestryContext);
+                tapestryContext: streamTapestryContext,
+                covenant: streamCovenantContent);
 
             streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
@@ -2526,7 +2599,8 @@ public sealed partial class WizardIntelligenceProvider(
                         maxIndexItems: streamMaxIndexItems,
                         maxIndexBytes: streamMaxIndexBytes,
                         sessionAttachmentContext: streamAttachmentContext,
-                        tapestryContext: streamTapestryContext);
+                        tapestryContext: streamTapestryContext,
+                covenant: streamCovenantContent);
 
                     if (preparedAdmissionMessages.Count > 0
                         && preparedAdmissionMessages[0].Role == ChatRole.System)
@@ -2685,6 +2759,22 @@ public sealed partial class WizardIntelligenceProvider(
 
             ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamTurnContext.InferenceTools, request, lease);
 
+            streamCovenantDispatch = ResolveCovenantAdmission(
+                covenantScope,
+                lease,
+                request,
+                chatMessages,
+                streamChatOptions);
+
+            if (streamCovenantDispatch.HasAdmittedContent)
+            {
+
+                streamCovenantContent = streamCovenantDispatch.Content;
+
+                RebuildMaterializedSystemPrompt();
+
+            }
+
             lastInferenceChatOptions = streamChatOptions;
 
             if (!streaming || !streamingContextPrepared)
@@ -2744,7 +2834,8 @@ public sealed partial class WizardIntelligenceProvider(
                         maxIndexItems: streamMaxIndexItems,
                         maxIndexBytes: streamMaxIndexBytes,
                         sessionAttachmentContext: streamAttachmentContext,
-                        tapestryContext: streamTapestryContext);
+                        tapestryContext: streamTapestryContext,
+                covenant: streamCovenantContent);
 
                     if (streaming)
                     {
@@ -2815,6 +2906,45 @@ public sealed partial class WizardIntelligenceProvider(
                                 .ConfigureAwait(false);
 
                             classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamContextGate.Error);
+                        }
+
+                        break;
+                    }
+
+                    // Disclosure precedes egress. Every physical dispatch that carries admitted
+                    // Covenant content or tainted history commits its own durable receipt here, before
+                    // the executor is reached; a receipt written afterwards could not record the one
+                    // case it exists for, a call that left the process and then crashed.
+                    Result streamCovenantGate = await AcknowledgeCovenantDispatchAsync(
+                            covenantScope,
+                            streamCovenantDispatch,
+                            lease,
+                            targetModel,
+                            streaming,
+                            streamSystemPromptDocument,
+                            chatMessages,
+                            streamChatOptions,
+                            callBreakdown,
+                            inferenceToken)
+                        .ConfigureAwait(false);
+
+                    if (streamCovenantGate.IsFailure)
+                    {
+                        inferenceError = streamCovenantGate.Error.Message;
+                        inferenceTypedError = streamCovenantGate.Error;
+
+                        streamAccountingStatus = InferenceRunStatus.Failed;
+
+                        if (!streaming)
+                        {
+                            await grimoireTurnWriter
+                                .ResolveInterruptedAndMarkFinalizedAsync(
+                                    grimoireTurn,
+                                    null,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+
+                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamCovenantGate.Error);
                         }
 
                         break;
@@ -3860,10 +3990,20 @@ public sealed partial class WizardIntelligenceProvider(
 
         bool finalizeOk = streaming
             ? await grimoireTurnWriter
-                .TryFinalizeStreamedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
+                .TryFinalizeStreamedAssistantEntryAsync(
+                    grimoireTurn,
+                    finalText,
+                    targetModel,
+                    inferenceToken,
+                    covenantScope?.DerivedSensitivity)
                 .ConfigureAwait(false)
             : await grimoireTurnWriter
-                .TryFinalizeBufferedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
+                .TryFinalizeBufferedAssistantEntryAsync(
+                    grimoireTurn,
+                    finalText,
+                    targetModel,
+                    inferenceToken,
+                    covenantScope?.DerivedSensitivity)
                 .ConfigureAwait(false);
 
         if (!finalizeOk)
@@ -6663,6 +6803,158 @@ public sealed partial class WizardIntelligenceProvider(
 
             overBudget = isOverBudget();
         }
+    }
+
+    /// <summary>
+    /// Commits this dispatch's Covenant evidence, or refuses to let the bytes leave.
+    /// </summary>
+    /// <remarks>
+    /// The one pre-egress obligation of the turn loop. A clean call on a clean Session returns success
+    /// without touching the database, freezing an envelope, or allocating a receipt — that is what keeps
+    /// the disabled path identical to the path that existed before the Covenant did.
+    ///
+    /// <para>Every other call fails closed. A frozen envelope that cannot be built, an installation
+    /// with no established authority, and a journal that cannot commit are all refusals, because each
+    /// of them means the receipt an operator would later read would not describe what went out.</para>
+    /// </remarks>
+    private async ValueTask<Result> AcknowledgeCovenantDispatchAsync(
+        CovenantTurnScope? covenantScope,
+        CovenantDispatchPlan dispatch,
+        ChatClientLease lease,
+        string targetModel,
+        bool streaming,
+        SystemPromptDocument systemPromptDocument,
+        IReadOnlyList<MeAiChatMessage> messages,
+        ChatOptions chatOptions,
+        ContextTokenBreakdown breakdown,
+        CancellationToken cancellationToken)
+    {
+
+        if (covenantDispatch is null || covenantScope is not { } scope)
+        {
+
+            return Result.Success();
+
+        }
+
+        if (!dispatch.HasAdmittedContent && !scope.HistoryTainted)
+        {
+
+            return Result.Success();
+
+        }
+
+        SystemPromptBuildResult built = systemPromptDocument.BuildResult();
+
+        ProviderCallSensitivity sensitivity = CovenantDispatchGate.ResolveSensitivity(scope, dispatch);
+
+        Result<ProviderCallEnvelope> frozen = CovenantProviderCallFreezer.TryFreeze(
+            new CovenantProviderCallDescriptor(
+                lease.Provider.Name,
+                targetModel,
+                streaming ? CovenantProviderDispatchMode.Streaming : CovenantProviderDispatchMode.Buffered,
+                breakdown.Profile.TokenizerId,
+                (ulong)ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit),
+                0,
+                built.Prompt,
+                built.Attribution,
+                messages,
+                chatOptions),
+            sensitivity,
+            new ProviderCallMaterializationSnapshot(false, []));
+
+        if (frozen.IsFailure)
+        {
+
+            return Result.Failure(frozen.Error);
+
+        }
+
+        Result<CovenantDispatchAdmission> admitted = await covenantDispatch
+            .AcknowledgeDispatchAsync(scope, dispatch, frozen.Value, cancellationToken)
+            .ConfigureAwait(false);
+
+        return admitted.IsFailure ? Result.Failure(admitted.Error) : Result.Success();
+
+    }
+
+    /// <summary>
+    /// Decides what this attempt's Covenant plan may actually inject, against this attempt's budget.
+    /// </summary>
+    /// <remarks>
+    /// Runs once per provider attempt, not once per tool round: the same plan and the same admitted
+    /// prefix have to be what every round of one attempt saw, or the admission receipt would describe
+    /// a prompt that changed underneath it.
+    ///
+    /// <para>The budget is the head-room the rest of the prompt leaves. It is measured against the
+    /// transcript as it stands before any Covenant bytes exist, which is the only measurement that is
+    /// not circular. Both delegates measure through the same estimator the context gate uses, so a
+    /// section that the planner believes fits is a section the gate will also accept.</para>
+    ///
+    /// <para>A turn with no plan does none of this work and allocates nothing.</para>
+    /// </remarks>
+    private CovenantDispatchPlan ResolveCovenantAdmission(
+        CovenantTurnScope? covenantScope,
+        ChatClientLease lease,
+        PingRequest request,
+        IReadOnlyList<MeAiChatMessage> messages,
+        ChatOptions chatOptions)
+    {
+
+        if (covenantScope is not { HasPlan: true } scope)
+        {
+
+            return CovenantDispatchPlan.Empty;
+
+        }
+
+        int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
+
+        ModelCallContext context = BuildModelCallContext(lease, request);
+
+        int baseline = ModelTokenEstimator.EstimateContext(
+            new ModelTokenizationRequest(
+                lease.Provider,
+                lease.ResolvedModel,
+                messages,
+                chatOptions,
+                context.ReservedAnswerTokens,
+                context.ReservedReasoningTokens))
+            .TotalTokens;
+
+        ulong headroom = (ulong)Math.Max(0, contextWindowLimit - baseline);
+
+        ulong Measure(string text) =>
+            text.Length == 0
+                ? 0UL
+                : (ulong)ModelTokenEstimator.EstimateContext(
+                    new ModelTokenizationRequest(
+                        lease.Provider,
+                        lease.ResolvedModel,
+                        [new MeAiChatMessage(ChatRole.System, text)],
+                        chatOptions,
+                        0,
+                        0))
+                    .TotalTokens;
+
+        // The builder owns the headings, the untrusted-data notice, and the fences, and none of them
+        // are visible from here. A fixed allowance per emitted section covers them. Overstating is the
+        // safe direction for a budget: it can only admit less than would have fitted, never more than
+        // the window holds.
+        ulong MeasureSections(CovenantPromptContent content) =>
+            Measure(content.GlobalConfirmed)
+            + Measure(content.CampaignConfirmed)
+            + Measure(content.CampaignProposed)
+            + (content.HasGlobalConfirmed ? CovenantSectionFramingTokenAllowance : 0UL)
+            + (content.HasCampaignConfirmed ? CovenantSectionFramingTokenAllowance : 0UL)
+            + (content.HasProposed ? CovenantSectionFramingTokenAllowance : 0UL);
+
+        return CovenantDispatchGate.PlanDispatch(
+            scope,
+            headroom,
+            MeasureSections,
+            Measure);
+
     }
 
     private Result EnsureContextBudgetWithMaterializations(
