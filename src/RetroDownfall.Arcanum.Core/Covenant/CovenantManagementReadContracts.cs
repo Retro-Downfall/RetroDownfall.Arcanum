@@ -218,6 +218,12 @@ public enum CovenantEffectDecision : byte
 /// <summary>
 /// One affected Campaign, as an example inside a bounded effect snapshot.
 /// </summary>
+public sealed record CovenantMutationEffectExample(
+    Guid CampaignId,
+    CovenantEffectDecision Decision,
+    bool HasCampaignConfirmedHead,
+    bool HasCampaignProposedHead);
+
 /// <summary>
 /// One scope-lane-lifecycle bucket of the head census.
 /// </summary>
@@ -252,12 +258,6 @@ public sealed record CovenantScopeCensus(
     public static CovenantScopeCensus Empty { get; } = new([], 0, 0, 0);
 
 }
-
-public sealed record CovenantMutationEffectExample(
-    Guid CampaignId,
-    CovenantEffectDecision Decision,
-    bool HasCampaignConfirmedHead,
-    bool HasCampaignProposedHead);
 
 /// <summary>
 /// The prospective effect of a Global or Campaign mutation on one normalized key.

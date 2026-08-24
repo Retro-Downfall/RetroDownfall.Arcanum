@@ -4,6 +4,18 @@ public interface ICovenantCompiler
 {
     CovenantCompiledContent Compile(string key, string authoredContent);
 
+    /// <summary>
+    /// Renders a Proposed block from freshly compiled fragments, using the fence length each one
+    /// persists.
+    /// </summary>
+    /// <remarks>
+    /// Not the renderer a prompt sees. A live turn renders from frozen fragment bytes that were
+    /// persisted turns or sessions earlier, and rescans them rather than trusting a stored number, so
+    /// <c>CovenantSectionRenderer</c> owns that path. This one answers the same question from the
+    /// compile side, which is what makes the persisted fence length auditable at all. The two are
+    /// held byte-for-byte together by test, because a fence shorter than the payload's own longest
+    /// backtick run is a fence the payload closes early.
+    /// </remarks>
     string RenderProposedSection(IReadOnlyList<CovenantCompiledContent> fragments);
 }
 

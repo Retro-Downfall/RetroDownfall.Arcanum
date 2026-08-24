@@ -248,6 +248,29 @@ public sealed class CovenantDomainContractTests
 
     }
 
+    /// <summary>
+    /// The status surface reports one rendered-byte ceiling for all three prompt sections, and that
+    /// projection is honest only while the three placement ceilings are the same number.
+    /// </summary>
+    /// <remarks>
+    /// Asserted against each other rather than against a literal, so revising the contract to give one
+    /// section a ceiling of its own fails here — where the single-field projection lives — instead of
+    /// leaving an operator comparing a Campaign Proposed total against a Global bound.
+    /// </remarks>
+    [Fact]
+    public void The_three_placement_ceilings_agree_so_one_reported_ceiling_can_stand_for_all_of_them()
+    {
+
+        Assert.Equal(
+            CovenantLimits.MaxGlobalConfirmedRenderedBytes,
+            CovenantLimits.MaxCampaignConfirmedRenderedBytes);
+
+        Assert.Equal(
+            CovenantLimits.MaxGlobalConfirmedRenderedBytes,
+            CovenantLimits.MaxCampaignProposedRenderedBytes);
+
+    }
+
     [Fact]
     public void Hard_limits_match_the_approved_contract()
     {

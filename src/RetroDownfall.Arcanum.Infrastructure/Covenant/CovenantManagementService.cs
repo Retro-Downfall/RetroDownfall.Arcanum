@@ -91,6 +91,10 @@ internal sealed class CovenantManagementService(
     /// Not yet implemented over the accelerator. The typed refusal is deliberate: an unbuilt search
     /// that answered with an empty page would be indistinguishable from a Covenant that holds nothing
     /// matching, which is the one answer an operator must never be given wrongly.
+    ///
+    /// <para>No route reaches this. The endpoint was unmapped rather than left mapped and refusing,
+    /// because an advertised inspection surface that can only refuse teaches an operator the search is
+    /// broken rather than absent. The method stays so a stale caller fails closed with a reason.</para>
     /// </remarks>
     public ValueTask<Result<CovenantPageDto>> QueryAsync(
         CovenantQueryRequest request,
@@ -363,6 +367,11 @@ internal sealed class CovenantManagementService(
             census.GlobalConfirmedRenderedBytes,
             census.MaxCampaignConfirmedRenderedBytes,
             census.MaxCampaignProposedRenderedBytes,
+
+            // One field stands for three placement ceilings, which is only honest while the three are
+            // the same number. CovenantDomainContractTests pins them equal, so giving one section a
+            // ceiling of its own fails there rather than here, where an operator would be comparing a
+            // Campaign total against a Global bound and see nothing wrong.
             CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             new CovenantSearchHealthDto(
                 SearchHealth(snapshot),

@@ -110,11 +110,8 @@ public sealed class CovenantPublicContractInventoryTests
         [
             .. CoreAssembly
                 .GetTypes()
-                .Where(static type => type is { IsPublic: true, IsClass: true, IsAbstract: false })
-                .Where(static type => type.Namespace == "RetroDownfall.Arcanum.Core.Covenant")
-                .Where(static type =>
-                    type.Name.EndsWith("Dto", StringComparison.Ordinal)
-                    || type.Name.EndsWith("Request", StringComparison.Ordinal))
+                .Where(IsCovenantShapeKind)
+                .Where(HasWireShapeName)
                 .Select(static type => type.FullName!)
                 .Where(name => !declared.Contains(name))
                 .OrderBy(static name => name, StringComparer.Ordinal)
@@ -123,6 +120,43 @@ public sealed class CovenantPublicContractInventoryTests
         Assert.Empty(undeclared);
 
     }
+
+    /// <summary>
+    /// The discovery this freeze runs on reaches value types, not only classes.
+    /// </summary>
+    /// <remarks>
+    /// The Covenant namespace is full of public record structs, and a class-only filter made every one
+    /// of them invisible to the freeze — a shape named <c>…Dto</c> could ship undeclared purely by
+    /// being a struct. Asserted against a real public record struct in that namespace so the check
+    /// cannot pass by describing itself.
+    /// </remarks>
+    [Fact]
+    public void Discovery_reaches_a_public_record_struct_in_the_covenant_namespace()
+    {
+
+        Assert.True(typeof(CovenantScopeCensusRow).IsValueType);
+
+        Assert.False(typeof(CovenantScopeCensusRow).IsClass);
+
+        Assert.True(IsCovenantShapeKind(typeof(CovenantScopeCensusRow)));
+
+        Assert.False(IsCovenantShapeKind(typeof(CovenantScope)));
+
+        Assert.False(IsCovenantShapeKind(typeof(ICovenantStore)));
+
+    }
+
+    private static bool IsCovenantShapeKind(Type type) =>
+        type.IsPublic
+        && !type.IsAbstract
+        && !type.IsEnum
+        && !type.IsInterface
+        && (type.IsClass || type.IsValueType)
+        && type.Namespace == "RetroDownfall.Arcanum.Core.Covenant";
+
+    private static bool HasWireShapeName(Type type) =>
+        type.Name.EndsWith("Dto", StringComparison.Ordinal)
+        || type.Name.EndsWith("Request", StringComparison.Ordinal);
 
     /// <summary>
     /// An exclusion has to be honest. A type declared as "not a wire shape" that turns out to be

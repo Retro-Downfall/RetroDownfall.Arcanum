@@ -140,7 +140,7 @@ public sealed record CovenantRetirePrepareRequest(
             CovenantWireValidation.ValidateKey(Key),
             CovenantWireValidation.ValidateLane(Lane),
             CovenantWireValidation.ValidateRetirableLane(Scope, Lane),
-            CovenantWireValidation.RequireNonNegative(ExpectedRevision, "expected Covenant revision"),
+            CovenantWireValidation.RequirePositive(ExpectedRevision, "expected Covenant revision"),
             CovenantWireValidation.RequireIdentity(MutationId, "client-generated mutation identity"));
 
 }
@@ -195,7 +195,7 @@ public sealed record CovenantRetireRequest(
             CovenantWireValidation.ValidateKey(Key),
             CovenantWireValidation.ValidateLane(Lane),
             CovenantWireValidation.ValidateRetirableLane(Scope, Lane),
-            CovenantWireValidation.RequireNonNegative(ExpectedRevision, "expected Covenant revision"),
+            CovenantWireValidation.RequirePositive(ExpectedRevision, "expected Covenant revision"),
             CovenantWireValidation.RequireIdentity(MutationId, "client-generated mutation identity"),
             CovenantWireValidation.ValidateToken(PreflightToken));
 

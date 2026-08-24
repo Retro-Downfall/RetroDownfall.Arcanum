@@ -102,10 +102,28 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
         // Backdating only shortens a token's life and is what a caller aligning its payload with this
         // stamp is doing. Forward-dating would extend it past the lifetime that was asked for.
-        if (issuedAtUtc is { } stated && stated > timeProvider.GetUtcNow())
+        if (issuedAtUtc is { } stated)
         {
-            return Result<string>.Failure(
-                new Error(ErrorCodes.Covenant.InvalidCursor, "An envelope cannot be issued in the future."));
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+
+            if (stated > now)
+            {
+                return Result<string>.Failure(
+                    new Error(ErrorCodes.Covenant.InvalidCursor, "An envelope cannot be issued in the future."));
+            }
+
+            // Bounded on the other side too, on Decode's own terms: a stamp at least a whole lifetime
+            // old mints a token that the very next Decode refuses as expired. Without this the caller
+            // is handed a dead token and learns why one round trip later, and the header's issued-at —
+            // which is authenticated, and which every consumer of this port reads — is caller-asserted
+            // with no bound at all on how far into the past it may be stamped.
+            if (now - stated >= lifetime)
+            {
+                return Result<string>.Failure(
+                    new Error(ErrorCodes.Covenant.InvalidCursor, "An envelope cannot be issued already expired."));
+            }
+
         }
 
         Span<byte> key = stackalloc byte[32];

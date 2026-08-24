@@ -36,8 +36,11 @@ public interface ICovenantEnvelopeCodec
     /// whenever the reads straddle a millisecond and the token is refused as inconsistent, which is a
     /// coin toss rather than a bound. Stating the instant makes them agree by construction.
     ///
-    /// <para>A future instant is refused: backdating only shortens a token's life, but forward-dating
-    /// would extend it past the lifetime the caller asked for.</para>
+    /// <para>The stamp is bounded on both sides, because it is caller-asserted and it is what every
+    /// consumer of this port reads out of the authenticated header. A future instant is refused —
+    /// forward-dating would extend a token past the lifetime the caller asked for — and so is an
+    /// instant at least a whole lifetime in the past, which would mint a token the very next decode
+    /// refuses as expired.</para>
     /// </remarks>
     Result<string> Encode(
         CovenantEnvelopePurpose purpose,

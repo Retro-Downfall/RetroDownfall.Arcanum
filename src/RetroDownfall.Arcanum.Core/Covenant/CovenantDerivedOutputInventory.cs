@@ -111,6 +111,15 @@ public static class CovenantDerivedOutputInventory
             + "it, because they travel to sinks that have no authority to hold protected text."),
 
         new(
+            "covenant-scope-census",
+            "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantStore",
+            null,
+            DerivedOutputPolicy.ContentFreeMetadataOnly,
+            "The head census reaches the status surface and the command line without protected read "
+            + "authority, so it carries scope, lane, lifecycle, counts, and rendered byte totals and "
+            + "never a key, a fragment, a digest, or a Campaign identity."),
+
+        new(
             "host-process-tools-transition",
             "RetroDownfall.Arcanum.Infrastructure.Security.HostProcessToolsTransitionService",
             null,

@@ -633,6 +633,10 @@ internal sealed class CovenantMutationService(
     /// <remarks>
     /// Deliberately derived through the same factory the commit uses, so a change to what a request
     /// means cannot alter one side and leave the other issuing tokens against the old meaning.
+    ///
+    /// <para>The revision reaches the factory exactly as the caller stated it. Clamping a retirement's
+    /// revision here once made zero and one digest identically, so a token prepared for one request
+    /// authorized the other — the wire contract refuses a nonpositive retirement revision instead.</para>
     /// </remarks>
     private static CovenantDigest RequestDigest(
         CovenantOperationScope scope,
@@ -651,7 +655,7 @@ internal sealed class CovenantMutationService(
                     normalizedKey,
                     normalizedKey,
                     lane,
-                    Math.Max(expectedRevision, 1),
+                    expectedRevision,
                     PlaceholderBinding,
                     PlaceholderDigest)
                 .Value.Authorization.RequestIdempotencyDigest

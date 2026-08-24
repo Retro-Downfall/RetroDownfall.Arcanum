@@ -145,15 +145,20 @@ public sealed class CovenantTurnSection
             throw new ArgumentOutOfRangeException(nameof(placement));
         }
 
+        // The placement alone does not pin the decision kind. Accepting either eligible decision in
+        // either kind of section would let an EligibleProposed decision render agent-authored text
+        // into a Confirmed section, which is the one lane the operator is entitled to trust.
+        CovenantPlanDecision eligible = placement is CovenantPlacement.CampaignProposed
+            ? CovenantPlanDecision.EligibleProposed
+            : CovenantPlanDecision.EligibleConfirmed;
+
         foreach (CovenantPlanCandidateDecision decision in candidates)
         {
             ArgumentNullException.ThrowIfNull(decision, nameof(candidates));
 
-            if (decision.Placement != placement
-                || decision.Decision is not CovenantPlanDecision.EligibleConfirmed
-                    and not CovenantPlanDecision.EligibleProposed)
+            if (decision.Placement != placement || decision.Decision != eligible)
             {
-                throw new ArgumentException("A Section can contain only eligible decisions for its placement.", nameof(candidates));
+                throw new ArgumentException("A Section can contain only the eligible decision its placement admits.", nameof(candidates));
             }
         }
     }

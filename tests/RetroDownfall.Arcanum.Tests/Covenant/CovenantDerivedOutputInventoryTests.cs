@@ -157,6 +157,51 @@ public sealed class CovenantDerivedOutputInventoryTests
 
     }
 
+    /// <summary>
+    /// The head census travels to an operator holding no protected read authority, so it is held to
+    /// the same content-free vocabulary the log scope is.
+    /// </summary>
+    /// <remarks>
+    /// <c>RenderedBytes</c> is the stated exception, and only that name: a byte total is a length, and
+    /// a length is what the per-section ceiling is compared against. Every other member of the census
+    /// is a bucket label or a count, so a key, a fragment, or a digest appearing here would be content
+    /// crossing a boundary that declares it carries none.
+    /// </remarks>
+    [Fact]
+    public void The_scope_census_carries_no_key_content_or_digest_bearing_member()
+    {
+
+        string[] forbidden = ["Digest", "Content", "Text", "Key", "Fragment"];
+
+        foreach (Type shape in (Type[])[typeof(CovenantScopeCensus), typeof(CovenantScopeCensusRow)])
+        {
+
+            foreach (PropertyInfo property in shape.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+
+                Assert.DoesNotContain(
+                    forbidden,
+                    name => property.Name.Contains(name, StringComparison.Ordinal));
+
+                Assert.True(
+                    !property.Name.Contains("Bytes", StringComparison.Ordinal)
+                        || property.Name.EndsWith("RenderedBytes", StringComparison.Ordinal),
+                    $"{shape.Name}.{property.Name} carries bytes that are not the declared rendered total.");
+
+                // The Campaign figures are maxima across Campaigns, so the name carries no identity —
+                // but a member that could carry one would be a string or a Guid, and there is none.
+                Assert.True(
+                    property.PropertyType != typeof(string)
+                        && property.PropertyType != typeof(Guid)
+                        && property.PropertyType != typeof(Guid?),
+                    $"{shape.Name}.{property.Name} could carry an identity or free text.");
+
+            }
+
+        }
+
+    }
+
     [Fact]
     public void The_log_scope_renders_a_fixed_vocabulary_with_no_free_text()
     {

@@ -136,6 +136,14 @@ public static class CovenantPublicContractInventory
 
         new(Namespace + nameof(DirectFinalizationCapacityRequest),
             "An in-process argument for the finalization path that has no claim to release."),
+
+        new(Namespace + nameof(CovenantScopeCensus),
+            "A store-port projection of content-free counts and byte totals. The operator sees it only "
+            + "after the management port copies it into CovenantStatusDto, which is the declared wire "
+            + "shape; this one crosses no boundary and carries no key, content, or Campaign identity."),
+
+        new(Namespace + nameof(CovenantScopeCensusRow),
+            "One bucket of that same in-process projection."),
     ];
 
     /// <summary>Every frozen wire shape and durable checkpoint.</summary>

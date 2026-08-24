@@ -794,6 +794,7 @@ public sealed class CovenantLinkerTests
         byte[] bytes = new byte[256 * 1_024];
 
         bytes.AsSpan().Fill((byte)'x');
+        "- "u8.CopyTo(bytes);
         bytes[^1] = (byte)'\n';
 
         return ImmutableCollectionsMarshal.AsImmutableArray(bytes);

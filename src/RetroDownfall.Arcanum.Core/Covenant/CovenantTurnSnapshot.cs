@@ -254,6 +254,19 @@ public sealed class CovenantSnapshotCandidate
             throw new ArgumentException("A compiled Covenant fragment must end with LF.", nameof(compiledFragment));
         }
 
+        if (!compiledFragment.AsSpan().StartsWith("- "u8))
+        {
+            throw new ArgumentException("A compiled Covenant fragment must begin with its bullet marker.", nameof(compiledFragment));
+        }
+
+        // The Proposed fence is closed by position: only a line that begins at column 0 can end the
+        // block. An interior LF would put agent-controlled bytes exactly there, so a fragment carries
+        // one line and its terminator or it is not a fragment at all.
+        if (compiledFragment.AsSpan()[..^1].Contains((byte)'\n'))
+        {
+            throw new ArgumentException("A compiled Covenant fragment may contain no LF but its terminator.", nameof(compiledFragment));
+        }
+
         try
         {
             _ = StrictUtf8.GetCharCount(compiledFragment.AsSpan());

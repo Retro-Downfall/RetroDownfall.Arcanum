@@ -196,6 +196,19 @@ internal static class CovenantWireValidation
             : InvalidBody($"A {subject} cannot be negative.");
 
     /// <summary>
+    /// Refuses a revision that names no existing head.
+    /// </summary>
+    /// <remarks>
+    /// Zero and one are the same request for an operation that can only follow an existing version.
+    /// Admitting zero and clamping it later mints a preflight token whose digest is the digest for
+    /// revision one, which makes a token prepared for one request usable for another.
+    /// </remarks>
+    internal static Result RequirePositive(long value, string subject) =>
+        value > 0
+            ? Result.Success()
+            : InvalidBody($"A {subject} must name an existing version.");
+
+    /// <summary>
     /// Validates a stable apply-request digest on the wire: exactly 64 hexadecimal characters.
     /// </summary>
     /// <remarks>

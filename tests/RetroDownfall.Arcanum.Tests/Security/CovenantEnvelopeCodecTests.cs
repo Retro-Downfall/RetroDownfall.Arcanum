@@ -136,6 +136,38 @@ public sealed class CovenantEnvelopeCodecTests
     }
 
     [Fact]
+    public void An_envelope_cannot_be_issued_already_expired()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        // A stamp a whole lifetime old mints a token the very next decode refuses, so the caller is
+        // told here rather than handed a dead token and left to discover it one round trip later.
+        Result<string> refused = harness.Codec.Encode(
+            CovenantEnvelopePurpose.OperatorPreflight,
+            "preflight-body"u8,
+            TimeSpan.FromMinutes(5),
+            Now.AddMinutes(-5).AddSeconds(-1));
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.InvalidCursor, refused.Error.Code);
+
+        // One millisecond inside the lifetime still mints, so the bound is the lifetime rather than a
+        // rejection of backdating, which is what the operator preflight body relies on.
+        Result<string> accepted = harness.Codec.Encode(
+            CovenantEnvelopePurpose.OperatorPreflight,
+            "preflight-body"u8,
+            TimeSpan.FromMinutes(5),
+            Now.AddMinutes(-5).AddMilliseconds(1));
+
+        Assert.True(accepted.IsSuccess);
+
+        Assert.True(harness.Codec.Decode(CovenantEnvelopePurpose.OperatorPreflight, accepted.Value).IsSuccess);
+
+    }
+
+    [Fact]
     public void An_omitted_instant_still_leaves_the_codec_owning_the_clock()
     {
 

@@ -17,7 +17,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 /// <summary>
-/// The six routes an operator reads their own Covenant through.
+/// The five routes an operator reads their own Covenant through, and the one that is not mapped.
 /// </summary>
 public sealed class CovenantInspectionRouteTests
 {
@@ -25,7 +25,6 @@ public sealed class CovenantInspectionRouteTests
     private static readonly string[] InspectionRoutes =
     [
         "ListCovenantEntries",
-        "QueryCovenantEntries",
         "ShowCovenantEntry",
         "ListCovenantVersions",
         "ListCovenantSources",
@@ -35,8 +34,6 @@ public sealed class CovenantInspectionRouteTests
     [Theory]
 
     [InlineData("ListCovenantEntries")]
-
-    [InlineData("QueryCovenantEntries")]
 
     [InlineData("ShowCovenantEntry")]
 
@@ -61,7 +58,7 @@ public sealed class CovenantInspectionRouteTests
     }
 
     [Fact]
-    public async Task The_declared_set_is_exactly_the_six_named_inspection_routes()
+    public async Task The_declared_set_is_exactly_the_five_named_inspection_routes()
     {
 
         await using RouteGraph graph = await RouteGraph.CreateAsync();
@@ -75,6 +72,8 @@ public sealed class CovenantInspectionRouteTests
         ];
 
         Assert.Equal([.. InspectionRoutes.Order(StringComparer.Ordinal)], declared);
+
+        Assert.DoesNotContain("QueryCovenantEntries", declared, StringComparer.Ordinal);
 
     }
 

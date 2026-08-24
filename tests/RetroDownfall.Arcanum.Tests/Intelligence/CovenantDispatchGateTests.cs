@@ -400,6 +400,8 @@ public sealed class CovenantDispatchGateTests
 
         bytes.AsSpan().Fill((byte)'x');
 
+        "- "u8.CopyTo(bytes);
+
         bytes[^1] = (byte)'\n';
 
         return [.. bytes];

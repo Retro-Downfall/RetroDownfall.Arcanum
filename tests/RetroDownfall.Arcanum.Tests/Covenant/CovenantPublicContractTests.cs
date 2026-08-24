@@ -333,6 +333,64 @@ public sealed class CovenantPublicContractTests
 
     }
 
+    /// <summary>
+    /// Zero and one named the same retirement once, and the preflight digest could not tell them
+    /// apart, so a token prepared at zero authorized a commit at one.
+    /// </summary>
+    [Fact]
+    public void A_retirement_that_names_no_existing_revision_is_refused_on_both_halves()
+    {
+
+        CovenantRetirePrepareRequest prepare = new(
+            CovenantScope.Campaign,
+            Campaign,
+            "build.commands",
+            CovenantLane.Confirmed,
+            ExpectedRevision: 0,
+            Guid.NewGuid());
+
+        CovenantRetireRequest commit = new(
+            CovenantScope.Campaign,
+            Campaign,
+            "build.commands",
+            CovenantLane.Confirmed,
+            ExpectedRevision: 0,
+            Guid.NewGuid(),
+            Token);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, prepare.Validate().Error.Code);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, commit.Validate().Error.Code);
+
+    }
+
+    [Fact]
+    public void A_retirement_that_names_the_first_revision_still_validates_on_both_halves()
+    {
+
+        CovenantRetirePrepareRequest prepare = new(
+            CovenantScope.Campaign,
+            Campaign,
+            "build.commands",
+            CovenantLane.Confirmed,
+            ExpectedRevision: 1,
+            Guid.NewGuid());
+
+        CovenantRetireRequest commit = new(
+            CovenantScope.Campaign,
+            Campaign,
+            "build.commands",
+            CovenantLane.Confirmed,
+            ExpectedRevision: 1,
+            Guid.NewGuid(),
+            Token);
+
+        Assert.True(prepare.Validate().IsSuccess);
+
+        Assert.True(commit.Validate().IsSuccess);
+
+    }
+
     [Fact]
     public void A_set_commit_without_its_preflight_token_is_refused()
     {
