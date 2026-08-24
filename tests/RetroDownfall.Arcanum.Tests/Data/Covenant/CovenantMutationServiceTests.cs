@@ -214,6 +214,134 @@ public sealed class CovenantMutationServiceTests
 
     }
 
+    [Fact]
+    public async Task A_campaign_mutation_commits_on_an_installation_whose_registry_has_advanced()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        // Every Campaign an installation has ever created advanced this epoch, and a Campaign-scoped
+        // write needs at least one Campaign to apply to — so on any real installation the registry
+        // epoch has moved. A Campaign mutation binds nothing here on purpose, and a stand-in value
+        // compared like a real one would refuse the entire Campaign lane of the operator write path.
+        await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignOne, "First", Token);
+
+        await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignTwo, "Second", Token);
+
+        CovenantMutationService service = Service(fixture);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        CovenantOperationScope scope = CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne);
+
+        string preflight;
+
+        await using (CovenantReadLease read = (await gate.AcquireReadAsync(scope, Token)).Value)
+        {
+
+            Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
+                new CovenantSetPrepareRequest(
+                    CovenantScope.Campaign,
+                    CovenantOperationGateFixture.CampaignOne,
+                    "preference.migrations",
+                    "This Campaign ships its migrations by hand.",
+                    ExpectedRevision: 0,
+                    mutationId,
+                    Reactivate: false),
+                read,
+                Token);
+
+            Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+            preflight = prepared.Value.PreflightToken;
+
+        }
+
+        await using CovenantWriteLease write = (await gate.AcquireWriteAsync(scope, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await service.SetAsync(
+            new CovenantSetRequest(
+                CovenantScope.Campaign,
+                CovenantOperationGateFixture.CampaignOne,
+                "preference.migrations",
+                "This Campaign ships its migrations by hand.",
+                ExpectedRevision: 0,
+                mutationId,
+                Reactivate: false,
+                preflight),
+            write,
+            Token);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+        Assert.Equal(CovenantMutationOutcome.Applied, committed.Value.Outcome);
+
+    }
+
+    [Fact]
+    public async Task A_global_mutation_still_goes_stale_when_a_campaign_appears_before_it_commits()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        CovenantMutationService service = Service(fixture);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantSetRequest request = await PrepareThenBuildAsync(service, gate, Guid.CreateVersion7(), Token);
+
+        // The other half of the same rule. A Global mutation reaches every Campaign, including one
+        // created after it was measured, so its preflight does bind the registry and has to go stale.
+        await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignOne, "Appeared", Token);
+
+        await using CovenantWriteLease write =
+            (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await service.SetAsync(request, write, Token);
+
+        Assert.True(committed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, committed.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task A_preflight_survives_a_clock_that_ticks_between_the_body_and_its_envelope()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        // The preflight body repeats the envelope's timestamps so a caller cannot extend a token's
+        // life by editing the half the other does not cover, and the commit path requires the two to
+        // match byte for byte. Read from the clock twice, they agree only when both reads land in the
+        // same millisecond — which makes a valid token's acceptance a coin toss rather than a rule.
+        // This clock advances on every read, so the two reads can never coincide.
+        SteppingTimeProvider clock = new();
+
+        CovenantMutationService service = new(
+            fixture.Store,
+            new CovenantCompiler(),
+            new StubEnvelopeCodec(),
+            new FixedCovenantConnectionSource(fixture.Connection),
+            new CovenantMutationKernel(),
+            new StubAuthority(),
+            clock);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantSetRequest request = await PrepareThenBuildAsync(service, gate, Guid.CreateVersion7(), Token);
+
+        await using CovenantWriteLease write =
+            (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await service.SetAsync(request, write, Token);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+    }
+
     private static async Task<CovenantSetRequest> PrepareThenBuildAsync(
         CovenantMutationService service,
         CovenantOperationGate gate,
@@ -289,12 +417,15 @@ public sealed class CovenantMutationServiceTests
         public Result<string> Encode(
             CovenantEnvelopePurpose purpose,
             ReadOnlySpan<byte> payload,
-            TimeSpan lifetime)
+            TimeSpan lifetime,
+            DateTimeOffset? issuedAtUtc = null)
         {
 
             string token = Convert.ToHexStringLower(Guid.NewGuid().ToByteArray());
 
-            DateTimeOffset now = DateTimeOffset.UtcNow;
+            // Honoured, not ignored: a stand-in that stamped its own clock would let the body and
+            // the header disagree, and the suite would rediscover that as a flake rather than a bug.
+            DateTimeOffset now = issuedAtUtc ?? DateTimeOffset.UtcNow;
 
             _issued[token] = new CovenantEnvelopeBody(
                 purpose,
@@ -318,6 +449,17 @@ public sealed class CovenantMutationServiceTests
                 : Result<CovenantEnvelopeBody>.Failure(new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This Covenant token is not valid for this purpose."));
+
+    }
+
+    /// <summary>A clock that advances a full second on every read, so no two reads can coincide.</summary>
+    private sealed class SteppingTimeProvider : TimeProvider
+    {
+
+        private long _ticks = DateTimeOffset.UnixEpoch.UtcTicks + TimeSpan.TicksPerDay;
+
+        public override DateTimeOffset GetUtcNow() =>
+            new(Interlocked.Add(ref _ticks, TimeSpan.TicksPerSecond), TimeSpan.Zero);
 
     }
 

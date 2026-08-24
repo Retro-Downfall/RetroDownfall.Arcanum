@@ -78,7 +78,8 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
     public Result<string> Encode(
         CovenantEnvelopePurpose purpose,
         ReadOnlySpan<byte> payload,
-        TimeSpan lifetime)
+        TimeSpan lifetime,
+        DateTimeOffset? issuedAtUtc = null)
     {
 
         if (!Enum.IsDefined(purpose))
@@ -97,6 +98,14 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         {
             return Result<string>.Failure(
                 new Error(ErrorCodes.Covenant.InvalidCursor, "This envelope lifetime is outside its bound."));
+        }
+
+        // Backdating only shortens a token's life and is what a caller aligning its payload with this
+        // stamp is doing. Forward-dating would extend it past the lifetime that was asked for.
+        if (issuedAtUtc is { } stated && stated > timeProvider.GetUtcNow())
+        {
+            return Result<string>.Failure(
+                new Error(ErrorCodes.Covenant.InvalidCursor, "An envelope cannot be issued in the future."));
         }
 
         Span<byte> key = stackalloc byte[32];
@@ -135,7 +144,7 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
             _checkpoint.Reached(CovenantEnvelopeCodecStep.PurposeKeyCopied);
 
-            DateTimeOffset issuedAt = timeProvider.GetUtcNow();
+            DateTimeOffset issuedAt = issuedAtUtc ?? timeProvider.GetUtcNow();
 
             DateTimeOffset expiresAt = issuedAt + lifetime;
 

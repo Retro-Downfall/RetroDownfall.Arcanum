@@ -25,10 +25,25 @@ public interface ICovenantEnvelopeCodec
     /// <summary>
     /// Issues one envelope over <paramref name="payload"/> for <paramref name="purpose"/>.
     /// </summary>
+    /// <param name="issuedAtUtc">
+    /// The instant to stamp, for a payload that carries its own copy of it. Omitted, the codec reads
+    /// the clock itself.
+    /// </param>
+    /// <remarks>
+    /// A payload that repeats the envelope's own timestamps — the operator preflight body does, so a
+    /// caller cannot extend a token's life by editing the half the other does not cover — has to be
+    /// built before the envelope exists. Left to read the clock twice, the two halves disagree
+    /// whenever the reads straddle a millisecond and the token is refused as inconsistent, which is a
+    /// coin toss rather than a bound. Stating the instant makes them agree by construction.
+    ///
+    /// <para>A future instant is refused: backdating only shortens a token's life, but forward-dating
+    /// would extend it past the lifetime the caller asked for.</para>
+    /// </remarks>
     Result<string> Encode(
         CovenantEnvelopePurpose purpose,
         ReadOnlySpan<byte> payload,
-        TimeSpan lifetime);
+        TimeSpan lifetime,
+        DateTimeOffset? issuedAtUtc = null);
 
     /// <summary>
     /// Authenticates and decodes one envelope, refusing anything not issued for

@@ -303,7 +303,7 @@ public sealed class CovenantMutationBatch
     public CovenantMutationBatch(
         Guid datasetGeneration,
         long expectedKeyReclamationEpoch,
-        long expectedCampaignRegistryEpoch,
+        long? expectedCampaignRegistryEpoch,
         DateTimeOffset committedAtUtc,
         ImmutableArray<CovenantMutationIntent> intents)
     {
@@ -314,9 +314,9 @@ public sealed class CovenantMutationBatch
             expectedKeyReclamationEpoch,
             nameof(expectedKeyReclamationEpoch));
 
-        ExpectedCampaignRegistryEpoch = CovenantValidation.RequirePositive(
-            expectedCampaignRegistryEpoch,
-            nameof(expectedCampaignRegistryEpoch));
+        ExpectedCampaignRegistryEpoch = expectedCampaignRegistryEpoch is { } registryEpoch
+            ? CovenantValidation.RequirePositive(registryEpoch, nameof(expectedCampaignRegistryEpoch))
+            : null;
 
         CommittedAtUtc = committedAtUtc;
 
@@ -375,7 +375,15 @@ public sealed class CovenantMutationBatch
 
     public long ExpectedKeyReclamationEpoch { get; }
 
-    public long ExpectedCampaignRegistryEpoch { get; }
+    /// <summary>The Campaign registry epoch this batch requires, or absent when it binds none.</summary>
+    /// <remarks>
+    /// Absent is a stated position, not a missing value. A Global mutation reaches every Campaign,
+    /// including ones created after it was planned, so it binds the epoch and goes stale when the
+    /// registry moves. A Campaign mutation reaches exactly one, so binding the registry would make it
+    /// stale for reasons that cannot affect it — and a placeholder epoch here would be compared like a
+    /// real one, refusing every such mutation on any installation whose registry had ever advanced.
+    /// </remarks>
+    public long? ExpectedCampaignRegistryEpoch { get; }
 
     public DateTimeOffset CommittedAtUtc { get; }
 

@@ -206,7 +206,8 @@ public sealed class CovenantStatusTests
         public Result<string> Encode(
             CovenantEnvelopePurpose purpose,
             ReadOnlySpan<byte> payload,
-            TimeSpan lifetime) =>
+            TimeSpan lifetime,
+            DateTimeOffset? issuedAtUtc = null) =>
             throw new NotSupportedException("A status read issues no envelope.");
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>

@@ -72,15 +72,24 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         }
 
-        long registryEpoch = await ReadCampaignRegistryEpochAsync(transaction, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (registryEpoch != batch.ExpectedCampaignRegistryEpoch)
+        // Only a batch that bound the registry is checked against it. A Campaign mutation reaches one
+        // Campaign and states no requirement here, and comparing it to a stand-in value would refuse
+        // it on every installation whose registry had ever advanced — which is every installation that
+        // has a Campaign for it to apply to.
+        if (batch.ExpectedCampaignRegistryEpoch is { } expectedRegistryEpoch)
         {
 
-            return new Error(
-                ErrorCodes.Covenant.StaleSnapshot,
-                "The Campaign registry epoch changed before this mutation batch could commit.");
+            long registryEpoch = await ReadCampaignRegistryEpochAsync(transaction, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (registryEpoch != expectedRegistryEpoch)
+            {
+
+                return new Error(
+                    ErrorCodes.Covenant.StaleSnapshot,
+                    "The Campaign registry epoch changed before this mutation batch could commit.");
+
+            }
 
         }
 

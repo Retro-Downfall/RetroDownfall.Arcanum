@@ -183,7 +183,7 @@ public sealed record TurnCommitRequest
 public sealed record CovenantMutationBatchBinding(
     Guid DatasetGeneration,
     long ExpectedKeyReclamationEpoch,
-    long ExpectedCampaignRegistryEpoch);
+    long? ExpectedCampaignRegistryEpoch);
 
 /// <summary>The durable answer one finalization attempt resolved to.</summary>
 public sealed record TurnCommitReceipt(

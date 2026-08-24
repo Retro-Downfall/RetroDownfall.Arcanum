@@ -279,10 +279,13 @@ internal sealed class CovenantMutationService(
             issuedAt.ToUnixTimeMilliseconds(),
             expiresAt.ToUnixTimeMilliseconds());
 
+        // The body repeats these timestamps and the commit path requires the two to agree byte for
+        // byte, so the instant is stated rather than read a second time inside the codec.
         Result<string> token = codec.Encode(
             CovenantEnvelopePurpose.OperatorPreflight,
             body.Encode(),
-            PreflightLifetime);
+            PreflightLifetime,
+            issuedAt);
 
         if (token.IsFailure)
         {
@@ -494,7 +497,7 @@ internal sealed class CovenantMutationService(
         CovenantMutationBatch batch = new(
             body.DatasetGeneration,
             checked((long)body.KeyReclamationEpoch),
-            checked((long)(body.CampaignRegistryEpoch ?? 1UL)),
+            body.CampaignRegistryEpoch is { } bodyRegistryEpoch ? checked((long)bodyRegistryEpoch) : null,
             timeProvider.GetUtcNow(),
             [intent]);
 
