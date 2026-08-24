@@ -143,6 +143,8 @@ public sealed partial class WizardIntelligenceProvider
 
                     turn,
 
+                    invocationContext,
+
                     lease,
 
                     auxiliaryCalls,
@@ -167,6 +169,8 @@ public sealed partial class WizardIntelligenceProvider
         ContextPreviewRequest previewRequest,
 
         PingRequest turn,
+
+        ArcanumInvocationContext invocationContext,
 
         ChatClientLease lease,
 
@@ -367,6 +371,22 @@ public sealed partial class WizardIntelligenceProvider
 
             : [];
 
+        // Inspection exists to answer "what will this turn actually send". Building the preview without
+        // the Covenant makes it answer about a prompt no turn produces, and it is the reason the
+        // Proposed-lane pressure sentence below can never fire.
+        // The same scope a live turn opens, through the same gate. Resolving it any other way would let
+        // inspection and dispatch disagree about what this turn's Covenant is, which is the one thing an
+        // operator uses inspection to rule out.
+        CovenantTurnScope previewCovenantScope = await BeginCovenantTurnAsync(
+                turn,
+                invocationContext,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await using CovenantTurnScope previewCovenantOwned = previewCovenantScope;
+
+        CovenantPromptContent previewCovenant = previewCovenantOwned.PlanContent;
+
         SystemPromptDocument document = SystemPromptBuilder.BuildDocument(
 
             turn,
@@ -401,7 +421,9 @@ public sealed partial class WizardIntelligenceProvider
 
             sessionAttachmentContext: attachmentContext,
 
-            tapestryContext: tapestryContext);
+            tapestryContext: tapestryContext,
+
+            covenant: previewCovenant);
 
         InferenceContextBuilder.PrependDynamicSystemMessage(messages, document.Render());
 
@@ -527,6 +549,9 @@ public sealed partial class WizardIntelligenceProvider
 
                 });
 
+        // The attribution map is the only producer of the two Covenant token lanes. Without it the
+        // estimator emits a zero-token CovenantProposed row and inspection reports "no effective
+        // content" for a prompt that is carrying the operator's standing agreement.
         ContextTokenBreakdown breakdown = ModelTokenEstimator.EstimateContext(
 
             new ModelTokenizationRequest(
@@ -541,7 +566,9 @@ public sealed partial class WizardIntelligenceProvider
 
                 callContext.ReservedAnswerTokens,
 
-                callContext.ReservedReasoningTokens));
+                callContext.ReservedReasoningTokens,
+
+                document.BuildResult().Attribution));
 
         List<ContextPreviewSource> sources = BuildPreviewSources(
 

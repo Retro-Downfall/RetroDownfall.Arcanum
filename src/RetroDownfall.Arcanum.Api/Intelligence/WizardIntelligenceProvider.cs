@@ -2827,6 +2827,7 @@ public sealed partial class WizardIntelligenceProvider(
                             MaxIndexItems = streamMaxIndexItems,
                             MaxIndexBytes = streamMaxIndexBytes,
                             ScryingFoci = streamContextRequest.ScryingFoci,
+                            Covenant = streamCovenantContent,
                         });
                 chatMessages = preparedMessages;
                 streamingContextPrepared = true;
@@ -2835,26 +2836,12 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     streamContextUsesCompressedSummary = true;
 
-                    streamSystemPromptDocument = SystemPromptBuilder.BuildDocument(
-                        request,
-                        streamCodexContent,
-                        streamActiveSpell,
-                        streamAcceptedAttachedFiles,
-                        campaignSummary: thread?.Summary,
-                        dependencySpells: streamResonants,
-                        maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
-                            ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
-                        semanticContext: streamSemanticContext,
-                        sagaMemories: streamSagaMemories,
-                        lexiconEntries: streamLexiconEntries,
-                        maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
-                            settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
-                        sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
-                        maxIndexItems: streamMaxIndexItems,
-                        maxIndexBytes: streamMaxIndexBytes,
-                        sessionAttachmentContext: streamAttachmentContext,
-                        tapestryContext: streamTapestryContext,
-                covenant: streamCovenantContent);
+                    // The one rebuild path, rather than a second copy of the same call. Compression
+                    // replaced the whole transcript, so the document and chatMessages[0] have to be
+                    // rewritten together: the dispatch gate compares them and fails the turn closed on
+                    // any divergence, so a rebuild that refreshed only the document would refuse every
+                    // compressed turn that carried Covenant content.
+                    RebuildMaterializedSystemPrompt();
 
                     if (streaming)
                     {

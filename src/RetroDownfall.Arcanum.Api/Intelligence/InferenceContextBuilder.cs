@@ -57,6 +57,15 @@ internal sealed record ContextCompressionRequest
 
     public IReadOnlyList<AIContent>? AppendedContents { get; init; }
 
+    /// <summary>The Covenant sections this turn admitted, so a compressed rebuild keeps them.</summary>
+    /// <remarks>
+    /// Compression rebuilds the system prompt from the summarized transcript. Rebuilding it without the
+    /// Covenant would drop the operator's standing agreement exactly on the long sessions where it has
+    /// been restated least — and the dispatch gate compares the rebuilt transcript against the frozen
+    /// document, so the mismatch does not degrade quietly: it refuses the turn.
+    /// </remarks>
+    public CovenantPromptContent? Covenant { get; init; }
+
     /// <summary>
     /// The Scrying foci the ledger accepted for this turn — the images
     /// <see cref="InferenceContextBuilder.BuildInitialMeAiChatMessages"/> threaded onto the last
@@ -286,7 +295,8 @@ public sealed class InferenceContextBuilder(
             maxIndexItems: context.MaxIndexItems,
             maxIndexBytes: context.MaxIndexBytes,
             sessionAttachmentContext: context.SessionAttachmentContext,
-            tapestryContext: context.TapestryContext);
+            tapestryContext: context.TapestryContext,
+            covenant: context.Covenant);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 
