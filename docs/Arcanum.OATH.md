@@ -8,9 +8,9 @@
 
 **Design thesis:** a memory system is safe only when every retained claim, derivative, retrieval, provider call, mutation, and disclosure remains bound to its origin, authority, scope, sensitivity, revision history, and evidence of use.
 
-**Document status:** current as of **2026-08-22**, reconciled through GitHub issue #128 and issue #120's authenticated installation-reset active-state protocol.
+**Document status:** current as of **2026-08-23**, reconciled through GitHub issue #128 and issue #122's exact host-tools marker-pair compare-deletion and Campaign-marker cleanup.
 
-**Branch status.** This #120 update is intentionally branch-local on `long-term-memory` until the normal project mirror reaches `main`; delivery of this issue does not merge or rewrite `main`. Read this copy together with the implementation branch. The implementation and the `Arcanum.DESIGN.md` sections it cites (§10.10–§10.20.11) live on `long-term-memory`; §22 marks those links.
+**Branch status.** This #122 update is intentionally branch-local on `long-term-memory` until the normal project mirror reaches `main`; delivery of this issue does not merge or rewrite `main`. Read this copy together with the implementation branch. The implementation and the `Arcanum.DESIGN.md` sections it cites (§10.10–§10.20.11) live on `long-term-memory`; §22 marks those links.
 
 ---
 
@@ -78,6 +78,7 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#125** | Landed | Canonical secure-delete transaction, connection drain, fresh dataset, monotonic epochs, and retained-evidence assertions. |
 | **#126** | Landed | Checked WAL truncation, compaction/export proof, sidecar absence, and immutable candidate reopen. |
 | **#127** | Landed | Composite runtime publication, all-six-token retirement, bounded inventory/catalog guard, serialized warm writer, production transition, exact-owner recovery/adoption, complete composition, and same/fresh-process acceptance. |
+| **#122** | Landed | Exact host-tools marker-pair compare-deletion and Campaign-marker cleanup: the authenticated four-phase checkpoint and its restart proof, the signed-attestation, pair-evidence, Campaign-inventory, and effect digests, kind-four Campaign cleanup children with write-once companion observation evidence, the retained native operating-system marker capability and the shared process-wide mutation gate, reconciliation of every child to a terminal phase with a receipt whose deleted and orphaned counts add up under a checked addition, and composition through the one locked full-reset seam authorized to reach it. |
 | **#128** | Implemented | Dedicated Covenant reset preview; lifecycle authority and protected plan serialization; direct V3 reset coordinator entry; healthy-catalog V1 factory composition with ordinary cleanup between `ManagedArtifactsProcessed` and `HandlesClosed`; authenticated global/all plan rebinding; owner-only `Prepared + HostFactoryErasure` replay handoff and monotonic proof-before-shutdown; exact-owner lease maintenance through direct and recovered terminalization; and shared reset/global-factory external-retention disclosure before confirmation. |
 
 The shared persistence graph is registered in CLI and host with host-only initiation and recovery handlers. The existing `/api/data` reset/factory lifecycle is activated, including `arcanum data reset-memory --scope covenant`; the dedicated Covenant inspection/mutation/repair routes and commands remain unmapped. The feature remains off by default.
@@ -86,11 +87,10 @@ The shared persistence graph is registered in CLI and host with host-only initia
 
 | Issue | Size | Role |
 |---|---|---|
-| **#94** | XL | Covenant family erasure and data-lifecycle activation are implemented through the #128 contract; #120–#121 now secure installation-reset recovery and external authorization, while #122–#123 remain for full-reset effects. |
+| **#94** | XL | Covenant family erasure and data-lifecycle activation are implemented through the #128 contract; #120–#122 now secure installation-reset recovery, external authorization, and the exact marker-pair and Campaign-cleanup effects, while #123 remains for the rest. |
 | **#119** | XL | Reset/factory-erasure implementation through the #128 contract is present; parent completion remains. |
 | **#120** | L | The authenticated V2 installation-reset active record and its anti-rollback anchor. |
 | **#121** | L | CLI-only independently rooted external remediation verification and one-way full-reset authorization claim; no marker deletion or identity rotation. |
-| **#122** | XL | Host-tools marker-pair compare-deletion and Campaign-marker cleanup. |
 | **#123** | XL | Full-reset managed-file reconciliation and restore-credential terminalization. |
 | **#92** | XL | Performance, Native AOT, documentation, and release qualification — the #74 acceptance gate. |
 | **#102** | XL | Resumable raw-SQL feature-schema evolution and backfills. Shared prerequisite for #75–#78. |
@@ -912,11 +912,11 @@ The marker evidence carries that taint-time version in the complete unsigned dom
 
 The signed preimage is ASCII `Arcanum.FullInstallationReset.ExternalRemediation.v1`, NUL, byte version, the three UUIDs in RFC-4122/network order, taint version as `UInt64BE`, the four raw digests, decoded nonce and strict UTF-8 issuer each framed by `UInt16BE` length, then issued and expiry Unix seconds as `Int64BE`; the signature is excluded. The action digest is SHA-256 of ASCII `Arcanum.FullInstallationReset.RemediationAction.v1`, NUL, and byte `1` for exact `All`. Request and signed operation IDs must agree before any lookup, journal, marker read, shutdown, lock, or effect. Verification admits only the current exact `TaintedMatched` pair; clean, pending, mismatch, missing, unreadable, stale, future-issued, expired, unknown-issuer, replayed, or changed evidence is one content-free refusal. Ordinary reset has no attestation arm and refuses every dangerous pair before its host data effect.
 
-Acceptance carries the signed operation unchanged into exact-lock continuation and V2 publication, then writes one encrypted authenticated `FullInstallationResetRemediationClaimV1`. #121 runs no host factory effect, host handoff, online replay, ordinary offline cleanup, or credential deletion; later slices must preserve this signed identity if they add those continuations. The claim holds only version, operation and installation UUIDs, domain-separated attestation/nonce/issuer digests, and whole-second acceptance time. Plaintext statement, signature, issuer, nonce, file path, trust root, and key material are absent from the claim, outer header, output, confirmation, diagnostics, and logs. Fresh admission always checks the live clock, signature, and pinned root. An exact authenticated retry may continue after statement expiry only by rebuilding the canonical projection against the still-exact live marker evidence and fixed-time matching every stored identity and digest; it grants no new authorization and any changed input still refuses. It is an operation-bound one-way authorization checkpoint, not deletion: #122 owns exact marker-pair compare-delete and Campaign-marker cleanup; #123 owns remaining managed-file, restore-credential, and identity terminalization. The operation stays tainted and closed after #121 authorization and cannot report full reset complete.
+Acceptance carries the signed operation unchanged into exact-lock continuation and V2 publication, then writes one encrypted authenticated `FullInstallationResetRemediationClaimV1`. #121 runs no host factory effect, host handoff, online replay, ordinary offline cleanup, or credential deletion; later slices must preserve this signed identity if they add those continuations. The claim holds only version, operation and installation UUIDs, domain-separated attestation/nonce/issuer digests, and whole-second acceptance time. Plaintext statement, signature, issuer, nonce, file path, trust root, and key material are absent from the claim, outer header, output, confirmation, diagnostics, and logs. Fresh admission always checks the live clock, signature, and pinned root. An exact authenticated retry may continue after statement expiry only by rebuilding the canonical projection against the still-exact live marker evidence and fixed-time matching every stored identity and digest; it grants no new authorization and any changed input still refuses. It is an operation-bound one-way authorization checkpoint, not deletion of its own: #122 has since landed the exact marker-pair compare-delete and Campaign-marker cleanup that claim authorizes, and #123 still owns the remaining managed-file, restore-credential, and identity terminalization. The operation stays tainted and closed after the marker-pair checkpoint completes and cannot report full reset complete.
 
 One data-LRO lease maintainer begins immediately after named or unnamed durable factory start and spans re-plan, catalog proof, V1 checkpoint, coordinator, ordinary continuation, and terminalization. Ordinary continuation mutation compares operation ID, `Running`, exact owner, and live expiry. V0/V1 factory and V3 reset recovery use the same maintainer with the reconciler-adopted owner; ownership loss stops effects and becomes content-free requires-attention. No Covenant phase or checkpoint version changed.
 
-Real SQLCipher acceptance proves old-read-lease revocation and all-six-token rejection in one process, plus fresh-process exact-owner adoption/resume from `InventoryPrepared`. The `/api/data` reset/factory routes now await that graph through final release before writing a response. Dedicated Covenant management routes remain separate. Full-installation deletion remains closed after #121 evidence until #122–#123 finish their separately checkpointed effects.
+Real SQLCipher acceptance proves old-read-lease revocation and all-six-token rejection in one process, plus fresh-process exact-owner adoption/resume from `InventoryPrepared`. The `/api/data` reset/factory routes now await that graph through final release before writing a response. Dedicated Covenant management routes remain separate. Full-installation deletion remains closed after the #122 marker-pair checkpoint until #123 finishes its separately checkpointed effects.
 
 Completion reports local secure erasure separately from external disclosure and never claims remote copies were erased.
 
@@ -973,7 +973,7 @@ flowchart LR
 
 Phases 1 through 4 and the Covenant family-erasure lifecycle through the #128 route-activation contract are implemented. What remains for #74:
 
-- **#94:** full installation erasure and remediation (#120–#123); the #128 reset and healthy-catalog factory entry contract is implemented.
+- **#94:** full installation erasure and remediation (#120–#123, of which #120–#122 have landed); the #128 reset and healthy-catalog factory entry contract is implemented.
 - **#92:** performance, AOT, security, full-suite, review, and documentation qualification.
 
 Completing a child does not authorize feature enablement or closing #74 without the approved integration boundary.
@@ -1275,7 +1275,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 ## 22. Source map
 
-The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` through the project's normal mirror. This #120 delivery does not itself merge `main`.
+The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` through the project's normal mirror. This #122 delivery does not itself merge `main`.
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.20.11 **(branch)**:
   - §10.10 Core protocol foundation
