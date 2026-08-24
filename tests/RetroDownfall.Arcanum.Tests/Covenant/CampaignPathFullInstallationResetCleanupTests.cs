@@ -1678,6 +1678,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             throw new InvalidOperationException(
                 "The full-reset cleanup must borrow its caller's Core connection.");
 
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "The full-reset cleanup must borrow its caller's Core connection.");
+
     }
 
     private sealed class RecordingActiveStore(string guardedRoot)

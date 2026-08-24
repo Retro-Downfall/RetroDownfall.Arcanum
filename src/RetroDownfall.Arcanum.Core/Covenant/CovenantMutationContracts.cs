@@ -340,10 +340,14 @@ public sealed class CovenantMutationBatch
 
         HashSet<(CovenantScope Scope, Guid Campaign, string Key, CovenantLane Lane)> targets = [];
 
+        bool reachesEveryCampaign = false;
+
         foreach (CovenantMutationIntent intent in intents)
         {
 
             ArgumentNullException.ThrowIfNull(intent, nameof(intents));
+
+            reachesEveryCampaign |= intent.Target.Scope.Kind == CovenantScope.Global;
 
             if (!mutationIds.Add(intent.MutationId))
             {
@@ -364,6 +368,20 @@ public sealed class CovenantMutationBatch
                     nameof(intents));
 
             }
+
+        }
+
+        // Absence of the registry epoch is a legal position only for a batch that reaches one
+        // Campaign. The kernel skips the registry comparison whenever the epoch is absent, so a
+        // Global batch that omitted it would commit against a registry it never looked at. Deciding
+        // that here rather than trusting each construction site is the point: the intents are what
+        // say which position is legal, and the batch already holds them.
+        if (reachesEveryCampaign && ExpectedCampaignRegistryEpoch is null)
+        {
+
+            throw new ArgumentException(
+                "A Global Covenant mutation batch must bind the Campaign registry epoch.",
+                nameof(expectedCampaignRegistryEpoch));
 
         }
 

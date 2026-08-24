@@ -86,7 +86,12 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         CancellationToken cancellationToken)
     {
 
-        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
+        // session_sensitivity_state is an always-present core table, and the Covenant dispatch gate
+        // reads this projection on every session-backed turn — including on an installation whose
+        // Covenant is disabled and whose canonical tier has never been opened. Taking the latching
+        // accessor here would close the offline host-tools transition on that installation for a
+        // read that touched no Covenant material at all.
+        SqliteConnection connection = await connections.GetOpenCoreConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
         return await ReadProjectionWithinAsync(connection, transaction: null, sessionId, cancellationToken)

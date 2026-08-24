@@ -546,6 +546,11 @@ public sealed class CovenantLinkerTests
         Assert.Equal(CovenantPlanDecision.EligibleConfirmed, DecisionFor(plan, global).Decision);
         Assert.Equal(CovenantPlanDecision.Invalid, DecisionFor(plan, foreign).Decision);
         Assert.Equal([global], plan.GlobalConfirmedSection.Candidates.Select(static decision => decision.Candidate));
+
+        // Typed as invalid and also absent from the section: a foreign row that stayed out of the
+        // Global section but reached the Campaign one would still be another Campaign's content in
+        // this turn's prompt.
+        Assert.Empty(plan.CampaignConfirmedSection.Candidates);
     }
 
     [Fact]

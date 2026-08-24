@@ -1003,6 +1003,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             throw new InvalidOperationException(
                 "The stopped-host reconciliation must use the caller's connection.");
 
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException(
+                "The stopped-host reconciliation must use the caller's connection.");
+
     }
 
     /// <summary>

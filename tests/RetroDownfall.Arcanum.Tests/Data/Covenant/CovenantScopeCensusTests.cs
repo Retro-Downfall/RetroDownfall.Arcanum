@@ -84,6 +84,28 @@ public sealed class CovenantScopeCensusTests
 
         Assert.Equal(3, census.Rows.Length);
 
+        long campaignConfirmedBytes = RowBytes(census, CovenantScope.Campaign, CovenantLane.Confirmed);
+
+        long campaignProposedBytes = RowBytes(census, CovenantScope.Campaign, CovenantLane.Proposed);
+
+        // The two Campaign contents are deliberately different lengths, so a census that routed both
+        // Campaign lanes into one section total would have to disagree with one of these. Asserting
+        // only that Campaign Confirmed is zero — as an installation holding no such head can — would
+        // accept exactly that merge.
+        Assert.True(campaignConfirmedBytes > 0);
+
+        Assert.True(campaignProposedBytes > 0);
+
+        Assert.NotEqual(campaignConfirmedBytes, campaignProposedBytes);
+
+        Assert.Equal(campaignConfirmedBytes, census.CampaignConfirmedRenderedBytes);
+
+        Assert.Equal(campaignProposedBytes, census.CampaignProposedRenderedBytes);
+
+        Assert.Equal(
+            RowBytes(census, CovenantScope.Global, CovenantLane.Confirmed),
+            census.GlobalConfirmedRenderedBytes);
+
         Assert.Contains(
             census.Rows,
             row => row is
@@ -276,6 +298,40 @@ public sealed class CovenantScopeCensusTests
         Assert.True(refused.IsFailure);
 
     }
+
+    [Fact]
+    public async Task A_canonical_tier_that_cannot_be_read_returns_a_failure_rather_than_throwing()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await using (SqliteCommand drop = fixture.Connection.CreateCommand())
+        {
+
+            drop.CommandText = "DROP TABLE covenant_heads;";
+
+            _ = await drop.ExecuteNonQueryAsync(Token);
+
+        }
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease lease =
+            (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        // Status is a read-only request an operator makes to find out whether their memory works. A
+        // storage failure that escaped this Result-returning port would unwind through the endpoint
+        // instead of reaching the degradation the management service already renders.
+        Result<CovenantScopeCensus> read = await fixture.Store.ReadScopeCensusAsync(lease, Token);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, read.Error.Code);
+
+    }
+
+    private static long RowBytes(CovenantScopeCensus census, CovenantScope scope, CovenantLane lane) =>
+        census.Rows.Single(row => row.Scope == scope && row.Lane == lane).RenderedBytes;
 
     private static async Task<CovenantScopeCensus> CensusAsync(CovenantCanonicalFixture fixture)
     {

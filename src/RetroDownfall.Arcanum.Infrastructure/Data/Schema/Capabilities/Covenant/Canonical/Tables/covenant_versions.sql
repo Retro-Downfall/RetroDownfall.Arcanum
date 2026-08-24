@@ -39,8 +39,15 @@ CREATE TABLE IF NOT EXISTS covenant_versions (
             AND AuthoredContent IS NULL
             AND CompiledContent IS NULL
             AND AuthoredHash IS NULL
-            AND RenderedHash IS NULL)
+            AND RenderedHash IS NULL
+            AND CompiledByteCost = 0)
     ),
+    -- An agent proposal belongs to the Proposed lane and to nothing else. The rule runs one way:
+    -- an operator and an approved agent retirement both reach either lane, because retiring a
+    -- proposal is exactly how a proposal ends. Enforced here as well as in the contracts because a
+    -- direct writer could otherwise seat proposed content on a Confirmed head, and the first
+    -- complaint would be a constructor throw when the projection tried to load it.
+    CHECK (OriginCode <> 2 OR LaneCode = 2),
     -- An agent-authored version names the turn it came from. The operator origin has no turn, so
     -- only the two agent origins require one. (The no-Global-Proposed rule spans entries and
     -- versions, so it cannot be a single-table CHECK; covenant_heads_validate_* enforces it.)

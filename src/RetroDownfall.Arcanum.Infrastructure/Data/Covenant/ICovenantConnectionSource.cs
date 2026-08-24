@@ -18,6 +18,18 @@ internal interface ICovenantConnectionSource
 
     ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The same open connection, for a statement that reads only always-present core tables.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does not latch <see cref="CovenantProcessResidence"/>. That latch is one-way and
+    /// exists to forbid the offline host-tools transition once this process has held Covenant
+    /// material; a statement over a table no Covenant capability owns has held none. Latching for
+    /// one would close the transition on a gate-off installation whose canonical tier was never
+    /// opened, and the operator would have no way to reopen it.
+    /// </remarks>
+    ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken);
+
 }
 
 /// <summary>
@@ -26,12 +38,19 @@ internal interface ICovenantConnectionSource
 internal sealed class CovenantConnectionSource(ArcanumDbContext db) : ICovenantConnectionSource
 {
 
-    public async ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
+    public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
 
         // The one choke point every canonical read and write passes through, and therefore the one
         // place that can honestly latch "this process has held Covenant material".
         CovenantProcessResidence.MarkOpened();
+
+        return GetOpenCoreConnectionAsync(cancellationToken);
+
+    }
+
+    public async ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
+    {
 
         if (db.Database.GetDbConnection() is not SqliteConnection connection)
         {

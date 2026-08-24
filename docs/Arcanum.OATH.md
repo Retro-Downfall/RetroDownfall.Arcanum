@@ -119,7 +119,7 @@ The word **bitemporal** therefore requires care. OATH is bitemporal-*ready*: cur
 
 Unless a section explicitly says **landed**, the implementation descriptions below are the normative target assembled from the approved specification and coordinated plans. §2.1 is the boundary for claims about the executable that exists today.
 
-The Covenant integration is disabled by default through `Arcanum:Features:Covenant`. While disabled, an untainted call receives no Covenant prompt bytes, tools, canonical reads, accelerator reads, or feature-specific allocation. Authenticated management remains available for inspection, seeding, repair, reset, and erasure. Previously tainted Session history keeps its protected-read and propagation requirements after disablement.
+The Covenant integration is disabled by default through `Arcanum:Features:Covenant`. While disabled, an untainted call receives no Covenant prompt bytes, tools, canonical reads, accelerator reads, or feature-specific allocation. The one storage read the disabled path still takes is the Session sensitivity projection, over an always-present core table rather than either Covenant tier, and it takes the connection accessor that does not latch this process as having held Covenant material — the sentence below is why it is taken at all, since untaintedness cannot be known without reading. Authenticated management remains available for inspection, seeding, repair, reset, and erasure. Previously tainted Session history keeps its protected-read and propagation requirements after disablement.
 
 ## 3. Why an ordinary memory store is insufficient
 

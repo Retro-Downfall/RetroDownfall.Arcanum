@@ -128,11 +128,57 @@ public sealed class CovenantStoreTests
             laneRevision: 2,
             predecessorVersionId: retiring.VersionId);
 
+        SeededHead campaignLive = await fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "campaign.live",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Campaign live.",
+            Token);
+
+        // Both Campaign lanes get a tombstone. Seeding Global heads alone leaves the Campaign arm's
+        // own lifecycle filter unproven, and the Campaign arm is the one that carries no lane filter
+        // — so it is the arm where a retired Proposed head would surface as a live suggestion.
+        await SeedRetiredAsync(fixture, "campaign.retired.confirmed", CovenantLane.Confirmed);
+
+        await SeedRetiredAsync(fixture, "campaign.retired.proposed", CovenantLane.Proposed);
+
         CovenantTurnSnapshot snapshot = await ReadSnapshotAsync(fixture, CampaignOne);
 
-        CovenantSnapshotCandidate only = Assert.Single(snapshot.Candidates);
+        Assert.Equal(
+            new[] { live.EntryId, campaignLive.EntryId }.OrderBy(static id => id),
+            snapshot.Candidates.Select(static candidate => candidate.EntryId).OrderBy(static id => id));
 
-        Assert.Equal(live.EntryId, only.EntryId);
+        Assert.All(
+            snapshot.Candidates,
+            candidate => Assert.Equal(CovenantOperation.Set, candidate.Operation));
+
+        async Task SeedRetiredAsync(CovenantCanonicalFixture bed, string key, CovenantLane lane)
+        {
+
+            SeededHead seeded = await bed.SeedHeadAsync(
+                CovenantScope.Campaign,
+                CampaignOne,
+                key,
+                lane,
+                CovenantOperation.Set,
+                $"Doomed {key}.",
+                Token);
+
+            _ = await bed.SeedHeadAsync(
+                CovenantScope.Campaign,
+                CampaignOne,
+                key,
+                lane,
+                CovenantOperation.Retire,
+                null,
+                Token,
+                entryId: seeded.EntryId,
+                laneRevision: 2,
+                predecessorVersionId: seeded.VersionId);
+
+        }
 
     }
 
@@ -215,12 +261,16 @@ public sealed class CovenantStoreTests
     }
 
     [Fact]
-    public async Task One_hundred_and_sixty_active_heads_are_accepted()
+    public async Task One_hundred_and_sixty_active_heads_split_across_scopes_are_accepted()
     {
 
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
-        for (int index = 0; index < CovenantLimits.MaxActiveSnapshotRows; index++)
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+
+        const int GlobalHeads = 100;
+
+        for (int index = 0; index < GlobalHeads; index++)
         {
 
             _ = await fixture.SeedHeadAsync(
@@ -234,9 +284,27 @@ public sealed class CovenantStoreTests
 
         }
 
-        CovenantTurnSnapshot snapshot = await ReadSnapshotAsync(fixture, null);
+        for (int index = 0; index < CovenantLimits.MaxActiveSnapshotRows - GlobalHeads; index++)
+        {
+
+            _ = await fixture.SeedHeadAsync(
+                CovenantScope.Campaign,
+                CampaignOne,
+                $"campaign.key{index:000}",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set,
+                $"Campaign value {index}.",
+                Token);
+
+        }
+
+        // The bound is on the pair a turn loads, not on either scope alone: a Campaign sitting at
+        // the boundary must still see every Global head it inherits.
+        CovenantTurnSnapshot snapshot = await ReadSnapshotAsync(fixture, CampaignOne);
 
         Assert.Equal(CovenantLimits.MaxActiveSnapshotRows, snapshot.Candidates.Length);
+
+        Assert.Equal(GlobalHeads, snapshot.Candidates.Count(candidate => candidate.Scope == CovenantScope.Global));
 
     }
 

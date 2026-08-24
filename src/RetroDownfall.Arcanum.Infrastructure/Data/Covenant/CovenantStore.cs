@@ -799,11 +799,12 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                     rows.Add(new CovenantScopeCensusRow(scope, lane, lifecycle, count, bytes));
 
-                    // Retired heads need no filtering here. A tombstone version carries no compiled
-                    // content by table constraint, versions are append-only, and a trigger pins every
-                    // head's byte cost to its own version's — so a retired head's recorded cost is
-                    // zero and cannot become anything else. A guard would be a branch no writer can
-                    // reach, and the section totals below would read as though it were load-bearing.
+                    // Retired heads need no filtering here. A tombstone version carries neither
+                    // compiled content nor a nonzero byte cost by table constraint, versions are
+                    // append-only, and a trigger pins every head's byte cost to its own version's —
+                    // so a retired head's recorded cost is zero and cannot become anything else. A
+                    // guard would be a branch no writer can reach, and the section totals below
+                    // would read as though it were load-bearing.
                     if (scope is CovenantScope.Global)
                     {
 
@@ -868,6 +869,17 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                 globalConfirmed,
                 maxCampaignConfirmed,
                 maxCampaignProposed);
+
+        }
+        catch (SqliteException exception)
+        {
+
+            // A read-only status request must not unwind through the endpoint. The management
+            // service already renders a census it could not take as empty counts beside health that
+            // says the tier was not read, and that is only reachable through a returned failure.
+            return new Error(
+                ErrorCodes.Covenant.Unavailable,
+                $"The Covenant canonical tier could not be read for a census: {exception.SqliteErrorCode}.");
 
         }
         finally

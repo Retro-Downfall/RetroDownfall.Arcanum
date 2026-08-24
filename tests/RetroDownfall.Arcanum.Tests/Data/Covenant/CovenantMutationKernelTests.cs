@@ -36,6 +36,52 @@ public sealed class CovenantMutationKernelTests
 
     }
 
+    /// <summary>
+    /// A Global mutation reaches every Campaign, including one created between planning and commit,
+    /// so it has to bind the Campaign registry epoch. The kernel skips the registry comparison
+    /// whenever the epoch is absent, so a Global batch that omitted it would commit against a
+    /// registry nothing ever compared — and only the batch, which holds the intents, can tell the
+    /// legal absence from the illegal one.
+    /// </summary>
+    [Fact]
+    public void A_Global_batch_cannot_leave_the_Campaign_registry_epoch_unbound()
+    {
+
+        CovenantMutationIntent global = CovenantMutationFixture.OperatorSet(
+            CovenantOperationScope.Global,
+            "global.key",
+            "Global content.",
+            0,
+            0);
+
+        ArgumentException refused = Assert.Throws<ArgumentException>(() => new CovenantMutationBatch(
+            Guid.NewGuid(),
+            1,
+            null,
+            DateTimeOffset.UnixEpoch,
+            [global]));
+
+        Assert.Equal("expectedCampaignRegistryEpoch", refused.ParamName);
+
+        CovenantMutationIntent campaign = CovenantMutationFixture.OperatorSet(
+            CovenantOperationScope.ForCampaign(CampaignOne),
+            "campaign.key",
+            "Campaign content.",
+            0,
+            0);
+
+        // A Campaign-only batch reaches one Campaign, so absence stays a legal position for it.
+        CovenantMutationBatch accepted = new(
+            Guid.NewGuid(),
+            1,
+            null,
+            DateTimeOffset.UnixEpoch,
+            [campaign]);
+
+        Assert.Null(accepted.ExpectedCampaignRegistryEpoch);
+
+    }
+
     [Fact]
     public async Task A_create_appends_a_version_and_advances_its_head()
     {

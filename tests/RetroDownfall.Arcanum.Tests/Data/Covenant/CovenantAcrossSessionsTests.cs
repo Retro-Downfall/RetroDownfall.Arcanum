@@ -34,6 +34,10 @@ public sealed class CovenantAcrossSessionsTests
 
     private const string CampaignPreference = "This Campaign ships its migrations by hand.";
 
+    private const string GlobalKey = "preference.builds";
+
+    private const string CampaignOverride = "This Campaign builds from its own subdirectory.";
+
     private static readonly Guid SessionACampaign = CovenantOperationGateFixture.CampaignOne;
 
     private static readonly Guid SessionBCampaign = CovenantOperationGateFixture.CampaignTwo;
@@ -72,6 +76,82 @@ public sealed class CovenantAcrossSessionsTests
         Assert.True(session.PlanContent.HasConfirmed);
 
         Assert.False(session.PlanContent.HasProposed);
+
+        // And it renders in a second Campaign as well. Asserting it in one Campaign alone would let
+        // a Global arm that had quietly acquired a Campaign predicate pass, because every such arm
+        // is correct for exactly one Campaign.
+        CovenantTurnContext elsewhere =
+            await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+
+        Assert.Contains(GlobalPreference, elsewhere.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task A_global_and_a_campaign_preference_are_rendered_in_the_same_turn()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(SessionACampaign, "Session A", Token);
+
+        FakeCovenantAvailability availability = new();
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
+
+        await WriteGlobalAsync(fixture, gate);
+
+        await WriteCampaignAsync(fixture, gate, SessionACampaign);
+
+        CovenantTurnContext turn = await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+
+        // The two sections coexist. Every other test here populates one of them, so a linker that
+        // let a Campaign Confirmed head suppress the Global section — or the reverse — would still
+        // pass all of them.
+        Assert.Contains(GlobalPreference, turn.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
+
+        Assert.Contains(CampaignPreference, turn.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Retiring_a_campaign_override_gives_the_global_statement_back()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(SessionACampaign, "Session A", Token);
+
+        FakeCovenantAvailability availability = new();
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability, authority);
+
+        await WriteGlobalAsync(fixture, gate);
+
+        await WriteCampaignAsync(fixture, gate, SessionACampaign, GlobalKey, CampaignOverride);
+
+        CovenantTurnContext shadowed =
+            await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+
+        Assert.Contains(CampaignOverride, shadowed.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(GlobalPreference, shadowed.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
+
+        await RetireCampaignAsync(fixture, gate, SessionACampaign, GlobalKey);
+
+        CovenantTurnContext restored =
+            await BeginTurnAsync(fixture, gate, availability, authority, SessionACampaign);
+
+        // A Campaign tombstone withdraws the override, not the Global statement underneath it. If a
+        // tombstone kept shadowing, an operator could silence a Global preference in one Campaign
+        // with no row left anywhere that says so.
+        Assert.Contains(GlobalPreference, restored.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(CampaignOverride, restored.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
 
     }
 
@@ -323,7 +403,9 @@ public sealed class CovenantAcrossSessionsTests
     private static async Task WriteCampaignAsync(
         CovenantCanonicalFixture fixture,
         CovenantOperationGate gate,
-        Guid campaignId)
+        Guid campaignId,
+        string key = "preference.migrations",
+        string content = CampaignPreference)
     {
 
         CovenantMutationService service = Service(fixture);
@@ -340,8 +422,8 @@ public sealed class CovenantAcrossSessionsTests
                 new CovenantSetPrepareRequest(
                     CovenantScope.Campaign,
                     campaignId,
-                    "preference.migrations",
-                    CampaignPreference,
+                    key,
+                    content,
                     ExpectedRevision: 0,
                     mutationId,
                     Reactivate: false),
@@ -361,11 +443,64 @@ public sealed class CovenantAcrossSessionsTests
             new CovenantSetRequest(
                 CovenantScope.Campaign,
                 campaignId,
-                "preference.migrations",
-                CampaignPreference,
+                key,
+                content,
                 ExpectedRevision: 0,
                 mutationId,
                 Reactivate: false,
+                preflight),
+            write,
+            Token);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+    }
+
+    private static async Task RetireCampaignAsync(
+        CovenantCanonicalFixture fixture,
+        CovenantOperationGate gate,
+        Guid campaignId,
+        string key)
+    {
+
+        CovenantMutationService service = Service(fixture);
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        string preflight;
+
+        CovenantOperationScope scope = CovenantOperationScope.ForCampaign(campaignId);
+
+        await using (CovenantReadLease read = (await gate.AcquireReadAsync(scope, Token)).Value)
+        {
+
+            Result<CovenantMutationPreflightDto> prepared = await service.PrepareRetireAsync(
+                new CovenantRetirePrepareRequest(
+                    CovenantScope.Campaign,
+                    campaignId,
+                    key,
+                    CovenantLane.Confirmed,
+                    ExpectedRevision: 1,
+                    mutationId),
+                read,
+                Token);
+
+            Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+            preflight = prepared.Value.PreflightToken;
+
+        }
+
+        await using CovenantWriteLease write = (await gate.AcquireWriteAsync(scope, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await service.RetireAsync(
+            new CovenantRetireRequest(
+                CovenantScope.Campaign,
+                campaignId,
+                key,
+                CovenantLane.Confirmed,
+                ExpectedRevision: 1,
+                mutationId,
                 preflight),
             write,
             Token);

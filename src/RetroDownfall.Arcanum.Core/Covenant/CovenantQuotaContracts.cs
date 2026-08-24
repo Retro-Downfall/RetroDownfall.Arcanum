@@ -190,6 +190,11 @@ public sealed record AssistantFinalizationCapacityReservation(
 /// <remarks>
 /// Read once per batch inside the write transaction. Reading them per intent would let two intents
 /// in the same batch each see room that only one of them can actually take.
+///
+/// <para><c>ActiveEntriesInWidestTurnLoad</c> is the only counter that spans two scopes: it is the
+/// Global active head count plus the active head count of whichever Campaign a turn could bind it
+/// to. A turn loads exactly that pair, so a batch that keeps every single-scope counter inside its
+/// bound can still push the pair past what a snapshot may carry.</para>
 /// </remarks>
 public sealed record CovenantQuotaSnapshot(
     long ActiveEntriesInScope,
@@ -200,7 +205,8 @@ public sealed record CovenantQuotaSnapshot(
     long AgentBytesInCampaign,
     long MutationReceiptsInScope,
     long ProvenanceRowsInCampaign,
-    long PendingOutboxRows);
+    long PendingOutboxRows,
+    long ActiveEntriesInWidestTurnLoad);
 
 /// <summary>
 /// What one prospective batch would add to those counters.

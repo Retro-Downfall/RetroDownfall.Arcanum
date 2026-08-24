@@ -474,6 +474,9 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         }
 
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
+            GetOpenConnectionAsync(cancellationToken);
+
     }
 
     internal static T Unwrap<T>(Result<T> result) =>

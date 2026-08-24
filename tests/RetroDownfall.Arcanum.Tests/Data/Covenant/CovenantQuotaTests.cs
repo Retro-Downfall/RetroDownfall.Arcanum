@@ -158,7 +158,7 @@ public sealed class CovenantQuotaTests
         CovenantQuotaDemand atLimit = Nothing with
         {
 
-            NewEntries = CovenantLimits.MaxStableEntriesPerScope,
+            NewEntries = CovenantLimits.MaxActiveSnapshotRows,
 
         };
 
@@ -169,9 +169,69 @@ public sealed class CovenantQuotaTests
         Result<CovenantQuotaSnapshot> refused = await RunAsync(
             fixture,
             CovenantOperationScope.Global,
-            Nothing with { NewEntries = CovenantLimits.MaxStableEntriesPerScope + 1 });
+            Nothing with { NewEntries = CovenantLimits.MaxActiveSnapshotRows + 1 });
 
         Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refused.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Global_and_Campaign_heads_are_bounded_together_by_what_one_turn_can_load()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+
+        const int GlobalHeads = 100;
+
+        int campaignHeads = CovenantLimits.MaxActiveSnapshotRows - GlobalHeads - 1;
+
+        for (int index = 0; index < GlobalHeads; index++)
+        {
+
+            _ = await fixture.SeedHeadAsync(
+                CovenantScope.Global,
+                null,
+                $"global.key{index:000}",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set,
+                $"Global {index}.",
+                Token);
+
+        }
+
+        for (int index = 0; index < campaignHeads; index++)
+        {
+
+            _ = await fixture.SeedHeadAsync(
+                CovenantScope.Campaign,
+                CampaignOne,
+                $"campaign.key{index:000}",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set,
+                $"Campaign {index}.",
+                Token);
+
+        }
+
+        CovenantOperationScope campaignScope = CovenantOperationScope.ForCampaign(CampaignOne);
+
+        // The pair now holds one row less than a snapshot may carry, so exactly one more entry fits
+        // in either scope and two do not, whichever side asks for them.
+        Assert.True((await RunAsync(fixture, campaignScope, Nothing with { NewEntries = 1 })).IsSuccess);
+
+        Assert.True((await RunAsync(fixture, CovenantOperationScope.Global, Nothing with { NewEntries = 1 })).IsSuccess);
+
+        Result<CovenantQuotaSnapshot> refusedCampaign =
+            await RunAsync(fixture, campaignScope, Nothing with { NewEntries = 2 });
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refusedCampaign.Error.Code);
+
+        Result<CovenantQuotaSnapshot> refusedGlobal =
+            await RunAsync(fixture, CovenantOperationScope.Global, Nothing with { NewEntries = 2 });
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refusedGlobal.Error.Code);
 
     }
 

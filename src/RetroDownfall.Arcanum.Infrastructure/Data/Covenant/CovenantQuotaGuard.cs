@@ -256,7 +256,12 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             ?? Exceeds(snapshot.AgentBytesInCampaign, demand.NewAgentBytes, CovenantLimits.MaxAgentBytesPerCampaign, "agent bytes in this Campaign")
             ?? Exceeds(snapshot.MutationReceiptsInScope, demand.NewMutationReceipts, CovenantLimits.MaxMutationReceiptsPerScope, "mutation receipts in this scope")
             ?? Exceeds(snapshot.ProvenanceRowsInCampaign, demand.NewProvenanceRows, CovenantLimits.MaxAttachmentProvenanceRowsPerCampaign, "attachment provenance rows in this Campaign")
-            ?? Exceeds(snapshot.PendingOutboxRows, demand.NewOutboxRows, CovenantLimits.MaxPendingSearchOutboxRows, "pending search-outbox rows");
+            ?? Exceeds(snapshot.PendingOutboxRows, demand.NewOutboxRows, CovenantLimits.MaxPendingSearchOutboxRows, "pending search-outbox rows")
+            // Every ceiling above bounds one scope, but a turn loads Global and one Campaign
+            // together. Without this pair bound a batch that stays inside its own scope can seat a
+            // combination no snapshot may carry, and the store then refuses the whole turn load with
+            // an integrity failure that the operator cannot act on and never caused.
+            ?? Exceeds(snapshot.ActiveEntriesInWidestTurnLoad, demand.NewEntries, CovenantLimits.MaxActiveSnapshotRows, "active heads one turn would load");
 
         if (refusal is { } scopeError)
         {
@@ -704,6 +709,17 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         string scopePredicate = campaignScoped ? "CampaignId = $campaign" : "CampaignId IS NULL";
 
+        // A Global batch has no Campaign of its own, so the pair it has to fit inside is the one the
+        // widest Campaign would form with it; a Campaign batch is measured against its own pair.
+        string campaignSideOfTurnLoad = campaignScoped
+            ? "(SELECT COUNT(*) FROM covenant_heads WHERE CampaignId = $campaign AND CurrentOperationCode = 1)"
+            : """
+                COALESCE((SELECT MAX(HeadCount) FROM (
+                    SELECT COUNT(*) AS HeadCount FROM covenant_heads
+                    WHERE CampaignId IS NOT NULL AND CurrentOperationCode = 1
+                    GROUP BY CampaignId)), 0)
+                """;
+
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = $"""
@@ -729,7 +745,9 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
                     JOIN covenant_versions v ON v.VersionId = p.VersionId
                     JOIN covenant_entries e ON e.EntryId = v.EntryId
                     WHERE e.{scopePredicate}),
-                (SELECT COUNT(*) FROM covenant_search_outbox);
+                (SELECT COUNT(*) FROM covenant_search_outbox),
+                (SELECT COUNT(*) FROM covenant_heads WHERE CampaignId IS NULL AND CurrentOperationCode = 1)
+                    + {campaignSideOfTurnLoad};
             """;
 
         if (campaignScoped)
@@ -753,7 +771,8 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             reader.GetInt64(5),
             reader.GetInt64(6),
             reader.GetInt64(7),
-            reader.GetInt64(8));
+            reader.GetInt64(8),
+            reader.GetInt64(9));
 
     }
 

@@ -398,6 +398,8 @@ public sealed class CovenantCanonicalSchemaTests
 
         Assert.Contains("FOREIGN KEY constraint failed", foreignEntry.Message, StringComparison.Ordinal);
 
+        // The head copies the Proposed version's own origin, so the composite reference is the only
+        // rule left for the lane mismatch to break.
         SqliteException foreignLane = await AssertRaisesAsync(
             database,
             InsertHead(
@@ -410,7 +412,7 @@ public sealed class CovenantCanonicalSchemaTests
                 campaignId: campaignA,
                 normalizedKey: "beta.key",
                 compiledByteCost: 256,
-                originCode: 1,
+                originCode: 2,
                 searchRowId: 8));
 
         Assert.Contains("FOREIGN KEY constraint failed", foreignLane.Message, StringComparison.Ordinal);
@@ -484,6 +486,9 @@ public sealed class CovenantCanonicalSchemaTests
             InsertVersion(versionId, entryId, laneCode: 2, laneRevision: 1, operationCode: 1, compiledByteCost: 64),
             CancellationToken.None);
 
+        // The head carries the version's own origin, which the Proposed lane pins to the agent
+        // proposal: any other value aborts in the validate-insert trigger and would leave the
+        // Global-Proposed rule untested.
         SqliteException rejected = await AssertRaisesAsync(
             database,
             InsertHead(
@@ -496,7 +501,7 @@ public sealed class CovenantCanonicalSchemaTests
                 campaignId: null,
                 normalizedKey: "global.key",
                 compiledByteCost: 64,
-                originCode: 1,
+                originCode: 2,
                 searchRowId: 1));
 
         Assert.Contains("CHECK constraint failed", rejected.Message, StringComparison.Ordinal);
@@ -504,6 +509,84 @@ public sealed class CovenantCanonicalSchemaTests
         Assert.Equal(
             0L,
             await database.ScalarLongAsync("SELECT COUNT(*) FROM covenant_heads;", CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// An agent proposal belongs to the Proposed lane. The contracts refuse the Confirmed pairing on
+    /// the way in and the snapshot projection refuses it on the way out, but neither runs for a
+    /// writer holding a connection, so the table refuses it too. The rule runs one way: an operator
+    /// and an approved agent retirement both reach either lane, because retiring a proposal is how a
+    /// proposal ends.
+    /// </summary>
+    [Fact]
+    public async Task An_agent_proposal_cannot_be_seated_on_the_Confirmed_lane()
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        string entryId = NewId();
+
+        await database.ExecuteAsync(
+            InsertEntry(entryId, scopeCode: 2, campaignId: NewId(), normalizedKey: "lane.key"),
+            CancellationToken.None);
+
+        const string Authored = "'authored covenant text'";
+
+        const string Compiled = "'compiled covenant text'";
+
+        const string Digest = "randomblob(32)";
+
+        string[] set = [Authored, Compiled, Digest, Digest];
+
+        SqliteException proposalOnConfirmed = await AssertRaisesAsync(
+            database,
+            InsertShapedVersion(NewId(), entryId, laneCode: 1, laneRevision: 1, operationCode: 1, shape: set, origin: 2));
+
+        Assert.Contains("CHECK constraint failed", proposalOnConfirmed.Message, StringComparison.Ordinal);
+
+        // Each accepted pairing lands on its own entry, so the lane-revision uniqueness index is
+        // never what admits or refuses one.
+        string retiredEntryId = NewId();
+
+        await database.ExecuteAsync(
+            InsertEntry(retiredEntryId, scopeCode: 2, campaignId: NewId(), normalizedKey: "lane.retired"),
+            CancellationToken.None);
+
+        await database.ExecuteAsync(
+            InsertShapedVersion(NewId(), entryId, laneCode: 1, laneRevision: 1, operationCode: 1, shape: set, origin: 1),
+            CancellationToken.None);
+
+        // Retiring a proposal is how a proposal ends, so both non-proposing origins reach the
+        // Proposed lane.
+        await database.ExecuteAsync(
+            InsertShapedVersion(
+                NewId(),
+                retiredEntryId,
+                laneCode: 2,
+                laneRevision: 1,
+                operationCode: 2,
+                shape: ["NULL", "NULL", "NULL", "NULL"],
+                origin: 1),
+            CancellationToken.None);
+
+        await database.ExecuteAsync(
+            InsertShapedVersion(
+                NewId(),
+                entryId,
+                laneCode: 2,
+                laneRevision: 1,
+                operationCode: 2,
+                shape: ["NULL", "NULL", "NULL", "NULL"],
+                origin: 3),
+            CancellationToken.None);
+
+        Assert.Equal(
+            3L,
+            await database.ScalarLongAsync("SELECT COUNT(*) FROM covenant_versions;", CancellationToken.None));
 
     }
 
@@ -572,6 +655,22 @@ public sealed class CovenantCanonicalSchemaTests
             Assert.Contains("CHECK constraint failed", rejected.Message, StringComparison.Ordinal);
 
         }
+
+        // A tombstone renders nothing, so it costs nothing. The census reads that as a fact about
+        // every retirement rather than as a habit of the writer, and skips a lifecycle filter it
+        // would otherwise need.
+        SqliteException costlyRetire = await AssertRaisesAsync(
+            database,
+            InsertShapedVersion(
+                NewId(),
+                entryId,
+                laneCode: 1,
+                laneRevision: 1,
+                operationCode: 2,
+                shape: ["NULL", "NULL", "NULL", "NULL"],
+                compiledByteCost: 64));
+
+        Assert.Contains("CHECK constraint failed", costlyRetire.Message, StringComparison.Ordinal);
 
         await database.ExecuteAsync(
             InsertShapedVersion(
@@ -997,8 +1096,28 @@ public sealed class CovenantCanonicalSchemaTests
         long laneRevision,
         long operationCode,
         string[] shape,
-        long compiledByteCost = 0) =>
-        $"""
+        long compiledByteCost = 0,
+        long? origin = null)
+    {
+
+        // The lane decides the origin unless a test is deliberately writing a disagreeing pair, and
+        // an agent origin has to name the turn, the tool call, and the plan it was proposed against,
+        // so those columns follow the origin rather than the lane.
+        long originCode = origin ?? (laneCode == 2 ? 2 : 1);
+
+        bool agentAuthored = originCode != 1;
+
+        string sourceTurnId = agentAuthored ? Quote(NewId()) : "NULL";
+
+        string sourceToolCallId = agentAuthored ? Quote(NewId()) : "NULL";
+
+        string basePlanDigest = agentAuthored ? "randomblob(32)" : "NULL";
+
+        string wardReceiptDigest = originCode == 3 ? "randomblob(32)" : "NULL";
+
+        string authorizationModeCode = originCode == 3 ? "2" : "NULL";
+
+        return $"""
         INSERT INTO covenant_versions (
             VersionId,
             EntryId,
@@ -1042,13 +1161,13 @@ public sealed class CovenantCanonicalSchemaTests
             3,
             1,
             1,
-            1,
+            {originCode},
+            {sourceTurnId},
+            {sourceToolCallId},
+            {basePlanDigest},
             NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
+            {wardReceiptDigest},
+            {authorizationModeCode},
             {Quote(NewId())},
             randomblob(32),
             randomblob(32),
@@ -1058,6 +1177,8 @@ public sealed class CovenantCanonicalSchemaTests
             randomblob(32),
             {Quote(Timestamp)});
         """;
+
+    }
 
     private static string InsertHead(
         string entryId,

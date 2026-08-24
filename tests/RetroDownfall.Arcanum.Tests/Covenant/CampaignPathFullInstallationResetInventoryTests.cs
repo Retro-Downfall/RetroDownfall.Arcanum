@@ -1242,6 +1242,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
         }
 
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(
+            CancellationToken cancellationToken) =>
+            GetOpenConnectionAsync(cancellationToken);
+
     }
 
     private sealed class RecordingCredentialStore : IOsCredentialStore

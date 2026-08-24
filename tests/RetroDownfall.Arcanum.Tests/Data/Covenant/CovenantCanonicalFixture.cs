@@ -606,4 +606,7 @@ internal sealed class FixedCovenantConnectionSource(SqliteConnection connection)
 
     }
 
+    public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
+        GetOpenConnectionAsync(cancellationToken);
+
 }

@@ -377,6 +377,70 @@ public sealed class ArtifactSensitivityLedgerTests
     }
 
     /// <summary>
+    /// The Covenant dispatch gate reads this projection on every session-backed turn, including on
+    /// an installation whose Covenant is disabled. Opening the canonical connection latches this
+    /// process as having held Covenant material — a one-way latch that forbids the offline
+    /// host-tools transition — so a projection read over an always-present core table must take the
+    /// accessor that does not latch. The read itself is required: previously tainted Session history
+    /// keeps its protections after disablement, and untaintedness cannot be known without reading.
+    /// </summary>
+    [Fact]
+    public async Task Reading_the_session_projection_never_takes_the_residence_latching_connection()
+    {
+
+        await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
+
+        RecordingConnectionSource connections = new(fixture.Connection);
+
+        ArtifactSensitivityLedger ledger = new(connections);
+
+        Result<SessionSensitivityProjection> projection =
+            await ledger.ReadSessionProjectionAsync(Session, CancellationToken.None);
+
+        Assert.True(projection.IsSuccess);
+
+        Assert.Equal(0, connections.LatchingCalls);
+
+        Assert.Equal(1, connections.CoreCalls);
+
+    }
+
+    /// <summary>
+    /// Answers the same connection from either accessor and records which one the caller asked for.
+    /// </summary>
+    /// <remarks>
+    /// The real latch is a process-wide one-way static, so asserting on it directly would depend on
+    /// whatever else the test process had already run. Which accessor was taken is the same fact,
+    /// measured where it cannot be contaminated.
+    /// </remarks>
+    private sealed class RecordingConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
+    {
+
+        internal int LatchingCalls { get; private set; }
+
+        internal int CoreCalls { get; private set; }
+
+        public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
+        {
+
+            LatchingCalls++;
+
+            return ValueTask.FromResult(connection);
+
+        }
+
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
+        {
+
+            CoreCalls++;
+
+            return ValueTask.FromResult(connection);
+
+        }
+
+    }
+
+    /// <summary>
     /// A scratch Grimoire with only the core objects the ledger touches.
     /// </summary>
     /// <remarks>
