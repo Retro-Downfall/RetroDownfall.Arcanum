@@ -2782,6 +2782,18 @@ public sealed partial class WizardIntelligenceProvider(
 
             }
 
+            if (streamCovenantDispatch.Admission is { } streamCovenantAdmission)
+            {
+
+                // Recorded whether or not anything was dropped: zero is a measurement here, and an
+                // operator asking why a preference was not honored needs to see that the answer is
+                // "nothing was pressured" rather than "nobody looked".
+                streamMaterializationLedger.RecordCovenantPressure(
+                    streamCovenantAdmission.ProposedRemovals,
+                    (int)Math.Min(int.MaxValue, streamCovenantAdmission.PressuredProposedTokens));
+
+            }
+
             lastInferenceChatOptions = streamChatOptions;
 
             if (!streaming || !streamingContextPrepared)
@@ -7065,6 +7077,10 @@ public sealed partial class WizardIntelligenceProvider(
                 DroppedTapestryNodes = ledger.DroppedTapestryNodes,
 
                 DroppedTapestryTokens = ledger.DroppedTapestryTokens,
+
+                DroppedCovenantProposed = ledger.DroppedCovenantProposed,
+
+                DroppedCovenantProposedTokens = ledger.DroppedCovenantProposedTokens,
             };
         }
 

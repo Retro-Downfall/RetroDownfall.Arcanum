@@ -287,18 +287,67 @@ internal sealed class CovenantManagementService(
 
     }
 
-    public ValueTask<Result<CovenantStatusDto>> StatusAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// What this installation holds, in counts and ceilings only.
+    /// </summary>
+    /// <remarks>
+    /// Acquires its own installation read capability rather than borrowing one, because the port
+    /// takes no lease: status is reachable from the ordinary memory surface, and a census that
+    /// crosses every Campaign needs a capability that does too.
+    ///
+    /// <para>A census that cannot be read reports zero counts beside honest health rather than
+    /// failing the whole status call. An operator asking "is my memory working" is entitled to the
+    /// health answer even when the count behind it is momentarily unavailable — and the health fields
+    /// say plainly that the canonical tier is not healthy, so the zero cannot be mistaken for
+    /// emptiness.</para>
+    /// </remarks>
+    public async ValueTask<Result<CovenantStatusDto>> StatusAsync(CancellationToken cancellationToken)
     {
 
         CovenantAvailabilitySnapshot snapshot = availability.Current;
 
-        return ValueTask.FromResult(Result<CovenantStatusDto>.Success(new CovenantStatusDto(
+        CovenantScopeCensus census = CovenantScopeCensus.Empty;
+
+        if (snapshot.Canonical is CovenantCapabilityState.Healthy)
+        {
+
+            Result<CovenantInstallationReadLease> lease = await gate
+                .AcquireInstallationReadAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (lease.IsSuccess)
+            {
+
+                await using CovenantInstallationReadLease owned = lease.Value;
+
+                Result<CovenantScopeCensus> read = await store
+                    .ReadScopeCensusAsync(owned, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read.IsSuccess)
+                {
+
+                    census = read.Value;
+
+                }
+
+            }
+
+        }
+
+        return new CovenantStatusDto(
             snapshot.FeatureEnabled,
             snapshot.Canonical is CovenantCapabilityState.Healthy,
-            [],
-            GlobalConfirmedRenderedBytes: 0,
-            CampaignConfirmedRenderedBytes: 0,
-            CampaignProposedRenderedBytes: 0,
+            [
+                .. census.Rows.Select(static row => new CovenantScopeCountDto(
+                    row.Scope,
+                    row.Lane,
+                    row.Lifecycle,
+                    row.Count)),
+            ],
+            census.GlobalConfirmedRenderedBytes,
+            census.CampaignConfirmedRenderedBytes,
+            census.CampaignProposedRenderedBytes,
             CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             new CovenantSearchHealthDto(
                 snapshot.Accelerator is CovenantCapabilityState.Healthy
@@ -307,7 +356,7 @@ internal sealed class CovenantManagementService(
                 CovenantSearchExecutionMode.CanonicalFallback,
                 CovenantSearchRebuildGuidance.None),
             CovenantRetentionSummary,
-            snapshot.CanonicalDiagnosticCode)));
+            snapshot.CanonicalDiagnosticCode);
 
     }
 

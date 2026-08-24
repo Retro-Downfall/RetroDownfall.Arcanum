@@ -155,6 +155,7 @@ internal static class MemoryEndpoints
             db,
             options.CurrentValue,
             context.RequestServices.GetService<ICovenantAvailability>(),
+            context.RequestServices.GetService<ICovenantManagementService>(),
             context.RequestAborted).ConfigureAwait(false);
 
         string traceId = TraceId(context);
@@ -180,6 +181,7 @@ internal static class MemoryEndpoints
             db,
             options.CurrentValue,
             context.RequestServices.GetService<ICovenantAvailability>(),
+            context.RequestServices.GetService<ICovenantManagementService>(),
             context.RequestAborted).ConfigureAwait(false);
 
         Result<MemorySourcesDto> result;
@@ -229,6 +231,7 @@ internal static class MemoryEndpoints
             db,
             options.CurrentValue,
             context.RequestServices.GetService<ICovenantAvailability>(),
+            context.RequestServices.GetService<ICovenantManagementService>(),
             context.RequestAborted).ConfigureAwait(false);
 
         Result<MemoryExplainDto> result;
@@ -769,9 +772,11 @@ internal static class MemoryEndpoints
     /// inventing a zero: "you have no Covenant entries" and "your Covenant could not be read" are
     /// different sentences, and only one of them is an emergency (§10.18).</para>
     /// </remarks>
-    private static CovenantStatusDto? BuildCovenantStatus(
+    private static async Task<CovenantStatusDto?> BuildCovenantStatusAsync(
         ICovenantAvailability? availability,
-        FeatureSettings features)
+        ICovenantManagementService? management,
+        FeatureSettings features,
+        CancellationToken cancellationToken)
     {
 
         if (availability is null)
@@ -783,13 +788,22 @@ internal static class MemoryEndpoints
 
         CovenantAvailabilitySnapshot snapshot = availability.Current;
 
+        // Counts come from the management port, which owns the one content-free census. A status
+        // surface that counted rows itself would be a second reader of protected storage, and the
+        // two would eventually disagree about what "retired" means.
+        CovenantStatusDto? counted = management is null
+            ? null
+            : (await management.StatusAsync(cancellationToken).ConfigureAwait(false)) is { IsSuccess: true } read
+                ? read.Value
+                : null;
+
         return new CovenantStatusDto(
             Enabled: features.Covenant && snapshot.FeatureEnabled,
             Available: snapshot.Canonical is CovenantCapabilityState.Healthy,
-            Counts: [],
-            GlobalConfirmedRenderedBytes: 0,
-            CampaignConfirmedRenderedBytes: 0,
-            CampaignProposedRenderedBytes: 0,
+            Counts: counted?.Counts ?? [],
+            GlobalConfirmedRenderedBytes: counted?.GlobalConfirmedRenderedBytes ?? 0,
+            CampaignConfirmedRenderedBytes: counted?.CampaignConfirmedRenderedBytes ?? 0,
+            CampaignProposedRenderedBytes: counted?.CampaignProposedRenderedBytes ?? 0,
             RenderedByteCeilingPerSection: CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             Search: new CovenantSearchHealthDto(
                 ToSearchHealth(snapshot.Accelerator, snapshot.FtsSynchronization),
@@ -833,6 +847,7 @@ internal static class MemoryEndpoints
         ArcanumDbContext db,
         ArcanumSettings settings,
         ICovenantAvailability? availability,
+        ICovenantManagementService? management,
         CancellationToken cancellationToken)
     {
 
@@ -967,7 +982,12 @@ internal static class MemoryEndpoints
         ];
 
         return Result<MemoryStatusDto>.Success(
-            new MemoryStatusDto(sessionId, session?.Title, stores, BuildCovenantStatus(availability, features)));
+            new MemoryStatusDto(
+                sessionId,
+                session?.Title,
+                stores,
+                await BuildCovenantStatusAsync(availability, management, features, cancellationToken)
+                    .ConfigureAwait(false)));
 
     }
 

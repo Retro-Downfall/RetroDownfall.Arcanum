@@ -218,6 +218,35 @@ public enum CovenantEffectDecision : byte
 /// <summary>
 /// One affected Campaign, as an example inside a bounded effect snapshot.
 /// </summary>
+/// <summary>
+/// One scope-lane-lifecycle bucket of the head census.
+/// </summary>
+public readonly record struct CovenantScopeCensusRow(
+    CovenantScope Scope,
+    CovenantLane Lane,
+    CovenantLifecycle Lifecycle,
+    long Count,
+    long RenderedBytes);
+
+/// <summary>
+/// How much Covenant an installation holds, without saying what any of it is.
+/// </summary>
+/// <remarks>
+/// Buckets rather than one total, because "you have forty retired Campaign proposals" and "you have
+/// forty confirmed Global preferences" are different facts about the same number, and an operator
+/// deciding whether to prune needs the difference.
+/// </remarks>
+public sealed record CovenantScopeCensus(
+    ImmutableArray<CovenantScopeCensusRow> Rows,
+    long GlobalConfirmedRenderedBytes,
+    long CampaignConfirmedRenderedBytes,
+    long CampaignProposedRenderedBytes)
+{
+
+    public static CovenantScopeCensus Empty { get; } = new([], 0, 0, 0);
+
+}
+
 public sealed record CovenantMutationEffectExample(
     Guid CampaignId,
     CovenantEffectDecision Decision,

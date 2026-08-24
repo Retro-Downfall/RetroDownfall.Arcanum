@@ -12,7 +12,44 @@ public sealed record CovenantAdmissionPlan(
     bool ConfirmedAdmitted,
     int AdmittedProposedCount,
     int ProposedRemovals,
-    ulong EstimatedAdmittedTokens);
+    ulong EstimatedAdmittedTokens)
+{
+
+    /// <summary>
+    /// Estimated tokens the Proposed entries this attempt pressured out would have occupied.
+    /// </summary>
+    /// <remarks>
+    /// Summed over the pressured candidates alone. <see cref="EstimatedAdmittedTokens"/> is the cost
+    /// of what reached the model, and reporting it as pressure would tell an operator investigating a
+    /// dropped preference that the entries they lost were the ones the model actually read.
+    /// </remarks>
+    public ulong PressuredProposedTokens
+    {
+
+        get
+        {
+
+            ulong total = 0;
+
+            foreach (CovenantAdmissionCandidateDecision candidate in Candidates)
+            {
+
+                if (candidate.Decision is CovenantAdmissionDecision.Pressured)
+                {
+
+                    total += candidate.EstimatedTokens;
+
+                }
+
+            }
+
+            return total;
+
+        }
+
+    }
+
+}
 
 /// <summary>
 /// Decides what one provider attempt admits from a reused turn plan (§10.13).

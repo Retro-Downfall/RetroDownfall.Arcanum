@@ -193,6 +193,21 @@ public sealed record ContextTokenBreakdown
     /// <summary>Estimated Tapestry tokens evicted by context-window pressure.</summary>
     public int DroppedTapestryTokens { get; init; }
 
+    /// <summary>Proposed Covenant entries pressured out of this attempt's admission.</summary>
+    /// <remarks>
+    /// Counted separately from the semantic sources rather than folded in with them. Confirmed
+    /// content ranks with the operator's own Codex and is never evicted, so a single "dropped memory"
+    /// total would let a reader conclude the operator's standing agreement had been trimmed when only
+    /// the agent's unreviewed suggestions were.
+    /// </remarks>
+    public int DroppedCovenantProposed { get; init; }
+
+    /// <summary>Estimated tokens those pressured Proposed entries would have occupied.</summary>
+    public int DroppedCovenantProposedTokens { get; init; }
+
+    [JsonIgnore]
+    public bool HasCovenantPressure => DroppedCovenantProposed > 0;
+
     [JsonIgnore]
     public int DroppedSemanticRagChunks =>
         SaturatingInt((long)DroppedAttachmentRagChunks + DroppedWorkspaceRagChunks + DroppedTapestryNodes);

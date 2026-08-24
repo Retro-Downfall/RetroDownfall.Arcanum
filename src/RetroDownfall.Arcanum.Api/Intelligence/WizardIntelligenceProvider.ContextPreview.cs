@@ -777,7 +777,7 @@ public sealed partial class WizardIntelligenceProvider
 
     }
 
-    private static List<ContextPreviewSource> BuildPreviewSources(
+    internal static List<ContextPreviewSource> BuildPreviewSources(
 
         ContextTokenBreakdown breakdown,
 
@@ -824,6 +824,19 @@ public sealed partial class WizardIntelligenceProvider
                 request,
 
                 turn);
+
+            // Covenant pressure is reported on the lane it actually happened to. Folding it into the
+            // generic "dropped" total would let a reader conclude the operator's own Confirmed
+            // content had been trimmed, which admission never does.
+            if (component.Source is ContextTokenSource.CovenantProposed && breakdown.HasCovenantPressure)
+            {
+
+                reason = $"{breakdown.DroppedCovenantProposed} proposed "
+                    + $"{(breakdown.DroppedCovenantProposed == 1 ? "entry" : "entries")} "
+                    + $"({breakdown.DroppedCovenantProposedTokens} tokens) were pressured out by the "
+                    + "context budget; Confirmed content is never evicted.";
+
+            }
 
             string? content = request.ShowContent
 

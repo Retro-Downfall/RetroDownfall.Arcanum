@@ -227,6 +227,31 @@ public sealed class ContextMaterializationLedger
 
     public int DroppedTapestryTokens => _droppedTapestryTokens;
 
+    public int DroppedCovenantProposed => _droppedCovenantProposed;
+
+    public int DroppedCovenantProposedTokens => _droppedCovenantProposedTokens;
+
+    /// <summary>
+    /// Records the Proposed entries one attempt's admission could not fit.
+    /// </summary>
+    /// <remarks>
+    /// Called once per provider attempt, with that attempt's own decision. A retry under a different
+    /// budget reaches a different admission, and the ledger reports the attempt that actually
+    /// dispatched rather than accumulating every attempt's pressure into one inflated total.
+    /// </remarks>
+    public void RecordCovenantPressure(int droppedEntries, int droppedTokens)
+    {
+
+        _droppedCovenantProposed = Math.Max(0, droppedEntries);
+
+        _droppedCovenantProposedTokens = Math.Max(0, droppedTokens);
+
+    }
+
+    private int _droppedCovenantProposed;
+
+    private int _droppedCovenantProposedTokens;
+
     public ContextMaterializationEntry Accept(
         ContextMaterializationCandidate candidate,
         bool materialized)

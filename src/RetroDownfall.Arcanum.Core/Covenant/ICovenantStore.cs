@@ -54,6 +54,18 @@ public interface ICovenantStore
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Counts current heads by scope, lane, and lifecycle, with their rendered byte totals.
+    /// </summary>
+    /// <remarks>
+    /// Content-free by construction: it returns how many entries exist and how much room they take,
+    /// never what any of them says. That is what makes it safe on the ordinary memory-status surface,
+    /// which an operator reaches without protected read authority.
+    /// </remarks>
+    ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
     ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(
         CovenantMutationEffectQuery query,
         ICovenantSnapshotReadLease readLease,

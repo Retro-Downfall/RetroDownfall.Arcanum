@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 
 using RetroDownfall.Arcanum.Core.Memory;
 
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Tower;
@@ -93,7 +94,74 @@ public sealed class MemoryCommands(
 
         AnsiConsole.Write(table);
 
+        WriteCovenantStatus(result.Value.Covenant);
+
         return 0;
+
+    }
+
+    /// <summary>
+    /// Renders the Covenant block beside the other memory sources.
+    /// </summary>
+    /// <remarks>
+    /// Counts and ceilings only — the block carries no content, which is what makes it safe on a
+    /// surface an operator reaches without protected read authority.
+    ///
+    /// <para>An installation with no Covenant arm prints nothing rather than a row of zeroes. A zero
+    /// is a measurement, and the honest answer for something never measured is absence.</para>
+    /// </remarks>
+    private void WriteCovenantStatus(CovenantStatusDto? covenant)
+    {
+
+        if (covenant is null)
+        {
+
+            return;
+
+        }
+
+        dispatcher.WritePayload(
+            $"Covenant: {(covenant.Enabled ? "enabled" : "disabled")}, "
+            + $"{(covenant.Available ? "available" : "unavailable")}"
+            + (covenant.DegradationCode is { Length: > 0 } code ? $" ({code})" : string.Empty));
+
+        if (covenant.Counts.Length == 0)
+        {
+
+            dispatcher.WritePayload("  No Covenant entries.");
+
+            return;
+
+        }
+
+        Table covenantTable = new();
+
+        covenantTable.AddColumn(themePalette.HeadingTableColumn("Scope"));
+
+        covenantTable.AddColumn(themePalette.HeadingTableColumn("Lane"));
+
+        covenantTable.AddColumn(themePalette.HeadingTableColumn("State"));
+
+        covenantTable.AddColumn(themePalette.HeadingTableColumn("Count"));
+
+        foreach (CovenantScopeCountDto row in covenant.Counts)
+        {
+
+            covenantTable.AddRow(
+                row.Scope.ToString(),
+                row.Lane.ToString(),
+                row.Lifecycle.ToString(),
+                row.Count.ToString(CultureInfo.InvariantCulture));
+
+        }
+
+        AnsiConsole.Write(covenantTable);
+
+        dispatcher.WritePayload(
+            $"  Rendered bytes — Global Confirmed {covenant.GlobalConfirmedRenderedBytes}, "
+            + $"Campaign Confirmed {covenant.CampaignConfirmedRenderedBytes}, "
+            + $"Campaign Proposed {covenant.CampaignProposedRenderedBytes} "
+            + $"(ceiling {covenant.RenderedByteCeilingPerSection} per section)");
 
     }
 

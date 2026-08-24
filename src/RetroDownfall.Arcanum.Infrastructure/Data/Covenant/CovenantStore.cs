@@ -715,6 +715,133 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
     }
 
+    /// <summary>
+    /// Counts current heads by scope, lane, and lifecycle without reading a byte of content.
+    /// </summary>
+    /// <remarks>
+    /// One grouped scan over the head table rather than a page walk: the caller wants totals, and
+    /// paging to a total would make the cost of asking "how much do I have" grow with the answer.
+    ///
+    /// <para>Requires the installation read capability because it crosses every Campaign. A scoped
+    /// lease could only ever answer for its own scope, and a census that silently omitted the rest
+    /// would understate what an operator holds.</para>
+    /// </remarks>
+    public async ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+
+        Result validated = await ValidateLeaseAsync(
+                readLease,
+                required: null,
+                requireInstallation: true,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (validated.IsFailure)
+        {
+
+            return validated.Error;
+
+        }
+
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                .ConfigureAwait(false);
+
+        try
+        {
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = """
+                SELECT ScopeCode, LaneCode, CurrentOperationCode, COUNT(*), COALESCE(SUM(CompiledByteCost), 0)
+                FROM covenant_heads
+                GROUP BY ScopeCode, LaneCode, CurrentOperationCode
+                ORDER BY ScopeCode, LaneCode, CurrentOperationCode;
+                """;
+
+            ImmutableArray<CovenantScopeCensusRow>.Builder rows =
+                ImmutableArray.CreateBuilder<CovenantScopeCensusRow>();
+
+            long globalConfirmed = 0;
+
+            long campaignConfirmed = 0;
+
+            long campaignProposed = 0;
+
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false))
+            {
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    CovenantScope scope = (CovenantScope)reader.GetInt64(0);
+
+                    CovenantLane lane = (CovenantLane)reader.GetInt64(1);
+
+                    // A head whose current operation is a tombstone is a retired entry. The lifecycle
+                    // an operator reads is derived from that, never stored twice.
+                    CovenantLifecycle lifecycle = (CovenantOperation)reader.GetInt64(2) is CovenantOperation.Retire
+                        ? CovenantLifecycle.Retired
+                        : CovenantLifecycle.Set;
+
+                    long count = reader.GetInt64(3);
+
+                    long bytes = reader.GetInt64(4);
+
+                    rows.Add(new CovenantScopeCensusRow(scope, lane, lifecycle, count, bytes));
+
+                    // Retired heads need no filtering here. A tombstone version carries no compiled
+                    // content by table constraint, versions are append-only, and a trigger pins every
+                    // head's byte cost to its own version's — so a retired head's recorded cost is
+                    // zero and cannot become anything else. A guard would be a branch no writer can
+                    // reach, and the section totals below would read as though it were load-bearing.
+                    if (scope is CovenantScope.Global)
+                    {
+
+                        globalConfirmed += bytes;
+
+                    }
+                    else if (lane is CovenantLane.Confirmed)
+                    {
+
+                        campaignConfirmed += bytes;
+
+                    }
+                    else
+                    {
+
+                        campaignProposed += bytes;
+
+                    }
+
+                }
+
+            }
+
+            return new CovenantScopeCensus(
+                rows.ToImmutable(),
+                globalConfirmed,
+                campaignConfirmed,
+                campaignProposed);
+
+        }
+        finally
+        {
+
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+
+    }
+
     public async ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(
         CovenantMutationEffectQuery query,
         ICovenantSnapshotReadLease readLease,

@@ -332,6 +332,11 @@ public sealed class CovenantContextProviderTests
     private sealed class RecordingStore : ICovenantStore
     {
 
+        public ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken) =>
+            throw new UnreachableException();
+
         public int Reads { get; private set; }
 
         public ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
@@ -363,6 +368,11 @@ public sealed class CovenantContextProviderTests
     private sealed class SuccessfulStore : ICovenantStore
     {
 
+        public ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken) =>
+            throw new UnreachableException();
+
         public ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
             CanonicalCampaignContext campaign,
             ICovenantSnapshotReadLease readLease,
@@ -390,6 +400,11 @@ public sealed class CovenantContextProviderTests
 
     private sealed class UnreachableStore : ICovenantStore
     {
+
+        public ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken) =>
+            throw new UnreachableException();
 
         public ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(CanonicalCampaignContext campaign, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();
