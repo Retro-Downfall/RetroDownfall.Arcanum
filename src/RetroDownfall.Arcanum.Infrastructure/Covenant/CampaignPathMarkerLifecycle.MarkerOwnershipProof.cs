@@ -48,7 +48,33 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         using PhysicalCampaignRootOpener.MarkerCodecBytesLease lease = read.Value;
 
-        Result<CampaignPathMarkerContent> parsed = _codec.Parse(lease.Bytes.Span);
+        return ProveOpenMarkerOwnership(
+            authority,
+            marker,
+            lease.Bytes.Span,
+            campaignId,
+            pathRevision);
+
+    }
+
+    /// <summary>
+    /// The same proof, from bytes already read through a handle the caller still holds.
+    /// </summary>
+    /// <remarks>
+    /// Split out so a compare-delete can prove ownership and then delete <em>through the very handle
+    /// it proved</em>. Reopening the marker between the proof and the delete would put a gap in the
+    /// middle of a same-handle guarantee, and a byte-identical replacement landing in that gap is
+    /// exactly the substitution the whole protocol is built to refuse.
+    /// </remarks>
+    private Result<MarkerOwnershipEvidence> ProveOpenMarkerOwnership(
+        CampaignPathMarkerRootAuthority authority,
+        PhysicalCampaignRootOpener.MarkerHandleCapability marker,
+        ReadOnlySpan<byte> bytes,
+        Guid campaignId,
+        long pathRevision)
+    {
+
+        Result<CampaignPathMarkerContent> parsed = _codec.Parse(bytes);
 
         if (parsed.IsFailure
             || parsed.Value.CampaignId != campaignId
@@ -72,7 +98,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
         }
 
         return new MarkerOwnershipEvidence(
-            new CovenantDigest(SHA256.HashData(lease.Bytes.Span)),
+            new CovenantDigest(SHA256.HashData(bytes)),
             marker.PhysicalIdentityDigest,
             parsed.Value.RootVolumeId,
             parsed.Value.RootFileId);

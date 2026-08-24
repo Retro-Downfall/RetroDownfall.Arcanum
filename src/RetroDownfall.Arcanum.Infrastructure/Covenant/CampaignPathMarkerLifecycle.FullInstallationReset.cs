@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 
 using FullInstallationResetMarkerCleanupAuthority =
     RetroDownfall.Arcanum.Infrastructure.InstallationReset.HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority;
@@ -1368,13 +1369,647 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
     }
 
-    public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
+    /// <summary>
+    /// Drives every prepared child to a terminal phase, deleting only what it can prove.
+    /// </summary>
+    /// <remarks>
+    /// The caller's live core connection is borrowed and never disposed — the coordinator still has
+    /// its own effects to run on it — and every mutation lands in its own short transaction, because
+    /// one transaction spanning every Campaign would make a failure at the last marker discard the
+    /// terminal evidence of all the ones already deleted.
+    ///
+    /// <para>Authority is revalidated before the vector is read, before each child, and again before
+    /// each of those short transactions. Every active-record publication invalidates the proof bound
+    /// to the previous envelope revision, so a reconciliation that authenticated once at the top
+    /// would be running the rest of its effects on a journal that may since have moved.</para>
+    ///
+    /// <para>Nothing here releases a retained root. Release belongs to the coordinator, after the
+    /// terminal receipt is durably published: a seam that released as it went would drop the
+    /// authority a retry needs while that retry is still the only thing that can finish the
+    /// operation.</para>
+    /// </remarks>
+    public async Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
         ReconcileFullInstallationResetCleanupAsync(
             CampaignPathFullInstallationResetCleanupReceipt prepared,
             FullInstallationResetMarkerCleanupAuthority authority,
             SqliteConnection liveCoreConnection,
-            CancellationToken cancellationToken) =>
-        Task.FromResult(Inert<CampaignPathFullInstallationResetCleanupReceipt>());
+            CancellationToken cancellationToken)
+    {
+
+        if (_recoveryKeys is null
+            || prepared is null
+            || authority is null
+            || liveCoreConnection is null)
+        {
+
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
+
+        }
+
+        try
+        {
+
+            // Before the first read. The receipt has to be the one the authenticated checkpoint
+            // published, or the vector about to be walked belongs to a different operation.
+            Result revalidated = await authority.RevalidateReceiptAsync(
+                prepared,
+                cancellationToken).ConfigureAwait(false);
+
+            if (revalidated.IsFailure)
+            {
+
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
+
+            }
+
+            Result<List<CampaignPathFullResetCleanupChildRow>> ordered =
+                await ReadOrderedCleanupChildrenAsync(
+                    prepared,
+                    liveCoreConnection,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (ordered.IsFailure)
+            {
+
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
+
+            }
+
+            return await TerminalizeCleanupChildrenAsync(
+                prepared,
+                ordered.Value,
+                authority,
+                liveCoreConnection,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception exception) when (
+            exception is SqliteException
+                or IOException
+                or InvalidOperationException
+                or ArgumentException
+                or NotSupportedException
+                or ObjectDisposedException
+                or OverflowException)
+        {
+
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
+
+        }
+
+    }
+
+    /// <summary>
+    /// Reads the durable vector and proves it is exactly the one the authenticated receipt names.
+    /// </summary>
+    /// <remarks>
+    /// The independent parent count sits beside the joined read for the same reason it does during
+    /// preparation: the join cannot see a kind-four parent whose companion is missing as anything but
+    /// absent, and a shorter vector that still matched the receipt position by position would let a
+    /// deleted companion pass as a complete journal.
+    /// </remarks>
+    private static async Task<Result<List<CampaignPathFullResetCleanupChildRow>>>
+        ReadOrderedCleanupChildrenAsync(
+            CampaignPathFullInstallationResetCleanupReceipt prepared,
+            SqliteConnection connection,
+            CancellationToken cancellationToken)
+    {
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+        CampaignPathMarkerIntentStore intents = new(
+            CovenantSqliteConnectionInitializer.Instance,
+            connection,
+            transaction,
+            TimeProvider.System);
+
+        CampaignPathFullResetCleanupEvidenceStore evidence = new(
+            CovenantSqliteConnectionInitializer.Instance,
+            connection,
+            transaction);
+
+        Result<IReadOnlyList<CampaignPathFullResetCleanupChildRow>> existing =
+            await evidence.ReadOwnerChildrenAsync(
+                prepared.OwnerOperationId,
+                cancellationToken).ConfigureAwait(false);
+
+        long journaled = await intents
+            .CountFullInstallationResetCleanupForOwnerAsync(
+                prepared.OwnerOperationId,
+                cancellationToken).ConfigureAwait(false);
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        if (existing.IsFailure
+            || journaled != existing.Value.Count
+            || existing.Value.Count != prepared.OrderedMarkerIntentIds.Length)
+        {
+
+            return Inert<List<CampaignPathFullResetCleanupChildRow>>();
+
+        }
+
+        Dictionary<Guid, CampaignPathFullResetCleanupChildRow> byIntent =
+            existing.Value.ToDictionary(static child => child.Intent.IntentId);
+
+        List<CampaignPathFullResetCleanupChildRow> ordered =
+            new(prepared.OrderedMarkerIntentIds.Length);
+
+        foreach (Guid intentId in prepared.OrderedMarkerIntentIds)
+        {
+
+            if (!byIntent.TryGetValue(
+                    intentId,
+                    out CampaignPathFullResetCleanupChildRow? child)
+                || !CleanupChildMatchesReceipt(prepared, child))
+            {
+
+                return Inert<List<CampaignPathFullResetCleanupChildRow>>();
+
+            }
+
+            ordered.Add(child);
+
+        }
+
+        return ordered;
+
+    }
+
+    /// <summary>
+    /// Reproves one child's shape from its own immutable evidence, without the inventory.
+    /// </summary>
+    /// <remarks>
+    /// The observation digest is recomputed rather than read back, so a stored digest that agreed
+    /// with a substituted code cannot authenticate the substitution. The path hint is checked against
+    /// the authenticated display-path digest for the same reason: a blocked child that gained a hint
+    /// would be offering the deletion arm a location its own evidence says nobody opened.
+    /// </remarks>
+    private static bool CleanupChildMatchesReceipt(
+        CampaignPathFullInstallationResetCleanupReceipt prepared,
+        CampaignPathFullResetCleanupChildRow child)
+    {
+
+        if (child.Intent.IntentId == Guid.Empty
+            || child.Intent.OwnerOperationId != prepared.OwnerOperationId
+            || child.Intent.Kind is not CampaignPathMarkerIntentKind.FullInstallationResetCleanup
+            || child.Intent.OwnerEffectDigest != prepared.OwnerEffectDigest
+            || child.Intent.ExclusiveOwnerOperation is not null
+            || child.Intent.PendingDisposition is not null
+            || child.Intent.PriorRevision <= 0
+            || child.Intent.PhaseRevision <= 0
+            || child.Intent.Phase is not (CampaignPathMarkerPhase.Prepared
+                or CampaignPathMarkerPhase.Completed
+                or CampaignPathMarkerPhase.ManualBlocker)
+            || child.Evidence.IntentId != child.Intent.IntentId)
+        {
+
+            return false;
+
+        }
+
+        Result<CovenantDigest> observationDigest =
+            FullInstallationResetMarkerPairResetDigests.CampaignObservation(
+                child.Evidence.ObservationCode,
+                child.Evidence.CampaignInventoryEntryDigest,
+                child.Evidence.OpenedSameHandleOwnershipEvidenceDigest);
+
+        if (observationDigest.IsFailure
+            || observationDigest.Value != child.Evidence.ObservationDigest)
+        {
+
+            return false;
+
+        }
+
+        return child.Evidence.ObservationCode switch
+        {
+
+            CampaignPathFullResetCleanupObservationCode.Opened =>
+                child.Evidence.OpenedSameHandleOwnershipEvidenceDigest
+                    == child.Evidence.SameHandleOwnershipEvidenceDigest
+                && child.Intent.TargetDisplayPath is { } hint
+                && FullInstallationResetMarkerPairResetDigests.CampaignDisplayPath(hint)
+                    is { IsSuccess: true } hinted
+                && hinted.Value == child.Evidence.CanonicalDisplayPathDigest,
+
+            CampaignPathFullResetCleanupObservationCode.Unavailable
+                or CampaignPathFullResetCleanupObservationCode.Mismatch =>
+                child.Evidence.OpenedSameHandleOwnershipEvidenceDigest is null
+                && child.Intent.TargetDisplayPath is null,
+
+            _ => false,
+
+        };
+
+    }
+
+    /// <summary>
+    /// Walks the ordered vector once, counting what was deleted against what was left as an orphan.
+    /// </summary>
+    private async Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
+        TerminalizeCleanupChildrenAsync(
+            CampaignPathFullInstallationResetCleanupReceipt prepared,
+            List<CampaignPathFullResetCleanupChildRow> ordered,
+            FullInstallationResetMarkerCleanupAuthority authority,
+            SqliteConnection connection,
+            CancellationToken cancellationToken)
+    {
+
+        ulong deleted = 0;
+
+        ulong orphaned = 0;
+
+        foreach (CampaignPathFullResetCleanupChildRow child in ordered)
+        {
+
+            Result revalidated = await authority.RevalidateReceiptAsync(
+                prepared,
+                cancellationToken).ConfigureAwait(false);
+
+            if (revalidated.IsFailure)
+            {
+
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
+
+            }
+
+            // A child that is already terminal is counted from its durable phase and skipped
+            // entirely. That is what makes an authenticated retry after the terminal publication
+            // reach the identical receipt without opening a single handle.
+            if (child.Intent.Phase is CampaignPathMarkerPhase.Completed)
+            {
+
+                deleted = checked(deleted + 1);
+
+                continue;
+
+            }
+
+            if (child.Intent.Phase is CampaignPathMarkerPhase.ManualBlocker)
+            {
+
+                orphaned = checked(orphaned + 1);
+
+                continue;
+
+            }
+
+            Result<bool> terminalized = await TerminalizeOneCleanupChildAsync(
+                prepared,
+                child,
+                authority,
+                connection,
+                cancellationToken).ConfigureAwait(false);
+
+            if (terminalized.IsFailure)
+            {
+
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
+
+            }
+
+            if (terminalized.Value)
+            {
+
+                deleted = checked(deleted + 1);
+
+            }
+            else
+            {
+
+                orphaned = checked(orphaned + 1);
+
+            }
+
+        }
+
+        Result<CampaignPathFullInstallationResetCleanupReceipt> terminal =
+            CampaignPathFullInstallationResetCleanupReceipt.CreateTerminal(
+                prepared.OwnerOperationId,
+                prepared.OwnerEffectDigest,
+                prepared.OrderedMarkerIntentIds,
+                prepared.MarkerIntentVectorDigest,
+                deleted,
+                orphaned);
+
+        return terminal.IsSuccess
+            ? terminal
+            : Inert<CampaignPathFullInstallationResetCleanupReceipt>();
+
+    }
+
+    /// <summary>
+    /// Terminalizes one prepared child, returning whether its marker was deleted.
+    /// </summary>
+    /// <remarks>
+    /// The two blocked observation arms return before anything that could touch the workspace: no
+    /// marker store, no opener, no codec, and no filesystem call at all. Their evidence was written
+    /// while the installation was still intact and is the only thing this phase is entitled to act
+    /// on — going back to look would be asking a workspace the reset has already changed to decide
+    /// something the reset already decided.
+    ///
+    /// <para>Everything else is a compare-delete through the retained root and nothing else. A root
+    /// this process no longer holds is a manual blocker rather than a reopen, because reopening one
+    /// here would resolve a display path a second time, after the pair deletion removed the evidence
+    /// that would have let anybody check the answer.</para>
+    /// </remarks>
+    private async Task<Result<bool>> TerminalizeOneCleanupChildAsync(
+        CampaignPathFullInstallationResetCleanupReceipt prepared,
+        CampaignPathFullResetCleanupChildRow child,
+        FullInstallationResetMarkerCleanupAuthority authority,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        if (child.Evidence.ObservationCode
+            is not CampaignPathFullResetCleanupObservationCode.Opened)
+        {
+
+            return await BlockCleanupChildAsync(
+                prepared,
+                child,
+                authority,
+                connection,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
+        if (!_fullResetRetainedRoots.TryGetValue(
+                new FullResetRetainedRootKey(prepared.OwnerOperationId, child.Intent.CampaignId),
+                out CampaignPathMarkerRootAuthority? root)
+            || root.CampaignId != child.Intent.CampaignId
+            || root.PathRevision != child.Intent.PriorRevision
+            || root.PhysicalIdentityDigest != child.Evidence.IndexedPhysicalIdentityDigest)
+        {
+
+            return await BlockCleanupChildAsync(
+                prepared,
+                child,
+                authority,
+                connection,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
+        Result<PhysicalCampaignMarkerOpenResult> opened =
+            await root.OpenMarkerOrProveAbsentNoFollowAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+        if (opened.IsFailure)
+        {
+
+            return await BlockCleanupChildAsync(
+                prepared,
+                child,
+                authority,
+                connection,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
+        // Absence is this operation's own completed delete, not a missing target: preparation proved
+        // the marker present through this same retained root, and nothing else holds authority over
+        // that directory. Treating it as a blocker would strand a Campaign that is already clean.
+        if (opened.Value is PhysicalCampaignMarkerOpenResult.Absent)
+        {
+
+            return await CompleteCleanupChildAsync(
+                prepared,
+                child,
+                authority,
+                connection,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
+        PhysicalCampaignRootOpener.MarkerHandleCapability marker =
+            ((PhysicalCampaignMarkerOpenResult.Opened)opened.Value).Marker;
+
+        await using (marker.ConfigureAwait(false))
+        {
+
+            Result<PhysicalCampaignRootOpener.MarkerCodecBytesLease> read =
+                await marker.ReadAllBoundedAsync(
+                    _codec.MaximumMarkerByteCount,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (read.IsFailure)
+            {
+
+                return await BlockCleanupChildAsync(
+                    prepared,
+                    child,
+                    authority,
+                    connection,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            using PhysicalCampaignRootOpener.MarkerCodecBytesLease lease = read.Value;
+
+            Result<MarkerOwnershipEvidence> proof = ProveOpenMarkerOwnership(
+                root,
+                marker,
+                lease.Bytes.Span,
+                child.Intent.CampaignId,
+                child.Intent.PriorRevision);
+
+            // The parent's own committed digest, compared before the companion's. Either comparison
+            // alone catches a marker whose bytes changed — the byte digest is an input to the
+            // ownership digest below — so this one earns its place only against a journal whose two
+            // halves disagree, which is exactly the case the companion cannot report on itself.
+            if (proof.IsFailure || proof.Value.MarkerDigest != child.Intent.MarkerDigest)
+            {
+
+                return await BlockCleanupChildAsync(
+                    prepared,
+                    child,
+                    authority,
+                    connection,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            Result<CovenantDigest> ownership =
+                FullInstallationResetMarkerPairResetDigests.SameHandleOwnership(
+                    child.Intent.CampaignId,
+                    child.Intent.PriorRevision,
+                    proof.Value.MarkerDigest,
+                    child.Evidence.IndexedPhysicalIdentityDigest,
+                    root.PhysicalIdentityDigest,
+                    proof.Value.RootVolumeId,
+                    proof.Value.RootFileId);
+
+            if (ownership.IsFailure
+                || ownership.Value != child.Evidence.SameHandleOwnershipEvidenceDigest)
+            {
+
+                return await BlockCleanupChildAsync(
+                    prepared,
+                    child,
+                    authority,
+                    connection,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            Result removed = await root.CompareDeleteMarkerAsync(
+                marker,
+                marker.PhysicalIdentityDigest,
+                lease.Bytes,
+                cancellationToken).ConfigureAwait(false);
+
+            if (removed.IsFailure)
+            {
+
+                return await BlockCleanupChildAsync(
+                    prepared,
+                    child,
+                    authority,
+                    connection,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            // The parent directory barrier is part of the delete, not a follow-up to it. A child
+            // marked completed over an unflushed rename would be evidence that the marker is gone
+            // when a crash could still bring it back.
+            Result flushed = await root.FlushMarkerDirectoryAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (flushed.IsFailure)
+            {
+
+                return await BlockCleanupChildAsync(
+                    prepared,
+                    child,
+                    authority,
+                    connection,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+        }
+
+        return await CompleteCleanupChildAsync(
+            prepared,
+            child,
+            authority,
+            connection,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task<Result<bool>> CompleteCleanupChildAsync(
+        CampaignPathFullInstallationResetCleanupReceipt prepared,
+        CampaignPathFullResetCleanupChildRow child,
+        FullInstallationResetMarkerCleanupAuthority authority,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        Result advanced = await AdvanceCleanupChildAsync(
+            prepared,
+            child,
+            CampaignPathMarkerPhase.Completed,
+            authority,
+            connection,
+            cancellationToken).ConfigureAwait(false);
+
+        return advanced.IsSuccess ? true : Inert<bool>();
+
+    }
+
+    private async Task<Result<bool>> BlockCleanupChildAsync(
+        CampaignPathFullInstallationResetCleanupReceipt prepared,
+        CampaignPathFullResetCleanupChildRow child,
+        FullInstallationResetMarkerCleanupAuthority authority,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        Result advanced = await AdvanceCleanupChildAsync(
+            prepared,
+            child,
+            CampaignPathMarkerPhase.ManualBlocker,
+            authority,
+            connection,
+            cancellationToken).ConfigureAwait(false);
+
+        return advanced.IsSuccess ? false : Inert<bool>();
+
+    }
+
+    /// <summary>
+    /// Commits one child's single legal phase advance in its own short transaction.
+    /// </summary>
+    /// <remarks>
+    /// Kind four has exactly one transition — prepared to completed or to a manual blocker — so there
+    /// is no ladder to walk and nothing to observe on the way. The advance carries a null observation
+    /// and a null pending disposition because both are authority this kind never received, and the
+    /// compare-and-swap is on the phase revision this attempt actually read.
+    /// </remarks>
+    private async Task<Result> AdvanceCleanupChildAsync(
+        CampaignPathFullInstallationResetCleanupReceipt prepared,
+        CampaignPathFullResetCleanupChildRow child,
+        CampaignPathMarkerPhase phase,
+        FullInstallationResetMarkerCleanupAuthority authority,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        Result revalidated = await authority.RevalidateReceiptAsync(
+            prepared,
+            cancellationToken).ConfigureAwait(false);
+
+        if (revalidated.IsFailure)
+        {
+
+            return Inert();
+
+        }
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+        CampaignPathMarkerIntentStore intents = new(
+            _initializer,
+            connection,
+            transaction,
+            _timeProvider);
+
+        Result advanced = await intents.AdvancePhaseAsync(
+            child.Intent.IntentId,
+            child.Intent.PhaseRevision,
+            phase,
+            observation: null,
+            pendingDisposition: null,
+            cancellationToken).ConfigureAwait(false);
+
+        if (advanced.IsFailure)
+        {
+
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+            return Inert();
+
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        return Result.Success();
+
+    }
 
     private static Result Inert() =>
         Result.Failure(new Error(
