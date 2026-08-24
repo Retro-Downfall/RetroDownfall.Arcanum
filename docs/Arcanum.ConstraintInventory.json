@@ -6047,14 +6047,14 @@
       ],
       "symbolValues": {
         "ArcanumSettingClamps.SessionMaxPinnedEntries": "public static int SessionMaxPinnedEntries(int value) => Math.Clamp(value, 0, 100);",
-        "SessionSettings.MaxPinnedEntries": "Existing compatibility default 10; unchanged by issue #55"
+        "SessionSettings.MaxPinnedEntries": "Existing compatibility default 10; unchanged by the Arcanum and Compendium harness migration"
       },
-      "currentValue": "Existing compatibility default 10, clamped 0-100; retained unchanged because its session-management contract is outside issue #55 scope",
+      "currentValue": "Existing compatibility default 10, clamped 0-100; retained unchanged because its session-management contract is outside the Arcanum and Compendium harness migration",
       "owner": "operator",
       "enforcementPoint": "Existing session-management pin endpoint",
-      "userVisibleBehavior": "The pre-existing configured maximum still governs new durable entry pins; issue #55 adds no second count ceiling during inference materialization.",
+      "userVisibleBehavior": "The pre-existing configured maximum still governs new durable entry pins; inference materialization adds no second count ceiling of its own.",
       "originalRationale": "The value is an existing public compatibility contract outside this Arcanum and Compendium harness migration.",
-      "threatOrFailureModel": "Changing this out-of-scope contract would broaden issue #55 into a separate API behavior change without its own migration and acceptance review.",
+      "threatOrFailureModel": "Changing this out-of-scope contract would turn the harness migration into a separate API behavior change without its own migration and acceptance review.",
       "classification": "Explicit operator policy",
       "action": "retain",
       "replacementOrContinuation": "Change the existing sessions.maxPinnedEntries operator setting when that compatibility surface is in scope; inference materialization independently uses byte bounds and no per-turn pin-count ceiling.",
