@@ -2714,7 +2714,7 @@ Commit resolves an already-committed mutation identity before it decodes the tok
 
 #### 10.22.4 What is deliberately absent
 
-The service is reached by nothing. No route is mapped and no command is registered, so the only way to exercise this path today is a direct call; the HTTP surface, its JSON registrations, and the CLI verbs that would drive it are not built.
+The four mutation routes are registered and each declares `CovenantManage` operator authority, so the pre-binding middleware refuses an unauthorized request before a body byte is bound. No command is registered: the CLI verbs that would drive these routes are not built, so an operator today reaches them over HTTP or not at all. The inspection routes — list, query, detail, versions, sources, explain — are also unmapped, which means an operator can write an entry and cannot yet list one back.
 
 Campaign path-identity administration, Session-binding resolution, the schema repair and family-reinitialize routes, and a `doctor` verb are described in the public contract and are not implemented here. Turn-time Campaign resolution already works without them, and none of them is required for an operator to write or retire an entry.
 
