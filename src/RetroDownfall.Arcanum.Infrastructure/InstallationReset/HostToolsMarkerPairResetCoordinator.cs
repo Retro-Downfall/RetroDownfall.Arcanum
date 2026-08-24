@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -357,6 +359,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             attempt.PairJournaledPublished = true;
 
+            InstallationResetActivePublication? pairAbsenceVerifiedPublication = null;
+
             using CancellationTokenSource recoveryCheckpoint =
                 new(TimeSpan.FromSeconds(5));
 
@@ -578,6 +582,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
                 }
 
+                pairAbsenceVerifiedPublication = pairAbsencePublished.Value;
+
             }
             catch (Exception)
             {
@@ -586,7 +592,13 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             }
 
-            return Inert<InstallationResetActivePublication>();
+            // Outside the short recovery deadline the pair effects ran under, and outside its
+            // catch-all: the Campaign cleanup is bounded by the Campaign count rather than by a
+            // syscall, and it owns the release of the roots this process retained.
+            return await RunCampaignCleanupAsync(
+                heldInstallationLock,
+                pairAbsenceVerifiedPublication,
+                session).ConfigureAwait(false);
 
         }
         finally
@@ -1222,7 +1234,10 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             is HostToolsMarkerPairResetPhase.PairAbsenceVerified)
         {
 
-            return Inert<InstallationResetActivePublication>();
+            return await RunCampaignCleanupAsync(
+                heldInstallationLock,
+                finalProof.Value.Publication,
+                session).ConfigureAwait(false);
 
         }
 
@@ -1252,7 +1267,10 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         }
 
-        return Inert<InstallationResetActivePublication>();
+        return await RunCampaignCleanupAsync(
+            heldInstallationLock,
+            published.Value,
+            session).ConfigureAwait(false);
 
     }
 
@@ -1277,6 +1295,355 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             heldInstallationLock,
             checkpoint,
             cancellationToken);
+
+
+    /// <summary>
+    /// Runs the Campaign cleanup once both host-tools markers are provably gone.
+    /// </summary>
+    /// <remarks>
+    /// Entered from every path that reaches <see cref="HostToolsMarkerPairResetPhase.PairAbsenceVerified"/>
+    /// — the first attempt and both resumed ones — so the sequence a restart follows is the sequence
+    /// a first attempt followed, rather than a second implementation of it.
+    ///
+    /// <para>It does not run under the marker phases' short recovery deadline. That deadline exists
+    /// because each pair effect is a single fast syscall whose window must not be left open; this
+    /// stage walks up to the approved bounded Campaign maximum, opening and deleting a marker apiece,
+    /// and a five-second cap on that would abandon an operation part-way for no reason. Caller
+    /// cancellation is not honoured here either, for the same reason it is not honoured between the
+    /// two marker deletions: everything past the journal is an effect the checkpoint has already
+    /// promised, and the way to stop is to crash and resume.</para>
+    ///
+    /// <para>The retained roots are released exactly once, here, whatever happened. Release before
+    /// the terminal receipt is durable would drop the only authority that can finish the vector while
+    /// finishing it is still possible.</para>
+    /// </remarks>
+    private async Task<Result<InstallationResetActivePublication>> RunCampaignCleanupAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        InstallationResetActivePublication pairAbsence,
+        HostToolsMarkerPairResetDatabaseSession session)
+    {
+
+        if (pairAbsence.Payload.FullInstallationResetRemediationClaim is not { } claim)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        try
+        {
+
+            return await RunCampaignCleanupCoreAsync(
+                heldInstallationLock,
+                pairAbsence,
+                session).ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+        finally
+        {
+
+            try
+            {
+
+                await _lifecycle.ReleaseRetainedRootsAsync(claim.OperationId)
+                    .ConfigureAwait(false);
+
+            }
+            catch (Exception)
+            {
+                // Best effort: a handle that refuses to close cannot replace the operation's own
+                // outcome, and the release itself already continues past an individual failure.
+            }
+
+        }
+
+    }
+
+    private async Task<Result<InstallationResetActivePublication>> RunCampaignCleanupCoreAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        InstallationResetActivePublication pairAbsence,
+        HostToolsMarkerPairResetDatabaseSession session)
+    {
+
+        Result<RevalidatedPairCheckpoint> revalidated =
+            await RecoverAndRevalidatePairCheckpointAsync(
+                heldInstallationLock,
+                pairAbsence,
+                HostToolsMarkerPairResetPhase.PairAbsenceVerified,
+                CancellationToken.None).ConfigureAwait(false);
+
+        if (revalidated.IsFailure)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        Result<CampaignPathFullInstallationResetCleanupReceipt?> journaled =
+            ReconstructCleanupReceipt(revalidated.Value.Checkpoint);
+
+        if (journaled.IsFailure)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        CleanupJournalState state = new(
+            revalidated.Value.Publication,
+            revalidated.Value.Checkpoint,
+            journaled.Value);
+
+        // Zero deleted and zero orphaned is the prepared shape, and preparation is exact rather than
+        // merely idempotent — a replay reproves the committed vector instead of writing a second one.
+        // A journal already carrying terminal counts has nothing left to prepare, and handing that
+        // receipt back to preparation would ask it to compare a terminal vector against the prepared
+        // one it would have built.
+        if (state.Receipt is null or { DeletedCount: 0, OrphanCount: 0 })
+        {
+
+            Result<CleanupJournalState> journaledVector = await JournalCleanupVectorAsync(
+                heldInstallationLock,
+                state,
+                session).ConfigureAwait(false);
+
+            if (journaledVector.IsFailure)
+            {
+
+                return Inert<InstallationResetActivePublication>();
+
+            }
+
+            state = journaledVector.Value;
+
+        }
+
+        if (state.Receipt is not { } prepared)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        // Freshly minted against the publication that now carries the receipt. The authority that
+        // committed the prepared children was bound to the envelope revision the receipt superseded.
+        Result<FullInstallationResetMarkerCleanupAuthority> authority =
+            await MintCleanupAuthorityAsync(
+                heldInstallationLock,
+                state.Publication,
+                CancellationToken.None).ConfigureAwait(false);
+
+        if (authority.IsFailure)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        Result<CampaignPathFullInstallationResetCleanupReceipt> terminal =
+            await _lifecycle.ReconcileFullInstallationResetCleanupAsync(
+                prepared,
+                authority.Value,
+                session.BorrowCoreConnection(),
+                CancellationToken.None).ConfigureAwait(false);
+
+        if (terminal.IsFailure)
+        {
+
+            return Inert<InstallationResetActivePublication>();
+
+        }
+
+        // An authenticated retry whose children are all already terminal reaches the identical
+        // receipt. Republishing it would advance the envelope revision for no reason and invalidate
+        // every proof bound to the one it replaced.
+        if (!CampaignPathFullInstallationResetContractComparer.ReceiptEquals(
+                prepared,
+                terminal.Value))
+        {
+
+            Result<InstallationResetActivePublication> published =
+                await PublishCleanupReceiptAsync(
+                    heldInstallationLock,
+                    state,
+                    terminal.Value).ConfigureAwait(false);
+
+            if (published.IsFailure)
+            {
+
+                return Inert<InstallationResetActivePublication>();
+
+            }
+
+        }
+
+        // Recovery is still required on the success path. Managed-file reconciliation, restore
+        // credential removal, and installation-identity rotation are not part of this operation, so a
+        // durable terminal receipt is progress rather than a finished reset.
+        return Inert<InstallationResetActivePublication>();
+
+    }
+
+    /// <summary>
+    /// Commits the cleanup vector in one caller-owned transaction and publishes the receipt it froze.
+    /// </summary>
+    /// <remarks>
+    /// The transaction is opened, committed, and disposed here rather than inside the lifecycle seam,
+    /// because the durable vector and the pair effects that preceded it belong to the same borrowed
+    /// core connection: a seam that opened its own would be journaling against a snapshot the marker
+    /// deletions never saw.
+    /// </remarks>
+    private async Task<Result<CleanupJournalState>> JournalCleanupVectorAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        CleanupJournalState state,
+        HostToolsMarkerPairResetDatabaseSession session)
+    {
+
+        Result<CampaignPathFullInstallationResetInventory> inventory =
+            CampaignPathFullInstallationResetInventory.Create(
+                state.Checkpoint.RestartProof.SignedAttestation.OperationId,
+                state.Checkpoint.CampaignInventory,
+                state.Checkpoint.CampaignMarkerInventoryDigest);
+
+        if (inventory.IsFailure)
+        {
+
+            return Inert<CleanupJournalState>();
+
+        }
+
+        Result<CampaignPathFullInstallationResetCleanupPreparation> preparation =
+            CampaignPathFullInstallationResetCleanupPreparation.Create(
+                state.Checkpoint.RestartProof.SignedAttestation.OperationId,
+                state.Checkpoint.OwnerEffectDigest,
+                inventory.Value);
+
+        if (preparation.IsFailure)
+        {
+
+            return Inert<CleanupJournalState>();
+
+        }
+
+        Result<FullInstallationResetMarkerCleanupAuthority> authority =
+            await MintCleanupAuthorityAsync(
+                heldInstallationLock,
+                state.Publication,
+                CancellationToken.None).ConfigureAwait(false);
+
+        if (authority.IsFailure)
+        {
+
+            return Inert<CleanupJournalState>();
+
+        }
+
+        SqliteConnection connection = session.BorrowCoreConnection();
+
+        CampaignPathFullInstallationResetCleanupReceipt receipt;
+
+        await using (SqliteTransaction transaction =
+            (SqliteTransaction)await connection
+                .BeginTransactionAsync(CancellationToken.None)
+                .ConfigureAwait(false))
+        {
+
+            Result<CampaignPathFullInstallationResetCleanupReceipt> committed =
+                await _lifecycle.PrepareFullInstallationResetCleanupAsync(
+                    preparation.Value,
+                    state.Receipt,
+                    authority.Value,
+                    connection,
+                    transaction,
+                    CancellationToken.None).ConfigureAwait(false);
+
+            if (committed.IsFailure)
+            {
+
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                return Inert<CleanupJournalState>();
+
+            }
+
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+
+            receipt = committed.Value;
+
+        }
+
+        if (state.Receipt is not null
+            && CampaignPathFullInstallationResetContractComparer.ReceiptEquals(
+                state.Receipt,
+                receipt))
+        {
+
+            return state with { Receipt = receipt };
+
+        }
+
+        Result<InstallationResetActivePublication> published =
+            await PublishCleanupReceiptAsync(
+                heldInstallationLock,
+                state,
+                receipt).ConfigureAwait(false);
+
+        if (published.IsFailure)
+        {
+
+            return Inert<CleanupJournalState>();
+
+        }
+
+        Result<RevalidatedPairCheckpoint> revalidated =
+            await RecoverAndRevalidatePairCheckpointAsync(
+                heldInstallationLock,
+                published.Value,
+                HostToolsMarkerPairResetPhase.PairAbsenceVerified,
+                CancellationToken.None).ConfigureAwait(false);
+
+        return revalidated.IsFailure
+            ? Inert<CleanupJournalState>()
+            : new CleanupJournalState(
+                revalidated.Value.Publication,
+                revalidated.Value.Checkpoint,
+                receipt);
+
+    }
+
+    private Task<Result<InstallationResetActivePublication>> PublishCleanupReceiptAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        CleanupJournalState state,
+        CampaignPathFullInstallationResetCleanupReceipt receipt) =>
+        _activeStore.AdvanceAsync(
+            heldInstallationLock,
+            state.Publication,
+            state.Publication.Payload.ToRecord() with
+            {
+                HostToolsMarkerPairReset = state.Checkpoint with
+                {
+                    MarkerIntentCount = receipt.MarkerIntentCount,
+                    OrderedMarkerIntentIds = receipt.OrderedMarkerIntentIds,
+                    MarkerIntentVectorDigest = receipt.MarkerIntentVectorDigest,
+                    DeletedCount = receipt.DeletedCount,
+                    OrphanCount = receipt.OrphanCount,
+                },
+            },
+            CancellationToken.None);
+
+    /// <summary>
+    /// The authenticated publication, its checkpoint, and the cleanup receipt that checkpoint carries.
+    /// </summary>
+    private sealed record CleanupJournalState(
+        InstallationResetActivePublication Publication,
+        HostToolsMarkerPairResetCheckpointV1 Checkpoint,
+        CampaignPathFullInstallationResetCleanupReceipt? Receipt);
 
     private async Task<Result<RevalidatedPairCheckpoint>>
         RecoverAndRevalidatePairCheckpointAsync(

@@ -35,7 +35,7 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// kind. A suite built on doubles here would be asserting that its own doubles agree with each other.
 /// </remarks>
 [Trait("Category", "Integration")]
-public sealed class CampaignPathFullInstallationResetCleanupTests
+public sealed partial class CampaignPathFullInstallationResetCleanupTests
 {
 
     private static CancellationToken Token => CancellationToken.None;
@@ -911,6 +911,26 @@ public sealed class CampaignPathFullInstallationResetCleanupTests
 
         }
 
+        /// <summary>
+        /// Reconciles through the freshly minted authority, releasing this attempt's read transaction
+        /// first because the seam opens short transactions of its own on the same connection.
+        /// </summary>
+        internal async Task<Result<CampaignPathFullInstallationResetCleanupReceipt>> ReconcileAsync(
+            CampaignPathFullInstallationResetCleanupReceipt prepared,
+            CampaignPathMarkerLifecycle? lifecycle = null)
+        {
+
+            await RollbackAsync();
+
+            return await (lifecycle ?? _harness.Lifecycle)
+                .ReconcileFullInstallationResetCleanupAsync(
+                    prepared,
+                    Authority,
+                    _harness.Connection,
+                    Token);
+
+        }
+
         internal async Task CommitAsync()
         {
 
@@ -1179,6 +1199,32 @@ public sealed class CampaignPathFullInstallationResetCleanupTests
             return (SqliteTransaction)await Connection.BeginTransactionAsync(
                 System.Data.IsolationLevel.Serializable,
                 Token);
+
+        }
+
+        internal static string MarkerPathOf(RegisteredRoot root) =>
+            Path.Combine(root.DisplayPath, ".arcanum", "campaign-root.marker");
+
+        /// <summary>
+        /// Reads the committed vector outside any caller transaction, as a later attempt sees it.
+        /// </summary>
+        internal async Task<IReadOnlyList<CampaignPathFullResetCleanupChildRow>>
+            ReadCommittedChildrenAsync(Guid ownerOperationId)
+        {
+
+            await using SqliteTransaction transaction = await BeginImmediateAsync();
+
+            CampaignPathFullResetCleanupEvidenceStore store = new(
+                CovenantSqliteConnectionInitializer.Instance,
+                Connection,
+                transaction);
+
+            IReadOnlyList<CampaignPathFullResetCleanupChildRow> children =
+                Value(await store.ReadOwnerChildrenAsync(ownerOperationId, Token));
+
+            await transaction.RollbackAsync(Token);
+
+            return children;
 
         }
 

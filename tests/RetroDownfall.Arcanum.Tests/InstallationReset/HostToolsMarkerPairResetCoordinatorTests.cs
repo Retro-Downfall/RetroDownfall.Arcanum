@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 
 using System.Buffers.Text;
+using System.Collections.Immutable;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -16,7 +17,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
-public sealed class HostToolsMarkerPairResetCoordinatorTests
+public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 {
 
     [Fact]
@@ -2773,9 +2774,16 @@ public sealed class HostToolsMarkerPairResetCoordinatorTests
 
             Assert.DoesNotContain("os-effect", events);
 
-            Assert.DoesNotContain(events, entry => entry.StartsWith(
-                "advance:",
-                StringComparison.Ordinal));
+            // No pair phase is republished. What this resume does publish is the Campaign cleanup
+            // vector the checkpoint had not yet journaled, under the phase already proven — so every
+            // advance it makes names the phase it started from.
+            Assert.All(
+                events.Where(entry => entry.StartsWith("advance:", StringComparison.Ordinal)),
+                static entry => Assert.Equal("advance:PairAbsenceVerified", entry));
+
+            Assert.Equal(
+                HostToolsMarkerPairResetPhase.PairAbsenceVerified,
+                store.LastNext!.HostToolsMarkerPairReset!.Phase);
 
         }
         finally
@@ -5670,6 +5678,66 @@ public sealed class HostToolsMarkerPairResetCoordinatorTests
 
         internal int ReleaseCalls { get; private set; }
 
+        internal int PrepareCalls { get; private set; }
+
+        internal int ReconcileCalls { get; private set; }
+
+        /// <summary>The intent vector preparation commits, as the real seam would have journaled it.</summary>
+        internal ImmutableArray<Guid> PreparedIntentIds { get; init; } = [];
+
+        internal ulong ReconciledDeletedCount { get; init; }
+
+        internal ulong ReconciledOrphanCount { get; init; }
+
+        internal bool FailPrepare { get; init; }
+
+        internal bool FailReconcile { get; init; }
+
+        internal HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority?
+            PrepareAuthority
+        {
+            get;
+            private set;
+        }
+
+        internal HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority?
+            ReconcileAuthority
+        {
+            get;
+            private set;
+        }
+
+        internal CampaignPathFullInstallationResetCleanupReceipt? PrepareExpectedReceipt
+        {
+            get;
+            private set;
+        }
+
+        internal CampaignPathFullInstallationResetCleanupReceipt? ReconcilePreparedReceipt
+        {
+            get;
+            private set;
+        }
+
+        internal SqliteConnection? PrepareConnection { get; private set; }
+
+        internal SqliteConnection? ReconcileConnection { get; private set; }
+
+        /// <summary>The borrowed connection's state while reconciliation was live, not afterwards.</summary>
+        internal System.Data.ConnectionState? ReconcileConnectionState { get; private set; }
+
+        internal SqliteTransaction? PrepareTransaction { get; private set; }
+
+        /// <summary>
+        /// Whether the transaction belonged to the borrowed connection <em>while the call was live</em>.
+        /// </summary>
+        /// <remarks>
+        /// Recorded here rather than asserted afterwards: a committed and disposed
+        /// <see cref="SqliteTransaction"/> drops its connection reference, so a later comparison would
+        /// read null and say nothing about what the seam was handed.
+        /// </remarks>
+        internal bool? PrepareTransactionBoundToConnection { get; private set; }
+
         internal Guid? ReleasedOwnerOperationId { get; private set; }
 
         internal SqliteConnection? InventoryConnection { get; private set; }
@@ -5750,16 +5818,86 @@ public sealed class HostToolsMarkerPairResetCoordinatorTests
                 HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority authority,
                 SqliteConnection liveCoreConnection,
                 SqliteTransaction liveCoreTransaction,
-                CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+                CancellationToken cancellationToken)
+        {
+
+            PrepareCalls++;
+
+            PrepareAuthority = authority;
+
+            PrepareExpectedReceipt = expectedReceipt;
+
+            PrepareConnection = liveCoreConnection;
+
+            PrepareTransaction = liveCoreTransaction;
+
+            PrepareTransactionBoundToConnection =
+                ReferenceEquals(liveCoreTransaction.Connection, liveCoreConnection);
+
+            _events?.Add("prepare");
+
+            if (FailPrepare)
+            {
+
+                return Task.FromResult(
+                    Result<CampaignPathFullInstallationResetCleanupReceipt>.Failure(new Error(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "The test Campaign cleanup preparation is unavailable.")));
+
+            }
+
+            // Built from the preparation the coordinator handed over, so the receipt carries that
+            // journal's own owner and effect rather than one the test guessed.
+            return Task.FromResult(
+                CampaignPathFullInstallationResetCleanupReceipt.CreatePrepared(
+                    preparation.OwnerOperationId,
+                    preparation.OwnerEffectDigest,
+                    PreparedIntentIds,
+                    Value(FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(
+                        PreparedIntentIds))));
+
+        }
 
         public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
             ReconcileFullInstallationResetCleanupAsync(
                 CampaignPathFullInstallationResetCleanupReceipt prepared,
                 HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority authority,
                 SqliteConnection liveCoreConnection,
-                CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+                CancellationToken cancellationToken)
+        {
+
+            ReconcileCalls++;
+
+            ReconcileAuthority = authority;
+
+            ReconcilePreparedReceipt = prepared;
+
+            ReconcileConnection = liveCoreConnection;
+
+            ReconcileConnectionState = liveCoreConnection.State;
+
+            _events?.Add("reconcile");
+
+            if (FailReconcile)
+            {
+
+                return Task.FromResult(
+                    Result<CampaignPathFullInstallationResetCleanupReceipt>.Failure(new Error(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "The test Campaign cleanup reconciliation is unavailable.")));
+
+            }
+
+            return Task.FromResult(
+                CampaignPathFullInstallationResetCleanupReceipt.CreateTerminal(
+                    prepared.OwnerOperationId,
+                    prepared.OwnerEffectDigest,
+                    prepared.OrderedMarkerIntentIds,
+                    prepared.MarkerIntentVectorDigest,
+                    ReconciledDeletedCount,
+                    ReconciledOrphanCount));
+
+        }
 
         public Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
             CovenantExclusiveRecoveryOwner owner,
