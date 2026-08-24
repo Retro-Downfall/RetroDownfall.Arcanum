@@ -2668,11 +2668,19 @@ Only the Covenant spans of the prompt's attribution partition travel with the en
 
 A turn that showed the provider protected content produces a protected answer, and that answer's label is read by the next turn to decide whether it in turn owes a disclosure. Persisting the reply without its label would silently launder taint out of the Session, so a Covenant-derived reply is finalized through `IGrimoireTurnCommitter`, which writes the content and the sensitivity label inside one transaction. Failure there is a refusal rather than a downgrade: writing the content without the label is the one outcome worse than losing the reply.
 
+The interrupted path takes the same arm. An interrupted protected stream is the case most likely to lose its label — the reply is partial, the turn is unwinding, and the obvious thing to do is persist what arrived — so partial content commits through the committer exactly as a completed reply does. An interruption with nothing streamed discards the placeholder instead, which needs no label because it persists no content.
+
 The ordinary reply is unchanged and still takes the existing finalize path. That split is a narrowing, not the end state — the committer's own contract describes it as the single writer of every finalization, and the remaining paths have not moved onto it.
 
 The Session's current taint is read once per turn, before the first dispatch, through the content-free projection the sensitivity ledger publishes. A read that fails is treated as tainted: "we could not read the label" and "there is no label" are different facts, and treating the first as the second is exactly how an unlabelled protected dispatch would leave without a receipt.
 
-#### 10.21.6 What is deliberately absent
+#### 10.21.6 One comparison instead of a set of invariants
+
+The envelope freezes the prompt document the dispatch gate was handed, while the transcript's own system message is rewritten independently by context compression and by the materialization rebuilds. Every one of those rebuilds could in principle leave the two out of step, and the consequence would be the worst kind of evidence: a receipt describing a prompt the provider never saw.
+
+Rather than adding an invariant each rebuild has to remember, the gate compares the frozen prompt against the transcript's first message immediately before freezing and refuses the dispatch on any difference. That converts the whole class of drift — including drift a future rebuild introduces — into one fail-closed check, and it costs nothing on the path where no Covenant bytes exist, because it is only reached by a dispatch that already owes a receipt.
+
+#### 10.21.7 What is deliberately absent
 
 Agent-originated mutation is not yet live. The MCP proposal and retirement tools remain registered inert: no turn mints a tool capability, the staging collector this turn owns is never handed to one, and the committer's mutation arm therefore always receives an empty batch. Nothing in this section lets a model write.
 
