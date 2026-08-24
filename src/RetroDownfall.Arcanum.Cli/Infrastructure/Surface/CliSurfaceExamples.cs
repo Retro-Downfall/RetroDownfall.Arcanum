@@ -106,6 +106,15 @@ internal static class CliSurfaceExamples
         ["memory lexicon search"] = ["arcanum memory lexicon search \"ward policy\""],
         ["memory lexicon delete"] = [$"arcanum memory lexicon delete {SampleGuid}"],
 
+        // The Covenant. `set` shows the --file form because content never travels in an argument, and
+        // `retire` shows the confirmation-bearing form rather than --yes.
+        ["memory covenant list"] = ["arcanum memory covenant list"],
+        ["memory covenant show"] = ["arcanum memory covenant show preference.builds"],
+        ["memory covenant set"] =
+            ["arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"],
+        ["memory covenant retire"] =
+            ["arcanum memory covenant retire preference.builds --expected-revision 1"],
+
         // Lore
         ["lore list"] = ["arcanum lore list"],
         ["lore get"] = ["arcanum lore get ward.color"],

@@ -110,6 +110,10 @@
         "context inspect",
         "context sources",
         "context tools",
+        "memory covenant list",
+        "memory covenant retire",
+        "memory covenant set",
+        "memory covenant show",
         "run"
       ]
     },
@@ -120,6 +124,13 @@
         "center",
         "open center",
         "run"
+      ]
+    },
+    {
+      "alias": "-f",
+      "option": "--file",
+      "scopes": [
+        "memory covenant set"
       ]
     },
     {
@@ -2672,6 +2683,211 @@
             "arcanum memory explain"
           ],
           "commands": []
+        },
+        {
+          "path": "memory covenant",
+          "name": "covenant",
+          "description": "Read and write the standing agreement between this operator and the agent.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "memory covenant set",
+              "name": "set",
+              "description": "Write one standing preference the agent will honor on later turns.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key, for example preference.builds.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--file",
+                  "aliases": [
+                    "-f"
+                  ],
+                  "description": "Read the preference text from this file. Omit to read from piped standard input.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The revision this write expects to replace. Zero creates.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--reactivate",
+                  "aliases": [],
+                  "description": "Reinstate a key that was previously retired.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant list",
+              "name": "list",
+              "description": "List the standing preferences in one scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--all-scopes",
+                  "aliases": [],
+                  "description": "List Global and every Campaign scope together.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--lane",
+                  "aliases": [],
+                  "description": "Confirmed (operator-authored) or Proposed (agent-suggested).",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant list"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant show",
+              "name": "show",
+              "description": "Show both lane heads for one preference key.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant show preference.builds"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant retire",
+              "name": "retire",
+              "description": "Retire one preference so it is honored on no later turn.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--lane",
+                  "aliases": [],
+                  "description": "Confirmed or Proposed. Defaults to Confirmed.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The exact lane revision being retired.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant retire preference.builds --expected-revision 1"
+              ],
+              "commands": []
+            }
+          ]
         },
         {
           "path": "memory lexicon",

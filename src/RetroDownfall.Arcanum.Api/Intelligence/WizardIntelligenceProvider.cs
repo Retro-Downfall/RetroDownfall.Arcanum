@@ -35,6 +35,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
@@ -93,7 +94,8 @@ public sealed partial class WizardIntelligenceProvider(
     ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
     IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null,
     ITapestryStore? tapestryStore = null,
-    CovenantDispatchGate? covenantDispatch = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
+    CovenantDispatchGate? covenantDispatch = null,
+    CovenantToolCapabilityRegistry? covenantToolCapabilities = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
 {
     /// <summary>
     /// The token allowance charged for one emitted Covenant section's headings, notice, and fences.
@@ -1586,6 +1588,11 @@ public sealed partial class WizardIntelligenceProvider(
 
         ChatResponse? bufferedFinalResponse = null;
 
+        // Published once a dispatch has earned an admission receipt, because a staging capability is
+        // minted from that receipt: a tool call with no admission behind it has nothing to prove it
+        // belongs to this turn's plan.
+        IDisposable? streamCovenantStaging = null;
+
         try
         {
             string targetModel = lease.ResolvedModel;
@@ -2915,7 +2922,7 @@ public sealed partial class WizardIntelligenceProvider(
                     // Covenant content or tainted history commits its own durable receipt here, before
                     // the executor is reached; a receipt written afterwards could not record the one
                     // case it exists for, a call that left the process and then crashed.
-                    Result streamCovenantGate = await AcknowledgeCovenantDispatchAsync(
+                    Result<CovenantDispatchAdmission?> streamCovenantGate = await AcknowledgeCovenantDispatchAsync(
                             covenantScope,
                             streamCovenantDispatch,
                             lease,
@@ -2948,6 +2955,25 @@ public sealed partial class WizardIntelligenceProvider(
                         }
 
                         break;
+                    }
+
+                    if (streamCovenantGate.Value is { Receipt: not null } streamAdmitted
+                        && covenantScope is { Collector: not null, HeadProbe: not null } stagingScope
+                        && invocationContext.Campaign is { } stagingCampaign
+                        && covenantToolCapabilities is not null)
+                    {
+
+                        streamCovenantStaging?.Dispose();
+
+                        streamCovenantStaging = CovenantToolStagingAmbient.Push(new CovenantToolStagingContext(
+                            stagingScope.Collector,
+                            stagingCampaign,
+                            streamAdmitted.Receipt,
+                            streamAdmitted.Receipt.Materialization,
+                            stagingScope.HeadProbe,
+                            covenantToolCapabilities,
+                            inferenceToken));
+
                     }
 
                     ModelCallPurpose streamPurpose = streamToolRoundCount == 0
@@ -4095,6 +4121,8 @@ public sealed partial class WizardIntelligenceProvider(
         }
         finally
         {
+            streamCovenantStaging?.Dispose();
+
             HumanPromptLiveEmitterAmbient.Current = previousHumanPromptEmitter;
 
             liveHumanPromptChannel?.Writer.TryComplete();
@@ -6819,7 +6847,7 @@ public sealed partial class WizardIntelligenceProvider(
     /// with no established authority, and a journal that cannot commit are all refusals, because each
     /// of them means the receipt an operator would later read would not describe what went out.</para>
     /// </remarks>
-    private async ValueTask<Result> AcknowledgeCovenantDispatchAsync(
+    private async ValueTask<Result<CovenantDispatchAdmission?>> AcknowledgeCovenantDispatchAsync(
         CovenantTurnScope? covenantScope,
         CovenantDispatchPlan dispatch,
         ChatClientLease lease,
@@ -6835,14 +6863,14 @@ public sealed partial class WizardIntelligenceProvider(
         if (covenantDispatch is null || covenantScope is not { } scope)
         {
 
-            return Result.Success();
+            return Result<CovenantDispatchAdmission?>.Success(null);
 
         }
 
         if (!dispatch.HasAdmittedContent && !scope.HistoryTainted)
         {
 
-            return Result.Success();
+            return Result<CovenantDispatchAdmission?>.Success(null);
 
         }
 
@@ -6858,7 +6886,7 @@ public sealed partial class WizardIntelligenceProvider(
             && !string.Equals(messages[0].Text, built.Prompt, StringComparison.Ordinal))
         {
 
-            return Result.Failure(new Error(
+            return Result<CovenantDispatchAdmission?>.Failure(new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The frozen system prompt does not match the transcript this dispatch would send."));
 
@@ -6884,7 +6912,7 @@ public sealed partial class WizardIntelligenceProvider(
         if (frozen.IsFailure)
         {
 
-            return Result.Failure(frozen.Error);
+            return Result<CovenantDispatchAdmission?>.Failure(frozen.Error);
 
         }
 
@@ -6892,7 +6920,9 @@ public sealed partial class WizardIntelligenceProvider(
             .AcknowledgeDispatchAsync(scope, dispatch, frozen.Value, cancellationToken)
             .ConfigureAwait(false);
 
-        return admitted.IsFailure ? Result.Failure(admitted.Error) : Result.Success();
+        return admitted.IsFailure
+            ? Result<CovenantDispatchAdmission?>.Failure(admitted.Error)
+            : Result<CovenantDispatchAdmission?>.Success(admitted.Value);
 
     }
 

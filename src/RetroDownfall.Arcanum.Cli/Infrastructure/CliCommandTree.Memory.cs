@@ -149,6 +149,8 @@ internal static partial class CliCommandTree
 
         memory.Add(explain);
 
+        memory.Add(BuildCovenant(sp));
+
         memory.Add(lexicon);
 
         return memory;

@@ -56,6 +56,7 @@ public sealed class CovenantTurnContext : IAsyncDisposable
         CovenantTurnPlan? plan,
         CovenantTurnLease? lease,
         ICovenantMutationCollector? collector,
+        ICovenantTurnHeadProbe? headProbe,
         Guid logicalTurnId)
     {
 
@@ -67,6 +68,8 @@ public sealed class CovenantTurnContext : IAsyncDisposable
 
         Collector = collector;
 
+        HeadProbe = headProbe;
+
         LogicalTurnId = logicalTurnId;
 
     }
@@ -75,13 +78,14 @@ public sealed class CovenantTurnContext : IAsyncDisposable
     public static CovenantTurnContext Absent(CovenantTurnAbsence absence) =>
         absence is CovenantTurnAbsence.None
             ? throw new ArgumentOutOfRangeException(nameof(absence))
-            : new CovenantTurnContext(absence, null, null, null, Guid.Empty);
+            : new CovenantTurnContext(absence, null, null, null, null, Guid.Empty);
 
     public static CovenantTurnContext ForPlan(
         CovenantTurnPlan plan,
         CovenantTurnLease lease,
         ICovenantMutationCollector? collector,
-        Guid logicalTurnId)
+        Guid logicalTurnId,
+        ICovenantTurnHeadProbe? headProbe = null)
     {
 
         ArgumentNullException.ThrowIfNull(plan);
@@ -93,6 +97,7 @@ public sealed class CovenantTurnContext : IAsyncDisposable
             plan,
             lease,
             collector,
+            headProbe,
             CovenantValidation.RequireNonEmpty(logicalTurnId, nameof(logicalTurnId)));
 
     }
@@ -103,6 +108,14 @@ public sealed class CovenantTurnContext : IAsyncDisposable
 
     /// <summary>The staging collector, present only for an eligible attended session-backed turn.</summary>
     public ICovenantMutationCollector? Collector { get; }
+
+    /// <summary>The one bounded head read a staging tool call may make, scoped to this turn.</summary>
+    /// <remarks>
+    /// Paired with the collector on purpose: a turn that may stage a mutation is exactly the turn that
+    /// may need to learn whether the key it is proposing already has a head. A turn that may not stage
+    /// has no reason to probe, and carries neither.
+    /// </remarks>
+    public ICovenantTurnHeadProbe? HeadProbe { get; }
 
     public Guid LogicalTurnId { get; }
 

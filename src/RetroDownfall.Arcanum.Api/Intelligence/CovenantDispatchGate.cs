@@ -91,6 +91,9 @@ public sealed class CovenantTurnScope : IAsyncDisposable
 
     public ICovenantMutationCollector? Collector => _context.Collector;
 
+    /// <summary>The bounded head read this turn's staging tool calls may make.</summary>
+    public ICovenantTurnHeadProbe? HeadProbe => _context.HeadProbe;
+
     /// <summary>The unpressured content this plan would inject before any budget is applied.</summary>
     public CovenantPromptContent PlanContent => _context.PlanContent;
 
