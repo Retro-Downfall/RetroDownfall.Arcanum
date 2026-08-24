@@ -12,6 +12,13 @@
 # JIT run reported turn planning at roughly twice the published binary's cost, so a ceiling set from
 # one would be meaningless against the other.
 #
+# A recorded baseline is only comparable on the host that recorded it. The comparison is a paired
+# bootstrap over batches co-run in one process, which is what cancels the drift a machine accumulates
+# over a long run; it cannot cancel the difference between two machines. Comparing a developer
+# machine's baseline against a shared runner would report the runner as a code regression. Record and
+# compare on the same host, or compare two revisions in one CI job. The absolute ceilings are the
+# cross-host gate, and they are the authoritative half for exactly this reason.
+#
 # Exit codes come from the host and are the contract: 0 within every stated bound, 1 a breach, 2 the
 # run could not be made. A breach and an unmeasurable run are different answers.
 

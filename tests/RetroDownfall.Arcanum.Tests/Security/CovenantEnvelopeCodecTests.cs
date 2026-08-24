@@ -87,6 +87,71 @@ public sealed class CovenantEnvelopeCodecTests
     }
 
     [Fact]
+    public void A_caller_whose_payload_repeats_the_stamp_may_state_the_instant()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        DateTimeOffset stated = Now.AddSeconds(-30);
+
+        // The operator preflight body carries its own copy of these timestamps and the commit path
+        // requires the two to match byte for byte. Left to read the clock twice they agree only when
+        // both reads land in the same millisecond, so the caller states the instant instead.
+        string token = harness.Codec.Encode(
+            CovenantEnvelopePurpose.OperatorPreflight,
+            "preflight-body"u8,
+            TimeSpan.FromMinutes(5),
+            stated).Value;
+
+        CovenantEnvelopeBody body = harness.Codec
+            .Decode(CovenantEnvelopePurpose.OperatorPreflight, token).Value;
+
+        Assert.Equal(stated.ToUnixTimeMilliseconds(), body.IssuedAtUtc.ToUnixTimeMilliseconds());
+
+        Assert.Equal(
+            stated.AddMinutes(5).ToUnixTimeMilliseconds(),
+            body.ExpiresAtUtc.ToUnixTimeMilliseconds());
+
+    }
+
+    [Fact]
+    public void An_envelope_cannot_be_issued_in_the_future()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        // Backdating only shortens a token's life, which is what a caller aligning its payload with
+        // this stamp is doing. Forward-dating would extend it past the lifetime that was asked for,
+        // so it is refused rather than clamped.
+        Result<string> refused = harness.Codec.Encode(
+            CovenantEnvelopePurpose.OperatorPreflight,
+            "preflight-body"u8,
+            TimeSpan.FromMinutes(5),
+            Now.AddMilliseconds(1));
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.InvalidCursor, refused.Error.Code);
+
+    }
+
+    [Fact]
+    public void An_omitted_instant_still_leaves_the_codec_owning_the_clock()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        string token = harness.Codec
+            .Encode(CovenantEnvelopePurpose.Cursor, "cursor-state"u8, TimeSpan.FromMinutes(1))
+            .Value;
+
+        CovenantEnvelopeBody body = harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token).Value;
+
+        Assert.Equal(Now.ToUnixTimeMilliseconds(), body.IssuedAtUtc.ToUnixTimeMilliseconds());
+
+    }
+
+    [Fact]
     public void Wire_layout_is_the_exact_forty_six_byte_header_plus_ciphertext_and_tag()
     {
 

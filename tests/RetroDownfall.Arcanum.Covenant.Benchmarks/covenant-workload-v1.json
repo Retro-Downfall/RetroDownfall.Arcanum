@@ -31,6 +31,7 @@
     "iterationsPerBatch": 60,
     "allocationControlIterations": 400
   },
+  "$orderComment": "Operations are measured in the order declared here, and the order is part of the workload. mutation.commit appends a real version on every iteration, so it leaves the corpus with more versions than it found — the heads it measures are unchanged, which is why the census below it is unaffected, but reordering these entries would still change what the ones after it measure. The corpus digest is taken at seed time and would not catch that.",
   "$ceilingsComment": "Latency ceilings carry roughly four times the headroom over what an Apple-silicon developer machine measures, because a shared CI runner is slower and a gate that failed on a busy runner would be turned off. Allocation ceilings are far tighter — allocations are deterministic and machine-independent, so their only headroom needs to absorb a code change, not a host. That asymmetry is deliberate: latency catches order-of-magnitude regressions and allocation catches the ordinary kind.",
   "operations": [
     {

@@ -1,14 +1,15 @@
 using RetroDownfall.Arcanum.Core.Performance;
 
-namespace RetroDownfall.Arcanum.Tests.Performance;
+namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 
 /// <summary>
 /// The arithmetic every Covenant benchmark verdict rests on.
 /// </summary>
 /// <remarks>
-/// Deliberately outside the <c>Perf</c> category: none of this measures anything, so it is
-/// deterministic and belongs in the ordinary suite. The wall-clock gates it serves live only in the
-/// dedicated benchmark command.
+/// Deliberately outside the <c>Performance</c> namespace and its <c>Perf</c> category. That namespace
+/// holds wall-clock assertions and the coverage run excludes it, which is exactly the wrong treatment
+/// for these: none of this measures anything, so it is deterministic and has to run on every lane.
+/// The wall-clock gates this arithmetic serves live only in the dedicated benchmark command.
 /// </remarks>
 public sealed class BenchmarkStatisticsTests
 {

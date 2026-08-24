@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace RetroDownfall.Arcanum.Tests.Performance;
+namespace RetroDownfall.Arcanum.Tests.Benchmarks;
 
 /// <summary>
 /// The pinned benchmark workload, read as the release gate reads it.

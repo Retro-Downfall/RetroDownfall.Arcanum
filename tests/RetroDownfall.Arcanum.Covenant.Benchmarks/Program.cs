@@ -156,7 +156,7 @@ int exit = 0;
 if (baselinePath is { Length: > 0 })
 {
 
-    exit = Math.Max(exit, Compare(run, baselinePath, manifest));
+    exit = Math.Max(exit, Compare(run, baselinePath));
 
 }
 
@@ -286,7 +286,11 @@ async Task MeasuredCommitAsync()
 
 }
 
-static int Compare(BenchmarkRun run, string baselinePath, WorkloadManifest manifest)
+// The manifest restates the regression rule so a reader of the workload can see it, but it is not a
+// knob: the thresholds live in BenchmarkRatioInterval and the ordinary suite asserts the two agree.
+// Reading them from the file here would make the restatement configuration, and a workload edit could
+// then move the gate without moving any code.
+static int Compare(BenchmarkRun run, string baselinePath)
 {
 
     BenchmarkRun? baseline = JsonSerializer.Deserialize(
@@ -343,8 +347,6 @@ static int Compare(BenchmarkRun run, string baselinePath, WorkloadManifest manif
         }
 
     }
-
-    _ = manifest;
 
     return exit;
 
