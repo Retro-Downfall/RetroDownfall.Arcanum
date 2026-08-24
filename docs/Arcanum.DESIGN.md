@@ -2690,6 +2690,34 @@ Attachment provenance is frozen as an empty materialization snapshot. The turn d
 
 The compression rebuild in `InferenceContextBuilder` does not carry Covenant content: its request type has no field for it, and a compressed transcript therefore renders without the profile. The context-preview surface likewise builds its prompt without a plan of its own.
 
+### 10.22 The operator's write path
+
+An operator writing a preference is the first half of the sentence the whole capability exists for; §10.21 built the second. This section is the service that turns "I want this remembered" into a durable canonical version, and the two-step protocol that makes what an operator was shown and what they committed the same thing.
+
+#### 10.22.1 Two builders, because an operator and an agent share almost nothing
+
+`CovenantOperatorMutationFactory` mirrors `CovenantAgentMutationFactory` and is deliberately a separate type. An operator may write Global, writes the Confirmed lane and only the Confirmed lane, may reactivate a tombstoned key, and is authorized by an authority epoch rather than by a turn's admission receipt; an agent may do none of those. Folding both into one builder with a nullable field per difference would turn "the agent wrote Global" into a validation rule somebody has to remember rather than a shape nobody can express.
+
+There is no lane parameter on the operator's `Set`. Taking one would make "an operator authored Proposed" a runtime refusal instead of an impossibility, and the Proposed lane belongs to the agent.
+
+#### 10.22.2 Prepare measures, commit refuses anything the measurement no longer describes
+
+Prepare is read-only. It resolves the mutation's effect against live state, reads every epoch that effect depends on inside that same bounded read, and issues a five-minute token whose encrypted body carries exactly those facts. Reading the epochs separately from the effect would leave a window in which the effect an operator was shown and the epochs their token binds describe two different installations.
+
+The token is not the authority — the operator's API key already established that. It is the binding that makes "you were shown this effect" and "this is the effect you are committing" the same sentence. Commit recomputes the request digest from its own canonical fields and compares it against the one inside the token, so a token cannot be carried from a cheap mutation onto an expensive one: the digest names the whole request, not just its target. The body's issued-at and expires-at must also equal the authenticated header values byte for byte before either is used to judge expiry, because a body that could disagree with its own header would let a caller extend a token's life by editing the half the header does not cover.
+
+A Global mutation's token additionally binds the Campaign registry epoch, because Global semantics reach every Campaign including ones created between prepare and apply. A Campaign mutation does not bind it, because binding a fact that cannot affect the outcome would make the token stale for reasons unrelated to what it authorizes. For the same reason a Global preflight requires the installation read capability rather than a scoped lease: measuring what a Global write does means reading across every Campaign, and a scoped lease does not cover that.
+
+#### 10.22.3 Receipt first, before the token is looked at
+
+Commit resolves an already-committed mutation identity before it decodes the token at all. The request digest needed for that comparison is derived from the commit's own fields and needs no token, so a client that lost the response to a network failure and retries after the five-minute lifetime expired receives its committed answer rather than a stale-token refusal for work that already happened. The same comparison makes a reused identity carrying different content an idempotency conflict rather than a second commit.
+
+#### 10.22.4 What is deliberately absent
+
+The service is reached by nothing. No route is mapped and no command is registered, so the only way to exercise this path today is a direct call; the HTTP surface, its JSON registrations, and the CLI verbs that would drive it are not built.
+
+Campaign path-identity administration, Session-binding resolution, the schema repair and family-reinitialize routes, and a `doctor` verb are described in the public contract and are not implemented here. Turn-time Campaign resolution already works without them, and none of them is required for an operator to write or retire an entry.
+
 ## 11. Local API security
 
 ### 11.1 Threat model
