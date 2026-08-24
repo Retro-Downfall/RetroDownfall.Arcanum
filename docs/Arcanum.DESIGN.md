@@ -2712,9 +2712,19 @@ A Global mutation's token additionally binds the Campaign registry epoch, becaus
 
 Commit resolves an already-committed mutation identity before it decodes the token at all. The request digest needed for that comparison is derived from the commit's own fields and needs no token, so a client that lost the response to a network failure and retries after the five-minute lifetime expired receives its committed answer rather than a stale-token refusal for work that already happened. The same comparison makes a reused identity carrying different content an idempotency conflict rather than a second commit.
 
-#### 10.22.4 What is deliberately absent
+#### 10.22.4 Reading back what was written
 
-The four mutation routes are registered and each declares `CovenantManage` operator authority, so the pre-binding middleware refuses an unauthorized request before a body byte is bound. No command is registered: the CLI verbs that would drive these routes are not built, so an operator today reaches them over HTTP or not at all. The inspection routes — list, query, detail, versions, sources, explain — are also unmapped, which means an operator can write an entry and cannot yet list one back.
+Six inspection routes answer the other half of the question. All six are `POST` with a typed body, including the ones that only read: scope selections, Campaign identities, keys, free text, and cursors are each either protected content or a direct pointer to it, and a URL is the one part of a request that reliably reaches an access log.
+
+Each read borrows the caller's lease rather than acquiring its own, so a page and the page after it are answered under the same admission generation. A named Campaign takes a scoped lease and an all-scopes read takes the installation capability, which is the store's rule rather than the route layer's — an all-scopes read crosses every Campaign and a scoped lease does not cover that. `Explain` is the exception: it builds a snapshot for the purpose and therefore detaches its own lease, which the handler transfers rather than acquires, because borrowing the caller's would either explain a different snapshot than the one it evaluated or force a nested acquisition, and a nested acquisition inside a drain is a deadlock.
+
+A cursor's encrypted body is fixed-width, big-endian, and length-prefixed on its one variable field, with a leading format byte per endpoint. Cursors come back from clients, so nothing is inferred: a body that is not exactly the declared length for its declared endpoint is refused before a field is read, one endpoint's cursor cannot answer another's page, and every failure — wrong format, wrong endpoint, trailing byte, truncation, invalid UTF-8 — produces the same content-free refusal, because a decoder that distinguished them would tell whoever sent the bytes which guess was closer. A cursor whose filter digest names a different query is `StaleCursor` rather than a spliced result set.
+
+#### 10.22.5 What is deliberately absent
+
+No command is registered: the CLI verbs that would drive these routes are not built, so an operator today reaches them over HTTP or not at all.
+
+Free-text `query` is routed and refuses. The accelerator-backed search behind it is not implemented, and an unbuilt search that answered with an empty page would be indistinguishable from a Covenant that holds nothing matching — which is the one answer an operator must never be given wrongly. `explain` evaluates the Global lane only, because a Campaign context is built from a resolved physical root that an inspection call does not hold and must not invent. `detail` reports both lane heads and no provenance leaves: those are a separate bounded read, and folding an unbounded one into a lookup would make one key's detail cost depend on how much an agent attached to it. Effective shadow and materialization are reported as `NotEvaluated` unless the request names an evaluation Campaign, because whether a Global entry is shadowed depends on which Campaign is asking.
 
 Campaign path-identity administration, Session-binding resolution, the schema repair and family-reinitialize routes, and a `doctor` verb are described in the public contract and are not implemented here. Turn-time Campaign resolution already works without them, and none of them is required for an operator to write or retire an entry.
 
