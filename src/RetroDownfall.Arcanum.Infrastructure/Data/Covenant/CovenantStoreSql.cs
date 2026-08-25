@@ -107,15 +107,25 @@ internal static class CovenantStoreSql
     /// operator their reply — the preflight admits what the commit then refuses — so the statement
     /// lives here rather than being written twice.
     /// </remarks>
-    internal static string QuotaSnapshot(bool campaignScoped)
+    internal static string QuotaSnapshot(bool campaignScoped, int excludedKeyCount)
     {
+
+        // The keys this batch is about to rewrite, removed from the two counters that measure active
+        // heads. A write to a key that already has one replaces that head rather than adding a head,
+        // so counting the row it is about to supersede charges the write for a row it does not add,
+        // and at the ceiling that refuses an operator the right to change their mind about something
+        // they already said. The ceiling itself is untouched: a key with no active head is excluded
+        // from nothing, so a genuinely new entry is still measured against the full count.
+        string notTouched = excludedKeyCount == 0
+            ? "1 = 1"
+            : $"NormalizedKey NOT IN ({string.Join(", ", Enumerable.Range(0, excludedKeyCount).Select(static index => $"$xkey{index}"))})";
 
         string scopePredicate = campaignScoped ? "CampaignId = $campaign" : "CampaignId IS NULL";
 
         // A Global batch has no Campaign of its own, so the pair it has to fit inside is the one the
         // widest Campaign would form with it; a Campaign batch is measured against its own pair.
         string campaignSideOfTurnLoad = campaignScoped
-            ? "(SELECT COUNT(*) FROM covenant_heads WHERE CampaignId = $campaign AND CurrentOperationCode = 1)"
+            ? $"(SELECT COUNT(*) FROM covenant_heads WHERE CampaignId = $campaign AND CurrentOperationCode = 1 AND {notTouched})"
             : """
                 COALESCE((SELECT MAX(HeadCount) FROM (
                     SELECT COUNT(*) AS HeadCount FROM covenant_heads
@@ -125,7 +135,7 @@ internal static class CovenantStoreSql
 
         return $"""
             SELECT
-                (SELECT COUNT(*) FROM covenant_heads WHERE {scopePredicate} AND CurrentOperationCode = 1),
+                (SELECT COUNT(*) FROM covenant_heads WHERE {scopePredicate} AND CurrentOperationCode = 1 AND {notTouched}),
                 (SELECT COUNT(*) FROM covenant_versions v
                     JOIN covenant_entries e ON e.EntryId = v.EntryId
                     WHERE e.{scopePredicate}),
@@ -147,7 +157,8 @@ internal static class CovenantStoreSql
                     JOIN covenant_entries e ON e.EntryId = v.EntryId
                     WHERE e.{scopePredicate}),
                 (SELECT COUNT(*) FROM covenant_search_outbox),
-                (SELECT COUNT(*) FROM covenant_heads WHERE CampaignId IS NULL AND CurrentOperationCode = 1)
+                (SELECT COUNT(*) FROM covenant_heads WHERE CampaignId IS NULL AND CurrentOperationCode = 1
+                    AND {(campaignScoped ? "1 = 1" : notTouched)})
                     + {campaignSideOfTurnLoad};
             """;
 

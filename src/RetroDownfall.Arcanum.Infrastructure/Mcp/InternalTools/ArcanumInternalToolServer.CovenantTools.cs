@@ -361,6 +361,11 @@ internal sealed partial class ArcanumInternalToolServer
         CancellationToken cancellationToken)
     {
 
+        // The revision this turn rendered, when the key is one the turn's own plan carried. The agent
+        // is revising what it was shown, so a head that moved since must fail the compare rather than
+        // be overwritten from under whoever moved it.
+        long? renderedRevision = null;
+
         foreach (CovenantPlanCandidateDecision decision in capability.ProducingAdmission.Plan.Decisions)
         {
 
@@ -368,14 +373,21 @@ internal sealed partial class ArcanumInternalToolServer
                 && decision.Candidate.Lane == CovenantLane.Proposed
                 && string.Equals(decision.Candidate.NormalizedKey.Value, normalizedKey, StringComparison.Ordinal))
             {
-                return Result<CovenantProposedLaneExpectation>.Success(
-                    new CovenantProposedLaneExpectation(
-                        checked((long)decision.Candidate.Revision),
-                        KeyEpoch: 0));
+
+                renderedRevision = checked((long)decision.Candidate.Revision);
+
+                break;
+
             }
 
         }
 
+        // Probed even when the plan already named the key, because the plan does not carry a key
+        // epoch and this used to supply a zero in its place. The publication authority compares that
+        // against the real epoch, reads the mismatch as a stale snapshot, and refuses inside the
+        // transaction that carries the operator's reply — so an agent restating a proposal the same
+        // turn had rendered to it, which is the ordinary way a suggestion gets refined, cost the
+        // operator their answer every time. An epoch is read or the write does not happen.
         Result<CovenantLaneHeadProbe> probe = await capability
             .ProbeLaneHeadAsync(nonce, CovenantLane.Proposed, normalizedKey, cancellationToken)
             .ConfigureAwait(false);
@@ -388,9 +400,9 @@ internal sealed partial class ArcanumInternalToolServer
         return probe.Value.Presence switch
         {
             CovenantLaneHeadPresence.Absent => Result<CovenantProposedLaneExpectation>.Success(
-                new CovenantProposedLaneExpectation(0, probe.Value.KeyEpoch)),
+                new CovenantProposedLaneExpectation(renderedRevision ?? 0, probe.Value.KeyEpoch)),
             CovenantLaneHeadPresence.Present => Result<CovenantProposedLaneExpectation>.Success(
-                new CovenantProposedLaneExpectation(probe.Value.LaneRevision, probe.Value.KeyEpoch)),
+                new CovenantProposedLaneExpectation(renderedRevision ?? probe.Value.LaneRevision, probe.Value.KeyEpoch)),
             _ => Result<CovenantProposedLaneExpectation>.Failure(new Error(
                 ErrorCodes.Covenant.LifecycleConflict,
                 "That key was retired. Ask the operator to reinstate it rather than proposing it again.")),
@@ -457,8 +469,10 @@ internal sealed partial class ArcanumInternalToolServer
         // Scope-wide ceilings first, because that is the order the authority applies them in, and a
         // preflight that refused on a different ceiling than the commit would have refused on would
         // hand the model a sentence about the wrong bound.
+        CovenantQuotaDemand demand = CovenantQuotaDemand.ForBatch(batch);
+
         Result<CovenantQuotaSnapshot> scope = await capability
-            .ProbeScopeAsync(nonce, cancellationToken)
+            .ProbeScopeAsync(nonce, demand.TouchedKeys, cancellationToken)
             .ConfigureAwait(false);
 
         if (scope.IsFailure)
@@ -466,9 +480,7 @@ internal sealed partial class ArcanumInternalToolServer
             return scope.Error;
         }
 
-        Error? scopeRefusal = CovenantScopeCapacity.Refusal(
-            scope.Value,
-            CovenantQuotaDemand.ForBatch(batch));
+        Error? scopeRefusal = CovenantScopeCapacity.Refusal(scope.Value, demand);
 
         if (scopeRefusal is { } scopeExceeded)
         {

@@ -44,7 +44,9 @@ public interface ICovenantTurnHeadProbe
     /// the same transaction, so a staging preflight that checked only the Section pair still let a
     /// batch through that the commit would refuse — and refusing there discards the operator's reply.
     /// </remarks>
-    ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(CancellationToken cancellationToken);
+    ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(
+        ImmutableArray<string> excludedKeys,
+        CancellationToken cancellationToken);
 
 }
 

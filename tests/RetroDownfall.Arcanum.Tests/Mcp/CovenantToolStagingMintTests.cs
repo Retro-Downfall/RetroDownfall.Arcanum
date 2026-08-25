@@ -221,7 +221,7 @@ public sealed class CovenantToolStagingMintTests
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result<CovenantSectionOccupancy>.Success(CovenantSectionOccupancy.Empty));
 
-        public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(CancellationToken cancellationToken) =>
+        public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(ImmutableArray<string> excludedKeys, CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result<CovenantQuotaSnapshot>.Success(CovenantQuotaSnapshot.Empty));
 
     }

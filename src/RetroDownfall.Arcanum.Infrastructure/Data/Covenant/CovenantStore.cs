@@ -730,6 +730,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
     /// </remarks>
     public async ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(
         CovenantOperationScope scope,
+        ImmutableArray<string> excludedKeys,
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
@@ -756,12 +757,19 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         bool campaignScoped = scope.Kind == CovenantScope.Campaign;
 
-        command.CommandText = CovenantStoreSql.QuotaSnapshot(campaignScoped);
+        command.CommandText = CovenantStoreSql.QuotaSnapshot(campaignScoped, excludedKeys.Length);
 
         if (campaignScoped)
         {
 
             Bind(command, "$campaign", scope.CampaignId!.Value.ToString("D"));
+
+        }
+
+        for (int index = 0; index < excludedKeys.Length; index++)
+        {
+
+            Bind(command, $"$xkey{index}", excludedKeys[index]);
 
         }
 

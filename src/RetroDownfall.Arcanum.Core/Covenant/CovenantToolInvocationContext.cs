@@ -297,6 +297,7 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
     /// </remarks>
     public async ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(
         CovenantToolCapabilityNonce nonce,
+        ImmutableArray<string> excludedKeys,
         CancellationToken cancellationToken)
     {
 
@@ -317,7 +318,7 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         }
 
         return await _headProbe
-            .ProbeScopeAsync(cancellationToken)
+            .ProbeScopeAsync(excludedKeys, cancellationToken)
             .ConfigureAwait(false);
 
     }

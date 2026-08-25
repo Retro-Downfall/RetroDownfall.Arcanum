@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -365,7 +367,7 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
-        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ImmutableArray<string> excludedKeys, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
     }
 
@@ -403,7 +405,7 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
-        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ImmutableArray<string> excludedKeys, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
     }
 
@@ -439,7 +441,7 @@ public sealed class CovenantContextProviderTests
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();
 
-        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
+        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ImmutableArray<string> excludedKeys, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();
 
     }

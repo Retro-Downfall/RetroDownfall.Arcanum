@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using System.Data;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
@@ -244,7 +246,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         ArgumentNullException.ThrowIfNull(transaction);
 
-        CovenantQuotaSnapshot snapshot = await ReadSnapshotAsync(scope, transaction, cancellationToken)
+        CovenantQuotaSnapshot snapshot = await ReadSnapshotAsync(scope, demand, transaction, cancellationToken)
             .ConfigureAwait(false);
 
         Error? refusal = CovenantScopeCapacity.Refusal(snapshot, demand);
@@ -640,20 +642,30 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
     private static async ValueTask<CovenantQuotaSnapshot> ReadSnapshotAsync(
         CovenantOperationScope scope,
+        CovenantQuotaDemand demand,
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
 
         bool campaignScoped = scope.Kind == CovenantScope.Campaign;
 
+        ImmutableArray<string> touched = demand.TouchedKeys;
+
         await using SqliteCommand command = transaction.CreateCommand();
 
-        command.CommandText = CovenantStoreSql.QuotaSnapshot(campaignScoped);
+        command.CommandText = CovenantStoreSql.QuotaSnapshot(campaignScoped, touched.Length);
 
         if (campaignScoped)
         {
 
             Bind(command, "$campaign", scope.CampaignId!.Value.ToString("D"));
+
+        }
+
+        for (int index = 0; index < touched.Length; index++)
+        {
+
+            Bind(command, $"$xkey{index}", touched[index]);
 
         }
 

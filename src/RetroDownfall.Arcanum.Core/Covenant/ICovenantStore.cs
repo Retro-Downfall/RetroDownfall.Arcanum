@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 
@@ -79,6 +81,7 @@ public interface ICovenantStore
     /// </remarks>
     ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(
         CovenantOperationScope scope,
+        ImmutableArray<string> excludedKeys,
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 

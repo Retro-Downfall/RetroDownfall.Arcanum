@@ -139,9 +139,13 @@ public sealed class CovenantQueryPlanTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task The_quota_snapshot_read_never_scans_a_table_it_does_not_cover(bool campaignScoped)
+    [InlineData(true, 0)]
+    [InlineData(true, 2)]
+    [InlineData(false, 0)]
+    [InlineData(false, 2)]
+    public async Task The_quota_snapshot_read_never_scans_a_table_it_does_not_cover(
+        bool campaignScoped,
+        int excludedKeys)
     {
 
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
@@ -155,7 +159,21 @@ public sealed class CovenantQueryPlanTests
 
         }
 
-        string plan = await ExplainAsync(fixture, CovenantStoreSql.QuotaSnapshot(campaignScoped), parameters);
+        // Both forms, because the excluded-key list changes the statement's text and a plan proved for
+        // one says nothing about the other -- the same reason the Section occupancy read is explained
+        // in both forms above. A batch always excludes the keys it is about to rewrite, so the form
+        // with keys is the one a live turn issues.
+        for (int index = 0; index < excludedKeys; index++)
+        {
+
+            parameters.Add(($"$xkey{index}", $"excluded.key{index}"));
+
+        }
+
+        string plan = await ExplainAsync(
+            fixture,
+            CovenantStoreSql.QuotaSnapshot(campaignScoped, excludedKeys),
+            parameters);
 
         // This statement has been read inside the commit transaction since capacity existed, where it
         // is paid once per mutation. It is now also read by the staging preflight, which puts it on

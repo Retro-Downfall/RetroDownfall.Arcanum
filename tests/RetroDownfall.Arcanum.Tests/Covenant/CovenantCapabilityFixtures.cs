@@ -96,7 +96,7 @@ internal static class CovenantCapabilityFixtures
 
         public int ScopeProbeCount { get; private set; }
 
-        public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(CancellationToken cancellationToken)
+        public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(ImmutableArray<string> excludedKeys, CancellationToken cancellationToken)
         {
             ScopeProbeCount++;
 

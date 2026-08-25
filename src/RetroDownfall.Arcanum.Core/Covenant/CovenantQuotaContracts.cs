@@ -234,13 +234,33 @@ public sealed record CovenantQuotaDemand(
     /// The upper bound on what one batch of intents would add.
     /// </summary>
     /// <remarks>
-    /// Deliberately conservative: an intent that turns out to be a no-op or an update simply consumes
-    /// less than it reserved, which is the safe direction for a ceiling. A revision is therefore
-    /// charged a whole new head even though it replaces one, and that is why the staging preflight
-    /// must build its demand here rather than reason about the batch itself — a preflight that was
-    /// less conservative than the authority would admit a batch the commit refuses, and the commit
-    /// carries the operator's reply.
+    /// Conservative on every counter that genuinely grows: an intent that turns out to be a no-op
+    /// consumes less than it reserved, which is the safe direction for a ceiling. It charges a head
+    /// per intent, and that charge is only meaningful beside <see cref="TouchedKeys"/> — the counters
+    /// it is compared against are read with those keys removed, so a write that replaces an existing
+    /// head cancels out and a write that creates one does not. Charging a replacement for a row it
+    /// never adds is what stopped an operator at the ceiling from revising something they had already
+    /// written, which is not what the ceiling is for.
+    ///
+    /// <para>The staging preflight builds its demand here rather than reasoning about the batch
+    /// itself, because a preflight less conservative than the authority admits a batch the commit
+    /// refuses, and the commit carries the operator's reply.</para>
     /// </remarks>
+    /// <summary>
+    /// Every key this batch would rewrite, once each.
+    /// </summary>
+    /// <remarks>
+    /// The counters that measure active heads are read with these removed, so a write that replaces a
+    /// head is not charged for the row it supersedes. Derived here rather than at each caller so the
+    /// authority and the staging preflight cannot exclude different sets and disagree about capacity.
+    /// </remarks>
+    public ImmutableArray<string> TouchedKeys =>
+    [
+        .. Sections
+            .SelectMany(static section => section.TouchedKeys)
+            .Distinct(StringComparer.Ordinal),
+    ];
+
     public static CovenantQuotaDemand ForBatch(IEnumerable<CovenantMutationIntent> intents)
     {
 

@@ -188,7 +188,7 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task A_proposal_for_a_key_the_plan_already_holds_uses_its_revision_without_probing()
+    public async Task A_proposal_for_a_key_the_plan_already_holds_keeps_its_revision_and_still_reads_the_head()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
@@ -196,8 +196,18 @@ public sealed class CovenantMutationToolTests
 
         McpToolsCallResultWire result = await session.CallProposeAsync("proposed.a", "an updated preference");
 
-        Assert.Equal(0, session.HeadProbe.ProbeCount);
+        // The revision comes from the plan, because the agent is revising what this turn rendered to
+        // it and a head that moved since must fail the compare rather than be overwritten.
         Assert.Equal(3, Staged(result).ExpectedRevision);
+
+        // The head is read even so. This assertion used to be its opposite -- that no probe happened --
+        // and skipping the read is exactly what made the staging path supply a zero for a key epoch the
+        // plan does not carry. The publication authority reads that mismatch as a stale snapshot and
+        // refuses inside the transaction holding the operator's reply, so an agent refining its own
+        // suggestion lost the answer every time. What the epoch is worth end to end is proven by
+        // An_agent_refining_its_own_proposal_does_not_cost_the_operator_the_answer; what is pinned here
+        // is that the read happens at all, because the saving was one query and the cost was the turn.
+        Assert.Equal(1, session.HeadProbe.ProbeCount);
     }
 
     [Fact]

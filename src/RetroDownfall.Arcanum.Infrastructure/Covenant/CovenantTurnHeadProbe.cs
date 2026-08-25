@@ -49,11 +49,14 @@ internal sealed class CovenantTurnHeadProbe(
     /// The scope is derived from the captured Campaign for the same reason the Section probe's is: a
     /// tool call must not be able to measure a scope its turn does not cover.
     /// </remarks>
-    public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(CancellationToken cancellationToken) =>
+    public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(
+        ImmutableArray<string> excludedKeys,
+        CancellationToken cancellationToken) =>
         store.ReadQuotaSnapshotAsync(
             campaign.IsCampaignBound
                 ? CovenantOperationScope.ForCampaign(campaign.CampaignId!.Value)
                 : CovenantOperationScope.Global,
+            excludedKeys,
             readLease,
             cancellationToken);
 

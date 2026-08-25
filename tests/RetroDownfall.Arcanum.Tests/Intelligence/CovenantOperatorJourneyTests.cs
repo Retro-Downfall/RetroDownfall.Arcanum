@@ -382,6 +382,109 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
         await FillConfirmedToDocumentedMaximaAsync();
 
+        await FillProposedToDocumentedMaximumAsync();
+
+        // The revision an agent makes constantly: a key the Proposed Section already holds, restated.
+        // The staging preflight excludes the key it is about to rewrite, so it measures the thirty-one
+        // that remain plus this one and admits. The publication authority charges every intent as a
+        // new active head whether or not it replaces one, so it weighs one hundred and sixty-one
+        // against the hundred and sixty a turn may load — inside the transaction carrying the reply.
+        ProposalTurn revision = await ProposeAsync(
+            CampaignA,
+            [("journey.proposal.00", "proposal 00 rebody")]);
+
+        // Where the proposal lands is deliberately left open, exactly as it is for a full Section:
+        // refusing it at the staging tool is honest, and so is accepting it. Taking the operator's
+        // answer with it is not. This is the same loss a full Proposed Section used to cause, reached
+        // by a different ceiling, so it is asserted the same way.
+        Assert.True(
+            revision.Turn.IsSuccess,
+            revision.Turn.IsFailure ? $"{revision.Turn.Error.Code}: {revision.Turn.Error.Message}" : null);
+
+        Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(revision.SessionId));
+
+    }
+
+    [SkippableFact]
+    public async Task An_agent_refining_its_own_proposal_does_not_cost_the_operator_the_answer()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        ProposalTurn first = await ProposeAsync(CampaignA, [("journey.refined", "a first attempt at the preference")]);
+
+        Assert.True(first.Turn.IsSuccess, first.Turn.IsFailure ? first.Turn.Error.Message : null);
+
+        // The ordinary next move, on an installation holding one entry: the agent sees its own earlier
+        // proposal rendered in this turn's prompt and restates it better. Because the key is in the
+        // turn's own plan, the staging path took its expectation from the plan — which carries a lane
+        // revision but no key epoch, so a zero was supplied in place of one. The publication authority
+        // compares that against the real epoch, finds a mismatch it can only read as a stale snapshot,
+        // and refuses inside the transaction carrying the reply.
+        ProposalTurn refined = await ProposeAsync(CampaignA, [("journey.refined", "the preference, stated better")]);
+
+        Assert.True(
+            refined.Turn.IsSuccess,
+            refined.Turn.IsFailure ? $"{refined.Turn.Error.Code}: {refined.Turn.Error.Message}" : null);
+
+        Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(refined.SessionId));
+
+        // And the refinement is what the lane holds, at one entry rather than two.
+        CovenantPageDto page = await ListAsync(CampaignA);
+
+        Assert.Single(page.Items, item => item.Key == "journey.refined");
+
+    }
+
+    [SkippableFact]
+    public async Task An_operator_at_the_installation_ceiling_can_still_revise_what_they_already_wrote()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        await FillConfirmedToDocumentedMaximaAsync();
+
+        await FillProposedToDocumentedMaximumAsync();
+
+        // Editing a preference that already exists replaces one head with another, so the number of
+        // active heads a turn would load is the same after the write as before it. The ceiling on that
+        // number is doing real work and is not in question here; what is in question is being charged
+        // for a row this write does not add. An operator who filled the allowance they were sold must
+        // still be able to change their mind about something they already said.
+        Result<CovenantMutationResultDto> revised = await SetCampaignAsync(
+            CampaignA,
+            "jc.00",
+            "v00 as the operator now prefers it",
+            expectedRevision: 1);
+
+        Assert.True(
+            revised.IsSuccess,
+            revised.IsFailure ? $"{revised.Error.Code}: {revised.Error.Message}" : null);
+
+        // And a genuinely new entry is still refused, because the ceiling is unchanged.
+        Result<CovenantMutationResultDto> added = await SetCampaignAsync(
+            CampaignA,
+            "jc.new",
+            "one entry past the ceiling",
+            expectedRevision: 0);
+
+        Assert.True(added.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, added.Error.Code);
+
+    }
+
+    /// <summary>
+    /// Fills the Campaign's Proposed Section the way service fills it: whole turns, each staging what
+    /// one turn is allowed to stage.
+    /// </summary>
+    private async Task FillProposedToDocumentedMaximumAsync()
+    {
+
         int filled = 0;
 
         while (filled < CovenantLimits.MaxCampaignProposedEntries)
@@ -408,25 +511,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             filled += batch;
 
         }
-
-        // The revision an agent makes constantly: a key the Proposed Section already holds, restated.
-        // The staging preflight excludes the key it is about to rewrite, so it measures the thirty-one
-        // that remain plus this one and admits. The publication authority charges every intent as a
-        // new active head whether or not it replaces one, so it weighs one hundred and sixty-one
-        // against the hundred and sixty a turn may load — inside the transaction carrying the reply.
-        ProposalTurn revision = await ProposeAsync(
-            CampaignA,
-            [("journey.proposal.00", "proposal 00 rebody")]);
-
-        // Where the proposal lands is deliberately left open, exactly as it is for a full Section:
-        // refusing it at the staging tool is honest, and so is accepting it. Taking the operator's
-        // answer with it is not. This is the same loss a full Proposed Section used to cause, reached
-        // by a different ceiling, so it is asserted the same way.
-        Assert.True(
-            revision.Turn.IsSuccess,
-            revision.Turn.IsFailure ? $"{revision.Turn.Error.Code}: {revision.Turn.Error.Message}" : null);
-
-        Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(revision.SessionId));
 
     }
 
