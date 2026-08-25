@@ -407,8 +407,8 @@ internal sealed partial class ArcanumInternalToolServer
     /// answer. So a Campaign whose Proposed lane was full accepted the proposal here, told the model
     /// it was staged, and then lost the whole turn at publication. The operator paid for an answer,
     /// never received it, and was handed a generic save failure that said nothing about a ceiling.
-    /// Refusing here costs the proposal and nothing else, and the model is told why in a sentence it
-    /// can act on by asking the operator to review what is already waiting.
+    /// Refusing here costs the proposal and nothing else, and the refusal carries the authority's own
+    /// sentence so the model learns which ceiling it met rather than that something went wrong.
     ///
     /// <para>Measured against the batch that would actually be sealed, not against this intent alone.
     /// A turn is allowed several proposals, and each one that only measured the durable Section would
@@ -469,14 +469,18 @@ internal sealed partial class ArcanumInternalToolServer
                 retained.Value,
                 section);
 
-            if (refusal is not null)
+            if (refusal is { } exceeded)
             {
 
+                // The authority's own sentence, which names which ceiling and by how much, plus what
+                // the model can do about it. A bare "capacity exceeded" would leave the model with no
+                // way to tell a full lane from a rejected key, and it would say it to the operator.
                 return new Error(
-                    ErrorCodes.Covenant.CapacityExceeded,
-                    "The operator's Proposed lane for this Campaign is full, so nothing was staged and "
-                    + "this turn's reply is unaffected. Ask them to review or retire what is already "
-                    + "waiting there before suggesting anything else.");
+                    exceeded.Code,
+                    exceeded.Message
+                    + " Nothing was staged and this turn's reply is unaffected. Ask the operator to"
+                    + " review or retire what is already waiting in their Proposed lane before"
+                    + " suggesting anything else.");
 
             }
 
