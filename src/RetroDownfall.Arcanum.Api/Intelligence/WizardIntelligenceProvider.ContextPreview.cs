@@ -371,12 +371,10 @@ public sealed partial class WizardIntelligenceProvider
 
             : [];
 
-        // Inspection exists to answer "what will this turn actually send". Building the preview without
-        // the Covenant makes it answer about a prompt no turn produces, and it is the reason the
-        // Proposed-lane pressure sentence below can never fire.
         // The same scope a live turn opens, through the same gate, so inspection and dispatch start from
-        // one plan. They only agree about what is *injected* once the admission below has run, which is
-        // why the preview re-measures rather than trusting the plan it renders first.
+        // one plan. Inspection exists to answer "what will this turn actually send", and the plan is not
+        // that answer: only the admission below decides what is injected, which is why the preview
+        // re-measures rather than reporting the plan it was handed.
         CovenantTurnScope previewCovenantScope = await BeginCovenantTurnAsync(
                 turn,
                 invocationContext,
@@ -385,48 +383,50 @@ public sealed partial class WizardIntelligenceProvider
 
         await using CovenantTurnScope previewCovenantOwned = previewCovenantScope;
 
-        // The plan is the unpressured set; dispatch injects what admission actually admitted. The
-        // preview renders the plan here only because admission needs the assembled messages to measure
-        // headroom against, and it is re-run below once those exist.
-        CovenantPromptContent previewCovenant = previewCovenantOwned.PlanContent;
+        // The plan is the unpressured set; dispatch injects only what admission admitted, so the
+        // preview assembles the prompt without a single Covenant byte and re-renders below from the
+        // admitted content. Rendering the plan first and measuring against it would charge the
+        // Covenant for its own bytes.
+        SystemPromptDocument BuildPreviewDocument(CovenantPromptContent? covenant) =>
+            SystemPromptBuilder.BuildDocument(
 
-        SystemPromptDocument document = SystemPromptBuilder.BuildDocument(
+                turn,
 
-            turn,
+                codexContent,
 
-            codexContent,
+                resolvedSpell?.Primary,
 
-            resolvedSpell?.Primary,
+                attachedFiles: turn.AttachedFiles,
 
-            attachedFiles: turn.AttachedFiles,
+                dependencySpells: resolvedSpell?.Resonants,
 
-            dependencySpells: resolvedSpell?.Resonants,
+                maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
 
-            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
+                    ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
 
-                ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
+                semanticContext: semanticContext,
 
-            semanticContext: semanticContext,
+                sagaMemories: sagaMemories,
 
-            sagaMemories: sagaMemories,
+                lexiconEntries: lexiconEntries,
 
-            lexiconEntries: lexiconEntries,
+                maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
 
-            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
+                    settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
 
-                settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
+                sessionAttachmentsIndex: attachmentIndex,
 
-            sessionAttachmentsIndex: attachmentIndex,
+                maxIndexItems: maxIndexItems,
 
-            maxIndexItems: maxIndexItems,
+                maxIndexBytes: maxIndexBytes,
 
-            maxIndexBytes: maxIndexBytes,
+                sessionAttachmentContext: attachmentContext,
 
-            sessionAttachmentContext: attachmentContext,
+                tapestryContext: tapestryContext,
 
-            tapestryContext: tapestryContext,
+                covenant: covenant);
 
-            covenant: previewCovenant);
+        SystemPromptDocument document = BuildPreviewDocument(covenant: null);
 
         InferenceContextBuilder.PrependDynamicSystemMessage(messages, document.Render());
 
@@ -483,6 +483,33 @@ public sealed partial class WizardIntelligenceProvider
             lease.Provider.ContextWindowLimit,
 
             settings.Value.ResolveIntelligence().ContextWindowCompressionThreshold);
+
+        // Inspection has to answer for the turn that would dispatch, so it runs the same admission in
+        // the same order dispatch runs it: against the Covenant-free transcript assembled above, before
+        // compression and before a single section is rendered. Reporting the plan instead would show
+        // the operator content a real turn might have pressured out, and would leave the pressure
+        // counters below permanently zero.
+        CovenantDispatchPlan previewDispatch = ResolveCovenantAdmission(
+            previewCovenantOwned,
+            lease,
+            turn,
+            messages,
+            options);
+
+        // Only what admission admitted is rendered, and it is rendered into the same message the model
+        // would receive, so the token rows below describe the content the reason strings talk about.
+        CovenantPromptContent? previewCovenant = previewDispatch.HasAdmittedContent
+            ? previewDispatch.Content
+            : null;
+
+        if (previewCovenant is not null && messages.Count > 0 && messages[0].Role == ChatRole.System)
+        {
+
+            document = BuildPreviewDocument(previewCovenant);
+
+            messages[0] = new MeAiChatMessage(ChatRole.System, document.Render());
+
+        }
 
         int beforeCompression = ModelTokenEstimator.EstimateContext(
 
@@ -552,7 +579,8 @@ public sealed partial class WizardIntelligenceProvider
 
                     // A compressed rebuild asks the builder for a fresh prompt, and without this the
                     // preview answers about a turn with no Covenant on exactly the long sessions the
-                    // agreement matters most for. The dispatch path carries it for the same reason.
+                    // agreement matters most for. It carries the admitted content rather than the plan,
+                    // because that is what this turn would send. The dispatch path does the same.
                     Covenant = previewCovenant,
 
                 });
@@ -560,17 +588,6 @@ public sealed partial class WizardIntelligenceProvider
         // The attribution map is the only producer of the two Covenant token lanes. Without it the
         // estimator emits a zero-token CovenantProposed row and inspection reports "no effective
         // content" for a prompt that is carrying the operator's standing agreement.
-        // Inspection has to answer for the turn that would dispatch, so it runs the same admission.
-        // Reporting the plan instead would show the operator content a real turn might have pressured
-        // out, and would leave the pressure counters below permanently zero — the branch that reads
-        // them would then be unreachable, which is exactly how this surface came to report nothing.
-        CovenantDispatchPlan previewDispatch = ResolveCovenantAdmission(
-            previewCovenantOwned,
-            lease,
-            turn,
-            finalMessages,
-            options);
-
         ContextTokenBreakdown breakdown = ModelTokenEstimator.EstimateContext(
 
             new ModelTokenizationRequest(

@@ -300,6 +300,17 @@ public sealed class CovenantTurnPlan
     }
 }
 
+/// <summary>The single condition the linker degrades a turn for: a Section whose rendered bytes exceed its placement bound.</summary>
+/// <remarks>
+/// Distinct from the argument exceptions this same call tree throws, and deliberately so. A Section
+/// over its ceiling is a fact about stored state -- nothing on the write path stops an installation
+/// from accumulating entries that together exceed one -- while a lane-versus-placement violation, an
+/// unknown placement, or a null argument is a defect in this assembly. One catch over both would tell
+/// an operator their stored Covenant is too large when the actual fault is ours, and would send them
+/// to prune data that is fine.
+/// </remarks>
+internal sealed class CovenantSectionBoundExceededException(string message) : Exception(message);
+
 internal static class CovenantSectionRenderer
 {
     public static byte[] Render(
@@ -420,7 +431,8 @@ internal static class CovenantSectionRenderer
     {
         if (renderedBytes > maximumBytes)
         {
-            throw new ArgumentException("The rendered Covenant Section exceeds its placement byte bound.");
+            throw new CovenantSectionBoundExceededException(
+                "The rendered Covenant Section exceeds its placement byte bound.");
         }
     }
 }

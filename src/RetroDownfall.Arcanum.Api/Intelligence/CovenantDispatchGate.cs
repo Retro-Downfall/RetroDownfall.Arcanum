@@ -122,11 +122,23 @@ public sealed class CovenantTurnScope : IAsyncDisposable
 /// budget therefore happens first, against the reused plan, and the receipt is minted afterwards
 /// over the prompt that measurement produced.
 /// </remarks>
-public sealed record CovenantDispatchPlan(CovenantPromptContent Content, CovenantAdmissionPlan? Admission)
+/// <param name="Content">What this attempt injects.</param>
+/// <param name="Admission">The attempt's admission outcome, or <see langword="null"/> when it had no plan.</param>
+/// <param name="AvailableTokenBudget">
+/// The head-room this attempt planned against, carried so the receipt can bind the budget the
+/// decision was made under. The cost of what was admitted is not that number: the receipt checks its
+/// per-candidate evidence against this bound, and the two are measured differently -- per fragment
+/// against per section -- so handing it the admitted cost compares a sum of message estimates against
+/// a single one and refuses an admission its own planner accepted.
+/// </param>
+public sealed record CovenantDispatchPlan(
+    CovenantPromptContent Content,
+    CovenantAdmissionPlan? Admission,
+    ulong AvailableTokenBudget)
 {
 
     /// <summary>The dispatch that injects nothing, for a turn with no plan.</summary>
-    public static CovenantDispatchPlan Empty { get; } = new(CovenantPromptContent.None, null);
+    public static CovenantDispatchPlan Empty { get; } = new(CovenantPromptContent.None, null, 0);
 
     public bool HasAdmittedContent => !Content.IsEmpty;
 
@@ -222,6 +234,9 @@ public sealed class CovenantDispatchGate(
 
     }
 
+    /// <summary>The empty provenance every absence record carries, allocated once rather than per turn.</summary>
+    private static readonly GenerationProvenance NoProvenance = GenerationProvenance.CreateExact([]);
+
     /// <summary>
     /// Emits this turn's single content-free participation record and returns the scope unchanged.
     /// </summary>
@@ -236,9 +251,6 @@ public sealed class CovenantDispatchGate(
     /// <see cref="CovenantProtectedLogScope"/> so the type, not this call site, is what guarantees
     /// no Covenant key, fragment, or content digest can ever be added to it.</para>
     /// </remarks>
-    /// <summary>The empty provenance every absence record carries, allocated once rather than per turn.</summary>
-    private static readonly GenerationProvenance NoProvenance = GenerationProvenance.CreateExact([]);
-
     private CovenantTurnScope Record(CovenantTurnScope scope)
     {
 
@@ -290,7 +302,7 @@ public sealed class CovenantDispatchGate(
             measureSections,
             measureFragment);
 
-        return new CovenantDispatchPlan(admission.AdmittedContent, admission);
+        return new CovenantDispatchPlan(admission.AdmittedContent, admission, availableTokenBudget);
 
     }
 
@@ -468,7 +480,7 @@ public sealed class CovenantDispatchGate(
             attemptOrdinal,
             null,
             providerCall,
-            admission.EstimatedAdmittedTokens,
+            plan.AvailableTokenBudget,
             admission.Candidates);
 
     }

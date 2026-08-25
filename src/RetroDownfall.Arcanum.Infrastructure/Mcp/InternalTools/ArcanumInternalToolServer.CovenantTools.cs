@@ -14,11 +14,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// The two Covenant mutation handlers.
 /// </summary>
 /// <remarks>
-/// Both are registered unconditionally in the cached internal-tool superset and both fail closed on
-/// their own, and neither is advertised in this build. Advertisement is filtered per turn from the
-/// live feature gate, canonical availability, invocation context, and tool policy, but a stale
-/// cached partition or a direct internal invocation would bypass that filter, so each handler
-/// rechecks the same facts before it accepts its capability.
+/// Both stay in the handler map unconditionally and neither is advertised in this build, so an
+/// unadvertised name meets a handler rather than a missing one. Each handler rechecks the live feature
+/// gate, canonical availability, this turn's staging capability and the tool the capability names
+/// before it accepts a call, because a stale cached partition or a direct internal invocation would
+/// bypass the per-turn advertisement filter. What no handler rechecks is the build-time withholding
+/// below: that decision is enforced where the tool is advertised, and nowhere else.
 ///
 /// <para>Neither ever writes canonical state, and in this build nothing else writes it on their
 /// behalf either. They stage into the turn's collector, and the only production disposition of that
@@ -45,8 +46,9 @@ internal sealed partial class ArcanumInternalToolServer
     /// always refuses teaches a model the capability is broken rather than absent, and an unbuilt
     /// capability must not look like a built one that happens to be failing.
     ///
-    /// <para>The handler stays registered regardless, so a direct or stale invocation still fails
-    /// closed rather than reaching an unregistered name.</para>
+    /// <para>The handler stays registered regardless, so a direct or stale invocation reaches it
+    /// rather than an unregistered name, and fails closed there: a retirement capability is never
+    /// minted, because the staging binder mints only for the proposal name.</para>
     /// </remarks>
     private static bool CovenantRetirementAvailable => false;
 
@@ -64,8 +66,12 @@ internal sealed partial class ArcanumInternalToolServer
     /// the Ward receipt and egress disclosure this build does not construct, so the flag is the one
     /// place that decision gets made rather than a branch that drifts on.</para>
     ///
-    /// <para>The handler stays registered regardless, so a direct or stale invocation still fails
-    /// closed rather than reaching an unregistered name.</para>
+    /// <para>This flag is read where tools are advertised and nowhere else. The handler stays
+    /// registered regardless, so a direct or stale invocation reaches it rather than an unregistered
+    /// name, and is then answered by the ordinary capability recheck -- which does not consult this
+    /// flag. Staging that reached the handler would still be discarded when the turn ends, so the
+    /// withheld outcome holds either way, but it holds because nothing seals a batch rather than
+    /// because the handler refuses.</para>
     /// </remarks>
     private static bool CovenantProposalAvailable => false;
 

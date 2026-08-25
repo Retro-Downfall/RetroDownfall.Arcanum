@@ -14,11 +14,17 @@ public sealed class CovenantLinker : ICovenantLinker
         // is a fact about stored state, not a programming error, so it degrades the turn through the
         // ordinary failure channel the dispatch gate already handles rather than escaping as an
         // exception past the gate's never-fail-the-turn contract and taking the turn lease with it.
+        //
+        // Only that one condition. The same call tree throws ArgumentException for its own invariant
+        // breaches -- a Section handed a decision its placement does not admit, a Section that is not
+        // the subsequence its plan says it is, an unknown placement, a null argument -- and catching
+        // those here would report a defect in this assembly as corruption of the operator's stored
+        // data, in a message that names their Covenant and not our bug.
         try
         {
             return LinkCore(snapshot);
         }
-        catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
+        catch (CovenantSectionBoundExceededException)
         {
             return Result<CovenantTurnPlan>.Failure(new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
