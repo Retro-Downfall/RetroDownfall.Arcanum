@@ -259,9 +259,14 @@ try {
         "/I$sqlcipherSource" `
         "/I$(Join-Path $opensslPrefix 'include')" `
         "/Fo$objectFile" `
-        $amalgamation | Out-Null
+        $amalgamation 2>&1 | Tee-Object -Variable compileLog | Out-Null
 
     if ($LASTEXITCODE -ne 0) {
+        # Kept quiet on success and shown in full on failure. Discarding it outright left the
+        # operator with 'Compilation failed.' and no diagnostic at all, on the one path where the
+        # compiler has already said exactly what is wrong.
+        $compileLog | ForEach-Object { Write-Host $_ }
+
         throw 'Compilation failed.'
     }
 
@@ -272,9 +277,14 @@ try {
         "/OUT:$outputPath" `
         $objectFile `
         $libcrypto `
-        ws2_32.lib crypt32.lib advapi32.lib user32.lib bcrypt.lib | Out-Null
+        ws2_32.lib crypt32.lib advapi32.lib user32.lib bcrypt.lib 2>&1 |
+        Tee-Object -Variable linkLog | Out-Null
 
     if ($LASTEXITCODE -ne 0) {
+        # Same reasoning as the compile step above: the linker names the missing symbol or library,
+        # and throwing without it turns a specific failure into an unactionable one.
+        $linkLog | ForEach-Object { Write-Host $_ }
+
         throw 'Linking failed.'
     }
 
