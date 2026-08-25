@@ -20,7 +20,8 @@
     "publicKeysUrl": "https://openssl-library.org/source/pubkeys.asc",
     "publicKeysSha256": "56e106cd1c44bdb117aec24795f6dfbecaa9bfa0a2901b85331f0059aad16d53",
     "license": "Apache-2.0",
-    "linkage": "static"
+    "linkage": "static",
+    "reproducibilityNote": "The static libcrypto each build links is not byte-stable across two builds of the same pinned sources on any of the three toolchains, and neither is the SQLCipher object compiled against it; the shared library linked from them is, on all three. Only the reproducible facts are recorded here: each asset's own sha256, which the verify workflow asserts by building twice and comparing, and amalgamationSha256, which is identical across every build and every RID."
   },
   "compileOptions": [
     "SQLCIPHER_CRYPTO_OPENSSL",
@@ -107,39 +108,41 @@
       "dynamicDependencies": [
         "/usr/lib/libSystem.B.dylib"
       ],
-      "libcryptoSha256": "7f3f0193d81513129537b80a9449f1f289e35b5982ef04af5c941baa702af5a9"
+      "amalgamationSha256": "8adaff6b464052a74e7adaa3cfa2725400f48eca68f47856fa806eaf30bdf2c9"
     },
     {
       "rid": "win-arm64",
       "path": "runtimes/win-arm64/native/e_sqlcipher.dll",
       "outputFileName": "e_sqlcipher.dll",
-      "status": "pending",
-      "sha256": null,
-      "compiler": null,
-      "linker": null,
-      "image": null,
+      "status": "verified",
+      "sha256": "6a6a6929702973581ebab70b97b55baa22dc598f37e8906c7a2687dd0a412f21",
+      "compiler": "Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36256 for ARM64",
+      "linker": "MSVC link.exe",
+      "image": "win25-vs2026 20260818.207.1",
       "deploymentTarget": "10.0.17763.0",
       "dynamicDependencies": [
         "ADVAPI32.dll",
         "KERNEL32.dll",
         "bcrypt.dll"
-      ]
+      ],
+      "amalgamationSha256": "8adaff6b464052a74e7adaa3cfa2725400f48eca68f47856fa806eaf30bdf2c9"
     },
     {
       "rid": "win-x64",
       "path": "runtimes/win-x64/native/e_sqlcipher.dll",
       "outputFileName": "e_sqlcipher.dll",
-      "status": "pending",
-      "sha256": null,
-      "compiler": null,
-      "linker": null,
-      "image": null,
+      "status": "verified",
+      "sha256": "88f6357899f9441669ad49166bd5370cb898ca9a17bf4e8451685b6353406e5d",
+      "compiler": "Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36256 for x64",
+      "linker": "MSVC link.exe",
+      "image": "win25-vs2026 20260818.207.1",
       "deploymentTarget": "10.0.17763.0",
       "dynamicDependencies": [
         "ADVAPI32.dll",
         "KERNEL32.dll",
         "bcrypt.dll"
-      ]
+      ],
+      "amalgamationSha256": "8adaff6b464052a74e7adaa3cfa2725400f48eca68f47856fa806eaf30bdf2c9"
     }
   ],
   "sboms": [

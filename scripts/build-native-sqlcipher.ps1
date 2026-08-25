@@ -98,13 +98,17 @@ $env:SOURCE_DATE_EPOCH = $manifest.sqlcipher.sourceDateEpoch
 
 $outputName = $asset.outputFileName
 
-# Fixed rather than random, and that is the difference between reproducing and not. OpenSSL compiles
-# its own build command line into buildinf.h, and that command line carries the include paths of the
-# work area; the amalgamation then includes OpenSSL's headers, so the path reaches the object as well.
-# Two runs under two random directories therefore produced a different libcrypto and a different object
-# from a byte-identical amalgamation, which is exactly what the input fingerprints showed. The name is
-# per-RID so two RIDs built side by side do not share one area, and the directory is cleared on entry
-# because a fixed path is a path that can survive a crash.
+# Fixed rather than random, and that is the difference between reproducing and not: under random
+# directories two clean builds linked two different DLLs, and under this one they link the same DLL on
+# both Windows RIDs. The mechanism is narrower than it first looked. libcrypto and the SQLCipher object
+# still differ between the two builds -- they did before and they do now, on macOS as well -- because
+# an archive and an object carry per-build member headers. What the random directory added was a path
+# that reached the linked image itself, and an image is the one artifact here that /BREPRO and the
+# linker otherwise render identical. So the intermediates are allowed to move and the shipping library
+# is not, which is what the verify workflow asserts by building twice and comparing that library.
+#
+# The name is per-RID so two RIDs built side by side do not share one area, and the directory is
+# cleared on entry because a fixed path is a path that can survive a crash and be inherited.
 $workDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "arcanum-sqlcipher-$Rid"
 
 Remove-Item -Recurse -Force -Path $workDirectory -ErrorAction SilentlyContinue

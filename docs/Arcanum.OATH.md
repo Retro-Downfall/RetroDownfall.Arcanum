@@ -654,7 +654,7 @@ Cross-tier core owner IDs are historical identities rather than fragile optional
 
 The database runtime contract pins **SQLCipher 4.17.0** on **SQLite 3.53.3** with statically linked **OpenSSL 3.5.7**. Native assets are built from pinned sources, hash-verified, SBOM-described, and delivered by RID with no system-library or extension fallback. `SQLITE_OMIT_LOAD_EXTENSION` is a compile option, not a runtime setting.
 
-The shipping matrix is `osx-arm64`, `win-x64`, and `win-arm64`. The checked-in `osx-arm64` asset is **verified**; `win-x64` and `win-arm64` remain **pending**, their binaries are absent, and those RIDs intentionally fail the build until their Windows verification workflow supplies accepted assets.
+The shipping matrix is `osx-arm64`, `win-x64`, and `win-arm64`, and all three assets are checked in and **verified**: each was built twice from the pinned sources on a clean runner and the two libraries compared byte for byte. A RID whose asset were ever removed or left pending would still fail the build rather than fall back, which is the property that made the pending state safe to hold.
 
 > Issue #92's acceptance criteria named a five-RID matrix (`osx-arm64`, `osx-x64`, `linux-x64`, `linux-arm64`, `win-x64`) that predated the hermetic matrix `native-source-manifest.json` declares. Its text has been amended to the manifest's three RIDs, naming the manifest as the authority: the three it dropped have no hermetic toolchain and are not shipping RIDs, and `win-arm64`, which it had omitted, is one.
 
