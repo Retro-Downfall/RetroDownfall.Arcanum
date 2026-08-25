@@ -85,6 +85,37 @@ public sealed class CovenantTurnScope : IAsyncDisposable
 
     internal void RecordDerived(ProviderCallSensitivity sensitivity) => DerivedSensitivity = sensitivity;
 
+    /// <summary>The last admission this turn minted, which is the branch a seal has to commit.</summary>
+    /// <remarks>
+    /// The last one rather than the first. Every staging tool call records the ordinal of the
+    /// admission that produced it, and a seal takes the lineage up to the ordinal it is given, so
+    /// sealing against an earlier attempt would silently drop every mutation a later tool round
+    /// staged — the exact acknowledgement the tool had already reported to the model.
+    /// </remarks>
+    private CovenantAdmissionReceipt? _lastAdmission;
+
+    internal void RecordAdmitted(CovenantAdmissionReceipt receipt) => _lastAdmission = receipt;
+
+    /// <summary>
+    /// The staged batch this turn owes its answer, or absent when it staged nothing to publish.
+    /// </summary>
+    /// <remarks>
+    /// Absent is the ordinary answer. Almost every turn stages nothing, and a binding minted anyway
+    /// would make "this turn has a profile change to publish" indistinguishable from "this turn has a
+    /// collector", which every eligible turn has.
+    /// </remarks>
+    public CovenantTurnCommitBinding? StagedCommit() =>
+        _context.Collector is { StagedCount: > 0 } collector
+            && _context.Plan is { } plan
+            && _lastAdmission is { } admission
+                ? new CovenantTurnCommitBinding(
+                    collector,
+                    admission.BranchId,
+                    admission.BranchOrdinal,
+                    plan.Snapshot.DatasetGeneration.Value,
+                    plan.Snapshot.KeyReclamationEpoch)
+                : null;
+
     public CovenantTurnAbsence Absence => _context.Absence;
 
     public bool HasPlan => _context.HasPlan;
@@ -112,6 +143,27 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     public ValueTask DisposeAsync() => _context.DisposeAsync();
 
 }
+
+/// <summary>
+/// One turn's staged Covenant batch, and the canonical facts it was staged under.
+/// </summary>
+/// <remarks>
+/// Carries the collector rather than an array already sealed from it, because sealing has to happen
+/// inside the finalize path's own failure envelope. A batch frozen before the writer was entered
+/// would be a sealed collector nobody had yet committed to publishing, and the turn could still end
+/// without publishing it — which is the one state worse than never having sealed at all.
+///
+/// <para>The Campaign registry epoch is absent by construction rather than defaulted. An agent
+/// proposal reaches exactly one Campaign — the canonical schema forbids a Global Proposed head — so
+/// the batch binds no registry, and the kernel skips a comparison that a stand-in value would have
+/// failed on every installation whose registry had ever advanced.</para>
+/// </remarks>
+public sealed record CovenantTurnCommitBinding(
+    ICovenantMutationCollector Collector,
+    Guid CommittedBranchId,
+    ulong FinalBranchOrdinal,
+    Guid DatasetGeneration,
+    long ExpectedKeyReclamationEpoch);
 
 /// <summary>
 /// What one provider attempt may inject, decided before its prompt is built.
@@ -445,6 +497,16 @@ public sealed class CovenantDispatchGate(
         }
 
         scope.RecordDerived(sensitivity);
+
+        // Recorded only once the disclosure is durable. An admission remembered before its receipt
+        // committed could become the branch a seal publishes against for a dispatch whose bytes were
+        // never allowed to leave.
+        if (receipt is not null)
+        {
+
+            scope.RecordAdmitted(receipt);
+
+        }
 
         return Result<CovenantDispatchAdmission>.Success(
             new CovenantDispatchAdmission(receipt, acknowledged.Value, sensitivity));

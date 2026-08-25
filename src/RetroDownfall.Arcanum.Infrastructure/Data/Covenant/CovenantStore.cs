@@ -67,6 +67,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         ulong canonicalSequence = 0;
 
+        long keyReclamationEpoch = 0;
+
         List<CovenantSnapshotCandidate> candidates = [];
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -79,7 +81,9 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 canonicalSequence = checked((ulong)reader.GetInt64(1));
 
-                if (reader.IsDBNull(2))
+                keyReclamationEpoch = reader.GetInt64(2);
+
+                if (reader.IsDBNull(3))
                 {
 
                     // The left join produced the state row alone: this installation has no active
@@ -88,7 +92,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 }
 
-                Result<CovenantSnapshotCandidate> candidate = MaterializeCandidate(reader, offset: 2);
+                Result<CovenantSnapshotCandidate> candidate = MaterializeCandidate(reader, offset: 3);
 
                 if (candidate.IsFailure)
                 {
@@ -128,6 +132,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
             return new CovenantTurnSnapshot(
                 new CovenantGenerationId(datasetGeneration),
+                keyReclamationEpoch,
                 campaignId,
                 canonicalSequence,
                 [.. candidates]);

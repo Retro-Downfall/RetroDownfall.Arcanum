@@ -140,9 +140,11 @@ internal sealed partial class ArcanumInternalToolServer
 
             w.WriteString(
                 "description",
-                "\"staged\" means the change was accepted into this turn and nothing more. It never means "
-                + "the change has been written, and in this build it never will be: the turn discards "
-                + "staged mutations when it ends.");
+                "\"staged\" means the change was accepted into this turn, not that it has been written. "
+                + "It is written when this turn's reply is saved, in the same transaction, and dropped "
+                + "with the turn if the reply never is. Even once written it sits in the Proposed lane "
+                + "awaiting the operator's confirmation, so it is a suggestion to them rather than a "
+                + "setting that now applies.");
 
             w.WriteEndObject();
 

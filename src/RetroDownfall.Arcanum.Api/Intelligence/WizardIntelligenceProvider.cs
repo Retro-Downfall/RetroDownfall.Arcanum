@@ -3719,7 +3719,8 @@ public sealed partial class WizardIntelligenceProvider(
                         grimoireTurn,
                         streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
                         CancellationToken.None,
-                        covenantScope?.DerivedSensitivity).ConfigureAwait(false);
+                        covenantScope?.DerivedSensitivity,
+                        covenantScope?.StagedCommit()).ConfigureAwait(false);
                 }
 
                 yield return new IntelligenceEvent(
@@ -4039,6 +4040,11 @@ public sealed partial class WizardIntelligenceProvider(
             }
         }
 
+        // The one arm that publishes a staged Covenant batch. It is the only place the answer this
+        // turn actually produced and the profile change staged against it can be written together,
+        // which is what the batch's atomicity contract means in practice.
+        CovenantTurnCommitBinding? covenantCommit = covenantScope?.StagedCommit();
+
         bool finalizeOk = streaming
             ? await grimoireTurnWriter
                 .TryFinalizeStreamedAssistantEntryAsync(
@@ -4046,7 +4052,8 @@ public sealed partial class WizardIntelligenceProvider(
                     finalText,
                     targetModel,
                     inferenceToken,
-                    covenantScope?.DerivedSensitivity)
+                    covenantScope?.DerivedSensitivity,
+                    covenantCommit)
                 .ConfigureAwait(false)
             : await grimoireTurnWriter
                 .TryFinalizeBufferedAssistantEntryAsync(
@@ -4054,7 +4061,8 @@ public sealed partial class WizardIntelligenceProvider(
                     finalText,
                     targetModel,
                     inferenceToken,
-                    covenantScope?.DerivedSensitivity)
+                    covenantScope?.DerivedSensitivity,
+                    covenantCommit)
                 .ConfigureAwait(false);
 
         if (!finalizeOk)
@@ -4186,11 +4194,15 @@ public sealed partial class WizardIntelligenceProvider(
                     classification,
                     streamAccumulator.Length))
             {
+                // Reached after a failed finalize as well as after a genuine interrupt, and the
+                // handle is still unfinalized in both. Passing the staged batch is what stops this
+                // cleanup from committing the answer a moment after the atomic arm refused to.
                 await grimoireTurnWriter
                     .TryResolveInterruptedOnStreamExitAsync(
                         grimoireTurn,
                         streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                        covenantScope?.DerivedSensitivity)
+                        covenantScope?.DerivedSensitivity,
+                        covenantScope?.StagedCommit())
                     .ConfigureAwait(false);
             }
         }

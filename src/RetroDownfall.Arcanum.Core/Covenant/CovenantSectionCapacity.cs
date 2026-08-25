@@ -10,12 +10,11 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// would have fitted, or accept a write that renders one byte over and breaks every turn afterwards
 /// -- installation-wide, because the ceiling is a property of the Section and not of the entry.
 ///
-/// <para>The two Confirmed placements are reached by the operator mutation surface. Every
+/// <para>The two Confirmed placements are reached by the operator mutation surface. The
 /// <see cref="CovenantPlacement.CampaignProposed"/> arm below -- its entry ceiling, its byte
-/// ceiling, and the fence-and-framing arithmetic no other placement uses -- is composed but never
-/// reached with real content: no installation can hold a Proposed head, because the lane's only
-/// producer is the agent mutation factory and every staged proposal is discarded before it is
-/// written. The Proposed arithmetic is proven by tests alone, and that is what its tests prove.</para>
+/// ceiling, and the fence-and-framing arithmetic no other placement uses -- is reached by the agent
+/// mutation factory, whose staged proposals become Proposed heads when the turn that staged them
+/// commits its answer.</para>
 /// </remarks>
 public static class CovenantSectionCapacity
 {

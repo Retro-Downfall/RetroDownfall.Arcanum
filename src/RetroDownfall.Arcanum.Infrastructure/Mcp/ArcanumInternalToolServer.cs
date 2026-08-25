@@ -970,20 +970,17 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (CovenantToolsAvailable())
         {
-            if (CovenantProposalAvailable)
-            {
-                tools.Add(
-                    new McpToolDefinitionWire
-                    {
-                        Name = CovenantToolNames.ProposeCovenant,
-                        Description =
-                            "Propose one standing preference the operator has expressed, so it is honored in later sessions without being restated. "
-                            + "It is stored for their review and is never treated as an instruction until they confirm it. "
-                            + "Use it for durable preferences about how they want you to work, not for facts about the task at hand.",
-                        InputSchema = _proposeCovenantSchema,
-                        OutputSchema = _covenantMutationOutputSchema,
-                    });
-            }
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = CovenantToolNames.ProposeCovenant,
+                    Description =
+                        "Propose one standing preference the operator has expressed, so it is honored in later sessions without being restated. "
+                        + "It is stored for their review and is never treated as an instruction until they confirm it. "
+                        + "Use it for durable preferences about how they want you to work, not for facts about the task at hand.",
+                    InputSchema = _proposeCovenantSchema,
+                    OutputSchema = _covenantMutationOutputSchema,
+                });
 
             if (CovenantRetirementAvailable)
             {

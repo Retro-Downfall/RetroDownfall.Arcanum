@@ -53,7 +53,7 @@ internal static class CovenantStoreSql
     /// dataset facts every snapshot binds, in a single round trip.
     /// </summary>
     internal static string TurnSnapshot() => $"""
-        SELECT st.DatasetGeneration, st.CanonicalSearchSequence, candidates.*
+        SELECT st.DatasetGeneration, st.CanonicalSearchSequence, st.KeyReclamationEpoch, candidates.*
         FROM covenant_state st
         LEFT JOIN (
             SELECT {HeadProjection}

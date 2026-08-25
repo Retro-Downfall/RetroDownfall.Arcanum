@@ -68,20 +68,19 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task Neither_mutation_tool_is_advertised_on_a_healthy_tier_it_cannot_deliver_from()
+    public async Task Only_the_tool_this_build_can_deliver_is_advertised_on_a_healthy_tier()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
         McpToolsListResultWire tools = await session.ListToolsAsync();
 
-        // A healthy Covenant tier advertises exactly the tools this build can actually honor, which
-        // is neither of them. Retirement cannot be granted at all: minting its capability needs the
-        // preflight disclosure and Ward receipt no production caller builds. Proposal can be granted
-        // and staged, and then goes nowhere: nothing under src/ seals a turn's collector, so the
-        // staged intent is discarded when the turn ends. Advertising either one teaches a model that
-        // the capability works, and the proposal tool is the worse of the two because it answers with
-        // a success the operator will never see the effect of.
-        Assert.DoesNotContain(tools.Tools, static tool => tool.Name == CovenantToolNames.ProposeCovenant);
+        // A healthy Covenant tier advertises exactly the tools this build can actually honor.
+        // Proposal is one of them: a granted call stages, and the turn's completed finalization
+        // publishes the batch beside its answer. Retirement is not: minting its capability needs the
+        // preflight disclosure and Ward receipt no production caller builds, so every call would
+        // refuse, and advertising a tool that always fails teaches a model the capability is broken
+        // rather than absent.
+        Assert.Contains(tools.Tools, static tool => tool.Name == CovenantToolNames.ProposeCovenant);
         Assert.DoesNotContain(tools.Tools, static tool => tool.Name == CovenantToolNames.RetireCovenant);
 
         // Both handlers stay registered regardless, so a stale or direct invocation still fails closed
@@ -163,7 +162,7 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task A_proposal_tells_the_model_the_staged_change_is_discarded_rather_than_stored()
+    public async Task A_proposal_tells_the_model_the_write_is_pending_its_turn_and_awaiting_review()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
@@ -175,15 +174,17 @@ public sealed class CovenantMutationToolTests
 
         Assert.Contains("staged", text, StringComparison.OrdinalIgnoreCase);
 
-        // The receipt has to name the disposition that actually happens. Nothing under src/ seals the
-        // turn's collector, so a staged proposal is dropped when the turn ends; a receipt that only
-        // said "staged" would let the model report a stored preference to the operator.
-        Assert.Contains("discarded", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("never sees it", text, StringComparison.OrdinalIgnoreCase);
+        // The receipt has to name the disposition that actually happens, and at this instant nothing
+        // is written yet. Both halves matter: a receipt that claimed the write had landed would have
+        // the model report a stored preference for a turn that may still fail, and one that stopped
+        // at "staged" would leave the model to guess which.
+        Assert.Contains("when this turn's reply is saved", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("dropped with the turn", text, StringComparison.OrdinalIgnoreCase);
 
-        // The old text promised a write conditional on the turn being saved. There is no such write.
-        Assert.DoesNotContain("saved to", text, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("only if this turn's answer is saved", text, StringComparison.OrdinalIgnoreCase);
+        // Proposed is review-only. A model that described it as applied would be telling the operator
+        // their behaviour had changed on the strength of its own suggestion.
+        Assert.Contains("confirm", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("discarded", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -23,11 +23,10 @@ public sealed record CovenantAdmissionPlan(
     /// of what reached the model, and reporting it as pressure would tell an operator investigating a
     /// dropped preference that the entries they lost were the ones the model actually read.
     ///
-    /// <para>Composed but never non-zero on an installation. This runs on every turn the Covenant
-    /// feature is on, and it runs over an empty Proposed set: the lane's only producer is the agent
-    /// mutation factory, whose staged intents are always discarded, and the operator surface writes
-    /// the Confirmed lane only. So no Proposed head can exist to be pressured out, and only tests
-    /// reach a non-zero total. The arithmetic is proven, the surface it reports on is not.</para>
+    /// <para>Zero on most turns, and now reachable on any of them. The lane's only producer is the
+    /// agent mutation factory, whose staged proposals reach the Proposed lane when the turn that
+    /// staged them commits its answer, so an installation whose agent has proposed anything can plan
+    /// a Proposed head and pressure it out under a tight budget.</para>
     /// </remarks>
     public ulong PressuredProposedTokens
     {

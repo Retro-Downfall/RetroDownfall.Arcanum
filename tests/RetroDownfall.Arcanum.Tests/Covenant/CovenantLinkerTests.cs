@@ -626,6 +626,7 @@ public sealed class CovenantLinkerTests
         ImmutableArray<CovenantSnapshotCandidate> aliasedCandidates = ImmutableCollectionsMarshal.AsImmutableArray(candidateBuffer);
         CovenantTurnSnapshot snapshot = new(
             new CovenantGenerationId(CovenantTask6Fixture.DatasetGeneration),
+            CovenantTask6Fixture.KeyReclamationEpoch,
             null,
             1,
             aliasedCandidates);
@@ -673,8 +674,11 @@ public sealed class CovenantLinkerTests
             1,
             1);
 
-        Assert.Throws<ArgumentException>(() => new CovenantTurnSnapshot(default, null, 1, [candidate]));
-        Assert.Throws<ArgumentException>(() => new CovenantTurnSnapshot(new CovenantGenerationId(CovenantTask6Fixture.DatasetGeneration), null, 1, default));
+        Assert.Throws<ArgumentException>(() => new CovenantTurnSnapshot(default, CovenantTask6Fixture.KeyReclamationEpoch, null, 1, [candidate]));
+        Assert.Throws<ArgumentException>(() => new CovenantTurnSnapshot(new CovenantGenerationId(CovenantTask6Fixture.DatasetGeneration), CovenantTask6Fixture.KeyReclamationEpoch, null, 1, default));
+        // A zero epoch is a snapshot that read no state row. Binding a batch to it would compare a
+        // value the canonical tier can never hold, so it is refused where it is first observable.
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CovenantTurnSnapshot(new CovenantGenerationId(CovenantTask6Fixture.DatasetGeneration), 0, null, 1, [candidate]));
         Assert.Throws<ArgumentException>(() => CovenantTask6Fixture.Snapshot(
             null,
             Enumerable.Repeat(candidate, CovenantLimits.MaxActiveSnapshotRows + 1).ToArray()));
@@ -964,11 +968,20 @@ internal static class CovenantTask6Fixture
             integrity);
     }
 
+    /// <summary>The key-reclamation epoch a freshly installed canonical tier seeds.</summary>
+    /// <remarks>
+    /// The installer's own value rather than an arbitrary one. A snapshot that claimed an epoch no
+    /// installation starts at would let a batch bound to it pass here and be refused as stale by the
+    /// mutation kernel against a real database.
+    /// </remarks>
+    public const long KeyReclamationEpoch = 1;
+
     public static CovenantTurnSnapshot Snapshot(
         Guid? campaignId,
         params CovenantSnapshotCandidate[] candidates) =>
         new(
             new CovenantGenerationId(DatasetGeneration),
+            KeyReclamationEpoch,
             campaignId,
             4,
             [.. candidates]);

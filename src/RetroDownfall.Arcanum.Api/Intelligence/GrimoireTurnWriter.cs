@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -93,7 +95,8 @@ public sealed class GrimoireTurnWriter(
         string finalText,
         string targetModel,
         CancellationToken cancellationToken,
-        ProviderCallSensitivity? sensitivity = null)
+        ProviderCallSensitivity? sensitivity = null,
+        CovenantTurnCommitBinding? covenantCommit = null)
     {
 
         return await TryFinalizeAssistantEntryCoreAsync(
@@ -102,7 +105,8 @@ public sealed class GrimoireTurnWriter(
             targetModel,
             cancellationToken,
             "Grimoire could not finalize assistant entry for model {ModelName}.",
-            sensitivity).ConfigureAwait(false);
+            sensitivity,
+            covenantCommit).ConfigureAwait(false);
 
     }
 
@@ -112,7 +116,8 @@ public sealed class GrimoireTurnWriter(
         string finalText,
         string targetModel,
         CancellationToken cancellationToken,
-        ProviderCallSensitivity? sensitivity = null)
+        ProviderCallSensitivity? sensitivity = null,
+        CovenantTurnCommitBinding? covenantCommit = null)
     {
 
         return await TryFinalizeAssistantEntryCoreAsync(
@@ -121,7 +126,8 @@ public sealed class GrimoireTurnWriter(
             targetModel,
             cancellationToken,
             "Grimoire could not finalize streamed assistant entry for model {ModelName}.",
-            sensitivity).ConfigureAwait(false);
+            sensitivity,
+            covenantCommit).ConfigureAwait(false);
 
     }
 
@@ -129,7 +135,8 @@ public sealed class GrimoireTurnWriter(
         TurnHandle handle,
         string? streamedContent,
         CancellationToken cancellationToken,
-        ProviderCallSensitivity? sensitivity = null)
+        ProviderCallSensitivity? sensitivity = null,
+        CovenantTurnCommitBinding? covenantCommit = null)
     {
 
         if (handle.AssistantEntryId is not { } entryId)
@@ -139,10 +146,18 @@ public sealed class GrimoireTurnWriter(
 
         }
 
+        // An interrupted turn publishes no staged batch: the answer the operator would have judged
+        // the proposal against never finished. Persisting the partial reply anyway is the trap — this
+        // arm also runs after the completed arm's atomic commit has already failed, and it would
+        // then commit the answer alone, losing an acknowledgement the proposal tool had already
+        // reported. A turn that staged something therefore persists it with its answer or persists
+        // neither, so the content is dropped here rather than committed without its batch.
+        string? resolvedContent = covenantCommit is null ? streamedContent : null;
+
         try
         {
 
-            if (!string.IsNullOrEmpty(streamedContent))
+            if (!string.IsNullOrEmpty(resolvedContent))
             {
 
                 // An interrupted protected stream is the case most likely to lose its label: the reply
@@ -152,8 +167,9 @@ public sealed class GrimoireTurnWriter(
                 Result<bool> committed = await TryCommitProtectedAsync(
                         handle,
                         entryId,
-                        streamedContent,
+                        resolvedContent,
                         sensitivity,
+                        covenantCommit: null,
                         cancellationToken)
                     .ConfigureAwait(false);
 
@@ -172,7 +188,7 @@ public sealed class GrimoireTurnWriter(
                 {
 
                     await grimoire
-                        .FinalizeAssistantEntryAsync(entryId, streamedContent, cancellationToken)
+                        .FinalizeAssistantEntryAsync(entryId, resolvedContent, cancellationToken)
                         .ConfigureAwait(false);
 
                 }
@@ -213,7 +229,8 @@ public sealed class GrimoireTurnWriter(
         TurnHandle handle,
         string? streamedContent,
         CancellationToken cancellationToken,
-        ProviderCallSensitivity? sensitivity = null)
+        ProviderCallSensitivity? sensitivity = null,
+        CovenantTurnCommitBinding? covenantCommit = null)
     {
 
         if (handle.IsFinalized)
@@ -227,7 +244,8 @@ public sealed class GrimoireTurnWriter(
             handle,
             streamedContent,
             cancellationToken,
-            sensitivity).ConfigureAwait(false);
+            sensitivity,
+            covenantCommit).ConfigureAwait(false);
 
         if (resolved)
         {
@@ -241,7 +259,8 @@ public sealed class GrimoireTurnWriter(
     public async Task TryResolveInterruptedOnStreamExitAsync(
         TurnHandle handle,
         string? streamedContent,
-        ProviderCallSensitivity? sensitivity = null)
+        ProviderCallSensitivity? sensitivity = null,
+        CovenantTurnCommitBinding? covenantCommit = null)
     {
 
         if (handle.IsFinalized || handle.AssistantEntryId is null)
@@ -258,7 +277,8 @@ public sealed class GrimoireTurnWriter(
                 handle,
                 streamedContent,
                 CancellationToken.None,
-                sensitivity).ConfigureAwait(false);
+                sensitivity,
+                covenantCommit).ConfigureAwait(false);
 
         }
         catch (Exception ex)
@@ -827,7 +847,8 @@ public sealed class GrimoireTurnWriter(
     }
 
     /// <summary>
-    /// Commits a Covenant-derived reply and its sensitivity label in one transaction.
+    /// Commits a Covenant-derived reply, its sensitivity label, and this turn's staged Covenant
+    /// batch in one transaction.
     /// </summary>
     /// <remarks>
     /// Returns <see langword="false"/> — "not mine" — for the ordinary reply, which continues through the
@@ -836,14 +857,22 @@ public sealed class GrimoireTurnWriter(
     /// disclosure by reading exactly this row, so a response persisted without its label is a response
     /// that silently launders taint out of the Session.
     ///
+    /// <para>The turn's collector is sealed here rather than by the caller, because sealing and
+    /// publishing have to share one failure envelope. A batch frozen earlier would be a sealed
+    /// collector nobody was yet committed to publishing; a batch frozen later could not be inside the
+    /// transaction that carries the answer. Sealed-then-refused is safe: the turn scope discards the
+    /// collector on disposal, so a batch that did not commit is one nobody can publish afterwards.</para>
+    ///
     /// <para>Failure is a refusal, not a downgrade. Writing the content without the label would be the
-    /// one outcome worse than losing the reply.</para>
+    /// one outcome worse than losing the reply, and so would writing it without the batch the proposal
+    /// tool has already told the model was recorded.</para>
     /// </remarks>
     private async Task<Result<bool>> TryCommitProtectedAsync(
         TurnHandle handle,
         Guid finalizeId,
         string finalText,
         ProviderCallSensitivity? sensitivity,
+        CovenantTurnCommitBinding? covenantCommit,
         CancellationToken cancellationToken)
     {
 
@@ -852,7 +881,45 @@ public sealed class GrimoireTurnWriter(
             || handle.SessionId is not { } sessionId)
         {
 
-            return Result<bool>.Success(false);
+            // The ordinary reply has nothing to lose on this arm. A turn holding a staged batch does:
+            // "not mine" hands it to a finalize path that writes content alone, so a turn that cannot
+            // reach the atomic committer refuses rather than publishing half of what it owes.
+            return covenantCommit is null
+                ? Result<bool>.Success(false)
+                : Result<bool>.Failure(new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "This turn staged a Covenant mutation that its finalization cannot publish atomically."));
+
+        }
+
+        ImmutableArray<CovenantMutationIntent> mutations = [];
+
+        CovenantMutationBatchBinding? mutationBinding = null;
+
+        if (covenantCommit is { } staged)
+        {
+
+            Result<ImmutableArray<CovenantMutationIntent>> frozen = staged.Collector.Seal(
+                staged.CommittedBranchId,
+                staged.FinalBranchOrdinal);
+
+            if (frozen.IsFailure)
+            {
+
+                return Result<bool>.Failure(frozen.Error);
+
+            }
+
+            mutations = frozen.Value;
+
+            // An empty seal is an ordinary outcome, not a defect: every intent this turn staged
+            // belonged to a branch the provider abandoned. It publishes nothing and binds nothing.
+            mutationBinding = mutations.IsEmpty
+                ? null
+                : new CovenantMutationBatchBinding(
+                    staged.DatasetGeneration,
+                    staged.ExpectedKeyReclamationEpoch,
+                    ExpectedCampaignRegistryEpoch: null);
 
         }
 
@@ -865,7 +932,10 @@ public sealed class GrimoireTurnWriter(
                     finalText,
                     RequestIdentity(sessionId, finalizeId),
                     sensitivity.Level,
-                    sensitivity.Provenance),
+                    sensitivity.Provenance,
+                    finalReceiptDigest: null,
+                    mutations,
+                    mutationBinding),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -899,7 +969,8 @@ public sealed class GrimoireTurnWriter(
         string targetModel,
         CancellationToken cancellationToken,
         string finalizeFailureLogMessage,
-        ProviderCallSensitivity? sensitivity = null)
+        ProviderCallSensitivity? sensitivity = null,
+        CovenantTurnCommitBinding? covenantCommit = null)
     {
 
         if (handle.AssistantEntryId is not { } finalizeId)
@@ -917,6 +988,7 @@ public sealed class GrimoireTurnWriter(
                     finalizeId,
                     finalText,
                     sensitivity,
+                    covenantCommit,
                     cancellationToken)
                 .ConfigureAwait(false);
 

@@ -298,11 +298,13 @@ public sealed class CovenantTurnSnapshot
 
     public CovenantTurnSnapshot(
         CovenantGenerationId datasetGeneration,
+        long keyReclamationEpoch,
         Guid? canonicalCampaignId,
         ulong canonicalSearchSequence,
         ImmutableArray<CovenantSnapshotCandidate> candidates)
     {
         DatasetGeneration = ValidateGeneration(datasetGeneration);
+        KeyReclamationEpoch = CovenantValidation.RequirePositive(keyReclamationEpoch, nameof(keyReclamationEpoch));
         CanonicalCampaignId = ValidateCampaign(canonicalCampaignId);
         CanonicalSearchSequence = canonicalSearchSequence;
         Candidates = FreezeCandidates(candidates);
@@ -315,6 +317,21 @@ public sealed class CovenantTurnSnapshot
     }
 
     public CovenantGenerationId DatasetGeneration { get; }
+
+    /// <summary>The key-reclamation epoch this turn observed, which a staged batch must still hold.</summary>
+    /// <remarks>
+    /// Read here rather than at publication time on purpose. A mutation staged during this turn was
+    /// decided against the heads this snapshot carries, so the epoch that has to still be true at
+    /// commit is the one that was true when they were read; an epoch re-read inside the commit
+    /// transaction would equal itself and check nothing.
+    ///
+    /// <para>Deliberately outside <see cref="Digest"/>. The digest chain exists to prove that a plan,
+    /// its admission, and the collector staging against it describe the same content, and the epoch
+    /// is not content — it is a staleness fact the mutation kernel compares directly against live
+    /// canonical state, so binding it into the identity would add nothing the kernel does not already
+    /// enforce.</para>
+    /// </remarks>
+    public long KeyReclamationEpoch { get; }
 
     public Guid? CanonicalCampaignId { get; }
 

@@ -380,6 +380,7 @@ public sealed class CovenantContextProviderTests
             ValueTask.FromResult(Result<CovenantTurnSnapshot>.Success(
                 new CovenantTurnSnapshot(
                     new CovenantGenerationId(CovenantOperationGateFixture.DatasetGeneration),
+                    CovenantTask6Fixture.KeyReclamationEpoch,
                     CovenantOperationGateFixture.CampaignOne,
                     canonicalSearchSequence: 12,
                     [])));

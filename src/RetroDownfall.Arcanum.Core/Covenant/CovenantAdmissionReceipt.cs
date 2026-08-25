@@ -192,10 +192,10 @@ public sealed class CovenantAdmissionReceipt
     /// <remarks>
     /// The Confirmed arm is exercised on every turn. The Proposed arms below it — the Admitted-or-
     /// Pressured alphabet, the admitted-prefix-then-pressured-suffix order, and the no-fit rule that
-    /// forbids admitting Proposed content when Confirmed did not fit — are composed but never reached
-    /// with a real candidate: an installation has no Proposed head to plan, because the lane's only
-    /// producer is the agent mutation factory and every staged proposal is discarded. Their tests
-    /// prove the invariant, not a delivered surface.
+    /// forbids admitting Proposed content when Confirmed did not fit — are reached once an agent
+    /// proposal has been published, which happens when the turn that staged it commits its answer.
+    /// The no-fit rule is the one that has to hold: a turn too tight to seat the operator's own
+    /// Confirmed instruction must not seat the agent's suggestions in its place.
     /// </remarks>
     private static void ValidateClosedDecisionShape(
         CovenantTurnPlan plan,

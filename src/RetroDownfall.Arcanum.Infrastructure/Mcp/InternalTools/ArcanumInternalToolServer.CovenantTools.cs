@@ -14,20 +14,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// The two Covenant mutation handlers.
 /// </summary>
 /// <remarks>
-/// Both stay in the handler map unconditionally and neither is advertised in this build, so an
-/// unadvertised name meets a handler rather than a missing one. Each handler rechecks the live feature
-/// gate, canonical availability, this turn's staging capability and the tool the capability names
-/// before it accepts a call, because a stale cached partition or a direct internal invocation would
-/// bypass the per-turn advertisement filter. What no handler rechecks is the build-time withholding
-/// below: that decision is enforced where the tool is advertised, and nowhere else.
+/// Both are registered unconditionally in the cached internal-tool superset and both fail closed on
+/// their own, and only proposal is advertised in this build. Advertisement is filtered per turn from
+/// the live feature gate, canonical availability, invocation context, and tool policy, but a stale
+/// cached partition or a direct internal invocation would bypass that filter, so each handler
+/// rechecks the same facts before it accepts its capability.
 ///
-/// <para>Neither ever writes canonical state, and in this build nothing else writes it on their
-/// behalf either. They stage into the turn's collector, and the only production disposition of that
-/// collector is <c>Discard()</c>: <c>ICovenantMutationCollector.Seal</c> is the sole producer of the
-/// intent array a batch needs and has no caller under <c>src/</c>, and the one production
-/// <c>TurnCommitRequest</c> stops before its <c>mutations</c> argument, so the batch-aware assistant
-/// finalizer is never handed anything to publish. A staged mutation is therefore dropped when the
-/// turn ends (§10.13, §10.14).</para>
+/// <para>Neither handler ever writes canonical state itself. Both stage into the turn's collector,
+/// and what happens to that collector is decided entirely by how the turn ends: a turn that reaches
+/// its completed assistant finalization seals the collector and publishes the batch inside the same
+/// transaction as the answer, and every other ending — interrupted, refused, cancelled, or simply
+/// not Covenant-derived — discards it. A proposal therefore reaches the Campaign's Proposed lane
+/// exactly when the answer it accompanied did, and retirement reaches nothing at all: its capability
+/// is never minted, so its handler refuses before it can stage (§10.13, §10.14).</para>
 /// </remarks>
 internal sealed partial class ArcanumInternalToolServer
 {
@@ -46,34 +45,10 @@ internal sealed partial class ArcanumInternalToolServer
     /// always refuses teaches a model the capability is broken rather than absent, and an unbuilt
     /// capability must not look like a built one that happens to be failing.
     ///
-    /// <para>The handler stays registered regardless, so a direct or stale invocation reaches it
-    /// rather than an unregistered name, and fails closed there: a retirement capability is never
-    /// minted, because the staging binder mints only for the proposal name.</para>
+    /// <para>The handler stays registered regardless, so a direct or stale invocation still fails
+    /// closed rather than reaching an unregistered name.</para>
     /// </remarks>
     private static bool CovenantRetirementAvailable => false;
-
-    /// <summary>
-    /// Whether a proposal can actually be delivered, rather than merely acknowledged.
-    /// </summary>
-    /// <remarks>
-    /// Constant <see langword="false"/> in this build, and advertised accordingly. Staging succeeds,
-    /// but nothing under <c>src/</c> ever seals the turn's collector into a batch, so every accepted
-    /// proposal is discarded when the turn ends. Advertising the tool anyway would have the model
-    /// tell the operator their preference was recorded when no installation can ever hold it, and a
-    /// false success is worse than an absent capability because nothing surfaces the loss.
-    ///
-    /// <para>Turning this on is a product decision, not a wiring omission: agent-authored writes need
-    /// the Ward receipt and egress disclosure this build does not construct, so the flag is the one
-    /// place that decision gets made rather than a branch that drifts on.</para>
-    ///
-    /// <para>This flag is read where tools are advertised and nowhere else. The handler stays
-    /// registered regardless, so a direct or stale invocation reaches it rather than an unregistered
-    /// name, and is then answered by the ordinary capability recheck -- which does not consult this
-    /// flag. Staging that reached the handler would still be discarded when the turn ends, so the
-    /// withheld outcome holds either way, but it holds because nothing seals a batch rather than
-    /// because the handler refuses.</para>
-    /// </remarks>
-    private static bool CovenantProposalAvailable => false;
 
     private bool CovenantToolsAvailable()
     {
@@ -467,11 +442,11 @@ internal sealed partial class ArcanumInternalToolServer
             receipt.RenderedHash?.ToString(),
             intent.Artifact?.CompiledByteCost);
 
-        // The receipt says what actually happens. This build has no path that turns a staged mutation
-        // into a canonical write, so telling the model the operator will see it would be a lie the
-        // model then repeats to the operator.
+        // The receipt says what actually happens, and what has not happened yet. A proposal becomes
+        // durable with this turn's answer and not a moment sooner, so a model told plainly that the
+        // write is still pending cannot report a stored preference for a turn that never finished.
         string text = intent.Operation == CovenantOperation.Set
-            ? "Proposal staged for this turn only. This build has no path that stores it, so it is discarded when the turn ends and the operator never sees it. Do not tell them their preference was recorded."
+            ? "Proposal staged. It is stored for the operator's review when this turn's reply is saved, and dropped with the turn if the reply never is. It waits in the Proposed lane and does not take effect until they confirm it, so describe it to them as suggested rather than as applied."
             : "Retirement staged for this turn only. This build has no path that applies it, so the standing preference is unchanged when the turn ends.";
 
         return CovenantResult(text, wire, _json.CovenantMutationStagedResultWire, isError: false);
