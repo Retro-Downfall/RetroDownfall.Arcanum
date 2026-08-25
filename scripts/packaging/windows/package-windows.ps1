@@ -44,8 +44,12 @@ if ($IsLinux -or $IsMacOS) {
     throw "package-windows.ps1 must run on Windows. Use GitHub Actions for cross-OS artifacts."
 }
 
-if ($Rid -ne "win-x64") {
-    throw "Unsupported RID '$Rid' (expected win-x64 for this beta script)"
+# Both shipping Windows RIDs. The restriction to win-x64 was a guard rather than a limitation:
+# everything below that named the architecture was a folder or archive name, and the publish itself
+# only ever passed $Rid through to dotnet. A release that ships one Windows architecture and calls
+# itself a Windows release is the thing worth preventing, so the list is explicit rather than open.
+if ($Rid -notin @("win-x64", "win-arm64")) {
+    throw "Unsupported RID '$Rid' (expected win-x64 or win-arm64)"
 }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -172,7 +176,7 @@ try {
 
     function Publish-Cli {
         $publishDir = Join-Path $Work "cli-publish"
-        $stageName = "arcanum-win-x64"
+        $stageName = "arcanum-$Rid"
         $stageDir = Join-Path $Work "stage\$stageName"
         $archive = Join-Path $OutputDir "$stageName.zip"
         $project = Join-Path $RepoRoot "src\RetroDownfall.Arcanum.Cli\RetroDownfall.Arcanum.Cli.csproj"
@@ -246,23 +250,23 @@ try {
     if (-not $SkipForge) {
         Publish-Gui -Product "the-forge" `
             -ProjectRelative "src\RetroDownfall.TheForge.Ux\RetroDownfall.TheForge.Ux.csproj" `
-            -FolderName "the-forge-win-x64"
+            -FolderName "the-forge-$Rid"
     }
     else {
         Write-Host "==> Skipping The Forge (-SkipForge)"
     }
     Publish-Gui -Product "compendium" `
         -ProjectRelative "src\RetroDownfall.Compendium.Ux\RetroDownfall.Compendium.Ux.csproj" `
-        -FolderName "compendium-win-x64"
+        -FolderName "compendium-$Rid"
 
     Write-Host "==> Writing SHA256SUMS"
     $sumsPath = Join-Path $OutputDir "SHA256SUMS"
     $artifactNames = [System.Collections.Generic.List[string]]::new()
-    $artifactNames.Add("arcanum-win-x64.zip") | Out-Null
+    $artifactNames.Add("arcanum-$Rid.zip") | Out-Null
     if (-not $SkipForge) {
-        $artifactNames.Add("the-forge-win-x64.zip") | Out-Null
+        $artifactNames.Add("the-forge-$Rid.zip") | Out-Null
     }
-    $artifactNames.Add("compendium-win-x64.zip") | Out-Null
+    $artifactNames.Add("compendium-$Rid.zip") | Out-Null
     $lines = @()
     foreach ($name in $artifactNames) {
         $path = Join-Path $OutputDir $name
