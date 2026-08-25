@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 namespace RetroDownfall.Arcanum.Tests.Support;
 
 /// <summary>
-/// One authored production source file, with its comments removed.
+/// One authored source file, with its comments removed.
 /// </summary>
 internal readonly record struct ProductionSource(string RelativePath, string Text)
 {
@@ -57,12 +57,26 @@ internal static class ProductionSourceInventory
     /// <summary>
     /// Every authored <c>.cs</c> file under <c>src</c>, comment-free and repository-relative.
     /// </summary>
-    internal static IReadOnlyList<ProductionSource> Sources()
+    internal static IReadOnlyList<ProductionSource> Sources() => Under("src");
+
+    /// <summary>
+    /// Every authored <c>.cs</c> file under <c>tests</c>, comment-free and repository-relative.
+    /// </summary>
+    /// <remarks>
+    /// The same scanner pointed at the suites, for the rules that are properties of the test call
+    /// graph rather than of production's. Which production entry point a test enters through cannot be
+    /// read from a type's shape at all — only from what the test source names — and a second scanner
+    /// written for that reading would drift from this one the first time either learned about a new
+    /// intermediate directory.
+    /// </remarks>
+    internal static IReadOnlyList<ProductionSource> TestSuiteSources() => Under("tests");
+
+    private static IReadOnlyList<ProductionSource> Under(string repositoryRelativeDirectory)
     {
 
         string repositoryRoot = NativeSqlCipherTestPaths.RepositoryRoot();
 
-        string root = Path.Combine(repositoryRoot, "src");
+        string root = Path.Combine(repositoryRoot, repositoryRelativeDirectory);
 
         List<ProductionSource> sources = [];
 
