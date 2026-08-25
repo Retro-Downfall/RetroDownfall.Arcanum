@@ -82,7 +82,13 @@ jobs:
             exit 1
           fi
 
+      # Unconditional, and for the same reason the benchmark lane keeps the run that breached its
+      # ceiling: the build whose hash disagrees with the checked-in asset is the one most worth
+      # having. Gating the upload on the comparison also made the asset unobtainable exactly when it
+      # was needed — a RID with no checked-in binary, or one built in a different environment, cannot
+      # be adopted without a copy of what the pipeline actually produces.
       - name: Upload the rebuilt asset
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-sqlcipher-${{ matrix.rid }}
@@ -138,7 +144,9 @@ jobs:
             Write-Host "::notice::$env:RID is still pending. Record sha256 $first in native-source-manifest.json and check in the uploaded binary."
           }
 
+      # Unconditional on the same reasoning as the macOS lane above.
       - name: Upload the built asset
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-sqlcipher-${{ matrix.rid }}
