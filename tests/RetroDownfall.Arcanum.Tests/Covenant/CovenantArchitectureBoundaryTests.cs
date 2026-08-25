@@ -272,6 +272,12 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRegistration<CovenantSearchOutboxWorker>(services, ServiceLifetime.Scoped);
 
+        AssertSingleRegistration<CovenantOwnerCleanupCoordinator>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<CovenantSearchOutboxCoordinator>(services, ServiceLifetime.Scoped);
+
+        AssertSingleRegistration<CovenantTurnReceiptCompactionCoordinator>(services, ServiceLifetime.Scoped);
+
         AssertSingleRegistration<CovenantIndexRebuilder>(services, ServiceLifetime.Scoped);
 
         AssertSingleRegistration<ICovenantConnectionSource>(services, ServiceLifetime.Scoped);
