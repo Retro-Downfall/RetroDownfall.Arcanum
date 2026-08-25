@@ -240,6 +240,7 @@ public sealed class CovenantMutationCollectorTests
             null,
             CovenantTask6Fixture.ProviderCall(),
             10_000,
+            (ulong)plan.EligibleDecisions.Length,
             [
                 .. plan.EligibleDecisions.Select(static decision => new CovenantAdmissionCandidateDecision(
                     decision.Candidate.EntryId,

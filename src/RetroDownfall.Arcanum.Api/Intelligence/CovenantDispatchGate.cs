@@ -588,6 +588,7 @@ public sealed class CovenantDispatchGate(
             null,
             providerCall,
             plan.AvailableTokenBudget,
+            admission.EstimatedAdmittedTokens,
             admission.Candidates);
 
     }

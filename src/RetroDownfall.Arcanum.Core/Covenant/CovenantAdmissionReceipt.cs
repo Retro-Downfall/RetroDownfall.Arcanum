@@ -20,6 +20,7 @@ public sealed class CovenantAdmissionReceipt
         CovenantDigest? parentAdmissionDigest,
         ProviderCallEnvelope providerCall,
         ulong availableTokenBudget,
+        ulong plannedAdmittedTokens,
         ImmutableArray<CovenantAdmissionCandidateDecision> eligibleCandidates)
     {
         Plan = plan ?? throw new ArgumentNullException(nameof(plan));
@@ -33,6 +34,7 @@ public sealed class CovenantAdmissionReceipt
             nameof(parentAdmissionDigest));
         ProviderCall = providerCall ?? throw new ArgumentNullException(nameof(providerCall));
         AvailableTokenBudget = availableTokenBudget;
+        PlannedAdmittedTokens = plannedAdmittedTokens;
         EligibleCandidates = FreezeAndValidateCandidates(plan, eligibleCandidates);
 
         ValidateClosedDecisionShape(plan, EligibleCandidates);
@@ -50,13 +52,21 @@ public sealed class CovenantAdmissionReceipt
             plan,
             EligibleCandidates);
 
-        (EstimatedConfirmedTokens, EstimatedProposedTokens, ulong admittedTokens) =
+        (EstimatedConfirmedTokens, EstimatedProposedTokens) =
             CalculateTokenCounts(plan, EligibleCandidates);
         EstimatedTotalTokens = checked(EstimatedConfirmedTokens + EstimatedProposedTokens);
 
-        if (admittedTokens > AvailableTokenBudget)
+        // Judged against the planner's own measurement of the admitted sections, not against a second
+        // one computed here. The per-candidate estimates above are attribution: they tokenize each
+        // fragment alone, and a fragment tokenized alone cannot merge across the boundary it shares
+        // with its neighbour, so their sum runs ahead of the joint measure by a margin that grows with
+        // every entry. Asserting on that sum refused a Covenant the planner had correctly fitted, and
+        // it did so by throwing out of a turn — which cost the operator the answer they had paid for
+        // on every turn once the installation held enough entries. What this still catches is the
+        // pairing mistake it was written for: a budget and a plan that did not come from one decision.
+        if (PlannedAdmittedTokens > AvailableTokenBudget)
         {
-            throw new ArgumentException("Admitted Covenant token estimates exceed the supplied available budget.", nameof(eligibleCandidates));
+            throw new ArgumentException("The planned admitted token cost exceeds the budget the same attempt was given.", nameof(plannedAdmittedTokens));
         }
 
         AdmittedConfirmedBytes = checked((uint)(
@@ -120,6 +130,17 @@ public sealed class CovenantAdmissionReceipt
     public CovenantDigest SensitivityDigest => ProviderCall.Sensitivity.Digest;
 
     public ulong AvailableTokenBudget { get; }
+
+    /// <summary>
+    /// What the admission planner measured the sections it admitted to cost.
+    /// </summary>
+    /// <remarks>
+    /// The tokenization of the rendered admitted content as one text, which is the number the fit
+    /// decision was made with and therefore the only one that can be compared to the budget without
+    /// the two disagreeing. <see cref="EstimatedTotalTokens"/> is the per-entry attribution and is
+    /// expected to run above this; it answers which entry cost what, not whether the whole fitted.
+    /// </remarks>
+    public ulong PlannedAdmittedTokens { get; }
 
     public ImmutableArray<CovenantAdmissionCandidateDecision> EligibleCandidates { get; }
 
@@ -279,13 +300,12 @@ public sealed class CovenantAdmissionReceipt
         return CovenantTurnSection.Create(plannedSection.Placement, admitted);
     }
 
-    private static (ulong Confirmed, ulong Proposed, ulong Admitted) CalculateTokenCounts(
+    private static (ulong Confirmed, ulong Proposed) CalculateTokenCounts(
         CovenantTurnPlan plan,
         ImmutableArray<CovenantAdmissionCandidateDecision> candidates)
     {
         ulong confirmed = 0;
         ulong proposed = 0;
-        ulong admitted = 0;
 
         for (int index = 0; index < candidates.Length; index++)
         {
@@ -301,13 +321,9 @@ public sealed class CovenantAdmissionReceipt
                 proposed = checked(proposed + candidate.EstimatedTokens);
             }
 
-            if (candidate.Decision == CovenantAdmissionDecision.Admitted)
-            {
-                admitted = checked(admitted + candidate.EstimatedTokens);
-            }
         }
 
-        return (confirmed, proposed, admitted);
+        return (confirmed, proposed);
     }
 
     private static void ValidateAdmissionDecision(CovenantAdmissionDecision decision)

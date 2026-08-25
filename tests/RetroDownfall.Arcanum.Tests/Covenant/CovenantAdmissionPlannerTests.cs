@@ -100,6 +100,7 @@ public sealed class CovenantAdmissionPlannerTests
             null,
             CovenantTask6Fixture.ProviderCall(),
             budget,
+            admission.EstimatedAdmittedTokens,
             admission.Candidates);
 
         Assert.Equal(admission.Candidates.AsEnumerable(), receipt.EligibleCandidates.AsEnumerable());

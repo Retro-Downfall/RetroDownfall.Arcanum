@@ -357,6 +357,122 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_covenant_holding_its_documented_confirmed_maxima_still_reaches_the_model()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        await FillConfirmedToDocumentedMaximaAsync();
+
+        // The whole claim: an installation that used exactly the allowance it was sold can still take
+        // an ordinary turn, and the preferences it stated are in the prompt. Nothing here is a
+        // capacity edge case — these are the numbers the documentation tells an operator they may use.
+        Assert.Contains("jg.00", await RunTurnAsync(CampaignA), StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+    public async Task A_revision_on_a_fully_allocated_installation_still_leaves_the_operator_their_answer()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        await FillConfirmedToDocumentedMaximaAsync();
+
+        int filled = 0;
+
+        while (filled < CovenantLimits.MaxCampaignProposedEntries)
+        {
+
+            int batch = Math.Min(
+                CovenantLimits.MaxStagedMutationsPerTurn,
+                CovenantLimits.MaxCampaignProposedEntries - filled);
+
+            (string Key, string Content)[] proposals =
+            [
+                .. Enumerable.Range(filled, batch).Select(static ordinal =>
+                    ($"journey.proposal.{ordinal:D2}", $"proposal {ordinal:D2} body")),
+            ];
+
+            ProposalTurn round = await ProposeAsync(CampaignA, proposals);
+
+            Assert.True(
+                round.Turn.IsSuccess,
+                round.Turn.IsFailure
+                    ? $"filled={filled} {round.Turn.Error.Code}: {round.Turn.Error.Message}"
+                    : null);
+
+            filled += batch;
+
+        }
+
+        // The revision an agent makes constantly: a key the Proposed Section already holds, restated.
+        // The staging preflight excludes the key it is about to rewrite, so it measures the thirty-one
+        // that remain plus this one and admits. The publication authority charges every intent as a
+        // new active head whether or not it replaces one, so it weighs one hundred and sixty-one
+        // against the hundred and sixty a turn may load — inside the transaction carrying the reply.
+        ProposalTurn revision = await ProposeAsync(
+            CampaignA,
+            [("journey.proposal.00", "proposal 00 rebody")]);
+
+        // Where the proposal lands is deliberately left open, exactly as it is for a full Section:
+        // refusing it at the staging tool is honest, and so is accepting it. Taking the operator's
+        // answer with it is not. This is the same loss a full Proposed Section used to cause, reached
+        // by a different ceiling, so it is asserted the same way.
+        Assert.True(
+            revision.Turn.IsSuccess,
+            revision.Turn.IsFailure ? $"{revision.Turn.Error.Code}: {revision.Turn.Error.Message}" : null);
+
+        Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(revision.SessionId));
+
+    }
+
+    /// <summary>
+    /// Writes both Confirmed Sections up to the maxima the documentation advertises.
+    /// </summary>
+    /// <remarks>
+    /// Through the operator's own prepare-and-commit pair rather than by seeding rows, because the
+    /// question both callers ask is what an installation reaches by ordinary use. Their sum, with a
+    /// full Proposed Section, is exactly the widest turn load the publication authority permits.
+    /// </remarks>
+    private async Task FillConfirmedToDocumentedMaximaAsync()
+    {
+
+        for (int ordinal = 0; ordinal < CovenantLimits.MaxGlobalConfirmedEntries; ordinal++)
+        {
+
+            Result<CovenantMutationResultDto> written = await SetAsync(
+                CovenantScope.Global,
+                null,
+                $"jg.{ordinal:D2}",
+                $"v{ordinal:D2}",
+                expectedRevision: 0,
+                reactivate: false);
+
+            Assert.True(written.IsSuccess, written.IsFailure ? written.Error.Message : null);
+
+        }
+
+        for (int ordinal = 0; ordinal < CovenantLimits.MaxCampaignConfirmedEntries; ordinal++)
+        {
+
+            Result<CovenantMutationResultDto> written = await SetCampaignAsync(
+                CampaignA,
+                $"jc.{ordinal:D2}",
+                $"v{ordinal:D2}",
+                expectedRevision: 0);
+
+            Assert.True(written.IsSuccess, written.IsFailure ? written.Error.Message : null);
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task A_turn_with_the_feature_off_sends_the_bytes_an_installation_that_never_had_a_covenant_sends()
     {
 

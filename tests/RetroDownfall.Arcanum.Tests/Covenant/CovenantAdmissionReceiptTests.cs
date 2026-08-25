@@ -297,6 +297,71 @@ public sealed class CovenantAdmissionReceiptTests
     }
 
     [Fact]
+    public void Per_entry_attribution_above_the_budget_is_not_a_refusal()
+    {
+        CovenantSnapshotCandidate first = CovenantTask6Fixture.GlobalConfirmed(
+            "confirmed.a",
+            CovenantTask6Fixture.G1,
+            CovenantTask6Fixture.G2,
+            1,
+            1);
+        CovenantSnapshotCandidate second = CovenantTask6Fixture.GlobalConfirmed(
+            "confirmed.b",
+            CovenantTask6Fixture.G3,
+            CovenantTask6Fixture.G4,
+            2,
+            2);
+        CovenantTurnPlan plan = Link(CovenantTask6Fixture.Snapshot(null, second, first));
+        ImmutableArray<CovenantAdmissionCandidateDecision> admitted =
+        [
+            Decision(plan.EligibleDecisions[0], CovenantAdmissionDecision.Admitted, 60),
+            Decision(plan.EligibleDecisions[1], CovenantAdmissionDecision.Admitted, 60)
+        ];
+
+        // The shape a real installation reaches: each entry tokenized alone comes to more than the
+        // budget, while the planner's tokenization of the same entries rendered together comes to
+        // less, because tokens merge across the boundaries the per-entry measure has to pay for. The
+        // gap widens with every entry, so asserting on the sum turned a Covenant that fitted into a
+        // thrown exception, and the throw landed inside the turn that carried the operator's reply.
+        CovenantAdmissionReceipt receipt = Receipt(
+            plan,
+            CovenantTask6Fixture.ProviderCall(),
+            admitted,
+            availableTokenBudget: 100,
+            plannedAdmittedTokens: 90);
+
+        Assert.Equal((ulong)120, receipt.EstimatedTotalTokens);
+        Assert.Equal((ulong)90, receipt.PlannedAdmittedTokens);
+        Assert.Equal((ulong)100, receipt.AvailableTokenBudget);
+    }
+
+    [Fact]
+    public void A_planned_cost_above_the_budget_of_the_same_attempt_is_refused()
+    {
+        CovenantSnapshotCandidate only = CovenantTask6Fixture.GlobalConfirmed(
+            "confirmed.a",
+            CovenantTask6Fixture.G1,
+            CovenantTask6Fixture.G2,
+            1,
+            1);
+        CovenantTurnPlan plan = Link(CovenantTask6Fixture.Snapshot(null, only));
+        ImmutableArray<CovenantAdmissionCandidateDecision> admitted =
+        [
+            Decision(plan.EligibleDecisions[0], CovenantAdmissionDecision.Admitted, 1)
+        ];
+
+        // The pairing mistake the assertion exists for: a planned cost and a budget that did not come
+        // out of one admission decision. The planner never produces this pair, which is the point —
+        // it can only arrive by handing the receipt one attempt's plan and another's budget.
+        Assert.Throws<ArgumentException>(() => Receipt(
+            plan,
+            CovenantTask6Fixture.ProviderCall(),
+            admitted,
+            availableTokenBudget: 100,
+            plannedAdmittedTokens: 101));
+    }
+
+    [Fact]
     public void Admission_delegates_the_exact_task_four_preimage_to_an_independent_literal()
     {
         CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
@@ -323,7 +388,7 @@ public sealed class CovenantAdmissionReceiptTests
     }
 
     [Fact]
-    public void Receipt_boundaries_reject_defaults_invalid_lineage_and_nonfitting_admitted_totals()
+    public void Receipt_boundaries_reject_defaults_invalid_lineage_and_a_plan_that_outruns_its_budget()
     {
         CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
         ProviderCallEnvelope call = CovenantTask6Fixture.ProviderCall();
@@ -337,6 +402,7 @@ public sealed class CovenantAdmissionReceiptTests
             null,
             call,
             4_096,
+            0,
             valid));
         Assert.Throws<ArgumentNullException>(() => new CovenantAdmissionReceipt(
             plan,
@@ -346,6 +412,7 @@ public sealed class CovenantAdmissionReceiptTests
             null,
             null!,
             4_096,
+            0,
             valid));
         Assert.Throws<ArgumentOutOfRangeException>(() => new CovenantAdmissionReceipt(
             plan,
@@ -355,6 +422,7 @@ public sealed class CovenantAdmissionReceiptTests
             null,
             call,
             4_096,
+            0,
             valid));
         Assert.Throws<ArgumentException>(() => new CovenantAdmissionReceipt(
             plan,
@@ -364,6 +432,7 @@ public sealed class CovenantAdmissionReceiptTests
             null,
             call,
             4_096,
+            0,
             valid));
         Assert.Throws<ArgumentOutOfRangeException>(() => new CovenantAdmissionReceipt(
             plan,
@@ -373,6 +442,7 @@ public sealed class CovenantAdmissionReceiptTests
             null,
             call,
             4_096,
+            0,
             valid));
         Assert.Throws<ArgumentException>(() => new CovenantAdmissionReceipt(
             plan,
@@ -382,6 +452,7 @@ public sealed class CovenantAdmissionReceiptTests
             default(CovenantDigest),
             call,
             4_096,
+            0,
             valid));
         Assert.Throws<ArgumentException>(() => new CovenantAdmissionReceipt(
             plan,
@@ -391,12 +462,18 @@ public sealed class CovenantAdmissionReceiptTests
             null,
             call,
             4_096,
+            0,
             default));
+        // A per-entry attribution above the budget is no longer a refusal: it is what the sum of
+        // separately tokenized fragments legitimately looks like once there are enough of them. The
+        // boundary the receipt still holds is the planned cost, which is the number the admission
+        // decision was actually made with, so that is the one asserted here.
         Assert.Throws<ArgumentException>(() => Receipt(
             plan,
             call,
-            valid.SetItem(0, valid[0] with { EstimatedTokens = 4_097 }),
-            availableTokenBudget: 4_096));
+            valid,
+            availableTokenBudget: 4_096,
+            plannedAdmittedTokens: 4_097));
 
         CovenantTurnPlan emptyPlan = Link(CovenantTask6Fixture.Snapshot(null));
         CovenantAdmissionReceipt empty = Receipt(
@@ -417,7 +494,8 @@ public sealed class CovenantAdmissionReceiptTests
         ulong globalAttemptOrdinal = 1,
         ulong branchOrdinal = 1,
         CovenantDigest? parentAdmissionDigest = null,
-        ulong availableTokenBudget = 4_096) =>
+        ulong availableTokenBudget = 4_096,
+        ulong plannedAdmittedTokens = 0) =>
         new(
             plan,
             globalAttemptOrdinal,
@@ -426,6 +504,7 @@ public sealed class CovenantAdmissionReceiptTests
             parentAdmissionDigest,
             call,
             availableTokenBudget,
+            plannedAdmittedTokens,
             decisions);
 
     private static ImmutableArray<CovenantAdmissionCandidateDecision> AllAdmitted(

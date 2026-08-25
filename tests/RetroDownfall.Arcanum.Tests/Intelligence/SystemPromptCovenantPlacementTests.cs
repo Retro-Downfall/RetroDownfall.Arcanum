@@ -363,6 +363,7 @@ public sealed class SystemPromptCovenantPlacementTests
             null,
             CovenantTask6Fixture.ProviderCall(),
             1_000,
+            (ulong)plan.EligibleDecisions.Count(static decision => decision.Decision != CovenantPlanDecision.EligibleProposed),
             [.. plan.EligibleDecisions.Select(static decision => new CovenantAdmissionCandidateDecision(
                 decision.Candidate.EntryId,
                 decision.Candidate.VersionId,
