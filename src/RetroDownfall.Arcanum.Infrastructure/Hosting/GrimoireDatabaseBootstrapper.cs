@@ -668,11 +668,31 @@ public static class GrimoireDatabaseBootstrapper
             grimoireDirectory,
             masterApiKey);
 
-        GrimoireSchemaInstallResult result = await installer.InstallAsync(
-            installConnection,
-            dimensions,
-            context,
-            cancellationToken).ConfigureAwait(false);
+        GrimoireSchemaInstallResult result;
+
+        try
+        {
+
+            result = await installer.InstallAsync(
+                installConnection,
+                dimensions,
+                context,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (GrimoireSchemaRefusedException refused)
+        {
+
+            // Normalized at the boundary for the same reason the KDF sidecar failure is: the refusal
+            // carries the steps the operator has to take, and letting it escape raw puts it in
+            // CliFailureMapper's default arm, which prints "An unexpected CLI error occurred." and
+            // names nothing. The refusal type stays internal because its reason enum is; what crosses
+            // is the sentence.
+            Log.Fatal(refused, "The Grimoire schema tier was refused. {Message}", refused.Message);
+
+            throw new GrimoireDatabaseUnavailableException(refused.Message, refused);
+
+        }
 
         await VerifyExpectedInstallationIdentityAsync(
             installConnection,

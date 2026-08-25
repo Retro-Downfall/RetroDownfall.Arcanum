@@ -63,7 +63,15 @@ internal sealed class CovenantConnectionSource(ArcanumDbContext db) : ICovenantC
         if (connection.State != System.Data.ConnectionState.Open)
         {
 
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            // Through EF rather than the raw connection, because opening the raw handle skips
+            // RelationalConnection and therefore skips the pragma interceptor — the only thing that
+            // registers a connection with CovenantSqliteConnectionInitializer. Every privileged
+            // Covenant statement authorizes against that registration, so a connection opened raw is
+            // refused by its own initializer the moment it is used. A live request never saw this
+            // because EF had already opened the connection loading the turn, leaving this branch
+            // unreached; a scope that does no EF work first — a background sweep — hits it every time.
+            // Every other service in this repository opens the Grimoire this way for the same reason.
+            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         }
 

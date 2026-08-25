@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Net.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -276,6 +277,29 @@ public sealed class CliContractTests
         Assert.Empty(standardOutput.ToString());
 
         Assert.Empty(standardError.ToString());
+
+    }
+
+    [Fact]
+    public void A_grimoire_startup_refusal_reaches_the_operator_with_its_remedy()
+    {
+
+        const string Remedy =
+            "The Core Grimoire schema tier was refused: MetadataMissing. Move arcanum.db aside.";
+
+        // Wrapped the way the generic host wraps whatever a hosted service throws on startup. Matching
+        // only the outermost type sent this to the default arm, so an operator whose database this
+        // build will not migrate was told "An unexpected CLI error occurred." and nothing else — on
+        // the one failure that arrives already knowing what they have to do about it.
+        CliFailure failure = CliFailureMapper.Map(
+            new AggregateException(
+                new InvalidOperationException(
+                    "host startup failed",
+                    new GrimoireDatabaseUnavailableException(Remedy))));
+
+        Assert.Equal(CliExitCode.ConfigurationError, failure.ExitCode);
+
+        Assert.Equal(Remedy, failure.SafeMessage);
 
     }
 

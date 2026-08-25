@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.Services.Setup;
@@ -923,7 +924,12 @@ internal static class CliFailureMapper
 {
 
     public static CliFailure Map(Exception exception) =>
-        exception switch
+        // A startup failure that names what to do is unwrapped first, because the host wraps whatever
+        // a hosted service throws and the switch below would otherwise fall to its default arm and
+        // print "An unexpected CLI error occurred." on exactly the failures that came with remedies.
+        UnwrapGrimoireUnavailable(exception) is { } unavailable
+            ? new CliFailure(CliExitCode.ConfigurationError, unavailable)
+            : exception switch
         {
             HttpRequestException => new CliFailure(
                 CliExitCode.NetworkError,
@@ -944,6 +950,51 @@ internal static class CliFailureMapper
                 CliExitCode.GenericError,
                 "An unexpected CLI error occurred."),
         };
+
+    /// <summary>
+    /// The operator-facing message of a Grimoire startup refusal anywhere in the exception chain.
+    /// </summary>
+    /// <remarks>
+    /// Walked rather than matched on the outermost type, because the generic host wraps what a hosted
+    /// service throws and the wrapper carries none of the recovery steps. Both refusals this finds
+    /// state what the operator has to do; before this they reached only the rolling log, which has no
+    /// console sink unless enterprise telemetry is enabled.
+    /// </remarks>
+    private static string? UnwrapGrimoireUnavailable(Exception exception)
+    {
+
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+
+            if (current is GrimoireDatabaseUnavailableException)
+            {
+
+                return current.Message;
+
+            }
+
+            if (current is AggregateException aggregate)
+            {
+
+                foreach (Exception inner in aggregate.InnerExceptions)
+                {
+
+                    if (UnwrapGrimoireUnavailable(inner) is { } found)
+                    {
+
+                        return found;
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        return null;
+
+    }
 
     /// <summary>
     /// Renders the startup validation failure the operator has to act on. Without this the only copy

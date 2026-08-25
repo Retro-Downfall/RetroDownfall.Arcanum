@@ -642,7 +642,12 @@ internal sealed class GrimoireSchemaRefusedException(
     GrimoireSchemaTransactionTier tier,
     GrimoireSchemaTierHealth health)
     : InvalidOperationException(
-        $"The {tier} Grimoire schema tier was refused: {health}.")
+        $"The {tier} Grimoire schema tier was refused: {health}. "
+        + "This build will not migrate a database written by a different one: Arcanum has no installed "
+        + "base yet, so a disagreeing database is repaired deliberately rather than upgraded in place. "
+        + "Restore a .arcbackup generation taken by this build with 'arcanum backup restore', or start "
+        + "fresh by moving arcanum.db and arcanum.db.kdf aside under ~/.config/arcanum/ — session data "
+        + "in the old file is not readable by this build either way.")
 {
 
     public GrimoireSchemaTransactionTier Tier { get; } = tier;

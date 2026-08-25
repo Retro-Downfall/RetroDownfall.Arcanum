@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
@@ -63,6 +64,14 @@ internal static class GrimoireProbe
             return new OpenResult(OpenState.NoDatabase, null, null);
 
         }
+
+        // The hermetic SQLCipher provider is installed explicitly, not by a bundle's module
+        // initializer. Every other path that opens the Grimoire does this — the bootstrapper, the
+        // context factory, backup, restore, installation reset — and this one did not, because it
+        // opens a SqliteConnection of its own rather than going through any of them. Without it the
+        // open throws before it can reach the key, and the operator is told their database could not
+        // be opened and pointed at 'arcanum backup restore' for a database that is perfectly healthy.
+        SqliteNativeRuntime.Instance.Initialize();
 
         string? secret;
 
