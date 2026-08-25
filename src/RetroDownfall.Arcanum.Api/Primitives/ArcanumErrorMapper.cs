@@ -81,10 +81,6 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Campaign.PathIdentityRequired =>
                 StatusCodes.Status409Conflict,
 
-            // A hostile provider is an upstream fault, not a caller fault.
-            ErrorCodes.Hub.ProviderToolBufferExceeded =>
-                StatusCodes.Status502BadGateway,
-
             ErrorCodes.Covenant.Unavailable
                 or ErrorCodes.Covenant.OperatorAuthorityUnavailable
                 or ErrorCodes.Covenant.HostToolsTransitionRequired

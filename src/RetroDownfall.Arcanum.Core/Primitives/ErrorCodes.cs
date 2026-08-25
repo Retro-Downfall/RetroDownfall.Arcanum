@@ -79,20 +79,13 @@ public static class ErrorCodes
         public const string Unhandled = "Hub.Unhandled";
 
         /// <summary>
-        /// A provider attempt streamed more buffered tool-name and argument bytes, or more
-        /// simultaneous call indexes, than the code-owned transport bounds permit.
+        /// A tool call carried an argument body that has no stable identity: it is not valid JSON, so
+        /// it cannot be canonicalized into the digest a Ward receipt and a disclosure receipt bind.
         /// </summary>
         /// <remarks>
-        /// Crossing a bound aborts the whole attempt and clears every private buffer before any
-        /// classification or dispatch, so a provider cannot exhaust host memory by never terminating
-        /// a tool call (§10.14).
+        /// Evidence has to be computable before anything decides what a call may do, so this refuses
+        /// the call ahead of classification and dispatch (§10.14).
         /// </remarks>
-        public const string ProviderToolBufferExceeded = "Hub.ProviderToolBufferExceeded";
-
-        /// <summary>
-        /// A streamed tool call never assembled into one coherent identity: a changed final name or
-        /// call id, a reused call index, malformed UTF-8, or an incomplete termination.
-        /// </summary>
         public const string ProviderToolCallInvalid = "Hub.ProviderToolCallInvalid";
 
         /// <summary>

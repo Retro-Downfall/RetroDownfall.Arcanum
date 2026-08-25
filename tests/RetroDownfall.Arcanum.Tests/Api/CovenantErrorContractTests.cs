@@ -53,7 +53,6 @@ public sealed class CovenantErrorContractTests
             { ErrorCodes.Covenant.IntegrityFailure, "Covenant.IntegrityFailure" },
             { ErrorCodes.Covenant.CampaignBindingConflict, "Covenant.CampaignBindingConflict" },
             { ErrorCodes.Covenant.HostToolsTransitionRequired, "Covenant.HostToolsTransitionRequired" },
-            { ErrorCodes.Hub.ProviderToolBufferExceeded, "Hub.ProviderToolBufferExceeded" },
             { ErrorCodes.Hub.SessionTurnBusy, "Hub.SessionTurnBusy" },
             { ErrorCodes.Hub.SessionHistoryChanged, "Hub.SessionHistoryChanged" },
             { ErrorCodes.Hub.SessionTurnRestoredInterrupted, "Hub.SessionTurnRestoredInterrupted" },
@@ -99,8 +98,6 @@ public sealed class CovenantErrorContractTests
             { ErrorCodes.Campaign.PathIdentityRequired, StatusCodes.Status409Conflict },
 
             { ErrorCodes.Hub.ContextBudgetExceeded, StatusCodes.Status429TooManyRequests },
-
-            { ErrorCodes.Hub.ProviderToolBufferExceeded, StatusCodes.Status502BadGateway },
 
             { ErrorCodes.Covenant.Unavailable, StatusCodes.Status503ServiceUnavailable },
             { ErrorCodes.Covenant.OperatorAuthorityUnavailable, StatusCodes.Status503ServiceUnavailable },
