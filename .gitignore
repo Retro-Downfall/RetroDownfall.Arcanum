@@ -18,6 +18,9 @@ coverage.*
 # coverage.* (above) is for coverage data files; keep tracked coverage tooling.
 !scripts/coverage.sh
 !tests/**/coverage.runsettings
+# Written into the checkout root by `./scripts/benchmark-covenant.sh --gate --record ...`, the
+# command the CI benchmark lane runs and a developer reproduces verbatim.
+covenant-benchmark-run.json
 mcp.db
 mcp.db-shm
 mcp.db-wal

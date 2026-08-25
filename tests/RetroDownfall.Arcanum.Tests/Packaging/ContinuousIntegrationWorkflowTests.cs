@@ -353,10 +353,22 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("retention-days:", gate.Body, StringComparison.Ordinal);
 
+        // The gate step exits 1 on a ceiling breach, and the breaching run is the one whose observed
+        // distribution most needs reading. A step with no condition defaults to `if: success()`, so
+        // the artifact would be dropped on exactly the run that justified collecting it. Matched at
+        // step-key indentation rather than as a bare substring, because the prose above the step in
+        // ci.yml names the condition and would otherwise satisfy this on its own.
+        Assert.Contains(
+            $"{System.Environment.NewLine}        if: always(){System.Environment.NewLine}",
+            gate.Body,
+            StringComparison.Ordinal);
+
         // A conditional job is a gate that can be turned off by editing a condition rather than by
-        // deleting a step, and the parser above cannot tell a job-level condition from a step-level
-        // one, so a condition anywhere in this job would also exempt it from the native-SQLCipher
-        // runner check.
+        // deleting a step, and a job-level condition here would also exempt this job from the
+        // native-SQLCipher runner check above. The step-level condition asserted immediately above
+        // must not count as one: JobsIn discards every line that is not at job-level indentation
+        // before it reads a key, so these two assertions together pin that a step-level `if:` leaves
+        // IsConditional false.
         Assert.False(
             gate.IsConditional,
             "The Covenant benchmark lane is conditional, so it can report success without running.");

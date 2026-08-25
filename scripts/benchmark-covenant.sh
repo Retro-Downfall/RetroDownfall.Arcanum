@@ -12,12 +12,19 @@
 # JIT run reported turn planning at roughly twice the published binary's cost, so a ceiling set from
 # one would be meaningless against the other.
 #
-# A recorded baseline is only comparable on the host that recorded it. The comparison is a paired
-# bootstrap over batches co-run in one process, which is what cancels the drift a machine accumulates
-# over a long run; it cannot cancel the difference between two machines. Comparing a developer
-# machine's baseline against a shared runner would report the runner as a code regression. Record and
-# compare on the same host, or compare two revisions in one CI job. The absolute ceilings are the
-# cross-host gate, and they are the authoritative half for exactly this reason.
+# A recorded baseline is only comparable on the host that recorded it, and the comparison is weaker
+# than a co-run one would be. There is no co-run mode: this host measures one revision, and --compare
+# deserializes a baseline some other process recorded at some other time. The bootstrap therefore
+# pairs by batch ordinal across two separately recorded runs — batch i of each side shares an ordinal
+# and nothing else — so it estimates within-run variance and aligns drift by position within a run.
+# It does not cancel the drift between two recording sessions, and it certainly cannot cancel
+# the difference between two machines. Recording a baseline and then comparing against it at the same
+# commit on the same host, with no edits in between, has reported two regressions, one at a ratio of
+# 1.353 on an operation whose p50 is a microsecond and a half. So read a comparative verdict as a
+# reason to investigate rather than as a measurement, and never compare a developer machine's
+# baseline against a shared runner: that reports the runner as a code regression. Record and compare
+# on the same host, or record one revision and compare the other inside one CI job. The absolute
+# ceilings are the cross-host gate, and they are the authoritative half for exactly these reasons.
 #
 # Exit codes come from the host and are the contract: 0 within every stated bound, 1 a breach, 2 the
 # run could not be made. A breach and an unmeasurable run are different answers.

@@ -730,7 +730,7 @@ Every shape is a named positional record registered with `ArcanumJsonContext`, e
 
 ### 8.29 `X-Arcanum-Context-Policy` and the Covenant pre-binding boundary
 
-The authenticated boundary every dedicated Covenant management route sits behind applies today to every `/api` and `/v1` route, including the existing `/api/data` Covenant reset and factory lifecycle. The ten mutation and inspection routes of §8.28 are registered behind it; repair, rebuild, Campaign path, and Session binding are not registered at all.
+The authenticated boundary every dedicated Covenant management route sits behind applies today to every `/api` and `/v1` route, including the existing `/api/data` Covenant reset and factory lifecycle. The nine mutation and inspection routes of §8.28 are registered behind it; free-text query, repair, rebuild, Campaign path, and Session binding are not registered at all.
 
 **Decision order.** API-key authentication → `X-Arcanum-Context-Policy` validation → Covenant authority issuance → body-size enforcement → source-generated binding. Everything before "body-size enforcement" happens with **zero bytes of the request body read**. Authentication is strictly first: a wrong key presented with a malformed policy header returns **401**, never 400, because a 400 would tell an unauthenticated caller that they reached a real route and that only their header spelling was wrong.
 

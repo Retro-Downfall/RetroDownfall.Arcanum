@@ -212,11 +212,15 @@ jobs:
       - name: Covenant benchmark gate
         run: ./scripts/benchmark-covenant.sh --gate --record covenant-benchmark-run.json
 
-      # Retention-pinned, and deliberately without a step-level condition: the job parser
-      # ContinuousIntegrationWorkflowTests uses treats any `if:` inside a job body as a job-level one
-      # and then exempts that job from the native-SQLCipher runner check, so an `if: always()` here
-      # would quietly retire an unrelated guard to save an artifact on a failed run.
+      # Retention-pinned and unconditional: the gate step above exits 1 on a ceiling breach, and the
+      # breaching run is the one whose distribution is most worth reading. The host writes the JSON
+      # before it evaluates the gate, so the file is there either way. `if: always()` is a step-level
+      # key, which the job parser ContinuousIntegrationWorkflowTests uses ignores -- it filters to
+      # job-level indentation before it reads a key -- so this does not mark the job conditional and
+      # does not exempt it from the native-SQLCipher runner check, exactly as the same condition on
+      # the coverage upload in build-test already does not.
       - name: Upload the Covenant benchmark run
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: covenant-benchmark-run
