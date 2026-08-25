@@ -720,6 +720,86 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
     }
 
     /// <summary>
+    /// Measures one rendered Section under a caller-owned read lease.
+    /// </summary>
+    /// <remarks>
+    /// The same statement, the same three columns, and the same excluded-key list the write authority
+    /// measures with inside its own transaction. Two readers that measured a Section differently would
+    /// let a staging preflight accept a proposal the commit then refuses, and a refused commit takes
+    /// the turn's answer down with the batch.
+    /// </remarks>
+    public async ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(
+        CovenantSectionOccupancyQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(query);
+
+        Result validated = await ValidateLeaseAsync(readLease, query.Scope, requireInstallation: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (validated.IsFailure)
+        {
+
+            return validated.Error;
+
+        }
+
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                .ConfigureAwait(false);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        bool campaignScoped = query.Scope.Kind == CovenantScope.Campaign;
+
+        command.CommandText = CovenantStoreSql.SectionOccupancy(campaignScoped, query.ExcludedKeys.Length);
+
+        if (campaignScoped)
+        {
+
+            Bind(command, "$campaign", query.Scope.CampaignId!.Value.ToString("D"));
+
+        }
+
+        Bind(command, "$lane", (int)query.Lane);
+
+        for (int index = 0; index < query.ExcludedKeys.Length; index++)
+        {
+
+            Bind(command, $"$key{index}", query.ExcludedKeys[index]);
+
+        }
+
+        CovenantSectionOccupancy occupancy = CovenantSectionOccupancy.Empty;
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                occupancy = new CovenantSectionOccupancy(
+                    reader.GetInt64(0),
+                    reader.GetInt64(1),
+                    (int)reader.GetInt64(2));
+
+            }
+
+        }
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return occupancy;
+
+    }
+
+    /// <summary>
     /// Counts current heads by scope, lane, and lifecycle without reading a byte of content.
     /// </summary>
     /// <remarks>

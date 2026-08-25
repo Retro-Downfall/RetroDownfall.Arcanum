@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Covenant;
@@ -16,6 +18,21 @@ public interface ICovenantTurnHeadProbe
     ValueTask<Result<CovenantLaneHeadProbe>> ProbeAsync(
         CovenantLane lane,
         string normalizedKey,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Measures the Section this turn's Campaign renders one lane into, ignoring named keys.
+    /// </summary>
+    /// <remarks>
+    /// Three numbers and no content, which is why a staging handler is allowed to ask. It has to be
+    /// allowed to ask: a proposal that would push its Section past a ceiling is refused by the write
+    /// authority, and the write authority runs inside the transaction that carries the operator's
+    /// answer, so a proposal admitted here and refused there costs the operator the reply they asked
+    /// for rather than only the proposal.
+    /// </remarks>
+    ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
+        CovenantLane lane,
+        ImmutableArray<string> excludedKeys,
         CancellationToken cancellationToken);
 
 }

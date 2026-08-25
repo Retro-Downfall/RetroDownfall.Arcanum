@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 
@@ -154,8 +155,16 @@ internal sealed partial class ArcanumInternalToolServer
                 expectation.Value.KeyEpoch,
                 toolInputDigest);
 
-            return intent.IsFailure
-                ? CovenantFailure(intent.Error)
+            if (intent.IsFailure)
+            {
+                return CovenantFailure(intent.Error);
+            }
+
+            Error? full = await RefuseFullProposedSectionAsync(capability, grant.Nonce, intent.Value, cancellationToken)
+                .ConfigureAwait(false);
+
+            return full is { } sectionFull
+                ? CovenantFailure(sectionFull)
                 : StageCovenantMutation(capability, grant.Nonce, intent.Value, toolInputDigest);
         }
         catch (OperationCanceledException)
@@ -386,6 +395,94 @@ internal sealed partial class ArcanumInternalToolServer
                 ErrorCodes.Covenant.LifecycleConflict,
                 "That key was retired. Ask the operator to reinstate it rather than proposing it again.")),
         };
+
+    }
+
+    /// <summary>
+    /// Refuses a proposal the Proposed Section could not carry, before the model is told it was kept.
+    /// </summary>
+    /// <remarks>
+    /// The Section ceiling used to be checked in exactly one place: the write authority, inside the
+    /// transaction that publishes the batch — and that transaction is the one carrying the operator's
+    /// answer. So a Campaign whose Proposed lane was full accepted the proposal here, told the model
+    /// it was staged, and then lost the whole turn at publication. The operator paid for an answer,
+    /// never received it, and was handed a generic save failure that said nothing about a ceiling.
+    /// Refusing here costs the proposal and nothing else, and the model is told why in a sentence it
+    /// can act on by asking the operator to review what is already waiting.
+    ///
+    /// <para>Measured against the batch that would actually be sealed, not against this intent alone.
+    /// A turn is allowed several proposals, and each one that only measured the durable Section would
+    /// see the same free slot the last one saw — which is the same defect one turn later, and harder
+    /// to see because the first few calls succeed.</para>
+    ///
+    /// <para>The keys the batch already names are excluded from the durable measure, because a
+    /// proposal for a key the lane already holds replaces that entry rather than adding one. Without
+    /// the exclusion, re-proposing an existing key would be charged twice and an ordinary revision
+    /// would be refused on a lane with room to spare.</para>
+    ///
+    /// <para>A read under the turn's lease cannot be a promise: another turn can fill the Section
+    /// between here and the commit, and the authority still refuses. That race is narrow and it fails
+    /// the way the platform already fails; what it is not is the ordinary case, which is what this
+    /// removes.</para>
+    /// </remarks>
+    private static async ValueTask<Error?> RefuseFullProposedSectionAsync(
+        CovenantToolInvocationContext capability,
+        CovenantToolCapabilityNonce nonce,
+        CovenantMutationIntent intent,
+        CancellationToken cancellationToken)
+    {
+
+        Result<ICovenantMutationCollector> collector = capability.ResolveCollector(nonce);
+
+        if (collector.IsFailure)
+        {
+            return collector.Error;
+        }
+
+        ImmutableArray<CovenantMutationIntent> batch =
+        [
+            .. collector.Value.PendingIntents(),
+            intent,
+        ];
+
+        foreach (CovenantSectionDemand section in CovenantSectionCapacity.Demands(batch))
+        {
+
+            if (section.Lane != intent.Target.Lane)
+            {
+
+                continue;
+
+            }
+
+            Result<CovenantSectionOccupancy> retained = await capability
+                .ProbeSectionAsync(nonce, section.Lane, section.TouchedKeys, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (retained.IsFailure)
+            {
+                return retained.Error;
+            }
+
+            Error? refusal = CovenantSectionCapacity.Refusal(
+                CovenantSectionCapacity.Placement(intent.Target.Scope.Kind, section.Lane),
+                retained.Value,
+                section);
+
+            if (refusal is not null)
+            {
+
+                return new Error(
+                    ErrorCodes.Covenant.CapacityExceeded,
+                    "The operator's Proposed lane for this Campaign is full, so nothing was staged and "
+                    + "this turn's reply is unaffected. Ask them to review or retire what is already "
+                    + "waiting there before suggesting anything else.");
+
+            }
+
+        }
+
+        return null;
 
     }
 

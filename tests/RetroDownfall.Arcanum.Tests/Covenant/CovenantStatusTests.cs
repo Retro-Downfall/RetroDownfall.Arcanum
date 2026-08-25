@@ -382,7 +382,8 @@ public sealed class CovenantStatusTests
             new CovenantLinker(),
             gate,
             availability,
-            new UnreachableEnvelopeCodec());
+            new UnreachableEnvelopeCodec(),
+            new UnreachableCampaignAvailabilityReader());
 
     /// <summary>A codec that fails loudly, because status issues and accepts no envelope.</summary>
     private sealed class UnreachableEnvelopeCodec : ICovenantEnvelopeCodec
@@ -400,6 +401,17 @@ public sealed class CovenantStatusTests
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
             throw new NotSupportedException("A status read accepts no envelope.");
+
+    }
+
+    /// <summary>A reader that fails loudly, because status resolves no evaluation Campaign.</summary>
+    private sealed class UnreachableCampaignAvailabilityReader : ICampaignAvailabilityReader
+    {
+
+        public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(
+            Guid campaignId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("A status read resolves no Campaign.");
 
     }
 

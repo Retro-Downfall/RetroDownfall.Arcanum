@@ -22,6 +22,8 @@ using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Tower;
+
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
@@ -560,7 +562,8 @@ public sealed class MemoryEndpointTests
             new CovenantLinker(),
             CovenantOperationGateFixture.CreateGate(),
             new FakeCovenantAvailability(),
-            new UnusedEnvelopeCodec());
+            new UnusedEnvelopeCodec(),
+            new UnusedCampaignAvailabilityReader());
 
     /// <summary>A codec that fails loudly, because a status read issues and accepts no envelope.</summary>
     private sealed class UnusedEnvelopeCodec : ICovenantEnvelopeCodec
@@ -578,6 +581,17 @@ public sealed class MemoryEndpointTests
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
             throw new NotSupportedException("A status read accepts no envelope.");
+
+    }
+
+    /// <summary>A reader that fails loudly, because a status read resolves no evaluation Campaign.</summary>
+    private sealed class UnusedCampaignAvailabilityReader : ICampaignAvailabilityReader
+    {
+
+        public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(
+            Guid campaignId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("A status read resolves no Campaign.");
 
     }
 

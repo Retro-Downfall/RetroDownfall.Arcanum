@@ -825,7 +825,13 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             NullLogger<CovenantDispatchGate>.Instance);
 
     private CovenantManagementService ManagementService() =>
-        new(Store(), new CovenantLinker(), OperationGate(), _availability, _codec);
+        new(
+            Store(),
+            new CovenantLinker(),
+            OperationGate(),
+            _availability,
+            _codec,
+            new CampaignAvailabilityReader(new FixedCovenantConnectionSource(Connection())));
 
     private CovenantMutationService MutationService() =>
         new(

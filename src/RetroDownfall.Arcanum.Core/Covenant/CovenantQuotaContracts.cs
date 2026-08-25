@@ -244,3 +244,31 @@ public sealed record CovenantSectionDemand(
     long NewEntries,
     long NewFragmentBytes,
     int RequiredFenceLength);
+
+/// <summary>
+/// What one rendered Section already holds that a prospective batch will not replace.
+/// </summary>
+/// <remarks>
+/// The three measures a Section is sized from, and the only three. Two readers of the same Section
+/// have to return the same shape or the preflight that admits a proposal and the authority that
+/// publishes it can disagree about whether it fits — and the operator pays that disagreement with the
+/// whole turn, because the batch and the answer commit together.
+/// </remarks>
+public readonly record struct CovenantSectionOccupancy(
+    long Entries,
+    long FragmentBytes,
+    int LongestFenceLength)
+{
+
+    /// <summary>The occupancy of a Section that holds nothing this batch will not replace.</summary>
+    public static CovenantSectionOccupancy Empty { get; }
+
+}
+
+/// <summary>
+/// One bounded Section measurement, ignoring the keys a prospective batch is about to rewrite.
+/// </summary>
+public sealed record CovenantSectionOccupancyQuery(
+    CovenantOperationScope Scope,
+    CovenantLane Lane,
+    ImmutableArray<string> ExcludedKeys);

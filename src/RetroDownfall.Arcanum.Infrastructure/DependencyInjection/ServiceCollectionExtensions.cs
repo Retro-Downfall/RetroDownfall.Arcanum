@@ -1633,7 +1633,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantLinker>(),
             sp.GetRequiredService<ICovenantOperationGate>(),
             sp.GetRequiredService<ICovenantAvailability>(),
-            sp.GetRequiredService<ICovenantEnvelopeCodec>()));
+            sp.GetRequiredService<ICovenantEnvelopeCodec>(),
+            sp.GetRequiredService<ICampaignAvailabilityReader>()));
 
         // The operator's write path. Scoped because it borrows the caller's own connection and lease
         // for the life of one request; a singleton would outlive both.

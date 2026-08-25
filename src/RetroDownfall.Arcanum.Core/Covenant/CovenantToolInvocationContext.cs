@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 
@@ -244,6 +245,45 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
 
         return await _headProbe
             .ProbeAsync(lane, normalizedKey, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Measures the Section a staged mutation would join, before anything is staged into it.
+    /// </summary>
+    /// <remarks>
+    /// Reached through the capability for the same reason the head probe is: a call that is no longer
+    /// live must not be able to open a read at all. What it answers is the fact the staging decision
+    /// turns on — a proposal admitted into a full Section is refused by the write authority, and that
+    /// authority runs inside the transaction carrying the operator's answer, so the turn loses the
+    /// reply rather than only the proposal.
+    /// </remarks>
+    public async ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
+        CovenantToolCapabilityNonce nonce,
+        CovenantLane lane,
+        ImmutableArray<string> excludedKeys,
+        CancellationToken cancellationToken)
+    {
+
+        Result<IDisposable> lease = TryAcquireUse(nonce);
+
+        if (lease.IsFailure)
+        {
+            return Result<CovenantSectionOccupancy>.Failure(lease.Error);
+        }
+
+        using IDisposable use = lease.Value;
+
+        Result usable = RecheckBeforeIrreversibleEffect(nonce);
+
+        if (usable.IsFailure)
+        {
+            return Result<CovenantSectionOccupancy>.Failure(usable.Error);
+        }
+
+        return await _headProbe
+            .ProbeSectionAsync(lane, excludedKeys, cancellationToken)
             .ConfigureAwait(false);
 
     }

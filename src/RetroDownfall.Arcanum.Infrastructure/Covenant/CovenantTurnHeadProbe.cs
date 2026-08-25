@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -30,5 +32,28 @@ internal sealed class CovenantTurnHeadProbe(
         string normalizedKey,
         CancellationToken cancellationToken) =>
         store.ProbeLaneHeadAsync(campaign, lane, normalizedKey, readLease, cancellationToken);
+
+    /// <summary>
+    /// Measures the turn's own Campaign Section, under the turn's own lease.
+    /// </summary>
+    /// <remarks>
+    /// The scope is derived from the captured Campaign rather than passed in, for the same reason the
+    /// head probe's is: a tool call must not be able to measure a Section its turn does not cover. A
+    /// Global-only turn has no Proposed Section to measure and no way to reach this, because the
+    /// capability that carries it refuses to exist without a Campaign binding.
+    /// </remarks>
+    public ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
+        CovenantLane lane,
+        ImmutableArray<string> excludedKeys,
+        CancellationToken cancellationToken) =>
+        store.ReadSectionOccupancyAsync(
+            new CovenantSectionOccupancyQuery(
+                campaign.IsCampaignBound
+                    ? CovenantOperationScope.ForCampaign(campaign.CampaignId!.Value)
+                    : CovenantOperationScope.Global,
+                lane,
+                excludedKeys),
+            readLease,
+            cancellationToken);
 
 }

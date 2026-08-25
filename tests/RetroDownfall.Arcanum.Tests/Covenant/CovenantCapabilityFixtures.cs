@@ -85,6 +85,23 @@ internal static class CovenantCapabilityFixtures
 
         public int ProbeCount { get; private set; }
 
+        /// <summary>What the Section already holds, for a suite that wants a full lane.</summary>
+        public CovenantSectionOccupancy Section { get; set; } = CovenantSectionOccupancy.Empty;
+
+        public int SectionProbeCount { get; private set; }
+
+        public ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
+            CovenantLane lane,
+            ImmutableArray<string> excludedKeys,
+            CancellationToken cancellationToken)
+        {
+            SectionProbeCount++;
+
+            return ValueTask.FromResult(Failure is { } failure
+                ? Result<CovenantSectionOccupancy>.Failure(failure)
+                : Result<CovenantSectionOccupancy>.Success(Section));
+        }
+
         public ValueTask<Result<CovenantLaneHeadProbe>> ProbeAsync(
             CovenantLane lane,
             string normalizedKey,

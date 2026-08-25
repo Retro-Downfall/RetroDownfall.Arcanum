@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -212,6 +214,12 @@ public sealed class CovenantToolStagingMintTests
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result<CovenantLaneHeadProbe>.Success(
                 CovenantLaneHeadProbe.NotFound(CovenantOperationScope.Global, lane, normalizedKey, 0)));
+
+        public ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
+            CovenantLane lane,
+            ImmutableArray<string> excludedKeys,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CovenantSectionOccupancy>.Success(CovenantSectionOccupancy.Empty));
 
     }
 

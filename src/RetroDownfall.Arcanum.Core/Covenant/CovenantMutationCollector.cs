@@ -50,6 +50,17 @@ public interface ICovenantMutationCollector
 
     int StagedCount { get; }
 
+    /// <summary>
+    /// The intents the current branch would seal if the turn committed now.
+    /// </summary>
+    /// <remarks>
+    /// The same filter <see cref="Seal"/> applies, so a staging preflight measures the batch that
+    /// would actually be published rather than everything the turn has ever staged. A preflight that
+    /// counted an abandoned branch's intents would refuse a proposal to make room for content no
+    /// commit was ever going to write.
+    /// </remarks>
+    ImmutableArray<CovenantMutationIntent> PendingIntents();
+
     /// <summary>Takes the in-flight use lease a staging attempt runs under.</summary>
     Result<IDisposable> TryAcquireUse();
 
@@ -129,6 +140,26 @@ public sealed class CovenantMutationCollector : ICovenantMutationCollector
             {
                 return _entries.Count;
             }
+
+        }
+
+    }
+
+    public ImmutableArray<CovenantMutationIntent> PendingIntents()
+    {
+
+        lock (_gate)
+        {
+
+            // No ordinal ceiling, because the seal's ceiling is the branch's own final ordinal and
+            // every live entry is at or below it. Filtering on the branch alone is therefore the same
+            // set, read at a moment when the final ordinal is not yet known.
+            return
+            [
+                .. _entries
+                    .Where(entry => entry.BranchId == CurrentBranchId)
+                    .Select(static entry => entry.Intent)
+            ];
 
         }
 

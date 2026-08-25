@@ -27,7 +27,8 @@ internal sealed class CovenantManagementService(
     ICovenantLinker linker,
     ICovenantOperationGate gate,
     ICovenantAvailability availability,
-    ICovenantEnvelopeCodec codec) : ICovenantManagementService
+    ICovenantEnvelopeCodec codec,
+    ICampaignAvailabilityReader campaigns) : ICovenantManagementService
 {
 
     /// <summary>How long a page cursor stays usable.</summary>
@@ -238,6 +239,14 @@ internal sealed class CovenantManagementService(
     /// Explain is the one read that must not answer from a cache: an operator asking why a preference
     /// is not being honoured needs the decision the live code would make now, not the decision some
     /// earlier turn recorded.
+    ///
+    /// <para>It evaluates the Campaign the request names. Evaluating Global-only regardless was not a
+    /// narrower answer, it was a wrong one: the reply still carried the Campaign identity back, so an
+    /// operator reading a Campaign explanation was shown Global sections under their Campaign's name,
+    /// and the Campaign Proposed Section — the only place an agent's proposal is ever rendered — was
+    /// empty for every Campaign there has ever been. That made an agent-authored proposal impossible
+    /// to read on any surface this build maps, and a proposal an operator cannot read is one they can
+    /// neither confirm nor retire.</para>
     /// </remarks>
     public async ValueTask<CovenantLeasedServiceResult<CovenantExplainDto>> ExplainAsync(
         CovenantExplainRequest request,
@@ -248,21 +257,31 @@ internal sealed class CovenantManagementService(
 
         Result validated = request.Validate();
 
-        // Global-only evaluation. A Campaign context is built from a resolved physical root, which an
-        // inspection call does not hold and must not invent; a Campaign-scoped explain therefore
-        // belongs with the Campaign administration surface rather than here.
-        CanonicalCampaignContext campaign = CanonicalCampaignContext.GlobalOnly;
+        Result<CanonicalCampaignContext> resolved = validated.IsFailure
+            ? Result<CanonicalCampaignContext>.Failure(validated.Error)
+            : await ResolveEvaluationCampaignAsync(request.CampaignId, cancellationToken).ConfigureAwait(false);
+
+        if (resolved.IsFailure)
+        {
+
+            return CovenantLeasedServiceResult<CovenantExplainDto>.Create(
+                Result<CovenantExplainDto>.Failure(resolved.Error),
+                NullLease.Instance);
+
+        }
+
+        CanonicalCampaignContext campaign = resolved.Value;
 
         Result<CovenantTurnLease> lease = await gate
             .AcquireTurnAsync(campaign, cancellationToken)
             .ConfigureAwait(false);
 
-        if (validated.IsFailure || lease.IsFailure)
+        if (lease.IsFailure)
         {
 
             return CovenantLeasedServiceResult<CovenantExplainDto>.Create(
-                Result<CovenantExplainDto>.Failure(validated.IsFailure ? validated.Error : lease.Error),
-                lease.IsSuccess ? lease.Value : NullLease.Instance);
+                Result<CovenantExplainDto>.Failure(lease.Error),
+                NullLease.Instance);
 
         }
 
@@ -288,6 +307,49 @@ internal sealed class CovenantManagementService(
                 ? Result<CovenantExplainDto>.Failure(plan.Error)
                 : Result<CovenantExplainDto>.Success(Explain(request, health, plan.Value)),
             lease.Value);
+
+    }
+
+    /// <summary>
+    /// Builds the canonical context an explanation evaluates under, from the Campaign it named.
+    /// </summary>
+    /// <remarks>
+    /// The decision itself is <see cref="CanonicalCampaignResolutionPolicy"/>, the same pure table a
+    /// live turn resolves through, so an explanation cannot bind a Campaign a turn would refuse. The
+    /// two sources a turn also offers — the Session's immutable binding and a supplied working
+    /// directory — are genuinely absent here: an inspection call is made from no Session and stands in
+    /// no directory, and inventing either would be asserting a fact rather than reading one. Every
+    /// other row of the table still applies, including the one that refuses a Campaign that no longer
+    /// exists.
+    ///
+    /// <para>The availability generation is read through the same reader the turn resolver uses, and
+    /// it is what the gate binds the turn lease to; a context that carried a stale generation would
+    /// hold a lease over a Campaign that had already been deleted underneath it.</para>
+    /// </remarks>
+    private async ValueTask<Result<CanonicalCampaignContext>> ResolveEvaluationCampaignAsync(
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        if (campaignId is not { } named)
+        {
+
+            return Result<CanonicalCampaignContext>.Success(CanonicalCampaignContext.GlobalOnly);
+
+        }
+
+        Result<long?> generation = await campaigns
+            .FindAvailabilityGenerationAsync(named, cancellationToken)
+            .ConfigureAwait(false);
+
+        return generation.IsFailure
+            ? Result<CanonicalCampaignContext>.Failure(generation.Error)
+            : CanonicalCampaignResolutionPolicy.Resolve(
+                session: null,
+                named,
+                workspace: null,
+                workingDirectorySupplied: false,
+                generation.Value);
 
     }
 

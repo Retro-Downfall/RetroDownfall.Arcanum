@@ -305,41 +305,21 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CancellationToken cancellationToken)
     {
 
-        CovenantPlacement placement = CovenantSectionCapacity.Placement(scope.Kind, section.Lane);
-
-        CovenantSectionOccupancy retained = await ReadSectionOccupancyAsync(
+        CovenantSectionOccupancy retained = await ReadRetainedSectionAsync(
                 scope,
                 section,
                 transaction,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        long entries = checked(retained.Entries + section.NewEntries);
-
-        int maximumEntries = CovenantSectionCapacity.MaximumEntries(placement);
-
-        if (entries > maximumEntries)
-        {
-
-            return new Error(
-                ErrorCodes.Covenant.CapacityExceeded,
-                $"This mutation would exceed the {maximumEntries}-entry bound on the {placement} Section.");
-
-        }
-
-        long rendered = CovenantSectionCapacity.RenderedBytes(
-            placement,
-            entries,
-            checked(retained.FragmentBytes + section.NewFragmentBytes),
-            Math.Max(retained.LongestFenceLength, section.RequiredFenceLength));
-
-        int maximumBytes = CovenantSectionCapacity.MaximumRenderedBytes(placement);
-
-        return rendered > maximumBytes
-            ? new Error(
-                ErrorCodes.Covenant.CapacityExceeded,
-                $"This mutation would render the {placement} Section at {rendered} bytes, past its {maximumBytes}-byte bound.")
-            : null;
+        // The arithmetic lives with the ceilings rather than here, because the staging preflight has
+        // to reach the same verdict from a read lease that this reaches from a write transaction. A
+        // second copy of the comparison is how a proposal comes to be accepted at the tool and refused
+        // at the commit, and a refused commit discards the operator's answer along with the batch.
+        return CovenantSectionCapacity.Refusal(
+            CovenantSectionCapacity.Placement(scope.Kind, section.Lane),
+            retained,
+            section);
 
     }
 
@@ -352,36 +332,21 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
     /// total would charge one entry twice, and leaving its fence requirement in would size the
     /// Section around backticks the batch is about to remove.
     /// </remarks>
-    private static async ValueTask<CovenantSectionOccupancy> ReadSectionOccupancyAsync(
+    private static async ValueTask<CovenantSectionOccupancy> ReadRetainedSectionAsync(
         CovenantOperationScope scope,
         CovenantSectionDemand section,
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
 
-        string scopePredicate = scope.Kind == CovenantScope.Campaign
-            ? "h.CampaignId = $campaign"
-            : "h.CampaignId IS NULL";
-
-        string[] keyParameters = [.. section.TouchedKeys.Select(static (_, index) => $"$key{index}")];
-
-        string untouched = keyParameters.Length == 0
-            ? "1 = 1"
-            : $"h.NormalizedKey NOT IN ({string.Join(", ", keyParameters)})";
-
         await using SqliteCommand command = transaction.CreateCommand();
 
-        command.CommandText = $"""
-            SELECT COUNT(*),
-                   COALESCE(SUM(h.CompiledByteCost), 0),
-                   COALESCE(MAX(v.RequiredFenceLength), 0)
-            FROM covenant_heads h
-            JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
-            WHERE {scopePredicate}
-              AND h.LaneCode = $lane
-              AND h.CurrentOperationCode = 1
-              AND {untouched};
-            """;
+        // The shared builder rather than a second copy of the statement. The preflight a proposal runs
+        // under a read lease issues this exact text, and a Section measured by two statements is a
+        // Section two callers can disagree about.
+        command.CommandText = CovenantStoreSql.SectionOccupancy(
+            scope.Kind == CovenantScope.Campaign,
+            section.TouchedKeys.Length);
 
         if (scope.Kind == CovenantScope.Campaign)
         {
@@ -392,29 +357,24 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         Bind(command, "$lane", (int)section.Lane);
 
-        for (int index = 0; index < keyParameters.Length; index++)
+        for (int index = 0; index < section.TouchedKeys.Length; index++)
         {
 
-            Bind(command, keyParameters[index], section.TouchedKeys[index]);
+            Bind(command, $"$key{index}", section.TouchedKeys[index]);
 
         }
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-
-        return new CovenantSectionOccupancy(
-            reader.GetInt64(0),
-            reader.GetInt64(1),
-            (int)reader.GetInt64(2));
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new CovenantSectionOccupancy(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                (int)reader.GetInt64(2))
+            : CovenantSectionOccupancy.Empty;
 
     }
-
-    private readonly record struct CovenantSectionOccupancy(
-        long Entries,
-        long FragmentBytes,
-        int LongestFenceLength);
 
     private static Error? Exceeds(long current, long added, long ceiling, string what) =>
         checked(current + added) > ceiling

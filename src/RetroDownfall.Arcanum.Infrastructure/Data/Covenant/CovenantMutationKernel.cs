@@ -270,56 +270,12 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
     /// What this scope's intents would leave in each rendered Section they touch.
     /// </summary>
     /// <remarks>
-    /// One row per lane, because the two lanes render into different Sections with different bounds.
-    /// A retirement contributes no entry and no bytes but still names its key, so the guard subtracts
-    /// what that key occupies today: retiring is how an installation gets back under a Section bound,
-    /// and a retirement charged as an addition could never do that.
+    /// Delegated rather than computed here, because the staging preflight has to build the demand for
+    /// the same batch this authority will publish. A preflight that summed a batch differently would
+    /// be measuring a batch the authority never sees.
     /// </remarks>
-    private static ImmutableArray<CovenantSectionDemand> SectionDemands(IEnumerable<CovenantMutationIntent> intents)
-    {
-
-        Dictionary<CovenantLane, (HashSet<string> Keys, long Entries, long Bytes, int Fence)> lanes = [];
-
-        foreach (CovenantMutationIntent intent in intents)
-        {
-
-            CovenantLane lane = intent.Target.Lane;
-
-            if (!lanes.TryGetValue(lane, out (HashSet<string> Keys, long Entries, long Bytes, int Fence) row))
-            {
-
-                row = ([], 0, 0, 0);
-
-            }
-
-            _ = row.Keys.Add(intent.Target.NormalizedKey.Value);
-
-            if (intent.Operation == CovenantOperation.Set && intent.Artifact is { } artifact)
-            {
-
-                row.Entries = checked(row.Entries + 1);
-
-                row.Bytes = checked(row.Bytes + artifact.CompiledByteCost);
-
-                row.Fence = Math.Max(row.Fence, artifact.RequiredFenceLength);
-
-            }
-
-            lanes[lane] = row;
-
-        }
-
-        return
-        [
-            .. lanes.Select(static lane => new CovenantSectionDemand(
-                lane.Key,
-                [.. lane.Value.Keys],
-                lane.Value.Entries,
-                lane.Value.Bytes,
-                lane.Value.Fence)),
-        ];
-
-    }
+    private static ImmutableArray<CovenantSectionDemand> SectionDemands(IEnumerable<CovenantMutationIntent> intents) =>
+        CovenantSectionCapacity.Demands(intents);
 
     private static async ValueTask<Result<CovenantMutationReceipt?>> TryReplayAsync(
         CovenantMutationTransaction transaction,

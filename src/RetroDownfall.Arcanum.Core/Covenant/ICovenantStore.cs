@@ -55,6 +55,20 @@ public interface ICovenantStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Measures one rendered Section, ignoring the keys a prospective batch is about to rewrite.
+    /// </summary>
+    /// <remarks>
+    /// Content-free: three numbers about a Section, never what any entry in it says. That is what
+    /// lets a live turn's staging preflight ask the question at all — a proposal has to know whether
+    /// the Section it would join still has room, and reading the Section's text to find out would
+    /// hand a tool call content its turn plan never admitted.
+    /// </remarks>
+    ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(
+        CovenantSectionOccupancyQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Counts current heads by scope, lane, and lifecycle, with their rendered byte totals.
     /// </summary>
     /// <remarks>
