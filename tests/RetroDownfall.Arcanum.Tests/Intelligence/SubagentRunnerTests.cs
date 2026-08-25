@@ -469,8 +469,7 @@ public sealed class SubagentRunnerTests
             bool hasIdempotencyKey,
             string completionId,
             string model,
-            CancellationToken executionToken,
-            InferenceAuditContext? auditContext = null) =>
+            CancellationToken executionToken) =>
             throw new NotSupportedException();
     }
 

@@ -40,11 +40,20 @@ internal sealed class CovenantCleanupWorker(
     {
     }
 
+    /// <summary>
+    /// Applies one bounded batch of owner deletions to the canonical tier.
+    /// </summary>
+    /// <remarks>
+    /// The bound is stated by the caller rather than defaulted. A default nobody overrides is a
+    /// decision that looks made and is not, and this bound decides how much of a deletion backlog one
+    /// pass drains — which is the difference between catching up and never finishing.
+    /// <see cref="DefaultBatchSize"/> is the value a caller with no reason to choose otherwise states.
+    /// </remarks>
     public async ValueTask<Result<CovenantCleanupOutcome>> RunBatchAsync(
         CovenantCleanupLease cleanupLease,
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken,
-        int maxEvents = DefaultBatchSize)
+        int maxEvents)
     {
 
         ArgumentNullException.ThrowIfNull(cleanupLease);

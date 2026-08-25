@@ -37,11 +37,20 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
     {
     }
 
+    /// <summary>
+    /// Carries one bounded contiguous range of outbox rows into the accelerator projection.
+    /// </summary>
+    /// <remarks>
+    /// The bound is stated by the caller rather than defaulted, for the same reason the cleanup
+    /// worker's is: it decides how much of a backlog one pass drains, and a default nobody overrides
+    /// hides that decision inside the worker. <see cref="DefaultBatchRows"/> is the value a caller
+    /// with no reason to choose otherwise states.
+    /// </remarks>
     public async ValueTask<Result<CovenantOutboxSyncOutcome>> SynchronizeAsync(
         CovenantAcceleratorLease acceleratorLease,
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken,
-        int maxRows = DefaultBatchRows)
+        int maxRows)
     {
 
         ArgumentNullException.ThrowIfNull(acceleratorLease);

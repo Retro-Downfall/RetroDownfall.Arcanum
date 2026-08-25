@@ -148,8 +148,7 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
         bool hasIdempotencyKey,
         string completionId,
         string model,
-        CancellationToken executionToken,
-        InferenceAuditContext? auditContext = null)
+        CancellationToken executionToken)
     {
         ArgumentNullException.ThrowIfNull(invocationContext);
 
@@ -162,15 +161,14 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
             hasIdempotencyKey,
             AccountingHandle: TurnAccountingAmbient.Current);
 
-        return ExecuteOpenAiSseCoreAsync(turnRequest, completionId, model, executionToken, auditContext);
+        return ExecuteOpenAiSseCoreAsync(turnRequest, completionId, model, executionToken);
     }
 
     public async IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseCoreAsync(
         TurnExecutionRequest request,
         string completionId,
         string model,
-        [EnumeratorCancellation] CancellationToken executionToken,
-        InferenceAuditContext? auditContext = null)
+        [EnumeratorCancellation] CancellationToken executionToken)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -198,8 +196,7 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
             request,
             projection,
             transport.Writer,
-            producerCancellation.Token,
-            auditContext);
+            producerCancellation.Token);
 
         bool drained = false;
 
@@ -288,13 +285,12 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
         TurnExecutionRequest request,
         OpenAiSseProjection projection,
         ChannelWriter<OpenAiChatChunk> writer,
-        CancellationToken executionToken,
-        InferenceAuditContext? auditContext)
+        CancellationToken executionToken)
     {
         try
         {
             IAsyncEnumerable<TurnEvent> events = _turnEventSource is TurnEngine engine
-                ? engine.RunTurnAsync(request, auditContext, executionToken)
+                ? engine.RunTurnAsync(request, auditContext: null, executionToken)
                 : _turnEventSource.RunTurnAsync(request, executionToken);
 
             await foreach (TurnEvent evt in events.ConfigureAwait(false))

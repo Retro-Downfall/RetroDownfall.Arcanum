@@ -58,15 +58,14 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
     public ToolResultMaterialization MaterializeStructured<T>(
         string toolName,
         T result,
-        JsonTypeInfo<T> jsonTypeInfo,
-        ToolResultMaterializerOptions? options = null)
+        JsonTypeInfo<T> jsonTypeInfo)
         where T : IStructuredToolResult<T>
     {
         _ = toolName;
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(jsonTypeInfo);
 
-        (int maxTokens, int maxBytes) = ResolveBudgets(options);
+        (int maxTokens, int maxBytes) = ResolveBudgets(null);
         string serialized = JsonSerializer.Serialize(result, jsonTypeInfo);
         int originalEstimatedTokens = EstimateTokens(serialized);
         int originalCharLength = serialized.Length;

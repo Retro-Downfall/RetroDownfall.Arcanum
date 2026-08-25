@@ -331,7 +331,7 @@ public sealed class CovenantOwnerCleanupTests
 
         Result<CovenantCleanupOutcome> refused = await CovenantCapacityFixture.InTransactionAsync(
             fixture,
-            transaction => new CovenantCleanupWorker().RunBatchAsync(lease, transaction, Token).AsTask(),
+            transaction => new CovenantCleanupWorker().RunBatchAsync(lease, transaction, Token, CovenantCleanupWorker.DefaultBatchSize).AsTask(),
             Token,
             commit: false);
 
@@ -360,7 +360,7 @@ public sealed class CovenantOwnerCleanupTests
 
         Result<CovenantCleanupOutcome> refused = await CovenantCapacityFixture.InTransactionAsync(
             fixture,
-            transaction => new CovenantCleanupWorker().RunBatchAsync(lease, transaction, Token).AsTask(),
+            transaction => new CovenantCleanupWorker().RunBatchAsync(lease, transaction, Token, CovenantCleanupWorker.DefaultBatchSize).AsTask(),
             Token,
             commit: false);
 
@@ -415,7 +415,7 @@ public sealed class CovenantOwnerCleanupTests
 
         Result<CovenantCleanupOutcome> outcome = await CovenantCapacityFixture.InTransactionAsync(
             fixture,
-            transaction => new CovenantCleanupWorker().RunBatchAsync(lease, transaction, Token).AsTask(),
+            transaction => new CovenantCleanupWorker().RunBatchAsync(lease, transaction, Token, CovenantCleanupWorker.DefaultBatchSize).AsTask(),
             Token);
 
         Assert.True(outcome.IsSuccess, outcome.IsFailure ? outcome.Error.Message : null);

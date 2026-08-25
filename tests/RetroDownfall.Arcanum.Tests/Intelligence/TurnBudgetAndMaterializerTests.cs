@@ -444,15 +444,14 @@ public sealed class TurnBudgetAndMaterializerTests
                 typeof(BrokenStructuredResult));
         BrokenStructuredResult result = new(
             ItemCount: 1,
-            Payload: new string('x', 128),
+            Payload: new string('x', ProductionByteBudget * 3),
             Behavior: behavior);
 
         InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
             () => materializer.MaterializeStructured(
                 "broken",
                 result,
-                typeInfo,
-                new ToolResultMaterializerOptions(MaxTokens: 1, MaxUtf8Bytes: 1)));
+                typeInfo));
 
         Assert.Contains(
             "must retain exactly the requested leading item count",
@@ -466,32 +465,31 @@ public sealed class TurnBudgetAndMaterializerTests
         ToolResultMaterializer materializer = new();
         WorkspaceSearchToolResultEnvelope envelope = new()
         {
-            Matches = Enumerable.Range(1, 12)
+            Matches = Enumerable.Range(1, 400)
                 .Select(static line => new WorkspaceSearchToolResultItem(
                     "src/quoted\"file.cs",
                     line,
                     3,
                     $"match {line}\nwith escaped text"))
                 .ToArray(),
-            TotalMatchCount = 12,
+            TotalMatchCount = 400,
         };
 
         ToolResultMaterialization result = materializer.MaterializeStructured(
             ToolRiskClassifier.SearchWorkspaceToolName,
             envelope,
-            McpJsonSerializerContext.Default.WorkspaceSearchToolResultEnvelope,
-            new ToolResultMaterializerOptions(MaxTokens: 10_000, MaxUtf8Bytes: 420));
+            McpJsonSerializerContext.Default.WorkspaceSearchToolResultEnvelope);
 
         using JsonDocument parsed = JsonDocument.Parse(result.TextForModel);
         JsonElement root = parsed.RootElement;
         int retained = root.GetProperty("matches").GetArrayLength();
 
         Assert.True(result.WasTruncated);
-        Assert.InRange(retained, 1, 11);
+        Assert.InRange(retained, 1, 399);
         Assert.True(root.GetProperty("truncated").GetBoolean());
-        Assert.Equal(12 - retained, root.GetProperty("omittedMatchCount").GetInt32());
+        Assert.Equal(400 - retained, root.GetProperty("omittedMatchCount").GetInt32());
         Assert.DoesNotContain("[truncated", result.TextForModel, StringComparison.Ordinal);
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(result.TextForModel) <= 420);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(result.TextForModel) <= ProductionByteBudget);
     }
 
     [Fact]
@@ -500,7 +498,9 @@ public sealed class TurnBudgetAndMaterializerTests
         ToolResultMaterializer materializer = new();
         WorkspaceSearchToolResultEnvelope envelope = new()
         {
-            Status = new string('x', 1000),
+            // A status line that alone overruns the shipped ceiling, so the envelope cannot fit even
+            // with every match dropped and the minimal fallback is the only valid answer left.
+            Status = new string('x', ProductionByteBudget * 2),
             Matches = [new WorkspaceSearchToolResultItem("a.cs", 1, 1, "match")],
             TotalMatchCount = 1,
         };
@@ -508,8 +508,7 @@ public sealed class TurnBudgetAndMaterializerTests
         ToolResultMaterialization result = materializer.MaterializeStructured(
             ToolRiskClassifier.SearchWorkspaceToolName,
             envelope,
-            McpJsonSerializerContext.Default.WorkspaceSearchToolResultEnvelope,
-            new ToolResultMaterializerOptions(MaxTokens: 1, MaxUtf8Bytes: 1));
+            McpJsonSerializerContext.Default.WorkspaceSearchToolResultEnvelope);
 
         using JsonDocument parsed = JsonDocument.Parse(result.TextForModel);
 

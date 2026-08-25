@@ -11,11 +11,20 @@ public interface IToolResultMaterializer
 
     ToolResultMaterialization Materialize(string toolName, string rawText, ToolResultMaterializerOptions? options = null);
 
+    /// <summary>
+    /// Reduces a structured envelope under the materializer's own budget.
+    /// </summary>
+    /// <remarks>
+    /// No budget argument, unlike <see cref="Materialize"/>. Its one production caller never varied
+    /// the budget, and every behaviour this path has — trimming leading items, updating the omission
+    /// counters, falling back to a minimal valid envelope — is observable at the budget a shipped turn
+    /// applies simply by handing it a larger envelope. A parameter that only ever let a suite reach
+    /// those behaviours with a smaller payload was buying convenience with representativeness.
+    /// </remarks>
     ToolResultMaterialization MaterializeStructured<T>(
         string toolName,
         T result,
-        JsonTypeInfo<T> jsonTypeInfo,
-        ToolResultMaterializerOptions? options = null)
+        JsonTypeInfo<T> jsonTypeInfo)
         where T : IStructuredToolResult<T>;
 
 }

@@ -36,13 +36,19 @@ public interface ITurnExecutionFacade
     /// <summary>
     /// Projects the same semantic turn stream into OpenAI SSE chunks (no HTTP serialization).
     /// </summary>
+    /// <remarks>
+    /// No audit context, unlike the two members above. Both of those have production callers that
+    /// supply one; this member has no production caller at all, because the chat-completions endpoint
+    /// streams through <c>IArcanumIntelligenceProvider</c> and serializes SSE itself. A parameter no
+    /// caller can pass on a member no caller reaches is two layers of unreachable, and carrying it
+    /// implied an audit path that never runs. A caller that appears will bring the argument with it.
+    /// </remarks>
     IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseAsync(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
         bool hasIdempotencyKey,
         string completionId,
         string model,
-        CancellationToken executionToken,
-        InferenceAuditContext? auditContext = null);
+        CancellationToken executionToken);
 
 }
