@@ -123,23 +123,32 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Assert the runner architecture matches the RID
-        shell: bash
+      # The SDK's own host RID, not the runner label and not PROCESSOR_ARCHITECTURE. The label can be
+      # right while the toolchain is not: an x64 SDK on an arm64 machine would cross-compile, which is
+      # the case this job exists to avoid. PROCESSOR_ARCHITECTURE cannot answer it at all -- Git for
+      # Windows ships an x64 bash, so on the arm64 runner it reads AMD64 from inside emulation and a
+      # guard built on it fails a correct job. Verified: it did, on the first dispatch of this
+      # workflow, against a runner whose image was windows-11-arm64.
+      - name: Assert the SDK is native to the RID
+        shell: pwsh
         env:
           RID: ${{ inputs.rid }}
         run: |
-          set -euo pipefail
-          echo "PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE:-unset}"
-          case "$RID" in
-            win-x64) expected="AMD64" ;;
-            win-arm64) expected="ARM64" ;;
-            *) echo "error: unsupported RID '$RID' (expected win-x64 or win-arm64)" >&2; exit 1 ;;
-          esac
-          if [[ "${PROCESSOR_ARCHITECTURE:-}" != "$expected" ]]; then
-            echo "error: $RID expects a $expected runner, got ${PROCESSOR_ARCHITECTURE:-unset}" >&2
-            exit 1
-          fi
-          dotnet --info
+          $ErrorActionPreference = "Stop"
+
+          $info = (& dotnet --info) -join "`n"
+
+          Write-Host $info
+
+          $match = [regex]::Match($info, '(?m)^\s*RID:\s*(?<rid>\S+)\s*$')
+
+          if (-not $match.Success) {
+              throw "dotnet --info did not report a host RID, so this job cannot tell whether it would cross-compile."
+          }
+
+          if ($match.Groups['rid'].Value -ne $env:RID) {
+              throw "$($env:RID) needs an SDK whose host RID is $($env:RID); this runner's is $($match.Groups['rid'].Value), so the publish would cross-compile."
+          }
 
       - name: Package Arcanum, Compendium, and The Forge
         shell: pwsh
