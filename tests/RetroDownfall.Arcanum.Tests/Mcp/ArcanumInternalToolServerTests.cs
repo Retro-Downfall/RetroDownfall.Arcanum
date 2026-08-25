@@ -686,7 +686,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
-            ToolOutputCapBytes = 4_096,
+
+            // Above the model budget rather than below it, because the second truncation is the whole
+            // point: a wire cap tighter than the budget the pipeline applies would leave the model
+            // step with nothing to do and the cumulative claim untested.
+            ToolOutputCapBytes = 16_384,
         };
         CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
         {
@@ -698,7 +702,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         await using TestMcpSession session = await CreateSessionAsync(
             intelligenceSettings: intelligenceSettings,
-            maxJsonRpcLineBytes: 16_384,
+            maxJsonRpcLineBytes: 65_536,
             codingToolsSettings: codingTools);
 
         McpToolsCallResultWire result = await session.CallToolAsync(
@@ -727,10 +731,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             new TrustedStructuredToolResult(
                 TrustedStructuredToolResultKind.WorkspaceSearch,
                 wireText),
-            new ToolResultMaterializer(),
-            new ToolResultMaterializerOptions(
-                MaxTokens: 10_000,
-                MaxUtf8Bytes: 1_024));
+            new ToolResultMaterializer());
 
         using JsonDocument modelJson = JsonDocument.Parse(modelText);
         int modelRetained = modelJson.RootElement.GetProperty("matches").GetArrayLength();

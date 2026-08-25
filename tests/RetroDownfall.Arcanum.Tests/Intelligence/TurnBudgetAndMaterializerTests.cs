@@ -16,6 +16,18 @@ public sealed class TurnBudgetAndMaterializerTests
     private const string TruncationMarkerBody = "[truncated: tool result exceeded token/byte budget]";
     private const string TruncationMarker = "\n" + TruncationMarkerBody;
 
+    /// <summary>
+    /// The byte ceiling a shipped turn materializes every tool result under.
+    /// </summary>
+    /// <remarks>
+    /// Derived from the materializer's own default token budget the way the materializer derives it,
+    /// so a change to the shipped ceiling moves this with it. The pipeline takes no budget argument:
+    /// its production call site never supplied one, and a suite that shrank the budget for the
+    /// occasion proved the truncation arithmetic while saying nothing about whether the ceiling a
+    /// turn actually applies is ever reached.
+    /// </remarks>
+    private const int ProductionByteBudget = ToolResultMaterializer.DefaultMaxTokens * 4;
+
     [Fact]
     public void ToolResultMaterializer_TruncatesAndMarks()
     {
@@ -541,14 +553,14 @@ public sealed class TurnBudgetAndMaterializerTests
     {
         WorkspaceSearchToolResultEnvelope envelope = new()
         {
-            Matches = Enumerable.Range(1, 20)
+            Matches = Enumerable.Range(1, 400)
                 .Select(static line => new WorkspaceSearchToolResultItem(
                     "src/quoted\"file.cs",
                     line,
                     1,
                     $"needle {line} with a long preview"))
                 .ToArray(),
-            TotalMatchCount = 20,
+            TotalMatchCount = 400,
         };
         string raw = JsonSerializer.Serialize(
             envelope,
@@ -559,15 +571,14 @@ public sealed class TurnBudgetAndMaterializerTests
             new TrustedStructuredToolResult(
                 TrustedStructuredToolResultKind.WorkspaceSearch,
                 raw),
-            new ToolResultMaterializer(),
-            new ToolResultMaterializerOptions(MaxTokens: 10_000, MaxUtf8Bytes: 420));
+            new ToolResultMaterializer());
 
         using JsonDocument parsed = JsonDocument.Parse(materialized);
 
         Assert.True(parsed.RootElement.GetProperty("truncated").GetBoolean());
-        Assert.InRange(parsed.RootElement.GetProperty("matches").GetArrayLength(), 1, 19);
+        Assert.InRange(parsed.RootElement.GetProperty("matches").GetArrayLength(), 1, 399);
         Assert.DoesNotContain("[truncated", materialized, StringComparison.Ordinal);
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(materialized) <= 420);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(materialized) <= ProductionByteBudget);
     }
 
     [Fact]
@@ -579,7 +590,7 @@ public sealed class TurnBudgetAndMaterializerTests
             Status = "failed",
             ProfileId = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
             SelectedSdkVersion = "10.0.302",
-            Diagnostics = Enumerable.Range(1, 20)
+            Diagnostics = Enumerable.Range(1, 400)
                 .Select(static line => new WorkspaceCheckToolResultItem(
                     "src/quoted\"file.cs",
                     line,
@@ -588,8 +599,8 @@ public sealed class TurnBudgetAndMaterializerTests
                     "CS1002",
                     $"diagnostic {line} with a bounded message"))
                 .ToArray(),
-            TotalDiagnosticCount = 20,
-            ErrorCount = 20,
+            TotalDiagnosticCount = 400,
+            ErrorCount = 400,
             ExitCode = 1,
         };
         string raw = JsonSerializer.Serialize(
@@ -601,10 +612,7 @@ public sealed class TurnBudgetAndMaterializerTests
             new TrustedStructuredToolResult(
                 TrustedStructuredToolResultKind.WorkspaceCheck,
                 raw),
-            new ToolResultMaterializer(),
-            new ToolResultMaterializerOptions(
-                MaxTokens: 10_000,
-                MaxUtf8Bytes: 520));
+            new ToolResultMaterializer());
 
         using JsonDocument parsed = JsonDocument.Parse(materialized);
 
@@ -612,7 +620,7 @@ public sealed class TurnBudgetAndMaterializerTests
         Assert.InRange(
             parsed.RootElement.GetProperty("diagnostics").GetArrayLength(),
             1,
-            19);
+            399);
         Assert.Equal(
             "10.0.302",
             parsed.RootElement.GetProperty("selectedSdkVersion").GetString());
@@ -621,7 +629,7 @@ public sealed class TurnBudgetAndMaterializerTests
             materialized,
             StringComparison.Ordinal);
         Assert.True(
-            System.Text.Encoding.UTF8.GetByteCount(materialized) <= 520);
+            System.Text.Encoding.UTF8.GetByteCount(materialized) <= ProductionByteBudget);
     }
 
     [Fact]
@@ -668,10 +676,7 @@ public sealed class TurnBudgetAndMaterializerTests
                 new TrustedStructuredToolResult(
                     TrustedStructuredToolResultKind.WorkspaceCheck,
                     raw),
-                new ToolResultMaterializer(),
-                new ToolResultMaterializerOptions(
-                    MaxTokens: 10_000,
-                    MaxUtf8Bytes: 620));
+                new ToolResultMaterializer());
 
         using JsonDocument parsed = JsonDocument.Parse(materialized);
         JsonElement root = parsed.RootElement;
@@ -696,8 +701,26 @@ public sealed class TurnBudgetAndMaterializerTests
     public void ToolExecutionPipeline_keeps_receipt_handled_patch_result_byte_exact()
     {
 
-        const string frozen =
-            "{\"omittedFileCount\":0,\"totalFileCount\":1,\"truncated\":false,\"files\":[{\"path\":\"quoted\\\".txt\",\"operation\":\"modify\",\"status\":\"applied\",\"appliedHunks\":1}],\"status\":\"ok\"}";
+        // Deliberately past the budget every other result is measured against, so that returning it
+        // unchanged is the short circuit being proved rather than a payload that happened to fit.
+        WorkspacePatchToolResultEnvelope envelope = new()
+        {
+            Files =
+            [
+                .. Enumerable.Range(1, 400).Select(static ordinal => new WorkspacePatchToolResultItem(
+                    $"src/quoted\"file-{ordinal}.cs",
+                    "modify",
+                    "applied",
+                    1)),
+            ],
+            TotalFileCount = 400,
+        };
+
+        string frozen = JsonSerializer.Serialize(
+            envelope,
+            McpJsonSerializerContext.Default.WorkspacePatchToolResultEnvelope);
+
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(frozen) > ProductionByteBudget);
 
         string materialized = ToolExecutionPipeline.MaterializeToolResultForModel(
             ToolRiskClassifier.ApplyPatchToolName,
@@ -705,10 +728,7 @@ public sealed class TurnBudgetAndMaterializerTests
                 TrustedStructuredToolResultKind.WorkspacePatch,
                 frozen,
                 ReceiptHandled: true),
-            new ToolResultMaterializer(),
-            new ToolResultMaterializerOptions(
-                MaxTokens: 1,
-                MaxUtf8Bytes: 1));
+            new ToolResultMaterializer());
 
         Assert.Equal(frozen, materialized);
 
@@ -719,14 +739,14 @@ public sealed class TurnBudgetAndMaterializerTests
     {
         WorkspaceSearchToolResultEnvelope envelope = new()
         {
-            Matches = Enumerable.Range(1, 20)
+            Matches = Enumerable.Range(1, 400)
                 .Select(static line => new WorkspaceSearchToolResultItem(
                     "external.cs",
                     line,
                     1,
                     $"external payload {line}"))
                 .ToArray(),
-            TotalMatchCount = 20,
+            TotalMatchCount = 400,
         };
         string raw = JsonSerializer.Serialize(
             envelope,
@@ -735,8 +755,7 @@ public sealed class TurnBudgetAndMaterializerTests
         string materialized = ToolExecutionPipeline.MaterializeToolResultForModel(
             ToolRiskClassifier.SearchWorkspaceToolName,
             raw,
-            new ToolResultMaterializer(),
-            new ToolResultMaterializerOptions(MaxTokens: 10_000, MaxUtf8Bytes: 420));
+            new ToolResultMaterializer());
 
         Assert.NotEqual(raw, materialized);
         Assert.ThrowsAny<JsonException>(() => JsonDocument.Parse(materialized));

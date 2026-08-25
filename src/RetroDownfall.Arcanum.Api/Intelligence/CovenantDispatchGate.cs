@@ -266,11 +266,13 @@ public sealed class CovenantDispatchGate(
         if (logicalTurnId == Guid.Empty)
         {
 
-            return Record(new CovenantTurnScope(
-                CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible),
-                Guid.Empty,
-                sessionId,
-                tainted));
+            return Record(
+                new CovenantTurnScope(
+                    CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible),
+                    Guid.Empty,
+                    sessionId,
+                    tainted),
+                invocation.Campaign?.CampaignId);
 
         }
 
@@ -285,15 +287,19 @@ public sealed class CovenantDispatchGate(
                 "Covenant turn acquisition failed with {ErrorCode}; the turn proceeds without Covenant content.",
                 begun.Error.Code);
 
-            return Record(new CovenantTurnScope(
-                CovenantTurnContext.Absent(CovenantTurnAbsence.CapabilityUnavailable),
-                logicalTurnId,
-                sessionId,
-                tainted));
+            return Record(
+                new CovenantTurnScope(
+                    CovenantTurnContext.Absent(CovenantTurnAbsence.CapabilityUnavailable),
+                    logicalTurnId,
+                    sessionId,
+                    tainted),
+                invocation.Campaign?.CampaignId);
 
         }
 
-        return Record(new CovenantTurnScope(begun.Value, logicalTurnId, sessionId, tainted));
+        return Record(
+            new CovenantTurnScope(begun.Value, logicalTurnId, sessionId, tainted),
+            invocation.Campaign?.CampaignId);
 
     }
 
@@ -314,7 +320,7 @@ public sealed class CovenantDispatchGate(
     /// <see cref="CovenantProtectedLogScope"/> so the type, not this call site, is what guarantees
     /// no Covenant key, fragment, or content digest can ever be added to it.</para>
     /// </remarks>
-    private CovenantTurnScope Record(CovenantTurnScope scope)
+    private CovenantTurnScope Record(CovenantTurnScope scope, Guid? campaignId)
     {
 
         logger.LogDebug(
@@ -324,7 +330,13 @@ public sealed class CovenantDispatchGate(
             CovenantProtectedLogScope.FromSensitivity(
                 ContentSensitivity.None,
                 NoProvenance,
-                scope.SessionId),
+                scope.SessionId,
+
+                // The Campaign this turn resolved to, which is the other half of "whose memory is this
+                // record about". A per-turn absence line without it cannot be read across Campaigns at
+                // all: every Campaign in an installation produces the same sentence, and the operator
+                // asking why one of them injects nothing has no way to tell which lines are theirs.
+                campaignId),
             scope.HistoryTainted);
 
         return scope;

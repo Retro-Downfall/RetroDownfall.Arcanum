@@ -1631,11 +1631,21 @@ public sealed class ToolExecutionPipeline(
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Reduces one tool result to the text the model is shown, under the one budget production has.
+    /// </summary>
+    /// <remarks>
+    /// No budget parameter. It carried an optional one that the single production call site never
+    /// passed and that nothing under <c>src</c> ever constructed, so every shipped turn materialized
+    /// under the materializer's own default and the override existed only for suites that wanted to
+    /// see truncation without producing enough output to earn it. A test budget nobody ships is a test
+    /// that proves the truncation arithmetic and says nothing about whether the shipped ceiling is
+    /// ever reached.
+    /// </remarks>
     internal static string MaterializeToolResultForModel(
         string toolName,
         object? rawResult,
-        IToolResultMaterializer materializer,
-        ToolResultMaterializerOptions? options = null)
+        IToolResultMaterializer materializer)
     {
 
         ArgumentNullException.ThrowIfNull(materializer);
@@ -1661,24 +1671,21 @@ public sealed class ToolExecutionPipeline(
                         rawText,
                         materializer,
                         McpJsonSerializerContext.Default
-                            .WorkspaceSearchToolResultEnvelope,
-                        options),
+                            .WorkspaceSearchToolResultEnvelope),
                 TrustedStructuredToolResultKind.WorkspacePatch =>
                     TryMaterializeStructured(
                         toolName,
                         rawText,
                         materializer,
                         McpJsonSerializerContext.Default
-                            .WorkspacePatchToolResultEnvelope,
-                        options),
+                            .WorkspacePatchToolResultEnvelope),
                 TrustedStructuredToolResultKind.WorkspaceCheck =>
                     TryMaterializeStructured(
                         toolName,
                         rawText,
                         materializer,
                         McpJsonSerializerContext.Default
-                            .WorkspaceCheckToolResultEnvelope,
-                        options),
+                            .WorkspaceCheckToolResultEnvelope),
                 _ => null,
             };
 
@@ -1688,10 +1695,7 @@ public sealed class ToolExecutionPipeline(
             }
         }
 
-        return materializer.Materialize(
-            toolName,
-            rawText,
-            options).TextForModel;
+        return materializer.Materialize(toolName, rawText).TextForModel;
 
     }
 
@@ -1699,8 +1703,7 @@ public sealed class ToolExecutionPipeline(
         string toolName,
         string rawText,
         IToolResultMaterializer materializer,
-        JsonTypeInfo<T> jsonTypeInfo,
-        ToolResultMaterializerOptions? options)
+        JsonTypeInfo<T> jsonTypeInfo)
         where T : class, IStructuredToolResult<T>
     {
         try
@@ -1714,8 +1717,7 @@ public sealed class ToolExecutionPipeline(
                 : materializer.MaterializeStructured(
                     toolName,
                     structured,
-                    jsonTypeInfo,
-                    options).TextForModel;
+                    jsonTypeInfo).TextForModel;
         }
         catch (JsonException)
         {

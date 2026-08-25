@@ -380,10 +380,6 @@ public sealed class TurnProjectionSemanticTests
         new(
             Guid.Parse("22222222-2222-2222-2222-222222222222"),
             sequence,
-            ProviderAttempt: 1,
-            ModelRound: 1,
-            ModelCallId: "model-call",
-            ToolCallId: null,
             DateTimeOffset.UnixEpoch.AddSeconds(sequence));
 
     private static ContextTokenBreakdown Breakdown() =>

@@ -36,22 +36,11 @@ internal sealed class TurnEventEmitter : IAsyncDisposable
 
     public bool TerminalEmitted => Volatile.Read(ref _terminalEmitted) == 1;
 
-    public TurnEventCorrelation NextCorrelation(
-        int providerAttempt = 0,
-        int modelRound = 0,
-        string? modelCallId = null,
-        string? toolCallId = null)
+    public TurnEventCorrelation NextCorrelation()
     {
         long sequence = Interlocked.Increment(ref _sequence);
 
-        return new TurnEventCorrelation(
-            _runId,
-            sequence,
-            providerAttempt,
-            modelRound,
-            modelCallId,
-            toolCallId,
-            DateTimeOffset.UtcNow);
+        return new TurnEventCorrelation(_runId, sequence, DateTimeOffset.UtcNow);
     }
 
     public async ValueTask EmitAsync(TurnEvent evt, CancellationToken cancellationToken = default)

@@ -57,17 +57,11 @@ internal sealed class CovenantAuthorityBootstrapper
     /// <param name="guardedDirectory">The Grimoire directory the lock guards.</param>
     /// <param name="masterApiKey">The master key this process holds. Never stored, only digested.</param>
     /// <param name="installedAtUtc">The single timestamp every tier records for this installation.</param>
-    /// <param name="existingInstallationIdentity">
-    /// The identity already recorded in <c>covenant_authority_state</c>, when the caller has read one.
-    /// Supplying it keeps the installation identity stable across restarts and key rotations; passing
-    /// <see langword="null"/> mints a fresh one for a database that has never had authority.
-    /// </param>
     public GrimoireSchemaInitializationContext PrepareUnderInstallationLock(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         string masterApiKey,
-        DateTimeOffset installedAtUtc,
-        string? existingInstallationIdentity = null)
+        DateTimeOffset installedAtUtc)
     {
 
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -79,7 +73,7 @@ internal sealed class CovenantAuthorityBootstrapper
         // Identity, not liveness, and deliberately no acquisition: see the type remarks.
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
-        return Prepare(masterApiKey, installedAtUtc, existingInstallationIdentity);
+        return Prepare(masterApiKey, installedAtUtc);
 
     }
 
@@ -94,13 +88,12 @@ internal sealed class CovenantAuthorityBootstrapper
     /// </remarks>
     public static GrimoireSchemaInitializationContext PrepareWithoutInstallationLock(
         string masterApiKey,
-        DateTimeOffset installedAtUtc,
-        string? existingInstallationIdentity = null)
+        DateTimeOffset installedAtUtc)
     {
 
         ArgumentException.ThrowIfNullOrEmpty(masterApiKey);
 
-        return Prepare(masterApiKey, installedAtUtc, existingInstallationIdentity);
+        return Prepare(masterApiKey, installedAtUtc);
 
     }
 
@@ -149,31 +142,28 @@ internal sealed class CovenantAuthorityBootstrapper
     /// changed belongs to <see cref="CoreGrimoireSchemaDataInitializer"/>, which advances from the
     /// durable row inside the install transaction; a bootstrapper that guessed at the next generation
     /// from outside that transaction could only ever disagree with it.
+    ///
+    /// <para>The identity is minted the same way, and for the same reason. Both entry points used to
+    /// accept an already-recorded identity to pass through instead, documented as what keeps an
+    /// installation stable across restarts and key rotations — and no caller under <c>src</c> ever
+    /// passed one, because none of them has one to pass: a fresh database has no row to read, and the
+    /// restore path that does read one builds the whole context from that row without coming here.
+    /// Stability is real, but it is the initializer's: it inserts only when no row exists, and its
+    /// convergence statement lists the key-derived columns and deliberately not the identity. A
+    /// parameter that documented someone else's guarantee and that nothing could supply was a promise
+    /// this type was in no position to make.</para>
     /// </remarks>
     private static GrimoireSchemaInitializationContext Prepare(
         string masterApiKey,
-        DateTimeOffset installedAtUtc,
-        string? existingInstallationIdentity) =>
+        DateTimeOffset installedAtUtc) =>
         new(
-            ResolveInstallationIdentity(existingInstallationIdentity),
+            // Uppercase, matching how the rest of the Grimoire stores identities, so a value written
+            // here compares equal to the same value written anywhere else.
+            Guid.NewGuid().ToString().ToUpperInvariant(),
             FreshAuthorityEpoch,
             FreshMasterKeyVersion,
             ComputeMasterKeyFingerprint(masterApiKey),
             FreshRecoveryEnvelopeEpoch,
             installedAtUtc);
-
-    /// <summary>
-    /// Keeps an installation's identity stable once it exists, and mints one only when it does not.
-    /// </summary>
-    /// <remarks>
-    /// A regenerated identity would look to every consumer like a different installation, which is
-    /// exactly the confusion the durable authority row exists to prevent. The uppercase form matches
-    /// how the rest of the Grimoire stores identities, so a value written here compares equal to the
-    /// same value written anywhere else.
-    /// </remarks>
-    private static string ResolveInstallationIdentity(string? existingInstallationIdentity) =>
-        string.IsNullOrWhiteSpace(existingInstallationIdentity)
-            ? Guid.NewGuid().ToString().ToUpperInvariant()
-            : existingInstallationIdentity;
 
 }

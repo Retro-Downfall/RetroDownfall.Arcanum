@@ -77,7 +77,7 @@ public sealed class TurnEventEmitterTests
         Task[] writers = Enumerable.Range(0, 20)
             .Select(async i =>
             {
-                TurnEventCorrelation correlation = emitter.NextCorrelation(providerAttempt: 0, modelRound: i);
+                TurnEventCorrelation correlation = emitter.NextCorrelation();
 
                 await emitter
                     .EmitAsync(new TurnStatusChanged(correlation, i.ToString(System.Globalization.CultureInfo.InvariantCulture)))

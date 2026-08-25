@@ -14,7 +14,7 @@ public class TurnEnginePlanIntegrationTests
     public void TurnPlan_Event_Records_Correlation()
     {
         var correlation = new RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.TurnEventCorrelation(
-            Guid.NewGuid(), 1, 0, 0, "mc-1", "tool-1", DateTimeOffset.UtcNow);
+            Guid.NewGuid(), 1, DateTimeOffset.UtcNow);
         Assert.NotEqual(Guid.Empty, correlation.RunId);
         Assert.Equal(1, correlation.Sequence);
     }

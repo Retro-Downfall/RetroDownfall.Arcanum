@@ -462,10 +462,6 @@ public sealed class TurnExecutionCoordinatorTests
         new(
             Guid.Parse("11111111-1111-1111-1111-111111111111"),
             sequence,
-            ProviderAttempt: 0,
-            ModelRound: 0,
-            ModelCallId: null,
-            ToolCallId: null,
             DateTimeOffset.UnixEpoch.AddSeconds(sequence));
 
     private static async Task<List<T>> ReadAllAsync<T>(IAsyncEnumerable<T> source)

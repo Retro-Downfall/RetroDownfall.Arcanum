@@ -19,11 +19,15 @@ internal sealed record TurnExecutionRequest(
     TurnAccountingHandle? AccountingHandle);
 
 /// <summary>Correlation metadata carried on every semantic turn event.</summary>
+/// <remarks>
+/// The run, the position within it, and when. A provider attempt, a model round, a model call id and
+/// a tool call id used to sit here too, defaulted at the only place that mints a correlation; every
+/// one of the eight production call sites took the default, and nothing anywhere read any of the
+/// four back. Four fields that were always absent and never consulted are not correlation, they are a
+/// shape a test could fill and production could not, so they are gone rather than left as a promise
+/// this type does not keep.
+/// </remarks>
 internal sealed record TurnEventCorrelation(
     Guid RunId,
     long Sequence,
-    int ProviderAttempt,
-    int ModelRound,
-    string? ModelCallId,
-    string? ToolCallId,
     DateTimeOffset Timestamp);

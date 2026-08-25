@@ -15,6 +15,12 @@ namespace RetroDownfall.Arcanum.Core.Logging;
 /// <para>A type rather than a convention. Guidance to "avoid logging Covenant content" is advice
 /// that a later change silently stops following; a value that cannot carry content is a guarantee
 /// that survives whoever writes the next log line.</para>
+///
+/// <para>It carried an optional keyed evidence tag as well, and carried it for nothing: no caller
+/// under <c>src</c> ever passed one, no reader anywhere ever read one back, and the tagger that
+/// would have minted one has no production caller either. An always-absent field on a type whose
+/// whole purpose is to be a guarantee is a claim the type does not keep, so it is gone. Reinstating
+/// it means minting the tag at a call site that actually holds a content identity to tag.</para>
 /// </remarks>
 public sealed record CovenantProtectedLogScope
 {
@@ -23,7 +29,6 @@ public sealed record CovenantProtectedLogScope
         ContentSensitivity sensitivity,
         GenerationProvenanceMode provenanceMode,
         int generationCount,
-        CovenantDiagnosticTag? evidenceTag,
         Guid? sessionId,
         Guid? campaignId)
     {
@@ -33,8 +38,6 @@ public sealed record CovenantProtectedLogScope
         ProvenanceMode = provenanceMode;
 
         GenerationCount = generationCount;
-
-        EvidenceTag = evidenceTag;
 
         SessionId = sessionId;
 
@@ -58,9 +61,6 @@ public sealed record CovenantProtectedLogScope
     /// </remarks>
     public int GenerationCount { get; }
 
-    /// <summary>An opaque, installation-keyed correlation tag, when one was minted.</summary>
-    public CovenantDiagnosticTag? EvidenceTag { get; }
-
     /// <summary>The owning Session, which is already an ordinary identity in these records.</summary>
     public Guid? SessionId { get; }
 
@@ -73,7 +73,6 @@ public sealed record CovenantProtectedLogScope
         GenerationProvenanceMode.Exact,
         0,
         null,
-        null,
         null);
 
     /// <summary>
@@ -84,9 +83,7 @@ public sealed record CovenantProtectedLogScope
     /// sensitivity digest, the label digest, and the producing plan and admission digests — all of
     /// which are correlatable evidence about protected content even though none of them is readable.
     /// </remarks>
-    public static CovenantProtectedLogScope FromLabel(
-        ArtifactSensitivityLabel label,
-        CovenantDiagnosticTag? evidenceTag = null)
+    public static CovenantProtectedLogScope FromLabel(ArtifactSensitivityLabel label)
     {
 
         ArgumentNullException.ThrowIfNull(label);
@@ -97,7 +94,6 @@ public sealed record CovenantProtectedLogScope
             label.Provenance.Mode is GenerationProvenanceMode.Exact
                 ? label.Provenance.ExactGenerationIds.Length
                 : 0,
-            evidenceTag,
             label.SessionId,
             label.CampaignId);
 
@@ -108,8 +104,7 @@ public sealed record CovenantProtectedLogScope
         ContentSensitivity sensitivity,
         GenerationProvenance provenance,
         Guid? sessionId = null,
-        Guid? campaignId = null,
-        CovenantDiagnosticTag? evidenceTag = null)
+        Guid? campaignId = null)
     {
 
         ArgumentNullException.ThrowIfNull(provenance);
@@ -122,7 +117,6 @@ public sealed record CovenantProtectedLogScope
             provenance.Mode is GenerationProvenanceMode.Exact
                 ? provenance.ExactGenerationIds.Length
                 : 0,
-            evidenceTag,
             sessionId,
             campaignId);
 

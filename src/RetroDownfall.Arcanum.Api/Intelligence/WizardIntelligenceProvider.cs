@@ -395,7 +395,7 @@ public sealed partial class WizardIntelligenceProvider(
                 case IntelligenceEventType.ToolCall:
                     yield return new ToolCallProposed(
                         correlation,
-                        frame.ToolCall?.CallId ?? correlation.ToolCallId ?? Guid.NewGuid().ToString("N"),
+                        frame.ToolCall?.CallId ?? Guid.NewGuid().ToString("N"),
                         frame.ToolCall?.Name ?? frame.Message,
                         frame.ToolCall?.ArgumentsJson ?? frame.Data ?? string.Empty,
                         ToolCallDisposition.ServerExecution,
