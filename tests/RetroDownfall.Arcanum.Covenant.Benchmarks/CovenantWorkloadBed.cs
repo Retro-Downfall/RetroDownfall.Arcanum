@@ -232,7 +232,13 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             Authority,
             TimeProvider.System);
 
-        Management = new CovenantManagementService(Store, new CovenantLinker(), Gate, Availability, codec);
+        Management = new CovenantManagementService(
+            Store,
+            new CovenantLinker(),
+            Gate,
+            Availability,
+            codec,
+            new BenchmarkCampaignAvailabilityReader(() => Campaigns));
 
         Context = new CovenantContextProvider(Availability, Gate, Store, new CovenantLinker());
 

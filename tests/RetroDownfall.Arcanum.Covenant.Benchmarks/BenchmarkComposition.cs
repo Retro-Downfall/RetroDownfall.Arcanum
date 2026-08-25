@@ -11,14 +11,15 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 namespace RetroDownfall.Arcanum.Covenant.Benchmarks;
 
 /// <summary>
-/// Three of the four seams a live host supplies from its own runtime, and the whole of what this file
-/// holds; the fourth is <c>CovenantWorkloadBed.FixedConnectionSource</c>.
+/// Four of the five seams a live host supplies from its own runtime, and the whole of what this file
+/// holds; the fifth is <c>CovenantWorkloadBed.FixedConnectionSource</c>.
 /// </summary>
 /// <remarks>
 /// These are adapters, not stand-ins for anything measured. Availability and authority come from the
-/// process's own runtime generation in a real host, and Campaign scope comes from the core registry;
-/// a benchmark process has neither, so it states them. Nothing here decides, compiles, links, admits,
-/// or stores — every one of those is the production service under measurement.
+/// process's own runtime generation in a real host, and Campaign scope and Campaign availability come
+/// from the core registry; a benchmark process has neither, so it states them. Nothing here decides,
+/// compiles, links, admits, or stores — every one of those is the production service under
+/// measurement.
 ///
 /// <para>The count matters because DESIGN enumerates the substituted seams, and an inventory that is
 /// short by one is a reader's assurance that something is production when it is not.</para>
@@ -94,6 +95,28 @@ internal sealed class BenchmarkCampaignScopeProbe(Func<Guid[]> campaigns) : ICov
             Array.IndexOf(campaigns(), campaignId) >= 0
                 ? CovenantCampaignScopeState.Live
                 : CovenantCampaignScopeState.Deleted));
+
+    }
+
+}
+
+internal sealed class BenchmarkCampaignAvailabilityReader(Func<Guid[]> campaigns) : ICampaignAvailabilityReader
+{
+
+    public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(
+        Guid campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Answered from the same seeded array the scope probe reads, and absent rather than generation
+        // zero for anything unseeded. A reader that disagreed with the probe would let one seam call a
+        // Campaign live while the other calls it unknown, and the resolution policy would then bind a
+        // context no installation can hold.
+        long? generation = Array.IndexOf(campaigns(), campaignId) >= 0 ? 1L : null;
+
+        return ValueTask.FromResult(Result<long?>.Success(generation));
 
     }
 
