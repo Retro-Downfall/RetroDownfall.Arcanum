@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -172,6 +173,52 @@ public sealed class DocumentationStructureTests
             "An API reference table row run has no header separator, so it renders as literal text:"
                 + global::System.Environment.NewLine
                 + string.Join(global::System.Environment.NewLine, offenders));
+
+    }
+
+    /// <summary>
+    /// Every Covenant capacity number Compendium quotes an operator, against the constants.
+    /// </summary>
+    /// <remarks>
+    /// Compendium is where an operator learns what they may store, so a number that drifts there is a
+    /// promise the product stops keeping without anyone editing the sentence that made it. The pair
+    /// bound is asserted as the sum rather than as a literal, because the reason it is 160 is that it
+    /// is the three Sections added together, and a change to any Section that left the sum stale would
+    /// be exactly the drift worth catching.
+    /// </remarks>
+    [Fact]
+    public void Compendium_quotes_the_covenant_capacity_the_product_enforces()
+    {
+
+        string compendium = string.Join('\n', ReadDocumentLines("Compendium.README.md"));
+
+        Assert.Contains("### What the Covenant can hold", compendium, StringComparison.Ordinal);
+
+        Assert.Contains(
+            $"| Global Confirmed | {CovenantLimits.MaxGlobalConfirmedEntries} | {CovenantLimits.MaxGlobalConfirmedRenderedBytes:N0} |",
+            compendium,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            $"| Campaign Confirmed | {CovenantLimits.MaxCampaignConfirmedEntries} | {CovenantLimits.MaxCampaignConfirmedRenderedBytes:N0} |",
+            compendium,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            $"| Campaign Proposed | {CovenantLimits.MaxCampaignProposedEntries} | {CovenantLimits.MaxCampaignProposedRenderedBytes:N0} |",
+            compendium,
+            StringComparison.Ordinal);
+
+        Assert.Equal(
+            CovenantLimits.MaxActiveSnapshotRows,
+            CovenantLimits.MaxGlobalConfirmedEntries
+            + CovenantLimits.MaxCampaignConfirmedEntries
+            + CovenantLimits.MaxCampaignProposedEntries);
+
+        Assert.Contains(
+            $"**{CovenantLimits.MaxActiveSnapshotRows} active entries in the pair a single turn would load.**",
+            compendium,
+            StringComparison.Ordinal);
 
     }
 

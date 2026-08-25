@@ -1041,6 +1041,12 @@ public static class ServiceCollectionExtensions
         // One-shot pending attachment GC; runs after Grimoire schema bootstrap above.
         services.AddInstallationResetRecoveryAwareHostedService<SessionAttachmentPendingGcHostedService>();
 
+        // Reset-aware rather than plain, so a pass cannot open a transaction against a dataset the
+        // installation is in the middle of replacing. Registered on the server host alone: the CLI
+        // composition is short-lived, and a sweep that started with a command and died with it would
+        // drain a backlog only for whoever happened to run one.
+        services.AddInstallationResetRecoveryAwareHostedService<CovenantMaintenanceHostedService>();
+
         // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until
         // Arcanum:Features:SessionSearch / CodebaseRetrieval are enabled, so registering them
         // unconditionally is safe on the hot path. Registered after
@@ -1907,6 +1913,28 @@ public static class ServiceCollectionExtensions
         services.AddScoped(
             static sp => new CovenantRequestedOperationStarter(
                 sp.GetRequiredService<ILongRunningOperationCoordinator>()));
+
+        // The three maintenance sweeps and their drivers. Each was registered and exercised by its own
+        // suite for the whole of this feature's life with nothing under src calling it, which meant
+        // owner deletions were journalled and never applied, the canonical outbox only ever grew, and
+        // turn receipts accumulated against a ceiling nothing could fold them below.
+        services.AddScoped(
+            static sp => new CovenantOwnerCleanupCoordinator(
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<CovenantCleanupWorker>()));
+
+        services.AddScoped(
+            static sp => new CovenantSearchOutboxCoordinator(
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<CovenantSearchOutboxWorker>()));
+
+        services.AddScoped(
+            static sp => new CovenantTurnReceiptCompactionCoordinator(
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<CovenantTurnReceiptCompactor>()));
 
         services.AddScoped(
             static sp => new CovenantIndexRebuildCoordinator(

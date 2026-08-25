@@ -174,6 +174,24 @@ The standalone attachment family adds no public configuration keys or consent se
 
 The native `delegate_task` subagent tool has no operator configuration key: each call requires an explicit positive token or cost budget, and completion/no-progress/cancellation applies without a turn, depth, or explicit-file-count counter. Child tools are disabled by construction. Child requests inherit no attachment context; an explicit attachment file must name an id from the parent's current-turn materialized allowlist, and each explicit path/content remains individually bounded.
 
+### What the Covenant can hold
+
+These are fixed bounds rather than settings — there is no key that raises them, which is why they are stated here rather than in the table above. An operator who knows them can tell the difference between Arcanum refusing something and Arcanum being full, and the refusal always says which.
+
+The Covenant has two scopes and two lanes. **Global** applies to every turn on the installation; a **Campaign** scope applies only to turns resolved to that Campaign. Within each, the **Confirmed** lane holds what you asserted and the **Proposed** lane holds what the agent has suggested and you have not yet acted on. A turn renders your Global entries, then the active Campaign's, and only ever loads one Campaign — so what any single turn carries is Global plus one Campaign, never the whole installation.
+
+| Section | Entries | Rendered bytes |
+|---|---|---|
+| Global Confirmed | 64 | 4,096 |
+| Campaign Confirmed | 64 | 4,096 |
+| Campaign Proposed | 32 | 4,096 |
+
+There is one further bound, and it is the one worth understanding: **160 active entries in the pair a single turn would load.** That is exactly the three sections above added together, so an installation that fills each section to its stated maximum sits precisely on it. The bound exists because the per-section limits alone would let a Global scope and a Campaign scope each stay legal while combining into a turn load no snapshot may carry, and the failure would arrive as an integrity refusal on an ordinary turn rather than on the write that caused it. Refusing the write is the honest place to refuse.
+
+**Editing something you already wrote is always allowed, including at the ceiling.** A write to a key that already exists replaces that entry rather than adding one, so the number of entries a turn would load is the same afterwards, and it is not charged against the bound. Only a genuinely new key is. The same is true of an agent refining a proposal it made earlier. If you are at the ceiling and want to add something new, retire an entry you no longer need — a retired entry renders nowhere and stops counting immediately, and it can be reinstated later by an explicit reactivating write rather than by proposing the key again.
+
+When a bound is reached the refusal names it and says by how much, and nothing is written. An agent that reaches one is told the same thing in terms it can act on, and it is told **before** anything is staged, so a full Covenant costs the suggestion and never the answer you asked for.
+
 ### Integrations, execution, cost, retention, daemon, and CLI
 
 | Descriptor key | Type and default | Bounds | Semantics |

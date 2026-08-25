@@ -204,6 +204,27 @@ public sealed class CovenantQueryPlanTests
     }
 
     [Fact]
+    public async Task The_turn_receipt_backlog_read_groups_on_an_index()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        string plan = await ExplainAsync(
+            fixture,
+            CovenantStoreSql.TurnReceiptBacklog(),
+            [("$ceiling", CovenantLimits.MaxTurnReceiptsPerSession), ("$take", 16)]);
+
+        // The compaction sweep runs this every pass to find its work, on an installation whose receipt
+        // table is the largest thing the family owns. A grouping that materialized would make the
+        // discovery cost scale with the whole table rather than with the backlog, which is the one
+        // property that decides whether a bounded sweep stays bounded.
+        Assert.DoesNotContain("SCAN covenant_turn_receipts\n", plan + "\n", StringComparison.Ordinal);
+
+        Assert.Contains("covenant_turn_receipts", plan, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task The_stable_list_page_uses_the_entry_and_version_keys()
     {
 

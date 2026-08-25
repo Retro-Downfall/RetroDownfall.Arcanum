@@ -107,6 +107,24 @@ internal static class CovenantStoreSql
     /// operator their reply — the preflight admits what the commit then refuses — so the statement
     /// lives here rather than being written twice.
     /// </remarks>
+    /// <summary>
+    /// The Sessions whose turn receipts have outgrown their live tail, most burdened first.
+    /// </summary>
+    /// <remarks>
+    /// Discovery for the compaction sweep, which folds one Session per call and cannot find its own
+    /// work. Bounded by <c>$take</c> so a pass costs the same on an installation with one backlog and
+    /// on one with thousands, and ordered by depth so the Sessions closest to their ceiling are the
+    /// ones a bounded pass spends itself on.
+    /// </remarks>
+    internal static string TurnReceiptBacklog() => """
+        SELECT SessionId
+        FROM covenant_turn_receipts
+        GROUP BY SessionId
+        HAVING COUNT(*) > $ceiling
+        ORDER BY COUNT(*) DESC
+        LIMIT $take;
+        """;
+
     internal static string QuotaSnapshot(bool campaignScoped, int excludedKeyCount)
     {
 
