@@ -1916,8 +1916,9 @@ public static class ServiceCollectionExtensions
 
         // The three maintenance sweeps and their drivers. Each was registered and exercised by its own
         // suite for the whole of this feature's life with nothing under src calling it, which meant
-        // owner deletions were journalled and never applied, the canonical outbox only ever grew, and
-        // turn receipts accumulated against a ceiling nothing could fold them below.
+        // owner deletions were journalled and never applied and the canonical outbox only ever grew.
+        // The compactor cost nothing by being idle, because nothing writes a turn-receipt detail row
+        // yet; it is driven on the same terms so a producer arrives to a sweep already proven.
         services.AddScoped(
             static sp => new CovenantOwnerCleanupCoordinator(
                 sp.GetRequiredService<ICovenantOperationGate>(),

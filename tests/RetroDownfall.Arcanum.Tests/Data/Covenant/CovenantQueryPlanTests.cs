@@ -215,12 +215,22 @@ public sealed class CovenantQueryPlanTests
             [("$ceiling", CovenantLimits.MaxTurnReceiptsPerSession), ("$take", 16)]);
 
         // The compaction sweep runs this every pass to find its work, on an installation whose receipt
-        // table is the largest thing the family owns. A grouping that materialized would make the
-        // discovery cost scale with the whole table rather than with the backlog, which is the one
-        // property that decides whether a bounded sweep stays bounded.
-        Assert.DoesNotContain("SCAN covenant_turn_receipts\n", plan + "\n", StringComparison.Ordinal);
+        // table is the largest thing the family owns. Two properties decide whether that stays cheap,
+        // and only the first is free: the grouping rides the session index as a covering scan, so no
+        // row body is read to count a Session's receipts.
+        Assert.Contains(
+            "SCAN covenant_turn_receipts USING COVERING INDEX idx_covenant_turn_receipts_session_created",
+            plan,
+            StringComparison.Ordinal);
 
-        Assert.Contains("covenant_turn_receipts", plan, StringComparison.Ordinal);
+        Assert.DoesNotContain("TEMP B-TREE FOR GROUP BY", plan, StringComparison.Ordinal);
+
+        // The second is paid deliberately. Ordering by depth needs a sort, and SQLite builds it after
+        // HAVING has already discarded every Session under the ceiling — so the temp b-tree spans the
+        // backlog rather than the table, and is empty on the installations that have no backlog at all.
+        // Asserted rather than left implied, because a comment claiming a sort costs nothing is exactly
+        // the kind of claim that stops being true when somebody moves the ordering.
+        Assert.Contains("USE TEMP B-TREE FOR ORDER BY", plan, StringComparison.Ordinal);
 
     }
 

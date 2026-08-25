@@ -22,29 +22,39 @@ public sealed class CovenantMaintenanceWiringTests
 {
 
     /// <summary>
-    /// Each sweep's entry point, and the file that declares it.
+    /// Each sweep's entry point, the call that reaches it, and the file that declares it.
     /// </summary>
     /// <remarks>
-    /// The declaring file is excluded from the search because a method's own declaration names it, and
-    /// counting that would let a sweep satisfy this rule by existing.
+    /// The needle carries the first argument rather than the method name alone, and that is the whole
+    /// difference between this rule working and looking like it works. Two of the three coordinators
+    /// name their own method after the worker method they drive, so a bare <c>.RunBatchAsync(</c> also
+    /// matches the driver calling the coordinator — sever the coordinator's call to the worker and the
+    /// test stays green over exactly the wiring it exists to catch. Verified by mutation rather than
+    /// reasoned about: with the bare needle, severing that call was invisible.
+    ///
+    /// <para>The declaring file is excluded because a method's own declaration names it, and counting
+    /// that would let a sweep satisfy this rule by existing.</para>
     /// </remarks>
-    public static TheoryData<string, string> Sweeps() => new()
+    public static TheoryData<string, string, string> Sweeps() => new()
     {
-        { "RunBatchAsync", "CovenantCleanupWorker.cs" },
-        { "SynchronizeAsync", "CovenantSearchOutboxWorker.cs" },
-        { "FoldAsync", "CovenantTurnReceiptCompactor.cs" },
+        { "RunBatchAsync", ".RunBatchAsync(lease", "CovenantCleanupWorker.cs" },
+        { "SynchronizeAsync", ".SynchronizeAsync(lease", "CovenantSearchOutboxWorker.cs" },
+        { "FoldAsync", ".FoldAsync(sessionId", "CovenantTurnReceiptCompactor.cs" },
     };
 
     [Theory]
     [MemberData(nameof(Sweeps))]
-    public void Every_maintenance_sweep_is_called_by_production_code(string entryPoint, string declaringFile)
+    public void Every_maintenance_sweep_is_called_by_production_code(
+        string entryPoint,
+        string call,
+        string declaringFile)
     {
 
         string[] callers =
         [
             .. ProductionSourceInventory.Sources()
                 .Where(source => !source.Is(declaringFile))
-                .Where(source => source.Names($".{entryPoint}("))
+                .Where(source => source.Names(call))
                 .Select(static source => source.RelativePath),
         ];
 

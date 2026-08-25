@@ -23,8 +23,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// for the encrypted tier were never applied, so a deleted Campaign's Covenant rows outlived it; the
 /// canonical outbox only ever grew, so the accelerator projection stayed at whatever sequence it was
 /// last left at and the pending-row ceiling was all that stood between an installation and a refusal
-/// it could not act on; and turn receipts accumulated against a per-Session ceiling with nothing able
-/// to fold them.
+/// it could not act on. The compactor is the exception and is driven on the same terms without the
+/// same history: nothing under <c>src</c> writes a <c>covenant_turn_receipts</c> detail row yet, so its
+/// pass finds nothing to fold. It is wired now because everything a producer would otherwise have to
+/// arrive with — the driver, the lease, the bounded discovery, the plan behind it — exists and has
+/// been watched running empty, which is the cheapest state in which to watch a sweep.
 ///
 /// <para>One service for all three rather than three, because they contend for the same two gate
 /// leases and running them in sequence is what keeps a pass from queueing behind itself. Each sweep is
