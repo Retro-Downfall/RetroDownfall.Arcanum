@@ -227,7 +227,37 @@ try {
     Push-Location $sqlcipherSource
 
     try {
-        & nmake /f Makefile.msc sqlite3.c | Out-Null
+        if ($Rid -eq 'win-arm64') {
+
+            # The amalgamation is produced by jimsh0.exe, which this makefile builds from source with
+            # whatever cl.exe is on PATH. Under the arm64 cross toolset that yields an arm64 executable,
+            # and the x64 runner cannot spawn it: NMAKE fails with U1045 and 0x800700d8, 'not compatible
+            # with the version of Windows you're running'. The tool has to be built for the host even
+            # when the library is built for the target. The amalgamation is architecture-independent C,
+            # so generating it under the host toolset changes nothing about what is compiled afterwards.
+            $vcvarsall = Join-Path $env:VCINSTALLDIR 'Auxiliary\Build\vcvarsall.bat'
+
+            if (-not (Test-Path $vcvarsall)) {
+                throw "Cannot locate vcvarsall.bat under VCINSTALLDIR ('$env:VCINSTALLDIR') to build the host amalgamation tool."
+            }
+
+            & cmd.exe /c "`"$vcvarsall`" x64 >nul && nmake /f Makefile.msc sqlite3.c" 2>&1 |
+                Tee-Object -Variable amalgamationLog | Out-Null
+
+            if ($LASTEXITCODE -ne 0) {
+                $amalgamationLog | ForEach-Object { Write-Host $_ }
+            }
+
+        }
+        else {
+
+            & nmake /f Makefile.msc sqlite3.c 2>&1 | Tee-Object -Variable amalgamationLog | Out-Null
+
+            if ($LASTEXITCODE -ne 0) {
+                $amalgamationLog | ForEach-Object { Write-Host $_ }
+            }
+
+        }
     }
     finally {
         Pop-Location
@@ -320,6 +350,11 @@ try {
     $outputSha = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $Output $outputName)).Hash.ToLowerInvariant()
 
     Write-Host "  linked $outputName ($outputSha)"
+
+    # Printed so a reproducibility failure identifies which input moved. Comparing two DLL hashes says
+    # only that something differed; comparing these says whether it was OpenSSL, the amalgamation, or
+    # the compile and link of an identical amalgamation.
+    Write-Host "  inputs: amalgamation=$((Get-FileHash -Algorithm SHA256 -Path $amalgamation).Hash.ToLowerInvariant()) libcrypto=$((Get-FileHash -Algorithm SHA256 -Path $libcrypto).Hash.ToLowerInvariant()) obj=$((Get-FileHash -Algorithm SHA256 -Path $objectFile).Hash.ToLowerInvariant())"
 
     Write-Host '==> Writing build attestation'
 
