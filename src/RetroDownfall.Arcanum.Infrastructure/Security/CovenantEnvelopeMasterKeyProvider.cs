@@ -124,6 +124,15 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
     /// not. The caller keeps no copy: the whole reason this method takes a mutable buffer rather than
     /// a string is that a string cannot be cleared. The returned generation stays caller-owned and
     /// unpublished until the composite runtime holder initializes keys and authority together.
+    ///
+    /// <para>Deliberately does not latch <see cref="CovenantProcessResidence"/>. Startup derives here
+    /// unconditionally, before anything has consulted <c>Arcanum:Features:Covenant</c>, because the
+    /// recovery-keyed families are what let a factory erasure fence protected state on an installation
+    /// that never enabled the feature. Latching for that derivation closed the offline host-tools
+    /// transition on every installation the moment it booted — including inside the offline command's
+    /// own process, which bootstraps the Grimoire before it can run the transition it exists to
+    /// perform. Residence begins where Covenant content does, at
+    /// <see cref="CovenantConnectionSource.GetOpenConnectionAsync"/> (§10.12).</para>
     /// </remarks>
     internal Result<CovenantPreparedEnvelopeKeyGeneration> PrepareInitial(
         Span<byte> masterKeyMaterial,
@@ -131,10 +140,6 @@ internal sealed class CovenantEnvelopeMasterKeyProvider
     {
 
         ArgumentNullException.ThrowIfNull(input);
-
-        // Deriving Covenant envelope keys puts Covenant-authorizing material in this process, so it
-        // latches residence for the same reason a canonical connection does (§10.12).
-        CovenantProcessResidence.MarkOpened();
 
         try
         {

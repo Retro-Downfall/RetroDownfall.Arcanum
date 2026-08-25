@@ -309,6 +309,13 @@ internal sealed class CovenantManagementService(
     /// the census on any authority, dataset, or capability-generation move — all of which happen while
     /// the tier reports itself Healthy. Without the field an operator was shown "available, no
     /// entries" for an installation that was simply not read.</para>
+    ///
+    /// <para>A disabled installation is not censused at all. Health is still answered — that is the
+    /// question a disabled operator is asking — but the scan itself opens a canonical connection,
+    /// which latches <c>CovenantProcessResidence</c> one way and closes the offline host-tools
+    /// transition for the whole process. Paying that for a count nothing wrote is the worst possible
+    /// trade, and it made a bare <c>arcanum memory status</c> enough to close the transition on an
+    /// installation that never enabled Covenant (§10.12).</para>
     /// </remarks>
     public async ValueTask<Result<CovenantStatusDto>> StatusAsync(CancellationToken cancellationToken)
     {
@@ -319,35 +326,40 @@ internal sealed class CovenantManagementService(
 
         CovenantCensusReadState state = CovenantCensusReadState.Refused;
 
-        // The census is attempted unconditionally rather than gated on reported health. The gate
-        // already refuses a capability over a tier it cannot serve, so a health check here would only
-        // duplicate that refusal — and it would suppress the counts of a degraded-but-readable tier,
-        // telling an operator they held nothing when the truth was that search was slower.
-        Result<CovenantInstallationReadLease> lease = await gate
-            .AcquireInstallationReadAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (lease.IsSuccess)
+        // Gated on the feature, and deliberately not on reported health. The gate already refuses a
+        // capability over a tier it cannot serve, so a health check here would only duplicate that
+        // refusal — and it would suppress the counts of a degraded-but-readable tier, telling an
+        // operator they held nothing when the truth was that search was slower.
+        if (snapshot.FeatureEnabled)
         {
 
-            await using CovenantInstallationReadLease owned = lease.Value;
-
-            Result<CovenantScopeCensus> read = await store
-                .ReadScopeCensusAsync(owned, cancellationToken)
+            Result<CovenantInstallationReadLease> lease = await gate
+                .AcquireInstallationReadAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            if (read.IsSuccess)
+            if (lease.IsSuccess)
             {
 
-                census = read.Value;
+                await using CovenantInstallationReadLease owned = lease.Value;
 
-                state = CovenantCensusReadState.Read;
+                Result<CovenantScopeCensus> read = await store
+                    .ReadScopeCensusAsync(owned, cancellationToken)
+                    .ConfigureAwait(false);
 
-            }
-            else
-            {
+                if (read.IsSuccess)
+                {
 
-                state = CovenantCensusReadState.Failed;
+                    census = read.Value;
+
+                    state = CovenantCensusReadState.Read;
+
+                }
+                else
+                {
+
+                    state = CovenantCensusReadState.Failed;
+
+                }
 
             }
 

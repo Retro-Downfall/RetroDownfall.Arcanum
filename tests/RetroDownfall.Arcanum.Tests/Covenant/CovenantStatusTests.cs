@@ -108,6 +108,66 @@ public sealed class CovenantStatusTests
 
     }
 
+    /// <summary>
+    /// A disabled installation is answered for health and is never censused.
+    /// </summary>
+    /// <remarks>
+    /// The census scans the canonical head table, and every canonical read goes through the connection
+    /// accessor that latches <c>CovenantProcessResidence</c>. That latch is one way and forbids the
+    /// offline host-tools transition for the rest of the process, so a bare <c>arcanum memory status</c>
+    /// was enough to close the transition on an installation that had never enabled Covenant — paid for
+    /// a count nothing had written (§10.12).
+    ///
+    /// <para>The gate is asserted to still grant the installation capability first. Without that half,
+    /// <c>Refused</c> would be satisfied just as well by a gate that declined for an unrelated reason,
+    /// and the test would stop distinguishing "not attempted" from "attempted and turned away".</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_disabled_installation_is_answered_without_scanning_the_canonical_tier()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        // Seeded so a census that did run would have something to report, and the empty result below
+        // could not be mistaken for an installation that simply holds nothing.
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "preference.builds",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Run build commands from the repository root.",
+            Token);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(static current => current with { FeatureEnabled = false });
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
+
+        Result<CovenantInstallationReadLease> grantable = await gate.AcquireInstallationReadAsync(Token);
+
+        Assert.True(grantable.IsSuccess, grantable.IsFailure ? grantable.Error.Message : string.Empty);
+
+        await grantable.Value.DisposeAsync();
+
+        Result<CovenantStatusDto> status = await Management(fixture, gate, availability).StatusAsync(Token);
+
+        Assert.True(status.IsSuccess, status.IsFailure ? status.Error.Message : string.Empty);
+
+        Assert.False(status.Value.Enabled);
+
+        // Health is still the answer an operator gets; the count beside it says it was never measured.
+        Assert.True(status.Value.Available);
+
+        Assert.Equal(CovenantCensusReadState.Refused, status.Value.Census);
+
+        Assert.Empty(status.Value.Counts);
+
+        Assert.Equal(0, status.Value.GlobalConfirmedRenderedBytes);
+
+    }
+
     [Fact]
     public async Task An_unreadable_tier_reports_zero_beside_health_that_says_why()
     {

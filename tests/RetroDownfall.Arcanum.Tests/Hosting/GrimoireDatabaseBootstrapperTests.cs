@@ -2,7 +2,9 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -14,6 +16,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
@@ -2904,12 +2907,161 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    /// <summary>
+    /// Bootstrapping with <c>Arcanum:Features:Covenant</c> off must leave Covenant residence unlatched.
+    /// </summary>
+    /// <remarks>
+    /// The latch is what forbids the offline host-tools transition, and it is one-way. Startup latched
+    /// it while taking envelope master material, before any request and before anything consulted the
+    /// feature flag, so an operator who had never enabled Covenant lost the transition the moment the
+    /// host came up — and so did the offline command's own process, which bootstraps the Grimoire
+    /// before it can run the transition it exists to perform (§10.12).
+    ///
+    /// <para>Deriving is not what this test wants stopped. Startup has to keep taking that material on
+    /// a disabled installation, because the recovery-keyed families are what let a factory erasure
+    /// fence protected state, so the assertions below pin the derivation as still happening and the
+    /// authority as still published. What must not happen is the latch.</para>
+    ///
+    /// <para>The assertion is guarded on the latch not already being set, because
+    /// <c>CovenantProcessResidence</c> is process-wide by design and a full-suite run latches it in
+    /// some other class long before this one. Nothing in this class latches it first: the guard is
+    /// evaluated before any Covenant connection is opened here.</para>
+    /// </remarks>
+    [Fact]
+    public async Task EnsureInitializedAsync_WithCovenantDisabled_PublishesAuthorityWithoutLatchingResidence()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        bool alreadyLatched = CovenantProcessResidence.HasOpened;
+
+        IServiceScopeFactory scopes = CreateCovenantAuthorityScopeFactory(
+            _credentialStore,
+            covenantEnabled: false);
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            scopes,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
+
+        // Without this the test could pass because the host-tools gate refused Covenant outright,
+        // which would prove nothing about what a permitted startup does.
+        Assert.True(
+            scope.ServiceProvider.GetRequiredService<HostProcessToolsRuntimePolicy>().CovenantPermitted);
+
+        if (!alreadyLatched)
+        {
+
+            Assert.False(CovenantProcessResidence.HasOpened);
+
+        }
+
+        // The control on the assertion above: "never derive anything" would satisfy it and would take
+        // the erasure fencing of every disabled installation down with it.
+        Assert.NotNull(
+            scope.ServiceProvider.GetRequiredService<CovenantEnvelopeMasterKeyProvider>().Current);
+
+        Result<CovenantInstallationReadLease> lease = await scope.ServiceProvider
+            .GetRequiredService<CovenantOperationGate>()
+            .AcquireInstallationReadAsync(CancellationToken.None);
+
+        Assert.True(lease.IsSuccess);
+
+        await lease.Value.DisposeAsync();
+
+    }
+
+    /// <summary>
+    /// The composition the residence test mirrors is the one the CLI and the host actually build.
+    /// </summary>
+    /// <remarks>
+    /// It registers the authority boundary by hand, because the shared schema fixture omits it. This
+    /// pins that hand-registration to the production graph: if <c>AddArcanumGrimoireForCli</c> ever
+    /// stops composing the key provider, the marker store, or the real environment probe, the
+    /// residence guarantee above would be describing a container no operator ever runs.
+    /// </remarks>
+    [Fact]
+    public void AddArcanumGrimoireForCli_ComposesTheAuthorityBoundaryTheResidenceTestMirrors()
+    {
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+        _ = services.AddArcanumGrimoireForCli();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.NotNull(provider.GetService<CovenantEnvelopeMasterKeyProvider>());
+
+        Assert.NotNull(provider.GetService<HostProcessToolsRuntimePolicy>());
+
+        Assert.NotNull(provider.GetService<IHostProcessToolsMarkerStore>());
+
+        Assert.IsType<HostProcessToolsEnvironmentProbe>(
+            provider.GetService<IHostProcessToolsEnvironmentProbe>());
+
+    }
+
     private bool IsReady()
     {
 
         using IServiceScope scope = _scopeFactory.CreateScope();
 
         return scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>().IsReady;
+
+    }
+
+    /// <summary>
+    /// The schema container plus the real Covenant authority boundary, bound to a feature flag.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the production types rather than the host-tools fakes the other tests use. A fake
+    /// environment probe reports a canned residence value, and residence is the whole subject here.
+    /// </remarks>
+    private static IServiceScopeFactory CreateCovenantAuthorityScopeFactory(
+        IOsCredentialStore credentials,
+        bool covenantEnabled)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<GrimoireDbReadiness>();
+
+        services.AddSingleton<IGrimoireDbReadiness>(
+            static sp => sp.GetRequiredService<GrimoireDbReadiness>());
+
+        services.AddSingleton<IOsCredentialStore>(credentials);
+
+        _ = services.AddGrimoireSchemaInstallation();
+
+        _ = services.AddOptions<ArcanumSettings>()
+            .Configure(settings => settings.Features.Covenant = covenantEnabled);
+
+        services.AddSingleton(
+            static sp => new CovenantEnvelopeMasterKeyProvider(
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
+
+        services.AddSingleton<HostProcessToolsRuntimePolicy>();
+
+        services.AddSingleton<IHostProcessToolsRuntimePolicy>(
+            static sp => sp.GetRequiredService<HostProcessToolsRuntimePolicy>());
+
+        services.AddSingleton<IHostProcessToolsMarkerStore>(
+            static sp => new HostProcessToolsMarkerStore(sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.AddSingleton<IHostProcessToolsEnvironmentProbe>(
+            static sp => new HostProcessToolsEnvironmentProbe(
+                sp.GetRequiredService<IOptions<ArcanumSettings>>()));
+
+        return services
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
 
     }
 
