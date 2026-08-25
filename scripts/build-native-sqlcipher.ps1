@@ -141,9 +141,17 @@ try {
 
     Assert-Sha256 -Path $opensslKeys -Expected $manifest.openssl.publicKeysSha256 -Label 'OpenSSL public keys'
 
-    $env:GNUPGHOME = Join-Path $workDirectory 'gnupg'
+    $gnupgHome = Join-Path $workDirectory 'gnupg'
 
-    New-Item -ItemType Directory -Path $env:GNUPGHOME -Force | Out-Null
+    New-Item -ItemType Directory -Path $gnupgHome -Force | Out-Null
+
+    # Git for Windows ships an MSYS gpg that resolves paths POSIX-style: it reads the leading drive
+    # letter as an ordinary relative segment and resolves the whole value against its own working
+    # directory. A Windows GNUPGHOME therefore became '/d/a/<repo>/C:\Users\...\gnupg', which does
+    # not exist, so gpg reported no writable keyring, imported nothing, and the OpenSSL signature
+    # check failed with 'No public key' on every Windows runner. The directory is created with the
+    # Windows path because PowerShell makes it; only the value handed to gpg is translated.
+    $env:GNUPGHOME = '/' + $gnupgHome.Substring(0, 1).ToLowerInvariant() + ($gnupgHome.Substring(2) -replace '\\', '/')
 
     & gpg --batch --quiet --import $opensslKeys
 
