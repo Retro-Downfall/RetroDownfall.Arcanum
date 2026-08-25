@@ -89,6 +89,13 @@ if (-not $asset) {
 
 $toolchain = $manifest.toolchains | Where-Object { $_.rid -eq $Rid }
 
+# OpenSSL stamps a build date into buildinf.h, and it is linked statically into the library that
+# ships, so without a fixed epoch two clean builds of identical sources differ and the reproducibility
+# proof fails on a difference that says nothing about the sources. /BREPRO already pins the PE
+# header's own timestamp; it does nothing for a date the compiler was handed as a string. The macOS
+# builder exports the same manifest value for the same reason.
+$env:SOURCE_DATE_EPOCH = $manifest.sqlcipher.sourceDateEpoch
+
 $outputName = $asset.outputFileName
 
 $workDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
