@@ -84,6 +84,33 @@ internal static class CovenantStoreSql
         LIMIT 1;
         """;
 
+    /// <summary>
+    /// The three Section measures for one scoped lane, ignoring an explicit key list.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the same shape and the same three columns the quota guard reads inside its write
+    /// transaction. Two statements that measured a Section differently would let a staging preflight
+    /// accept what the commit then refuses, which is the whole failure this query exists to prevent.
+    ///
+    /// <para>It names no key, so neither <c>active</c> partial index applies -- both lead with
+    /// <c>NormalizedKey</c> -- and the planner seeks <c>idx_covenant_heads_campaign_cleanup</c>
+    /// instead. That is the intended plan rather than a missed one: a Section is measured whole, and
+    /// the scope's own entry ceiling is what bounds the rows the seek walks.</para>
+    /// </remarks>
+    internal static string SectionOccupancy(bool campaignScoped, int excludedKeyCount) => $"""
+        SELECT COUNT(*),
+               COALESCE(SUM(h.CompiledByteCost), 0),
+               COALESCE(MAX(v.RequiredFenceLength), 0)
+        FROM covenant_heads h
+        JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
+        WHERE {(campaignScoped ? "h.CampaignId = $campaign" : "h.CampaignId IS NULL")}
+          AND h.LaneCode = $lane
+          AND h.CurrentOperationCode = 1
+          AND {(excludedKeyCount == 0
+              ? "1 = 1"
+              : $"h.NormalizedKey NOT IN ({string.Join(", ", Enumerable.Range(0, excludedKeyCount).Select(static index => $"$key{index}"))})")};
+        """;
+
     internal static string ListPage(
         CovenantOperationScope? scope,
         bool laneFiltered,

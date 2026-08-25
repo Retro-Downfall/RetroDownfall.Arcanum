@@ -82,6 +82,62 @@ public sealed class CovenantQueryPlanTests
 
     }
 
+    /// <summary>
+    /// The Section occupancy read a live staging call makes, in both scopes and with and without
+    /// keys to set aside.
+    /// </summary>
+    /// <remarks>
+    /// This one runs on the inference hot path -- once per proposal -- rather than on an operator
+    /// surface, so a scan here would be paid by every turn in which the agent proposes. The excluded
+    /// key list changes the statement's text, so both shapes are explained: a plan proved for the
+    /// unfiltered form says nothing about the form the second proposal in a turn actually issues.
+    /// </remarks>
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(true, 2)]
+    [InlineData(false, 0)]
+    [InlineData(false, 2)]
+    public async Task The_section_occupancy_read_searches_its_scope_index(bool campaignScoped, int excludedKeys)
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        List<(string Name, object Value)> parameters = [("$lane", 1)];
+
+        if (campaignScoped)
+        {
+
+            parameters.Add(("$campaign", CovenantOperationGateFixture.CampaignOne.ToString("D")));
+
+        }
+
+        for (int index = 0; index < excludedKeys; index++)
+        {
+
+            parameters.Add(($"$key{index}", $"excluded.key{index}"));
+
+        }
+
+        string plan = await ExplainAsync(
+            fixture,
+            CovenantStoreSql.SectionOccupancy(campaignScoped, excludedKeys),
+            parameters);
+
+        // Not one of the two "active" partial indexes: both lead with NormalizedKey, and a Section
+        // measurement deliberately names no key. The scope index is the right seek for it -- an
+        // equality lookup on the Campaign, bounded by the per-scope entry ceiling -- and it is the
+        // same seek the quota guard's own occupancy read takes inside the commit transaction, which
+        // is what keeps the preflight and the authority measuring the same rows.
+        Assert.Contains("SEARCH h USING INDEX idx_covenant_heads_campaign_cleanup", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN h", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN v", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task The_stable_list_page_uses_the_entry_and_version_keys()
     {
