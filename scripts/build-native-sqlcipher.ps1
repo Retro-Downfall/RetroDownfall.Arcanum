@@ -98,7 +98,16 @@ $env:SOURCE_DATE_EPOCH = $manifest.sqlcipher.sourceDateEpoch
 
 $outputName = $asset.outputFileName
 
-$workDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+# Fixed rather than random, and that is the difference between reproducing and not. OpenSSL compiles
+# its own build command line into buildinf.h, and that command line carries the include paths of the
+# work area; the amalgamation then includes OpenSSL's headers, so the path reaches the object as well.
+# Two runs under two random directories therefore produced a different libcrypto and a different object
+# from a byte-identical amalgamation, which is exactly what the input fingerprints showed. The name is
+# per-RID so two RIDs built side by side do not share one area, and the directory is cleared on entry
+# because a fixed path is a path that can survive a crash.
+$workDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "arcanum-sqlcipher-$Rid"
+
+Remove-Item -Recurse -Force -Path $workDirectory -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Path $workDirectory -Force | Out-Null
 
