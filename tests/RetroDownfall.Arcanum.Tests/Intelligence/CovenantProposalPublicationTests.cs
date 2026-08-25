@@ -297,12 +297,14 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
                 + content.CampaignProposed.Length),
             static fragment => (ulong)fragment.Length);
 
-        // Resolved by the gate, never asserted by the test. This is the decision that routes a
-        // finalization through the batch-aware committer at all, so a hand-made sensitivity here
-        // would let the whole publication path pass on a label production never produced.
+        // Resolved by the gate, never asserted into it. A first proposal is authored on a turn that
+        // showed the provider no Covenant bytes at all, so the honest label is None — and the receipt
+        // below has to be minted anyway, because the staging capability is minted from it. Asserting
+        // the label here is what stops this file from quietly reverting to the tainted arm, which is
+        // the arm it used to manufacture for itself.
         ProviderCallSensitivity sensitivity = CovenantDispatchGate.ResolveSensitivity(scope, plan);
 
-        Assert.Equal(ContentSensitivity.CovenantDerived, sensitivity.Level);
+        Assert.Equal(ContentSensitivity.None, sensitivity.Level);
 
         Result<CovenantDispatchAdmission> admitted = await gate.AcknowledgeDispatchAsync(
             scope,
@@ -556,6 +558,16 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The Session and the assistant placeholder a turn finalizes into, and nothing more.
+    /// </summary>
+    /// <remarks>
+    /// No sensitivity label. This file used to write one itself and then assert the taint it had just
+    /// written, which meant every assertion below it ran on the tainted arm — an arm no installation
+    /// reaches until some turn has already published a proposal. A first proposal is authored on a
+    /// clean Session against an empty Covenant, so that is the state seeded here, and the label the
+    /// gate resolves for it is checked rather than supplied.
+    /// </remarks>
     private async Task<(Guid SessionId, Guid AssistantEntryId)> SeedTurnAsync()
     {
 
@@ -586,19 +598,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             Sequence = 1L,
         });
 
-        Guid priorReplyId = Guid.NewGuid();
-
-        _ = _db.Entries.Add(new Entry
-        {
-            Id = priorReplyId,
-            SessionId = sessionId,
-            Role = MessageRole.Assistant,
-            Content = "an earlier Covenant-derived reply",
-            ModelUsed = "test-model",
-            CreatedAt = now,
-            Sequence = 2L,
-        });
-
         _ = _db.Entries.Add(new Entry
         {
             Id = assistantEntryId,
@@ -607,29 +606,10 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             Content = string.Empty,
             ModelUsed = "test-model",
             CreatedAt = now,
-            Sequence = 3L,
+            Sequence = 2L,
         });
 
         _ = await _db.SaveChangesAsync(CancellationToken.None);
-
-        // Labelled through the real ledger, not asserted into the gate. A Session that already
-        // holds Covenant-derived history is the ordinary reason a live turn is protected, and it is
-        // the fact the dispatch gate reads to decide that for itself.
-        Result<LabeledArtifactWriteReceipt> labelled = await new ArtifactSensitivityLedger(
-            new FixedCovenantConnectionSource(Connection())).LabelAsync(
-            new DerivedArtifactWrite(
-                SensitiveArtifactKind.AssistantEntry,
-                priorReplyId,
-                sessionId,
-                CampaignId,
-                null,
-                artifactRevision: 1,
-                DerivedArtifactContentDigest.ForText("an earlier Covenant-derived reply"),
-                ContentSensitivity.CovenantDerived,
-                GenerationProvenance.CreateExact([Guid.NewGuid()])),
-            CancellationToken.None);
-
-        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : null);
 
         return (sessionId, assistantEntryId);
 

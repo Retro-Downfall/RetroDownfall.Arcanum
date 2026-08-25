@@ -63,6 +63,15 @@ public sealed record CovenantMutationPreflightDto(
     string? RenderedHash,
     long? CompiledByteCost,
     long CurrentLaneRevision,
+
+    /// <summary>The revision the request said it expected, carried back beside the live one.</summary>
+    /// <remarks>
+    /// Both numbers travel because only the pair can be compared. The commit refuses when they
+    /// differ, and a preview that reported the head alone rendered a screen every line of which was
+    /// true and which described a write that could not succeed — so the operator approved it and was
+    /// then refused, with a message naming neither number.
+    /// </remarks>
+    long ExpectedLaneRevision,
     long KeyEpoch,
     CovenantMutationEffectDto Effect,
     DateTimeOffset IssuedAtUtc,

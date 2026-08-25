@@ -89,6 +89,13 @@ public sealed class CovenantCommands(
 
         }
 
+        if (RevisionConflict(prepared.Value, "write") is { } writeConflict)
+        {
+
+            return writeConflict;
+
+        }
+
         if (!await ConfirmAsync(prepared.Value, "Write", cancellationToken).ConfigureAwait(false))
         {
 
@@ -138,6 +145,13 @@ public sealed class CovenantCommands(
         {
 
             return Fail(prepared.Error, CliExitCode.GenericError);
+
+        }
+
+        if (RevisionConflict(prepared.Value, "retirement") is { } retireConflict)
+        {
+
+            return retireConflict;
 
         }
 
@@ -460,6 +474,40 @@ public sealed class CovenantCommands(
             ? $"{label}: none"
             : $"{label}: revision {head.LaneRevision}, {head.CompiledByteCost} bytes, {head.Origin}, "
                 + $"updated {head.UpdatedAtUtc:u}");
+
+    }
+
+    /// <summary>
+    /// Refuses a write the commit would refuse, before the operator is asked to approve it.
+    /// </summary>
+    /// <remarks>
+    /// The two numbers are compared here because the confirmation screen cannot tell them apart: it
+    /// reports the head, every line of it is true, and it describes a write that the kernel will
+    /// refuse the moment it is approved — with a message that names neither the revision the operator
+    /// needed nor the flag that carries it. Omitting <c>--expected-revision</c> sends zero, so the
+    /// natural command for updating an existing preference is exactly the one that fails.
+    ///
+    /// <para>An exit code rather than a cancellation. Nobody cancelled anything, and a script that
+    /// read success here would go on believing the preference had changed.</para>
+    /// </remarks>
+    private int? RevisionConflict(CovenantMutationPreflightDto preflight, string noun)
+    {
+
+        if (preflight.ExpectedLaneRevision == preflight.CurrentLaneRevision)
+        {
+
+            return null;
+
+        }
+
+        dispatcher.WriteDiagnostic(
+            $"This {noun} expects revision {preflight.ExpectedLaneRevision}, but the {preflight.Lane} lane "
+            + $"is at revision {preflight.CurrentLaneRevision}. It would be refused, so nothing was asked or written.");
+
+        dispatcher.WriteDiagnostic(
+            $"Re-run with --expected-revision {preflight.CurrentLaneRevision} to act on what is there now.");
+
+        return (int)CliExitCode.ConfigurationError;
 
     }
 

@@ -2945,7 +2945,10 @@ public sealed partial class WizardIntelligenceProvider(
                     // Disclosure precedes egress. Every physical dispatch that carries admitted
                     // Covenant content or tainted history commits its own durable receipt here, before
                     // the executor is reached; a receipt written afterwards could not record the one
-                    // case it exists for, a call that left the process and then crashed.
+                    // case it exists for, a call that left the process and then crashed. A turn that
+                    // may stage also passes through, discloses nothing, and earns the admission its
+                    // proposal tool runs under — the two obligations are separate, and treating them
+                    // as one is what made a first proposal impossible to author.
                     Result<CovenantDispatchAdmission?> streamCovenantGate = await AcknowledgeCovenantDispatchAsync(
                             covenantScope,
                             streamCovenantDispatch,
@@ -6875,9 +6878,16 @@ public sealed partial class WizardIntelligenceProvider(
     /// Commits this dispatch's Covenant evidence, or refuses to let the bytes leave.
     /// </summary>
     /// <remarks>
-    /// The one pre-egress obligation of the turn loop. A clean call on a clean Session returns success
-    /// without touching the database, freezing an envelope, or allocating a receipt — that is what keeps
-    /// the disabled path identical to the path that existed before the Covenant did.
+    /// The one pre-egress obligation of the turn loop. A clean call on a clean Session that cannot
+    /// stage anything returns success without touching the database, freezing an envelope, or
+    /// allocating a receipt — that is what keeps the disabled path identical to the path that existed
+    /// before the Covenant did.
+    ///
+    /// <para>A turn that may stage is not that turn, even when it admitted nothing. Its admission
+    /// receipt is the sole authority a staging tool call runs under, so withholding one because no
+    /// Covenant bytes were injected leaves the proposal tool advertised and permanently refused on
+    /// every installation whose Covenant is still empty — which is every installation until some turn
+    /// authors the first proposal, and none ever can.</para>
     ///
     /// <para>Every other call fails closed. A frozen envelope that cannot be built, an installation
     /// with no established authority, and a journal that cannot commit are all refusals, because each
@@ -6903,7 +6913,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         }
 
-        if (!dispatch.HasAdmittedContent && !scope.HistoryTainted)
+        if (!dispatch.HasAdmittedContent && !scope.HistoryTainted && !scope.MayStage)
         {
 
             return Result<CovenantDispatchAdmission?>.Success(null);

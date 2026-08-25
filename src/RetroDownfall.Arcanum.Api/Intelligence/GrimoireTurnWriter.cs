@@ -847,15 +847,16 @@ public sealed class GrimoireTurnWriter(
     }
 
     /// <summary>
-    /// Commits a Covenant-derived reply, its sensitivity label, and this turn's staged Covenant
-    /// batch in one transaction.
+    /// Commits a reply, its sensitivity label, and this turn's staged Covenant batch in one
+    /// transaction.
     /// </summary>
     /// <remarks>
     /// Returns <see langword="false"/> — "not mine" — for the ordinary reply, which continues through the
-    /// unchanged finalize path. Only a reply the turn already proved Covenant-derived comes here, and
-    /// for that reply the label is not optional decoration: the next turn decides whether it owes a
-    /// disclosure by reading exactly this row, so a response persisted without its label is a response
-    /// that silently launders taint out of the Session.
+    /// unchanged finalize path. A reply the turn proved Covenant-derived comes here because for that
+    /// reply the label is not optional decoration: the next turn decides whether it owes a disclosure
+    /// by reading exactly this row, so a response persisted without its label is a response that
+    /// silently launders taint out of the Session. A reply carrying a staged batch comes here too,
+    /// whatever its label, because the batch and the answer share a fate.
     ///
     /// <para>The turn's collector is sealed here rather than by the caller, because sealing and
     /// publishing have to share one failure envelope. A batch frozen earlier would be a sealed
@@ -876,8 +877,15 @@ public sealed class GrimoireTurnWriter(
         CancellationToken cancellationToken)
     {
 
+        // Two independent reasons to come here, and neither implies the other. A Covenant-derived
+        // reply owes its label; a turn holding a staged batch owes an atomic publication. The first
+        // proposal an agent ever authors has the second without the first — its Covenant was empty,
+        // so the call that carried the proposal tool showed the provider no Covenant bytes at all —
+        // and selecting the committer on the label alone refused exactly that turn.
+        bool owesLabel = sensitivity is { Level: ContentSensitivity.CovenantDerived };
+
         if (turnCommitter is null
-            || sensitivity is not { Level: ContentSensitivity.CovenantDerived }
+            || (!owesLabel && covenantCommit is null)
             || handle.SessionId is not { } sessionId)
         {
 
@@ -931,8 +939,12 @@ public sealed class GrimoireTurnWriter(
                     AssistantFinalizationOutcome.Committed,
                     finalText,
                     RequestIdentity(sessionId, finalizeId),
-                    sensitivity.Level,
-                    sensitivity.Provenance,
+
+                    // An unlabelled staging turn commits its batch under the label it actually
+                    // earned. Borrowing CovenantDerived to reach this committer would taint a reply
+                    // that carries no Covenant bytes, and every later turn in the Session with it.
+                    sensitivity?.Level ?? ContentSensitivity.None,
+                    sensitivity?.Provenance ?? GenerationProvenance.CreateExact([]),
                     finalReceiptDigest: null,
                     mutations,
                     mutationBinding),

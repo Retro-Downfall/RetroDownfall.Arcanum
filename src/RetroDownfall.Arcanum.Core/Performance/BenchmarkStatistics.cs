@@ -209,9 +209,12 @@ internal sealed record BenchmarkRatioInterval(double ObservedRatio, double Lower
 /// The paired bootstrap behind the comparative gate.
 /// </summary>
 /// <remarks>
-/// Paired because the two revisions are co-run in randomized interleaved batches: comparing batch to
-/// batch cancels the drift a machine accumulates over a long run, which comparing pooled samples
-/// would leave in the answer.
+/// Paired by batch ordinal across two separately recorded runs on one host. There is no co-run mode:
+/// <c>--compare</c> deserializes a baseline some other process recorded at some other time, so batch
+/// i of each side shares an ordinal and nothing else. Comparing batch to batch is still worth more
+/// than comparing pooled samples — it holds position in the run fixed — but it cannot cancel drift a
+/// machine accumulated between the two runs, and reading it as though it could is how a comparison
+/// that only ever says "not worse" gets mistaken for a measurement.
 /// </remarks>
 internal static class BenchmarkComparison
 {

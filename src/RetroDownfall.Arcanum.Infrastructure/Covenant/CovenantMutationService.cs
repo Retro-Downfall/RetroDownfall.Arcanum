@@ -306,6 +306,7 @@ internal sealed class CovenantMutationService(
             compiled is null ? null : Hex(compiled.FragmentHash),
             compiled?.FragmentUtf8ByteCount,
             currentRevision,
+            expectedRevision,
             effect.Value.KeyEpoch,
             EffectDto(effect.Value, scope, compiled),
             issuedAt,

@@ -24,6 +24,7 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -1080,6 +1081,37 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new FakeGrimoireRepository(),
             covenantDispatch,
             auditLogger,
+            covenantToolCapabilities: null,
+            turnCommitter: null,
+            providers);
+
+    /// <summary>
+    /// The same construction again, with the durable half of the staging path composed as well.
+    /// </summary>
+    /// <remarks>
+    /// A turn that may author a proposal needs three things production always supplies together and
+    /// tests have never supplied at all: the gate that mints the admission, the registry the tool
+    /// binding hands a capability through, and a Grimoire that can commit the answer and the staged
+    /// batch in one transaction. Composing two of the three produces a turn that stages and then
+    /// refuses its own finalization, which reads as a Covenant failure rather than as a gap in the
+    /// harness.
+    /// </remarks>
+    internal static WizardIntelligenceProvider CreateCovenantStagingWizard(
+        IChatClientFactory factory,
+        CovenantDispatchGate covenantDispatch,
+        CovenantToolCapabilityRegistry covenantToolCapabilities,
+        IGrimoireRepository grimoire,
+        IGrimoireTurnCommitter turnCommitter,
+        params ProviderSettings[] providers) =>
+        CreateWizard(
+            factory,
+            healthTracker: null,
+            withHealthTracker: false,
+            grimoire,
+            covenantDispatch,
+            auditLogger: null,
+            covenantToolCapabilities,
+            turnCommitter,
             providers);
 
     private static WizardIntelligenceProvider CreateWizard(
@@ -1101,15 +1133,17 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         bool withHealthTracker,
         FakeGrimoireRepository grimoire,
         params ProviderSettings[] providers) =>
-        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, providers);
+        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, null, null, providers);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
         IProviderHealthTracker? healthTracker,
         bool withHealthTracker,
-        FakeGrimoireRepository grimoire,
+        IGrimoireRepository grimoire,
         CovenantDispatchGate? covenantDispatch,
         FakeInferenceAuditLogger? auditLogger,
+        CovenantToolCapabilityRegistry? covenantToolCapabilities,
+        IGrimoireTurnCommitter? turnCommitter,
         params ProviderSettings[] providers)
     {
 
@@ -1150,7 +1184,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 grimoire,
                 grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
                 new SessionEventHub(NullLogger<SessionEventHub>.Instance),
-                NullLogger<GrimoireTurnWriter>.Instance),
+                NullLogger<GrimoireTurnWriter>.Instance,
+                turnCommitter),
             CreateInferenceContextBuilder(grimoire, settings),
             sanctumGuard,
             new ProcessResourceLimiter(),
@@ -1180,7 +1215,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
             withHealthTracker ? healthTracker : null,
-            covenantDispatch: covenantDispatch);
+            covenantDispatch: covenantDispatch,
+            covenantToolCapabilities: covenantToolCapabilities);
     }
 
     private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(

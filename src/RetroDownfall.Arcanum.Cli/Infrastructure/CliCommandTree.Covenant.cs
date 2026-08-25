@@ -143,6 +143,11 @@ internal static partial class CliCommandTree
         Option<long> retireRevision = new("--expected-revision")
         {
             Description = "The exact lane revision being retired.",
+
+            // Required, because zero is not a value a retirement can ever mean. A live head is never
+            // at revision zero, so an omitted flag would send the one number guaranteed to be refused
+            // — after the operator had already approved the screen describing the write.
+            Required = true,
         };
 
         retire.Add(retireKey);

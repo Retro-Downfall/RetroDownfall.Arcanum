@@ -216,11 +216,120 @@ public sealed class CovenantCommandTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A write whose expectation cannot match is refused before the operator is asked.
+    /// </summary>
+    /// <remarks>
+    /// <c>--expected-revision</c> has no default, so omitting it sends zero, and zero means "create".
+    /// Against a lane that already has a head the commit refuses with <c>Covenant.RevisionConflict</c>
+    /// — a message that names neither the revision the operator needed nor the flag that carries it —
+    /// and it does so only after they had approved a confirmation screen every line of which was true.
+    /// The natural command for updating an existing preference was therefore the one that always
+    /// failed, and the assertion here is that nothing was asked and nothing was written.
+    /// </remarks>
+    [Fact]
+    public async Task A_write_against_a_stale_expectation_is_refused_before_the_question_is_put()
+    {
+
+        RecordingHandler handler = new() { HeadRevision = 3 };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile("Run build commands from the repository root."),
+            expectedRevision: 0,
+            reactivate: false,
+            Token);
+
+        Assert.NotEqual(0, exitCode);
+
+        // The confirmation answers yes in this fixture, so reaching the commit route would mean the
+        // operator had been asked and their approval spent on a write that could not succeed.
+        Assert.Equal(["POST /api/memory/covenant/set/prepare"], handler.Requests);
+
+        string said = string.Join("\n", dispatcher.Diagnostics);
+
+        // The number the operator needs, not just the fact that something is stale.
+        Assert.Contains("revision 3", said, StringComparison.Ordinal);
+
+        Assert.Contains("--expected-revision 3", said, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The same write, once its expectation matches the head, still reaches the commit route.
+    /// </summary>
+    /// <remarks>
+    /// Paired with the refusal above so the guard cannot be "refuse everything": a comparison that
+    /// rejected every write would satisfy the test that only asserts the stale one is caught.
+    /// </remarks>
+    [Fact]
+    public async Task A_write_whose_expectation_matches_the_head_still_commits()
+    {
+
+        RecordingHandler handler = new() { HeadRevision = 3 };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out _);
+
+        int exitCode = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile("Run build commands from the repository root."),
+            expectedRevision: 3,
+            reactivate: false,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Equal(
+            ["POST /api/memory/covenant/set/prepare", "PUT /api/memory/covenant"],
+            handler.Requests);
+
+    }
+
+    /// <summary>
+    /// Retirement refuses to run at all without the revision it is retiring.
+    /// </summary>
+    /// <remarks>
+    /// A live head is never at revision zero, so an omitted flag on this verb is not a stale
+    /// expectation an operator might reasonably hold — it is the one value that can never succeed.
+    /// Refusing at parse time is what stops the command from reaching a preflight and a confirmation
+    /// screen on the way to a guaranteed refusal.
+    /// </remarks>
+    [Fact]
+    public void A_retirement_without_an_expected_revision_never_reaches_a_route()
+    {
+
+        RecordingHandler handler = new();
+
+        ParseResult parsed = Tree(handler).Parse("memory covenant retire preference.builds");
+
+        Assert.NotEmpty(parsed.Errors);
+
+        StringWriter output = new();
+
+        int exitCode = parsed.Invoke(new InvocationConfiguration
+        {
+            EnableDefaultExceptionHandler = false,
+            Output = output,
+            Error = output,
+        });
+
+        Assert.NotEqual(0, exitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--expected-revision", output.ToString(), StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task A_declined_retirement_never_reaches_the_commit_route()
     {
 
-        RecordingHandler handler = new();
+        RecordingHandler handler = new() { HeadRevision = 1 };
 
         CovenantCommands commands = Commands(handler, confirm: false, out _);
 
@@ -311,7 +420,7 @@ public sealed class CovenantCommandTests : IDisposable
     public async Task The_confirmation_screen_names_the_lane_the_server_resolved()
     {
 
-        RecordingHandler handler = new();
+        RecordingHandler handler = new() { HeadRevision = 1 };
 
         CovenantCommands commands = Commands(handler, confirm: false, out RecordingDispatcher dispatcher);
 
@@ -679,6 +788,9 @@ public sealed class CovenantCommandTests : IDisposable
 
         internal bool EmptyList { get; init; }
 
+        /// <summary>The revision the stubbed head sits at, as the preflight would report it.</summary>
+        internal long HeadRevision { get; init; }
+
         /// <summary>How many list pages exist before the cursor runs out.</summary>
         internal int ListPages { get; init; } = 1;
 
@@ -702,7 +814,10 @@ public sealed class CovenantCommandTests : IDisposable
             if (path.EndsWith("prepare", StringComparison.Ordinal))
             {
 
-                body = Preflight();
+                // Echoed from the request, exactly as the service echoes it. A stub that reported its
+                // own expectation could never disagree with the head, which is the disagreement the
+                // confirmation path exists to catch.
+                body = Preflight(HeadRevision, ExpectedRevisionOf(Bodies[^1]));
 
             }
             else if (path.EndsWith("list", StringComparison.Ordinal))
@@ -807,7 +922,28 @@ public sealed class CovenantCommandTests : IDisposable
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantVersionPageDto);
 
-        private static string Preflight() =>
+        private static long ExpectedRevisionOf(string requestBody)
+        {
+
+            using JsonDocument parsed = JsonDocument.Parse(requestBody);
+
+            foreach (JsonProperty property in parsed.RootElement.EnumerateObject())
+            {
+
+                if (string.Equals(property.Name, "expectedRevision", StringComparison.OrdinalIgnoreCase))
+                {
+
+                    return property.Value.GetInt64();
+
+                }
+
+            }
+
+            return 0;
+
+        }
+
+        private static string Preflight(long headRevision, long expectedRevision) =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantMutationPreflightDto>.FromResult(
                     Result<CovenantMutationPreflightDto>.Success(new CovenantMutationPreflightDto(
@@ -821,7 +957,8 @@ public sealed class CovenantCommandTests : IDisposable
                         "11",
                         RenderedHash,
                         4096,
-                        0,
+                        headRevision,
+                        expectedRevision,
                         1,
                         new CovenantMutationEffectDto(
                             CovenantEffectDecision.HeadCreated,

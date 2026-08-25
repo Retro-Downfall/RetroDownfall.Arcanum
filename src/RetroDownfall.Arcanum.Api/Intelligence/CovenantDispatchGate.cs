@@ -127,6 +127,17 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     /// <summary>The bounded head read this turn's staging tool calls may make.</summary>
     public ICovenantTurnHeadProbe? HeadProbe => _context.HeadProbe;
 
+    /// <summary>Whether this turn is provisioned to stage a Covenant mutation of its own.</summary>
+    /// <remarks>
+    /// Read from the collector and the probe rather than from the invocation context, because those
+    /// two are minted from exactly that predicate and are what a staging tool call actually needs.
+    /// The dispatch path holds this scope and not the context that produced it, so deriving the
+    /// answer here is what stops the admission decision and the provisioning decision from drifting
+    /// apart — which they had, in the direction that made the first proposal on an empty Covenant
+    /// impossible to author.
+    /// </remarks>
+    public bool MayStage => _context.Collector is not null && _context.HeadProbe is not null;
+
     /// <summary>The unpressured content this plan would inject before any budget is applied.</summary>
     public CovenantPromptContent PlanContent => _context.PlanContent;
 
@@ -416,9 +427,15 @@ public sealed class CovenantDispatchGate(
     /// Commits this attempt's admission receipt and its durable disclosure, before dispatch.
     /// </summary>
     /// <remarks>
-    /// A clean call on a clean Session performs no database work at all and returns no receipt — that
-    /// absence is the disabled-path guarantee, not an oversight. Every other call fails closed: if the
+    /// A clean call on a clean Session performs no database work at all — that absence is the
+    /// disabled-path guarantee, not an oversight. Every call that discloses fails closed: if the
     /// journal cannot commit, the bytes do not leave.
+    ///
+    /// <para>A receipt and a disclosure are separate obligations, not two names for one. Showing the
+    /// provider Covenant bytes is what owes a disclosure; holding the collector and the head probe is
+    /// what owes an admission, because that receipt is the whole of a staging tool call's authority.
+    /// A clean turn on an empty Covenant owes the second and not the first, and that is the turn on
+    /// which an agent authors its first proposal.</para>
     /// </remarks>
     public async ValueTask<Result<CovenantDispatchAdmission>> AcknowledgeDispatchAsync(
         CovenantTurnScope scope,
@@ -438,8 +455,24 @@ public sealed class CovenantDispatchGate(
         if (sensitivity.Level is not ContentSensitivity.CovenantDerived)
         {
 
+            // Nothing Covenant-derived is leaving, so there is nothing to disclose and the reply this
+            // call produces stays unlabelled. A turn that may stage still earns its admission here:
+            // the staging capability is minted from that receipt and from nothing else, so a gate
+            // that returned none would advertise the proposal tool on every healthy installation and
+            // refuse every call it ever made against an empty Covenant.
+            CovenantAdmissionReceipt? stagingAdmission = scope.MayStage
+                ? BuildReceipt(scope, plan, providerCall, scope.NextAttemptOrdinal())
+                : null;
+
+            if (stagingAdmission is not null)
+            {
+
+                scope.RecordAdmitted(stagingAdmission);
+
+            }
+
             return Result<CovenantDispatchAdmission>.Success(
-                new CovenantDispatchAdmission(null, null, sensitivity));
+                new CovenantDispatchAdmission(stagingAdmission, null, sensitivity));
 
         }
 
