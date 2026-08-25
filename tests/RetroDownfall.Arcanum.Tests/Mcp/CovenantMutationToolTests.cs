@@ -47,52 +47,54 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task The_proposal_tool_advertises_a_hand_authored_input_and_output_schema()
+    public void The_hand_authored_schemas_still_refuse_to_represent_authority()
     {
-        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
-
-        McpToolsListResultWire tools = await session.ListToolsAsync();
-
-        McpToolDefinitionWire propose = Assert.Single(
-            tools.Tools,
-            static tool => tool.Name == CovenantToolNames.ProposeCovenant);
-
+        // Both tools are withheld from tools/list, so the schemas are read from the builders rather
+        // than off the wire. The omissions are the contract that has to survive the withdrawal: a
+        // schema that decayed while nobody could see it would be the wrong thing to advertise again.
+        JsonElement propose = ArcanumInternalToolServer.BuildProposeCovenantSchema();
         JsonElement retire = ArcanumInternalToolServer.BuildRetireCovenantSchema();
 
-        Assert.Equal(["content", "key"], PropertyNames(propose.InputSchema));
+        Assert.Equal(["content", "key"], PropertyNames(propose));
         Assert.Equal(["key", "lane"], PropertyNames(retire));
-        Assert.NotNull(propose.OutputSchema);
 
         // Everything an agent could use to widen its own reach is absent from the wire, not merely
         // rejected by the server.
         foreach (string forbidden in (string[])["scope", "campaignId", "origin", "lifecycle", "revision", "attachment_id"])
         {
-            Assert.DoesNotContain(forbidden, PropertyNames(propose.InputSchema));
+            Assert.DoesNotContain(forbidden, PropertyNames(propose));
             Assert.DoesNotContain(forbidden, PropertyNames(retire));
         }
     }
 
     [Fact]
-    public async Task Retirement_is_withheld_from_the_advertised_set_it_cannot_be_granted_from()
+    public async Task Neither_mutation_tool_is_advertised_on_a_healthy_tier_it_cannot_deliver_from()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
         McpToolsListResultWire tools = await session.ListToolsAsync();
 
-        // A healthy Covenant tier advertises exactly the tools a turn can mint a capability for.
-        // Minting a retirement capability needs the preflight disclosure and Ward receipt no
-        // production caller builds, so every retirement would refuse; advertising it anyway teaches a
-        // model that the capability is broken rather than absent.
-        Assert.Contains(tools.Tools, static tool => tool.Name == CovenantToolNames.ProposeCovenant);
+        // A healthy Covenant tier advertises exactly the tools this build can actually honor, which
+        // is neither of them. Retirement cannot be granted at all: minting its capability needs the
+        // preflight disclosure and Ward receipt no production caller builds. Proposal can be granted
+        // and staged, and then goes nowhere: nothing under src/ seals a turn's collector, so the
+        // staged intent is discarded when the turn ends. Advertising either one teaches a model that
+        // the capability works, and the proposal tool is the worse of the two because it answers with
+        // a success the operator will never see the effect of.
+        Assert.DoesNotContain(tools.Tools, static tool => tool.Name == CovenantToolNames.ProposeCovenant);
         Assert.DoesNotContain(tools.Tools, static tool => tool.Name == CovenantToolNames.RetireCovenant);
 
-        // The handler stays registered regardless, so a stale or direct invocation still fails closed
+        // Both handlers stay registered regardless, so a stale or direct invocation still fails closed
         // rather than reaching an unregistered name.
-        McpToolsCallResultWire refused = await session.CallRetireAsync(
+        McpToolsCallResultWire refusedRetire = await session.CallRetireAsync(
             "campaign.a",
             nameof(CovenantLane.Proposed));
 
-        Assert.Equal(ErrorCodes.Covenant.IneligibleTurn, Failure(refused).Code);
+        Assert.Equal(ErrorCodes.Covenant.IneligibleTurn, Failure(refusedRetire).Code);
+
+        McpToolsCallResultWire refusedPropose = await session.CallProposeAsync("campaign.a", "concise");
+
+        Assert.Equal(ErrorCodes.Covenant.IneligibleTurn, Failure(refusedPropose).Code);
     }
 
     [Fact]
@@ -161,7 +163,7 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task A_proposal_answers_the_model_that_the_change_is_staged_and_not_written()
+    public async Task A_proposal_tells_the_model_the_staged_change_is_discarded_rather_than_stored()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
@@ -172,7 +174,16 @@ public sealed class CovenantMutationToolTests
         string text = Assert.Single(result.Content).Text;
 
         Assert.Contains("staged", text, StringComparison.OrdinalIgnoreCase);
+
+        // The receipt has to name the disposition that actually happens. Nothing under src/ seals the
+        // turn's collector, so a staged proposal is dropped when the turn ends; a receipt that only
+        // said "staged" would let the model report a stored preference to the operator.
+        Assert.Contains("discarded", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("never sees it", text, StringComparison.OrdinalIgnoreCase);
+
+        // The old text promised a write conditional on the turn being saved. There is no such write.
         Assert.DoesNotContain("saved to", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("only if this turn's answer is saved", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

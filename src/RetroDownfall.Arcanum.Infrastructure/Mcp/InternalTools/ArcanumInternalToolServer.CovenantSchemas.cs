@@ -13,11 +13,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// schemas, so agent-originated Global mutation is unrepresentable on the wire as well as refused by
 /// the server. The output schemas carry no secret, no raw provenance content, and no operator
 /// authority field (§10.14).
+///
+/// <para>Both tools are withheld from <c>tools/list</c> in this build, so these schemas are built
+/// and held rather than advertised. They are kept exact anyway: the omissions are the contract the
+/// wire has to keep whenever either tool is advertised again, and a schema that decayed while
+/// nobody could see it would be the wrong thing to turn back on.</para>
 /// </remarks>
 internal sealed partial class ArcanumInternalToolServer
 {
 
-    private static JsonElement BuildProposeCovenantSchema()
+    /// <summary>
+    /// Visible to tests for the same reason the retirement schema is: neither tool is advertised in
+    /// this build, so nothing else can reach the shape to prove it still refuses to represent scope,
+    /// Campaign id, origin, lifecycle, revision, or attachment identity on the wire.
+    /// </summary>
+    internal static JsonElement BuildProposeCovenantSchema()
     {
         return BuildSchema(static w =>
         {
@@ -130,8 +140,9 @@ internal sealed partial class ArcanumInternalToolServer
 
             w.WriteString(
                 "description",
-                "\"staged\" means the change will be published only if this turn's answer is itself "
-                + "persisted. It never means the change has already been written.");
+                "\"staged\" means the change was accepted into this turn and nothing more. It never means "
+                + "the change has been written, and in this build it never will be: the turn discards "
+                + "staged mutations when it ends.");
 
             w.WriteEndObject();
 

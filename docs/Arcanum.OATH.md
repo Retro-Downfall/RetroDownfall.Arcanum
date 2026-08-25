@@ -851,7 +851,15 @@ The two hand-authored, source-generated MCP tools are:
 - `propose_covenant`, for Campaign Proposed content;
 - `retire_covenant`, a Forbidden Art for Campaign-bound retirement under Ward policy.
 
-Both are registered inert and advertised only while the feature and canonical tier are healthy. No turn mints a capability yet, so every call is currently refused. Neither can be reached through `mcp invoke`; `arcanum-internal` is not a diagnostic MCP target and both names are on the blocked list alongside the other Forbidden Arts.
+Both handlers are registered on every host, and **neither tool is advertised in `tools/list` in this build**. Each is withheld for its own reason, and each stays registered so a stale or direct invocation fails closed rather than reaching an unregistered name.
+
+`retire_covenant` cannot be granted at all. Minting its capability requires the preflight disclosure a Ward showed the operator and the receipt proving they approved it, and nothing resolves a Ward decision, accepts a receipt, or commits a tool-effect disclosure, so every call would refuse. A tool that always fails teaches a model that the capability is broken rather than absent.
+
+`propose_covenant` can be granted, and a granted call stages successfully, and the staged mutation is then thrown away. `ICovenantMutationCollector.Seal` is the only producer of the intent array a batch needs and has no caller in the source; the single production `TurnCommitRequest` stops before its `mutations` argument; and the only production disposition of a turn's collector is `Discard()`. A success receipt for a write that is always discarded is a worse failure than a refusal, because nothing surfaces the loss to the operator — so the tool is withheld, and the receipt text tells any stale caller outright that the proposal is discarded rather than stored. Enabling agent-authored writes is a product decision with prerequisites this build has not met, and each tool sits behind one named availability flag rather than a branch that drifts on.
+
+One consequence is installation-wide: no `Proposed` lane head can exist anywhere, because that lane's only producer is the agent mutation factory and the operator mutation surface writes the `Confirmed` lane only. The Proposed-lane admission pressure arithmetic, the Campaign-Proposed section-capacity arithmetic, and the closed Proposed admission decision shape are all composed, run on every turn, and never meet a candidate; their tests prove the arithmetic, not a delivered surface.
+
+Neither can be reached through `mcp invoke`; `arcanum-internal` is not a diagnostic MCP target and both names are on the blocked list alongside the other Forbidden Arts.
 
 Issue #101 adds a third, read-only tool: scoped agent recall across durable memory, granting no mutation, promotion, or broader search authority, and absent for disabled, unattended, ambient background, and unauthorized subagent invocations.
 

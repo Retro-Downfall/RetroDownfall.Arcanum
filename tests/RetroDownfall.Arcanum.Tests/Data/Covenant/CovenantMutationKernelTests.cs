@@ -43,6 +43,16 @@ public sealed class CovenantMutationKernelTests
     /// registry nothing ever compared — and only the batch, which holds the intents, can tell the
     /// legal absence from the illegal one.
     /// </summary>
+    /// <remarks>
+    /// What this proves and what it does not. The accepted half is production-shaped: the one
+    /// <c>src/</c> site that builds a batch, <c>CovenantMutationService.CommitAsync</c>, binds a null
+    /// registry epoch for exactly this Campaign-scoped case. The refused half has no production
+    /// construction site at all — that same site derives the epoch from the scope and always supplies
+    /// one for Global, and the preflight body it reads is digest-bound, so no operator request can
+    /// present a Global mutation with the epoch missing. The refusal is a constructor guard against a
+    /// second batch builder someone adds later, and this test is evidence the guard exists, not
+    /// evidence that anything today can trip it.
+    /// </remarks>
     [Fact]
     public void A_Global_batch_cannot_leave_the_Campaign_registry_epoch_unbound()
     {
