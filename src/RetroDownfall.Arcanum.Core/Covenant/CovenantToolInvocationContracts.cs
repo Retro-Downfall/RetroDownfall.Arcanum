@@ -35,6 +35,17 @@ public interface ICovenantTurnHeadProbe
         ImmutableArray<string> excludedKeys,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Measures every scope-wide capacity counter for the scope this turn would write into.
+    /// </summary>
+    /// <remarks>
+    /// Counts and no content, on the same terms as the Section probe. The Section ceilings are two of
+    /// twelve; the other ten bound the scope's stored rows and are applied by the same authority in
+    /// the same transaction, so a staging preflight that checked only the Section pair still let a
+    /// batch through that the commit would refuse — and refusing there discards the operator's reply.
+    /// </remarks>
+    ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(CancellationToken cancellationToken);
+
 }
 
 /// <summary>

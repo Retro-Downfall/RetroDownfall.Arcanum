@@ -289,6 +289,40 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
     }
 
     /// <summary>
+    /// Measures every scope-wide capacity counter, through the capability that owns the turn.
+    /// </summary>
+    /// <remarks>
+    /// Guarded exactly as the Section probe is, and for the same reason: a call that is no longer live
+    /// must not be able to open a read at all.
+    /// </remarks>
+    public async ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(
+        CovenantToolCapabilityNonce nonce,
+        CancellationToken cancellationToken)
+    {
+
+        Result<IDisposable> lease = TryAcquireUse(nonce);
+
+        if (lease.IsFailure)
+        {
+            return Result<CovenantQuotaSnapshot>.Failure(lease.Error);
+        }
+
+        using IDisposable use = lease.Value;
+
+        Result usable = RecheckBeforeIrreversibleEffect(nonce);
+
+        if (usable.IsFailure)
+        {
+            return Result<CovenantQuotaSnapshot>.Failure(usable.Error);
+        }
+
+        return await _headProbe
+            .ProbeScopeAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    /// <summary>
     /// Transitions <see cref="CovenantToolCapabilityState.Registered"/> to
     /// <see cref="CovenantToolCapabilityState.Taken"/> exactly once.
     /// </summary>

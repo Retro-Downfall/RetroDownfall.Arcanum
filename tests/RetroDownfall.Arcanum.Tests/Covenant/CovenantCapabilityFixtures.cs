@@ -91,6 +91,20 @@ internal static class CovenantCapabilityFixtures
 
         public int SectionProbeCount { get; private set; }
 
+        /// <summary>What the scope already holds, for a suite that wants a scope-wide ceiling met.</summary>
+        public CovenantQuotaSnapshot Scope { get; set; } = CovenantQuotaSnapshot.Empty;
+
+        public int ScopeProbeCount { get; private set; }
+
+        public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(CancellationToken cancellationToken)
+        {
+            ScopeProbeCount++;
+
+            return ValueTask.FromResult(Failure is { } error
+                ? Result<CovenantQuotaSnapshot>.Failure(error)
+                : Result<CovenantQuotaSnapshot>.Success(Scope));
+        }
+
         public ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
             CovenantLane lane,
             ImmutableArray<string> excludedKeys,

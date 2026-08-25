@@ -247,21 +247,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantQuotaSnapshot snapshot = await ReadSnapshotAsync(scope, transaction, cancellationToken)
             .ConfigureAwait(false);
 
-        Error? refusal =
-            Exceeds(snapshot.ActiveEntriesInScope, demand.NewEntries, CovenantLimits.MaxStableEntriesPerScope, "stable entries in this scope")
-            ?? Exceeds(snapshot.VersionsInScope, demand.NewVersions, CovenantLimits.MaxVersionsPerScope, "versions in this scope")
-            ?? Exceeds(snapshot.SetVersionsInScope, demand.NewSetVersions, CovenantLimits.MaxSetVersionsPerScope, "content versions in this scope")
-            ?? Exceeds(snapshot.CanonicalBytesInScope, demand.NewCanonicalBytes, CovenantLimits.MaxCanonicalBytesPerScope, "canonical bytes in this scope")
-            ?? Exceeds(snapshot.AgentVersionsInCampaign, demand.NewAgentVersions, CovenantLimits.MaxAgentVersionsPerCampaign, "agent versions in this Campaign")
-            ?? Exceeds(snapshot.AgentBytesInCampaign, demand.NewAgentBytes, CovenantLimits.MaxAgentBytesPerCampaign, "agent bytes in this Campaign")
-            ?? Exceeds(snapshot.MutationReceiptsInScope, demand.NewMutationReceipts, CovenantLimits.MaxMutationReceiptsPerScope, "mutation receipts in this scope")
-            ?? Exceeds(snapshot.ProvenanceRowsInCampaign, demand.NewProvenanceRows, CovenantLimits.MaxAttachmentProvenanceRowsPerCampaign, "attachment provenance rows in this Campaign")
-            ?? Exceeds(snapshot.PendingOutboxRows, demand.NewOutboxRows, CovenantLimits.MaxPendingSearchOutboxRows, "pending search-outbox rows")
-            // Every ceiling above bounds one scope, but a turn loads Global and one Campaign
-            // together. Without this pair bound a batch that stays inside its own scope can seat a
-            // combination no snapshot may carry, and the store then refuses the whole turn load with
-            // an integrity failure that the operator cannot act on and never caused.
-            ?? Exceeds(snapshot.ActiveEntriesInWidestTurnLoad, demand.NewEntries, CovenantLimits.MaxActiveSnapshotRows, "active heads one turn would load");
+        Error? refusal = CovenantScopeCapacity.Refusal(snapshot, demand);
 
         if (refusal is { } scopeError)
         {
@@ -375,13 +361,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             : CovenantSectionOccupancy.Empty;
 
     }
-
-    private static Error? Exceeds(long current, long added, long ceiling, string what) =>
-        checked(current + added) > ceiling
-            ? new Error(
-                ErrorCodes.Covenant.CapacityExceeded,
-                $"This mutation would exceed the bound on {what}.")
-            : null;
 
     private async ValueTask<Result<AssistantFinalizationCapacityReservation>> TransitionAsync(
         AssistantFinalizationCapacityIdentity identity,
@@ -667,48 +646,9 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         bool campaignScoped = scope.Kind == CovenantScope.Campaign;
 
-        string scopePredicate = campaignScoped ? "CampaignId = $campaign" : "CampaignId IS NULL";
-
-        // A Global batch has no Campaign of its own, so the pair it has to fit inside is the one the
-        // widest Campaign would form with it; a Campaign batch is measured against its own pair.
-        string campaignSideOfTurnLoad = campaignScoped
-            ? "(SELECT COUNT(*) FROM covenant_heads WHERE CampaignId = $campaign AND CurrentOperationCode = 1)"
-            : """
-                COALESCE((SELECT MAX(HeadCount) FROM (
-                    SELECT COUNT(*) AS HeadCount FROM covenant_heads
-                    WHERE CampaignId IS NOT NULL AND CurrentOperationCode = 1
-                    GROUP BY CampaignId)), 0)
-                """;
-
         await using SqliteCommand command = transaction.CreateCommand();
 
-        command.CommandText = $"""
-            SELECT
-                (SELECT COUNT(*) FROM covenant_heads WHERE {scopePredicate} AND CurrentOperationCode = 1),
-                (SELECT COUNT(*) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate}),
-                (SELECT COUNT(*) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate} AND v.OperationCode = 1),
-                (SELECT COALESCE(SUM(v.CompiledByteCost), 0) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate}),
-                (SELECT COUNT(*) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate} AND v.OriginCode IN (2, 3)),
-                (SELECT COALESCE(SUM(v.CompiledByteCost), 0) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate} AND v.OriginCode IN (2, 3)),
-                (SELECT COUNT(*) FROM covenant_mutation_receipts WHERE {scopePredicate}),
-                (SELECT COUNT(*) FROM covenant_version_attachment_provenance p
-                    JOIN covenant_versions v ON v.VersionId = p.VersionId
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate}),
-                (SELECT COUNT(*) FROM covenant_search_outbox),
-                (SELECT COUNT(*) FROM covenant_heads WHERE CampaignId IS NULL AND CurrentOperationCode = 1)
-                    + {campaignSideOfTurnLoad};
-            """;
+        command.CommandText = CovenantStoreSql.QuotaSnapshot(campaignScoped);
 
         if (campaignScoped)
         {
@@ -717,22 +657,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         }
 
-        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-
-        return new CovenantQuotaSnapshot(
-            reader.GetInt64(0),
-            reader.GetInt64(1),
-            reader.GetInt64(2),
-            reader.GetInt64(3),
-            reader.GetInt64(4),
-            reader.GetInt64(5),
-            reader.GetInt64(6),
-            reader.GetInt64(7),
-            reader.GetInt64(8),
-            reader.GetInt64(9));
+        return await CovenantQuotaSnapshotReader.ReadAsync(command, cancellationToken).ConfigureAwait(false);
 
     }
 

@@ -138,6 +138,53 @@ public sealed class CovenantQueryPlanTests
 
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_quota_snapshot_read_never_scans_a_table_it_does_not_cover(bool campaignScoped)
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        List<(string Name, object Value)> parameters = [];
+
+        if (campaignScoped)
+        {
+
+            parameters.Add(("$campaign", CovenantOperationGateFixture.CampaignOne.ToString("D")));
+
+        }
+
+        string plan = await ExplainAsync(fixture, CovenantStoreSql.QuotaSnapshot(campaignScoped), parameters);
+
+        // This statement has been read inside the commit transaction since capacity existed, where it
+        // is paid once per mutation. It is now also read by the staging preflight, which puts it on
+        // the inference hot path, so a plan that decayed here would be paid by every turn in which
+        // the agent proposes -- the same reason the Section occupancy read is explained above.
+        string[] scans =
+        [
+            .. plan.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(static line => line.StartsWith("SCAN ", StringComparison.Ordinal))
+                // The outer SELECT has no FROM at all; SQLite reports its single synthetic row this
+                // way, and it reads no table.
+                .Where(static line => !line.Equals("SCAN CONSTANT ROW", StringComparison.Ordinal)),
+        ];
+
+        // Two of the ten counters are whole-table counts by definition -- receipts in the scope and
+        // pending outbox rows -- so they cannot seek. What they must not do is touch the row bodies,
+        // and both are bounded by their own ceilings rather than by the corpus.
+        Assert.All(
+            scans,
+            scan => Assert.Contains("USING COVERING INDEX", scan, StringComparison.Ordinal));
+
+        // Nothing is materialized: the widest-turn-load counter groups heads by Campaign on the Global
+        // side, and that grouping rides the Campaign index rather than building a sort.
+        Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
+
+        Assert.Contains("covenant_heads", plan, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task The_stable_list_page_uses_the_entry_and_version_keys()
     {

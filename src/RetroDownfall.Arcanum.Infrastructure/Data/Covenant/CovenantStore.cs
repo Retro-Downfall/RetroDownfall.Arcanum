@@ -728,6 +728,53 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
     /// let a staging preflight accept a proposal the commit then refuses, and a refused commit takes
     /// the turn's answer down with the batch.
     /// </remarks>
+    public async ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(
+        CovenantOperationScope scope,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+
+        Result validated = await ValidateLeaseAsync(readLease, scope, requireInstallation: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (validated.IsFailure)
+        {
+
+            return validated.Error;
+
+        }
+
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                .ConfigureAwait(false);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        bool campaignScoped = scope.Kind == CovenantScope.Campaign;
+
+        command.CommandText = CovenantStoreSql.QuotaSnapshot(campaignScoped);
+
+        if (campaignScoped)
+        {
+
+            Bind(command, "$campaign", scope.CampaignId!.Value.ToString("D"));
+
+        }
+
+        CovenantQuotaSnapshot snapshot = await CovenantQuotaSnapshotReader
+            .ReadAsync(command, cancellationToken)
+            .ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        return snapshot;
+
+    }
+
     public async ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(
         CovenantSectionOccupancyQuery query,
         ICovenantSnapshotReadLease readLease,

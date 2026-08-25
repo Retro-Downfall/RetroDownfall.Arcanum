@@ -42,6 +42,21 @@ internal sealed class CovenantTurnHeadProbe(
     /// Global-only turn has no Proposed Section to measure and no way to reach this, because the
     /// capability that carries it refuses to exist without a Campaign binding.
     /// </remarks>
+    /// <summary>
+    /// Measures the scope this turn writes into, under the turn's own lease.
+    /// </summary>
+    /// <remarks>
+    /// The scope is derived from the captured Campaign for the same reason the Section probe's is: a
+    /// tool call must not be able to measure a scope its turn does not cover.
+    /// </remarks>
+    public ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(CancellationToken cancellationToken) =>
+        store.ReadQuotaSnapshotAsync(
+            campaign.IsCampaignBound
+                ? CovenantOperationScope.ForCampaign(campaign.CampaignId!.Value)
+                : CovenantOperationScope.Global,
+            readLease,
+            cancellationToken);
+
     public ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
         CovenantLane lane,
         ImmutableArray<string> excludedKeys,

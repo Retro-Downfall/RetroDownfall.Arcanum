@@ -365,6 +365,8 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
+        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
     }
 
     private sealed class SuccessfulStore : ICovenantStore
@@ -401,6 +403,8 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
+        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
     }
 
     private sealed class UnreachableStore : ICovenantStore
@@ -433,6 +437,9 @@ public sealed class CovenantContextProviderTests
             throw new UnreachableException();
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
+            throw new UnreachableException();
+
+        public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();
 
     }

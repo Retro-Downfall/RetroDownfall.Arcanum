@@ -69,6 +69,20 @@ public interface ICovenantStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Reads every scope-wide capacity counter the publication authority compares against.
+    /// </summary>
+    /// <remarks>
+    /// Content-free: ten counts and no entry text, which is what lets a live turn's staging preflight
+    /// ask. It has to ask, because the authority applies these ceilings inside the transaction that
+    /// carries the operator's reply, so a batch admitted at staging and refused there costs the
+    /// operator their answer rather than only the proposal. Same statement as the authority reads.
+    /// </remarks>
+    ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(
+        CovenantOperationScope scope,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Counts current heads by scope, lane, and lifecycle, with their rendered byte totals.
     /// </summary>
     /// <remarks>

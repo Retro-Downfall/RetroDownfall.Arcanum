@@ -105,7 +105,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
                 : CovenantOperationScope.ForCampaign(group.Key.Campaign);
 
             Result<CovenantQuotaSnapshot> capacity = await quotas
-                .CheckCanonicalCapacityAsync(scope, Demand(group), transaction, cancellationToken)
+                .CheckCanonicalCapacityAsync(scope, CovenantQuotaDemand.ForBatch(group), transaction, cancellationToken)
                 .ConfigureAwait(false);
 
             if (capacity.IsFailure)
@@ -194,88 +194,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         return receipts;
 
     }
-
-    /// <summary>
-    /// The upper bound on what one scope's intents would add. Deliberately conservative: an intent
-    /// that turns out to be a no-op or an update simply consumes less than it reserved, which is the
-    /// safe direction for a ceiling.
-    /// </summary>
-    private static CovenantQuotaDemand Demand(IEnumerable<CovenantMutationIntent> intents)
-    {
-
-        long entries = 0;
-
-        long versions = 0;
-
-        long setVersions = 0;
-
-        long canonicalBytes = 0;
-
-        long agentVersions = 0;
-
-        long agentBytes = 0;
-
-        long receipts = 0;
-
-        long provenanceRows = 0;
-
-        foreach (CovenantMutationIntent intent in intents)
-        {
-
-            entries = checked(entries + 1);
-
-            versions = checked(versions + 1);
-
-            receipts = checked(receipts + 1);
-
-            provenanceRows = checked(provenanceRows + intent.Provenance.Length);
-
-            long bytes = intent.Artifact?.CompiledByteCost ?? 0;
-
-            canonicalBytes = checked(canonicalBytes + bytes);
-
-            if (intent.Operation == CovenantOperation.Set)
-            {
-
-                setVersions = checked(setVersions + 1);
-
-            }
-
-            if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved)
-            {
-
-                agentVersions = checked(agentVersions + 1);
-
-                agentBytes = checked(agentBytes + bytes);
-
-            }
-
-        }
-
-        return new CovenantQuotaDemand(
-            entries,
-            versions,
-            setVersions,
-            canonicalBytes,
-            agentVersions,
-            agentBytes,
-            receipts,
-            provenanceRows,
-            versions,
-            SectionDemands(intents));
-
-    }
-
-    /// <summary>
-    /// What this scope's intents would leave in each rendered Section they touch.
-    /// </summary>
-    /// <remarks>
-    /// Delegated rather than computed here, because the staging preflight has to build the demand for
-    /// the same batch this authority will publish. A preflight that summed a batch differently would
-    /// be measuring a batch the authority never sees.
-    /// </remarks>
-    private static ImmutableArray<CovenantSectionDemand> SectionDemands(IEnumerable<CovenantMutationIntent> intents) =>
-        CovenantSectionCapacity.Demands(intents);
 
     private static async ValueTask<Result<CovenantMutationReceipt?>> TryReplayAsync(
         CovenantMutationTransaction transaction,

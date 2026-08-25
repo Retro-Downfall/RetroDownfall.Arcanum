@@ -206,7 +206,13 @@ public sealed record CovenantQuotaSnapshot(
     long MutationReceiptsInScope,
     long ProvenanceRowsInCampaign,
     long PendingOutboxRows,
-    long ActiveEntriesInWidestTurnLoad);
+    long ActiveEntriesInWidestTurnLoad)
+{
+
+    /// <summary>An installation holding nothing, for callers describing an untouched scope.</summary>
+    public static CovenantQuotaSnapshot Empty { get; } = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+}
 
 /// <summary>
 /// What one prospective batch would add to those counters.
@@ -221,7 +227,89 @@ public sealed record CovenantQuotaDemand(
     long NewMutationReceipts,
     long NewProvenanceRows,
     long NewOutboxRows,
-    ImmutableArray<CovenantSectionDemand> Sections);
+    ImmutableArray<CovenantSectionDemand> Sections)
+{
+
+    /// <summary>
+    /// The upper bound on what one batch of intents would add.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately conservative: an intent that turns out to be a no-op or an update simply consumes
+    /// less than it reserved, which is the safe direction for a ceiling. A revision is therefore
+    /// charged a whole new head even though it replaces one, and that is why the staging preflight
+    /// must build its demand here rather than reason about the batch itself — a preflight that was
+    /// less conservative than the authority would admit a batch the commit refuses, and the commit
+    /// carries the operator's reply.
+    /// </remarks>
+    public static CovenantQuotaDemand ForBatch(IEnumerable<CovenantMutationIntent> intents)
+    {
+
+        ArgumentNullException.ThrowIfNull(intents);
+
+        long entries = 0;
+
+        long versions = 0;
+
+        long setVersions = 0;
+
+        long canonicalBytes = 0;
+
+        long agentVersions = 0;
+
+        long agentBytes = 0;
+
+        long receipts = 0;
+
+        long provenanceRows = 0;
+
+        foreach (CovenantMutationIntent intent in intents)
+        {
+
+            entries = checked(entries + 1);
+
+            versions = checked(versions + 1);
+
+            receipts = checked(receipts + 1);
+
+            provenanceRows = checked(provenanceRows + intent.Provenance.Length);
+
+            long bytes = intent.Artifact?.CompiledByteCost ?? 0;
+
+            canonicalBytes = checked(canonicalBytes + bytes);
+
+            if (intent.Operation == CovenantOperation.Set)
+            {
+
+                setVersions = checked(setVersions + 1);
+
+            }
+
+            if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved)
+            {
+
+                agentVersions = checked(agentVersions + 1);
+
+                agentBytes = checked(agentBytes + bytes);
+
+            }
+
+        }
+
+        return new CovenantQuotaDemand(
+            entries,
+            versions,
+            setVersions,
+            canonicalBytes,
+            agentVersions,
+            agentBytes,
+            receipts,
+            provenanceRows,
+            versions,
+            CovenantSectionCapacity.Demands(intents));
+
+    }
+
+}
 
 /// <summary>
 /// What one prospective batch would leave in one rendered Section of one scope.

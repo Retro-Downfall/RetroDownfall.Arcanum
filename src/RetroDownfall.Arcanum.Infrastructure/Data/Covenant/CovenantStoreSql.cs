@@ -97,6 +97,62 @@ internal static class CovenantStoreSql
     /// instead. That is the intended plan rather than a missed one: a Section is measured whole, and
     /// the scope's own entry ceiling is what bounds the rows the seek walks.</para>
     /// </remarks>
+    /// <summary>
+    /// Every scope-wide count one capacity decision reads, as a single row.
+    /// </summary>
+    /// <remarks>
+    /// Shared because two callers now ask this question: the publication authority, inside the
+    /// transaction that will commit, and the staging preflight, on a read lease before a tool call
+    /// accepts anything. Two callers reading different rows is precisely the shape that costs an
+    /// operator their reply — the preflight admits what the commit then refuses — so the statement
+    /// lives here rather than being written twice.
+    /// </remarks>
+    internal static string QuotaSnapshot(bool campaignScoped)
+    {
+
+        string scopePredicate = campaignScoped ? "CampaignId = $campaign" : "CampaignId IS NULL";
+
+        // A Global batch has no Campaign of its own, so the pair it has to fit inside is the one the
+        // widest Campaign would form with it; a Campaign batch is measured against its own pair.
+        string campaignSideOfTurnLoad = campaignScoped
+            ? "(SELECT COUNT(*) FROM covenant_heads WHERE CampaignId = $campaign AND CurrentOperationCode = 1)"
+            : """
+                COALESCE((SELECT MAX(HeadCount) FROM (
+                    SELECT COUNT(*) AS HeadCount FROM covenant_heads
+                    WHERE CampaignId IS NOT NULL AND CurrentOperationCode = 1
+                    GROUP BY CampaignId)), 0)
+                """;
+
+        return $"""
+            SELECT
+                (SELECT COUNT(*) FROM covenant_heads WHERE {scopePredicate} AND CurrentOperationCode = 1),
+                (SELECT COUNT(*) FROM covenant_versions v
+                    JOIN covenant_entries e ON e.EntryId = v.EntryId
+                    WHERE e.{scopePredicate}),
+                (SELECT COUNT(*) FROM covenant_versions v
+                    JOIN covenant_entries e ON e.EntryId = v.EntryId
+                    WHERE e.{scopePredicate} AND v.OperationCode = 1),
+                (SELECT COALESCE(SUM(v.CompiledByteCost), 0) FROM covenant_versions v
+                    JOIN covenant_entries e ON e.EntryId = v.EntryId
+                    WHERE e.{scopePredicate}),
+                (SELECT COUNT(*) FROM covenant_versions v
+                    JOIN covenant_entries e ON e.EntryId = v.EntryId
+                    WHERE e.{scopePredicate} AND v.OriginCode IN (2, 3)),
+                (SELECT COALESCE(SUM(v.CompiledByteCost), 0) FROM covenant_versions v
+                    JOIN covenant_entries e ON e.EntryId = v.EntryId
+                    WHERE e.{scopePredicate} AND v.OriginCode IN (2, 3)),
+                (SELECT COUNT(*) FROM covenant_mutation_receipts WHERE {scopePredicate}),
+                (SELECT COUNT(*) FROM covenant_version_attachment_provenance p
+                    JOIN covenant_versions v ON v.VersionId = p.VersionId
+                    JOIN covenant_entries e ON e.EntryId = v.EntryId
+                    WHERE e.{scopePredicate}),
+                (SELECT COUNT(*) FROM covenant_search_outbox),
+                (SELECT COUNT(*) FROM covenant_heads WHERE CampaignId IS NULL AND CurrentOperationCode = 1)
+                    + {campaignSideOfTurnLoad};
+            """;
+
+    }
+
     internal static string SectionOccupancy(bool campaignScoped, int excludedKeyCount) => $"""
         SELECT COUNT(*),
                COALESCE(SUM(h.CompiledByteCost), 0),

@@ -160,7 +160,7 @@ internal sealed partial class ArcanumInternalToolServer
                 return CovenantFailure(intent.Error);
             }
 
-            Error? full = await RefuseFullProposedSectionAsync(capability, grant.Nonce, intent.Value, cancellationToken)
+            Error? full = await RefuseWhatTheCommitWouldRefuseAsync(capability, grant.Nonce, intent.Value, cancellationToken)
                 .ConfigureAwait(false);
 
             return full is { } sectionFull
@@ -399,16 +399,24 @@ internal sealed partial class ArcanumInternalToolServer
     }
 
     /// <summary>
-    /// Refuses a proposal the Proposed Section could not carry, before the model is told it was kept.
+    /// Refuses a batch the publication authority would refuse, before the model is told it was kept.
     /// </summary>
     /// <remarks>
-    /// The Section ceiling used to be checked in exactly one place: the write authority, inside the
+    /// The ceilings used to be checked in exactly one place: the write authority, inside the
     /// transaction that publishes the batch — and that transaction is the one carrying the operator's
-    /// answer. So a Campaign whose Proposed lane was full accepted the proposal here, told the model
-    /// it was staged, and then lost the whole turn at publication. The operator paid for an answer,
-    /// never received it, and was handed a generic save failure that said nothing about a ceiling.
-    /// Refusing here costs the proposal and nothing else, and the refusal carries the authority's own
-    /// sentence so the model learns which ceiling it met rather than that something went wrong.
+    /// answer. So a Campaign at a ceiling accepted the proposal here, told the model it was staged,
+    /// and then lost the whole turn at publication. The operator paid for an answer, never received
+    /// it, and was handed a generic save failure that said nothing about a ceiling. Refusing here
+    /// costs the proposal and nothing else, and the refusal carries the authority's own sentence so
+    /// the model learns which ceiling it met rather than that something went wrong.
+    ///
+    /// <para>Every ceiling the authority applies, not a chosen few. Mirroring only the Section pair
+    /// left the ten scope-wide bounds still able to take the reply, and two of them are reachable by
+    /// ordinary use: an installation holding its documented Confirmed maxima sits exactly on the
+    /// widest-turn-load bound, so revising a proposal tipped it over, and the per-Campaign agent
+    /// version count only ever rises. Both the demand arithmetic and the comparison are the
+    /// authority's own — shared from Core rather than restated here — because a copy drifts the first
+    /// time either side learns about a ceiling the other does not.</para>
     ///
     /// <para>Measured against the batch that would actually be sealed, not against this intent alone.
     /// A turn is allowed several proposals, and each one that only measured the durable Section would
@@ -420,12 +428,13 @@ internal sealed partial class ArcanumInternalToolServer
     /// the exclusion, re-proposing an existing key would be charged twice and an ordinary revision
     /// would be refused on a lane with room to spare.</para>
     ///
-    /// <para>A read under the turn's lease cannot be a promise: another turn can fill the Section
-    /// between here and the commit, and the authority still refuses. That race is narrow and it fails
-    /// the way the platform already fails; what it is not is the ordinary case, which is what this
-    /// removes.</para>
+    /// <para>A read under the turn's lease still cannot be a promise, and is not meant to be: another
+    /// turn can consume the room between here and the commit, and the authority — which remains the
+    /// authority — still refuses. That race is narrow and it fails the way the platform already fails.
+    /// What this removes is the ordinary case, where nothing raced and the refusal was simply certain
+    /// from the moment the tool call was accepted.</para>
     /// </remarks>
-    private static async ValueTask<Error?> RefuseFullProposedSectionAsync(
+    private static async ValueTask<Error?> RefuseWhatTheCommitWouldRefuseAsync(
         CovenantToolInvocationContext capability,
         CovenantToolCapabilityNonce nonce,
         CovenantMutationIntent intent,
@@ -444,6 +453,29 @@ internal sealed partial class ArcanumInternalToolServer
             .. collector.Value.PendingIntents(),
             intent,
         ];
+
+        // Scope-wide ceilings first, because that is the order the authority applies them in, and a
+        // preflight that refused on a different ceiling than the commit would have refused on would
+        // hand the model a sentence about the wrong bound.
+        Result<CovenantQuotaSnapshot> scope = await capability
+            .ProbeScopeAsync(nonce, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (scope.IsFailure)
+        {
+            return scope.Error;
+        }
+
+        Error? scopeRefusal = CovenantScopeCapacity.Refusal(
+            scope.Value,
+            CovenantQuotaDemand.ForBatch(batch));
+
+        if (scopeRefusal is { } scopeExceeded)
+        {
+
+            return Refused(scopeExceeded);
+
+        }
 
         foreach (CovenantSectionDemand section in CovenantSectionCapacity.Demands(batch))
         {
@@ -472,15 +504,7 @@ internal sealed partial class ArcanumInternalToolServer
             if (refusal is { } exceeded)
             {
 
-                // The authority's own sentence, which names which ceiling and by how much, plus what
-                // the model can do about it. A bare "capacity exceeded" would leave the model with no
-                // way to tell a full lane from a rejected key, and it would say it to the operator.
-                return new Error(
-                    exceeded.Code,
-                    exceeded.Message
-                    + " Nothing was staged and this turn's reply is unaffected. Ask the operator to"
-                    + " review or retire what is already waiting in their Proposed lane before"
-                    + " suggesting anything else.");
+                return Refused(exceeded);
 
             }
 
@@ -489,6 +513,23 @@ internal sealed partial class ArcanumInternalToolServer
         return null;
 
     }
+
+    /// <summary>
+    /// The authority's own refusal, plus what the model can do about it.
+    /// </summary>
+    /// <remarks>
+    /// The authority's sentence names which ceiling was met and by how much. A bare "capacity
+    /// exceeded" would leave the model unable to tell a full lane from a rejected key, and it would
+    /// say exactly that to the operator. The addition is the part only this caller knows: that the
+    /// refusal cost the proposal alone, which is the whole point of asking before staging.
+    /// </remarks>
+    private static Error Refused(Error exceeded) =>
+        new(
+            exceeded.Code,
+            exceeded.Message
+            + " Nothing was staged and this turn's reply is unaffected. Ask the operator to"
+            + " review or retire what is already waiting in their Proposed lane before"
+            + " suggesting anything else.");
 
     private McpToolsCallResultWire StageCovenantMutation(
         CovenantToolInvocationContext capability,
