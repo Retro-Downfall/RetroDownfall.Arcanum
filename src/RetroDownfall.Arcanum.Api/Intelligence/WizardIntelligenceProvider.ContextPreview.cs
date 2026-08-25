@@ -374,9 +374,9 @@ public sealed partial class WizardIntelligenceProvider
         // Inspection exists to answer "what will this turn actually send". Building the preview without
         // the Covenant makes it answer about a prompt no turn produces, and it is the reason the
         // Proposed-lane pressure sentence below can never fire.
-        // The same scope a live turn opens, through the same gate. Resolving it any other way would let
-        // inspection and dispatch disagree about what this turn's Covenant is, which is the one thing an
-        // operator uses inspection to rule out.
+        // The same scope a live turn opens, through the same gate, so inspection and dispatch start from
+        // one plan. They only agree about what is *injected* once the admission below has run, which is
+        // why the preview re-measures rather than trusting the plan it renders first.
         CovenantTurnScope previewCovenantScope = await BeginCovenantTurnAsync(
                 turn,
                 invocationContext,
@@ -385,6 +385,9 @@ public sealed partial class WizardIntelligenceProvider
 
         await using CovenantTurnScope previewCovenantOwned = previewCovenantScope;
 
+        // The plan is the unpressured set; dispatch injects what admission actually admitted. The
+        // preview renders the plan here only because admission needs the assembled messages to measure
+        // headroom against, and it is re-run below once those exist.
         CovenantPromptContent previewCovenant = previewCovenantOwned.PlanContent;
 
         SystemPromptDocument document = SystemPromptBuilder.BuildDocument(
@@ -547,11 +550,27 @@ public sealed partial class WizardIntelligenceProvider
 
                     ScryingFoci = turn.ScryingFoci,
 
+                    // A compressed rebuild asks the builder for a fresh prompt, and without this the
+                    // preview answers about a turn with no Covenant on exactly the long sessions the
+                    // agreement matters most for. The dispatch path carries it for the same reason.
+                    Covenant = previewCovenant,
+
                 });
 
         // The attribution map is the only producer of the two Covenant token lanes. Without it the
         // estimator emits a zero-token CovenantProposed row and inspection reports "no effective
         // content" for a prompt that is carrying the operator's standing agreement.
+        // Inspection has to answer for the turn that would dispatch, so it runs the same admission.
+        // Reporting the plan instead would show the operator content a real turn might have pressured
+        // out, and would leave the pressure counters below permanently zero — the branch that reads
+        // them would then be unreachable, which is exactly how this surface came to report nothing.
+        CovenantDispatchPlan previewDispatch = ResolveCovenantAdmission(
+            previewCovenantOwned,
+            lease,
+            turn,
+            finalMessages,
+            options);
+
         ContextTokenBreakdown breakdown = ModelTokenEstimator.EstimateContext(
 
             new ModelTokenizationRequest(
@@ -569,6 +588,20 @@ public sealed partial class WizardIntelligenceProvider
                 callContext.ReservedReasoningTokens,
 
                 document.BuildResult().Attribution));
+
+        // The counters live on the breakdown the reason-builder reads. On the dispatch path a ledger
+        // merges them in; the preview has no ledger, so the admission's own numbers are merged here
+        // rather than left at their defaults.
+        breakdown = breakdown with
+        {
+            DroppedCovenantProposed = previewDispatch.Admission?.ProposedRemovals ?? 0,
+
+            DroppedCovenantProposedTokens = previewDispatch.Admission is { } previewAdmission
+                ? (int)Math.Min(int.MaxValue, previewAdmission.PressuredProposedTokens)
+                : 0,
+
+            CovenantConfirmedNoFit = previewDispatch.Admission is { ConfirmedAdmitted: false },
+        };
 
         List<ContextPreviewSource> sources = BuildPreviewSources(
 

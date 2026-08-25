@@ -194,6 +194,9 @@ expect_contains "unknown selector is reported" "matches no installed identity" "
 # The release path must keep the secure timestamp: without it the signature dies with the
 # certificate and notarization rejects the submission outright.
 (
+  # The subshell is the point: this case needs a release identity without leaking it into the
+  # ad-hoc cases below, and the assignment being subshell-local is what keeps them independent.
+  # shellcheck disable=SC2030
   APPLE_SIGNING_IDENTITY="Developer ID Application: Ada Lovelace (TEAM123456)"
   # shellcheck source=common.sh
   source "$COMMON"
