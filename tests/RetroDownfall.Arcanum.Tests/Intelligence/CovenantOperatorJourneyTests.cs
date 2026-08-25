@@ -76,10 +76,9 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
     /// <summary>The page size the operator's own list and version commands send.</summary>
     /// <remarks>
-    /// Taken from the CLI rather than left at the wire default. <c>CovenantListRequest.EffectiveLimit</c>
-    /// documents zero as "use the default", but the service digests and queries the raw
-    /// <c>Limit</c>, so a zero throws out of the read instead of paging — a separate defect, and not
-    /// one these journeys are about.
+    /// Taken from the CLI rather than left at the wire default, so these journeys read the pages the
+    /// shipped commands read. A request that omits the field is a different question and is asked
+    /// directly by <c>A_request_that_names_no_page_size_is_paged_by_the_default</c>.
     /// </remarks>
     private const int OperatorPageSize = 50;
 
@@ -469,6 +468,48 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             Assert.True(written.IsSuccess, written.IsFailure ? written.Error.Message : null);
 
         }
+
+    }
+
+    [SkippableFact]
+    public async Task A_request_that_names_no_page_size_is_paged_by_the_default()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        Result<CovenantMutationResultDto> written = await SetCampaignAsync(
+            CampaignA,
+            "journey.paged",
+            "a preference to page over",
+            expectedRevision: 0);
+
+        Assert.True(written.IsSuccess, written.IsFailure ? written.Error.Message : null);
+
+        await using CovenantInstallationReadLease read = await InstallationReadAsync();
+
+        // Zero is what the mapped route hands the service whenever a body omits "limit": the field is
+        // a plain int on the request record, its validation does not mention it, and the clamping
+        // property beside it is not deserialized. The contract documents zero as "use the default",
+        // and until recently the service digested and queried the raw value instead, so an omitted
+        // page size threw out of the read and the route answered with an unhandled exception. Nothing
+        // in the suite sent a zero, so the fix and its absence looked identical.
+        Result<CovenantPageDto> page = await ManagementService().ListAsync(
+            new CovenantListRequest(
+                CovenantCursorScopeSelection.Campaign,
+                CampaignA,
+                Lane: null,
+                CovenantLifecycle.Set,
+                CampaignA,
+                Limit: 0,
+                Cursor: null),
+            read,
+            CancellationToken.None);
+
+        Assert.True(page.IsSuccess, page.IsFailure ? $"{page.Error.Code}: {page.Error.Message}" : null);
+
+        Assert.Contains(page.Value.Items, item => item.Key == "journey.paged");
 
     }
 

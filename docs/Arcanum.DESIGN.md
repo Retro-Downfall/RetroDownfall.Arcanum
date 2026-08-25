@@ -2687,7 +2687,7 @@ The operator surfaces are also absent. There is no Covenant management route, no
 
 Attachment provenance is frozen as an empty materialization snapshot. The turn does not yet bind the exact materialized attachment sources into the provider-call envelope, so a proposal derived from an attachment could not prove its provenance through this path.
 
-The compression rebuild in `InferenceContextBuilder` does not carry Covenant content: its request type has no field for it, and a compressed transcript therefore renders without the profile. The context-preview surface likewise builds its prompt without a plan of its own.
+The compression rebuild in `InferenceContextBuilder` carries Covenant content: its request type has a field for it and the builder forwards the turn's own admitted content, so a compressed transcript renders with the profile rather than silently dropping it on exactly the long sessions that need it most. The context-preview surface opens a real turn scope and resolves its admission through the same path a dispatch takes, so the head-room it reports is the head-room the turn would measure.
 
 ### 10.22 The operator's write path
 
@@ -2721,7 +2721,7 @@ A cursor's encrypted body is fixed-width, big-endian, and length-prefixed on its
 
 #### 10.22.5 The agent's proposal goes live
 
-`CovenantToolCapabilityRegistry` has had a `TryTake` caller since the tools shipped and never had a `TryRegister` one, so every live `propose_covenant` call refused with `Covenant.IneligibleTurn`. The mint is what closes that, and it closes only that: a minted call stages, and the staged mutation is discarded when the turn ends, because nothing seals the collector into a batch. The tool is withheld from `tools/list` for that reason rather than advertised as a capability that answers with an unfulfilled success.
+`CovenantToolCapabilityRegistry` has had a `TryTake` caller since the tools shipped and never had a `TryRegister` one, so every live `propose_covenant` call refused with `Covenant.IneligibleTurn`. The mint closed the refusal, and the seal closed what followed it: a completed assistant finalization now freezes the turn's collector into a batch and hands it to the committer beside the answer, so a staged proposal is published in the transaction that persists the reply or not at all. `propose_covenant` is advertised on that basis. `retire_covenant` is still withheld from `tools/list`, because its capability needs a Ward receipt this build never constructs, and advertising a capability that answers with an unfulfilled success teaches a model the tool is broken rather than absent.
 
 A capability is minted per **tool call**, not per turn, bound to the exact tool name and request identity, because a capability minted per turn would authorize whatever arrived rather than what the turn planned for. It is minted from the attempt's admission receipt: a tool call with no admission behind it has nothing to prove it belongs to this turn's plan, which is why the mint happens after the dispatch gate rather than before it. `TryAdd` semantics mean a duplicate request identity is refused rather than overwriting a live registration, and the capability is one-shot, so a second call reusing an identity cannot borrow it.
 
