@@ -1,12 +1,18 @@
+using System.Text.Json;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -18,53 +24,74 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
+
+using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 /// <summary>
-/// One agent proposal, from the tool that staged it to the later turn that reads it back (§10.13).
+/// What happens to a staged proposal when the turn carrying it does not finish (§10.13).
 /// </summary>
 /// <remarks>
-/// Every component here is the production one: the real canonical store over a real installed
-/// schema, the real context provider, linker, and operation gate, the real dispatch gate that mints
-/// the admission, the real capability the MCP binding constructs, the real agent mutation factory
-/// and collector, the real <see cref="GrimoireTurnWriter"/> entry point the inference loop calls,
-/// and the real mutation kernel underneath the turn committer.
+/// A proposal and the answer it accompanied share a fate: they publish in one transaction or neither
+/// publishes. The two endings asserted here are the ones where "neither" is the whole guarantee — a
+/// turn the provider abandoned, and a turn whose host composed no batch-aware committer to publish it
+/// with. Both would otherwise leave an operator an answer whose proposal the tool had already
+/// reported as recorded, which is the one outcome worse than losing the reply.
 ///
-/// <para>Nothing here hand-builds a batch, a binding, or a <c>TurnCommitRequest</c>. That is the
-/// whole point of the file: every previous attempt at this path proved an arm no production caller
-/// reached, and a test that assembles the sealed batch itself proves exactly that again. The
-/// assertion is on the rendered Proposed section a second, independent turn is handed — the bytes a
-/// model would actually be shown — rather than on any intermediate object.</para>
+/// <para>Every turn here enters through <see cref="WizardIntelligenceProvider.ExecutePromptAsync"/>.
+/// That is not a preference: the only production caller of the dispatch gate's admission, planning
+/// and sensitivity members is a private wrapper on the provider, and a suite that reaches those
+/// members directly runs the gate's half of the turn and none of the wrapper's — which is exactly how
+/// a green test came to stand over a feature that could not bootstrap. Nothing below hand-builds a
+/// plan, an admission, a capability, a batch, or a commit binding; the scripted client stands in for
+/// the model's tool round and reaches the real in-process MCP server over the real transport, so the
+/// capability the proposal runs under is minted by the real binder and taken by the real server.</para>
+///
+/// <para>The cross-turn rendering case this file used to open with now lives in
+/// <c>CovenantBootstrapProposalTests</c>, which proves the same guarantee — a proposal one turn
+/// staged is rendered to a later, independent turn — from a genuinely empty Covenant and through the
+/// same provider entry point. Keeping a second copy here would have added a duplicate rather than
+/// coverage.</para>
 /// </remarks>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
 public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 {
 
+    private const string ModelName = "covenant-publication-test-model";
+
     private const string ProposedKey = "tests.reply.style";
 
     private const string ProposedContent = "answer with the failing assertion first";
 
+    private const string OperatorPrompt = "always lead with the failing assertion";
+
+    private const string AssistantAnswer = "Noted — I will lead with the failing assertion.";
+
     private static readonly Guid CampaignId = Guid.Parse("6C1F2A94-7B3D-4E58-9A02-D45E7F1C8B36");
 
     private readonly GrimoireFixture _fixture;
-
-    private string _dbPath = string.Empty;
-
-    private ArcanumDbContext? _db;
-
-    private SqliteConnection? _connection;
 
     private readonly FakeCovenantAvailability _availability = new();
 
     private readonly FakeCovenantAuthorityProvider _authority = new();
 
     private readonly FakeCovenantCampaignScopeProbe _campaigns = new();
+
+    private readonly AcceptingJournal _journal = new();
+
+    private string _dbPath = string.Empty;
+
+    private ArcanumDbContext? _db;
+
+    private SqliteConnection? _connection;
 
     private CovenantOperationGate? _operationGate;
 
@@ -102,93 +129,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task A_proposal_staged_by_one_turn_is_rendered_to_a_later_turn_that_never_saw_it()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        await SeedCampaignAsync();
-
-        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
-
-        CovenantDispatchGate gate = Gate();
-
-        Guid stagingTurnId = Guid.NewGuid();
-
-        // Turn one: adopt the Covenant, admit a dispatch, stage a proposal through the same
-        // capability the in-process MCP binding mints, then finalize.
-        ProviderCallSensitivity sensitivity;
-
-        CovenantTurnCommitBinding? commit;
-
-        await using (CovenantTurnScope staging = await gate.BeginTurnAsync(
-            Invocation(),
-            stagingTurnId,
-            sessionId,
-            CancellationToken.None))
-        {
-
-            Assert.True(staging.HasPlan);
-
-            Assert.NotNull(staging.Collector);
-
-            CovenantDispatchAdmission admitted = await AdmitAsync(gate, staging);
-
-            await StageProposalAsync(staging, admitted, stagingTurnId);
-
-            Assert.Equal(1, staging.Collector!.StagedCount);
-
-            sensitivity = admitted.Sensitivity;
-
-            commit = staging.StagedCommit();
-
-            Assert.NotNull(commit);
-
-            bool finalized = await Writer().TryFinalizeBufferedAssistantEntryAsync(
-                Handle(sessionId, assistantEntryId),
-                "Noted — I will lead with the failing assertion.",
-                "test-model",
-                CancellationToken.None,
-                sensitivity,
-                commit);
-
-            Assert.True(finalized);
-
-        }
-
-        Assert.Equal(
-            "Noted — I will lead with the failing assertion.",
-            await ReadAssistantContentAsync(assistantEntryId));
-
-        // Turn two shares nothing with turn one but the installation: a new logical turn, a new
-        // plan, a new lease, and a store read that never saw the collector.
-        await using CovenantTurnScope later = await gate.BeginTurnAsync(
-            Invocation(),
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            CancellationToken.None);
-
-        Assert.True(later.HasPlan);
-
-        string rendered = later.PlanContent.CampaignProposed;
-
-        // The rendered bytes, not the head row. A head that existed but rendered into nothing would
-        // satisfy every intermediate assertion and still show the model nothing.
-        Assert.Contains(ProposedKey, rendered, StringComparison.Ordinal);
-
-        Assert.Contains(ProposedContent, rendered, StringComparison.Ordinal);
-
-        // The lane matters as much as the content. Proposed content that arrived in a Confirmed
-        // section would be an agent writing the operator's own instructions.
-        Assert.DoesNotContain(ProposedContent, later.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
-
-        Assert.DoesNotContain(ProposedContent, later.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
-
-        Assert.Equal(CovenantLane.Proposed, Assert.Single(later.Plan!.CampaignProposedSection.Candidates).Candidate.Lane);
-
-    }
-
-    [SkippableFact]
     public async Task An_interrupted_turn_publishes_neither_its_partial_answer_nor_its_staged_proposal()
     {
 
@@ -196,46 +136,36 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
         await SeedCampaignAsync();
 
-        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+        Guid sessionId = await SeedUntaintedSessionAsync();
 
-        CovenantDispatchGate gate = Gate();
+        CovenantToolCapabilityRegistry registry = new();
 
-        Guid stagingTurnId = Guid.NewGuid();
+        await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
 
-        await using (CovenantTurnScope staging = await gate.BeginTurnAsync(
-            Invocation(),
-            stagingTurnId,
-            sessionId,
-            CancellationToken.None))
-        {
+        // The proposal is staged and the provider then fails, which is the ordering that matters: a
+        // turn that failed before staging has nothing to lose and would satisfy every assertion below
+        // without proving any of them.
+        StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging: true);
 
-            CovenantDispatchAdmission admitted = await AdmitAsync(gate, staging);
+        Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: true)
+            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
 
-            await StageProposalAsync(staging, admitted, stagingTurnId);
+        Assert.True(turn.IsFailure);
 
-            // The stream-exit arm, reached both by a genuine interrupt and by the cleanup that runs
-            // after the atomic finalize refused. Committing the partial reply here would leave the
-            // operator an answer whose proposal the tool had already reported as accepted.
-            bool resolved = await Writer().ResolveInterruptedAndMarkFinalizedAsync(
-                Handle(sessionId, assistantEntryId),
-                "partial streamed text",
-                CancellationToken.None,
-                admitted.Sensitivity,
-                staging.StagedCommit());
+        // The tool told the model the proposal was recorded, so a batch existed for this turn to lose.
+        Assert.Null(chat.ToolFailure);
 
-            Assert.True(resolved);
+        Assert.NotNull(chat.Staged);
 
-        }
+        // Nothing the turn produced survives it. A reply persisted here would be an answer the
+        // operator can read whose accompanying proposal was silently dropped.
+        Assert.Null(await ReadLastAssistantContentAsync(sessionId));
 
-        Assert.Null(await ReadAssistantContentAsync(assistantEntryId));
+        Assert.False(await ReadTaintAsync(sessionId));
 
-        await using CovenantTurnScope later = await gate.BeginTurnAsync(
-            Invocation(),
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            CancellationToken.None);
-
-        Assert.DoesNotContain(ProposedContent, later.PlanContent.CampaignProposed, StringComparison.Ordinal);
+        // The rendered bytes a later, independent turn is handed. A published head that rendered into
+        // nothing would satisfy a head-count assertion and still be a leak.
+        Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
 
     }
 
@@ -247,162 +177,88 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
         await SeedCampaignAsync();
 
-        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+        Guid sessionId = await SeedUntaintedSessionAsync();
 
-        CovenantDispatchGate gate = Gate();
+        CovenantToolCapabilityRegistry registry = new();
 
-        Guid stagingTurnId = Guid.NewGuid();
+        await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
 
-        await using CovenantTurnScope staging = await gate.BeginTurnAsync(
-            Invocation(),
-            stagingTurnId,
-            sessionId,
-            CancellationToken.None);
+        StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging: false);
 
-        CovenantDispatchAdmission admitted = await AdmitAsync(gate, staging);
+        // A host with no batch-aware committer composed. The ordinary reply would fall through to the
+        // plain finalize path; a turn holding a proposal must not, because that path writes the answer
+        // and drops the batch without telling anyone.
+        Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: false)
+            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
 
-        await StageProposalAsync(staging, admitted, stagingTurnId);
+        Assert.True(turn.IsFailure);
 
-        // A host with no batch-aware committer composed. The ordinary reply would fall through to
-        // the plain finalize path; a turn holding a proposal must not, because that path writes the
-        // answer and drops the batch without telling anyone.
-        GrimoireTurnWriter uncomposed = new(
-            Repository(withKernel: false),
-            Repository(withKernel: false),
-            new SessionEventHub(NullLogger<SessionEventHub>.Instance),
-            NullLogger<GrimoireTurnWriter>.Instance);
+        Assert.Null(chat.ToolFailure);
 
-        bool finalized = await uncomposed.TryFinalizeBufferedAssistantEntryAsync(
-            Handle(sessionId, assistantEntryId),
-            "an answer that must not outlive its batch",
-            "test-model",
-            CancellationToken.None,
-            admitted.Sensitivity,
-            staging.StagedCommit());
+        Assert.NotNull(chat.Staged);
 
-        Assert.False(finalized);
+        Assert.Null(await ReadLastAssistantContentAsync(sessionId));
 
-        Assert.Equal(string.Empty, await ReadAssistantContentAsync(assistantEntryId));
-
-    }
-
-    private async Task<CovenantDispatchAdmission> AdmitAsync(CovenantDispatchGate gate, CovenantTurnScope scope)
-    {
-
-        CovenantDispatchPlan plan = CovenantDispatchGate.PlanDispatch(
-            scope,
-            100_000,
-            static content => (ulong)(content.GlobalConfirmed.Length
-                + content.CampaignConfirmed.Length
-                + content.CampaignProposed.Length),
-            static fragment => (ulong)fragment.Length);
-
-        // Resolved by the gate, never asserted into it. A first proposal is authored on a turn that
-        // showed the provider no Covenant bytes at all, so the honest label is None — and the receipt
-        // below has to be minted anyway, because the staging capability is minted from it. Asserting
-        // the label here is what stops this file from quietly reverting to the tainted arm, which is
-        // the arm it used to manufacture for itself.
-        ProviderCallSensitivity sensitivity = CovenantDispatchGate.ResolveSensitivity(scope, plan);
-
-        Assert.Equal(ContentSensitivity.None, sensitivity.Level);
-
-        Result<CovenantDispatchAdmission> admitted = await gate.AcknowledgeDispatchAsync(
-            scope,
-            plan,
-            ProviderCall(sensitivity),
-            CancellationToken.None);
-
-        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
-
-        Assert.NotNull(admitted.Value.Receipt);
-
-        return admitted.Value;
+        Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
 
     }
 
     /// <summary>
-    /// Stages one proposal the way a live <c>propose_covenant</c> call does.
+    /// The Proposed section a second, independent turn would be shown.
     /// </summary>
     /// <remarks>
-    /// The capability is minted and registered exactly as <c>BindCovenantStaging</c> mints it — same
-    /// collector, same Campaign, same producing admission, same call materialization, same probe, no
-    /// retirement preflight and no Ward receipt — and taken back out of the real registry the way the
-    /// handler takes it. Constructing one directly and using it would skip the register-and-take
-    /// handover that is the only thing standing between a turn's collector and an arbitrary caller.
+    /// A new logical turn, a new Session identity, a new plan and a new lease, so the read shares
+    /// nothing with the turn that staged but the installation itself.
     /// </remarks>
-    private static async Task StageProposalAsync(
-        CovenantTurnScope scope,
-        CovenantDispatchAdmission admitted,
-        Guid turnId)
+    private async Task<string> LaterProposedSectionAsync()
     {
 
-        CovenantToolCapabilityRegistry registry = new();
-
-        CovenantToolCapabilityNonce nonce = CovenantToolCapabilityNonce.Create();
-
-        string requestId = $"call-{turnId:N}";
-
-        await using CovenantToolInvocationContext registered = new(
-            scope.Collector!,
-            CovenantOperationGateFixture.CampaignContext(CampaignId),
-            admitted.Receipt!,
-            admitted.Receipt!.Materialization,
-            scope.HeadProbe!,
-            nonce,
-            CovenantToolNames.ProposeCovenant,
-            requestId,
-            retirementPreflight: null,
-            wardReceipt: null,
+        await using CovenantTurnScope later = await Gate().BeginTurnAsync(
+            Invocation(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
             CancellationToken.None);
 
-        Assert.True(registry.TryRegister("connection-1", requestId, registered, nonce));
+        Assert.True(later.HasPlan);
 
-        Result<CovenantToolCapabilityGrant> grant = registry.TryTake("connection-1", requestId);
+        return later.PlanContent.CampaignProposed;
 
-        Assert.True(grant.IsSuccess, grant.IsFailure ? grant.Error.Message : null);
+    }
 
-        CovenantToolInvocationContext capability = grant.Value.Capability;
+    private static PingRequest Ping(Guid sessionId) =>
+        new(
+            Prompt: OperatorPrompt,
+            Model: ModelName,
+            WorkingDirectory: string.Empty,
+            SessionId: sessionId,
+            DisableMcpTools: true,
+            SkipSpellRouting: true);
 
-        Result<IDisposable> lease = capability.TryAcquireUse(grant.Value.Nonce);
+    private WizardIntelligenceProvider Wizard(
+        StagingChatClient chat,
+        CovenantDispatchGate gate,
+        CovenantToolCapabilityRegistry registry,
+        bool withCommitter)
+    {
 
-        Assert.True(lease.IsSuccess, lease.IsFailure ? lease.Error.Message : null);
-
-        using (lease.Value)
+        ProviderSettings provider = new()
         {
+            Name = "provider-covenant-publication",
+            Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "https://example.test/v1",
+            Models = [ModelName],
+            ContextWindowLimit = 32_768,
+        };
 
-            CovenantCompiledContent compiled = new CovenantCompiler().Compile(ProposedKey, ProposedContent);
+        GrimoireRepository repository = Repository();
 
-            Result<CovenantLaneHeadProbe> probe = await capability.ProbeLaneHeadAsync(
-                grant.Value.Nonce,
-                CovenantLane.Proposed,
-                compiled.NormalizedKey,
-                CancellationToken.None);
-
-            Assert.True(probe.IsSuccess, probe.IsFailure ? probe.Error.Message : null);
-
-            Result<CovenantMutationIntent> intent = CovenantAgentMutationFactory.Propose(
-                capability,
-                compiled,
-                probe.Value.Presence is CovenantLaneHeadPresence.Present ? probe.Value.LaneRevision : 0,
-                probe.Value.KeyEpoch,
-                CovenantTask6Fixture.D(71));
-
-            Assert.True(intent.IsSuccess, intent.IsFailure ? intent.Error.Message : null);
-
-            Assert.True(capability.RecheckBeforeIrreversibleEffect(grant.Value.Nonce).IsSuccess);
-
-            Result<ICovenantMutationCollector> collector = capability.ResolveCollector(grant.Value.Nonce);
-
-            Assert.True(collector.IsSuccess, collector.IsFailure ? collector.Error.Message : null);
-
-            Result<CovenantStagedMutationReceipt> staged = collector.Value.Stage(
-                intent.Value,
-                capability.ProducingAdmission,
-                CovenantTask6Fixture.D(71));
-
-            Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
-
-        }
+        return WizardIntelligenceProviderFallbackTests.CreateCovenantStagingWizard(
+            new SingleLeaseChatClientFactory(chat, provider, ModelName),
+            gate,
+            registry,
+            repository,
+            withCommitter ? repository : null,
+            provider);
 
     }
 
@@ -411,8 +267,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </summary>
     /// <remarks>
     /// One operation gate for the whole test, because a second would mint its own authority and every
-    /// turn built against the first would be refused as stale — which is the same shape as a real
-    /// failure and would hide one.
+    /// turn built against the first would be refused as stale — the same shape as a real failure, and
+    /// it would hide one.
     /// </remarks>
     private CovenantDispatchGate Gate() =>
         new(
@@ -421,7 +277,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
                 OperationGate(),
                 new CovenantStore(new FixedCovenantConnectionSource(Connection())),
                 new CovenantLinker()),
-            new AcceptingJournal(),
+            _journal,
             new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(Connection())),
             _authority,
             TimeProvider.System,
@@ -451,8 +307,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// <remarks>
     /// Built from the authority the gate actually publishes rather than from a constant. The provider
     /// refuses a turn whose epoch does not match the lease it just took, and a hard-coded epoch would
-    /// make every turn here degrade to <see cref="CovenantTurnAbsence.CapabilityUnavailable"/> — a
-    /// silent absence that still lets most assertions in this file read as a passing composition.
+    /// degrade every turn here to <see cref="CovenantTurnAbsence.CapabilityUnavailable"/> — a silent
+    /// absence under which "no proposal was published" would read as a passing assertion.
     /// </remarks>
     private ArcanumInvocationContext Invocation()
     {
@@ -474,35 +330,14 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     }
 
-    private GrimoireTurnWriter Writer()
-    {
-
-        GrimoireRepository repository = Repository(withKernel: true);
-
-        return new GrimoireTurnWriter(
-            repository,
-            repository,
-            new SessionEventHub(NullLogger<SessionEventHub>.Instance),
-            NullLogger<GrimoireTurnWriter>.Instance,
-            repository);
-
-    }
-
-    private GrimoireRepository Repository(bool withKernel) =>
+    private GrimoireRepository Repository() =>
         new(
             _db!,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot(new ArcanumSettings()),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
-            withKernel ? new CovenantMutationKernel() : null);
-
-    private static GrimoireTurnWriter.TurnHandle Handle(Guid sessionId, Guid assistantEntryId) =>
-        new()
-        {
-            SessionId = sessionId,
-            AssistantEntryId = assistantEntryId,
-        };
+            new CovenantMutationKernel());
 
     private SqliteConnection Connection()
     {
@@ -559,106 +394,350 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The Session and the assistant placeholder a turn finalizes into, and nothing more.
+    /// An empty Session with the immutable Campaign binding a live turn refuses to proceed without.
     /// </summary>
     /// <remarks>
-    /// No sensitivity label. This file used to write one itself and then assert the taint it had just
-    /// written, which meant every assertion below it ran on the tainted arm — an arm no installation
-    /// reaches until some turn has already published a proposal. A first proposal is authored on a
-    /// clean Session against an empty Covenant, so that is the state seeded here, and the label the
-    /// gate resolves for it is checked rather than supplied.
+    /// No entries and no sensitivity label. The turn writes its own user entry and assistant
+    /// placeholder, which is what makes "no assistant content survived" a fact about the turn rather
+    /// than about what the fixture declined to seed. The binding row's foreign key is stood down for
+    /// that one statement because EF stores the Session key as uppercase text and the binding writer
+    /// does not, so the reference can never hold; that mismatch is a defect of its own and not one
+    /// this file can assert around.
     /// </remarks>
-    private async Task<(Guid SessionId, Guid AssistantEntryId)> SeedTurnAsync()
+    private async Task<Guid> SeedUntaintedSessionAsync()
     {
 
         Guid sessionId = Guid.NewGuid();
-
-        Guid assistantEntryId = Guid.NewGuid();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         _ = _db!.Sessions.Add(new Session
         {
             Id = sessionId,
+            CampaignId = CampaignId,
             CreatedAt = now,
             UpdatedAt = now,
             Status = "active",
             Title = "covenant proposal",
-            UnsummarizedEntryCount = 2,
-        });
-
-        _ = _db.Entries.Add(new Entry
-        {
-            Id = Guid.NewGuid(),
-            SessionId = sessionId,
-            Role = MessageRole.User,
-            Content = "always lead with the failing assertion",
-            ModelUsed = "test-model",
-            CreatedAt = now,
-            Sequence = 1L,
-        });
-
-        _ = _db.Entries.Add(new Entry
-        {
-            Id = assistantEntryId,
-            SessionId = sessionId,
-            Role = MessageRole.Assistant,
-            Content = string.Empty,
-            ModelUsed = "test-model",
-            CreatedAt = now,
-            Sequence = 2L,
+            UnsummarizedEntryCount = 0,
         });
 
         _ = await _db.SaveChangesAsync(CancellationToken.None);
 
-        return (sessionId, assistantEntryId);
+        await SetForeignKeyEnforcementAsync(enabled: false);
+
+        try
+        {
+
+            using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                Connection(),
+                CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+            await using SqliteCommand command = Connection().CreateCommand();
+
+            command.CommandText = """
+                INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                VALUES ($sessionId, $kindCode, $campaignId, $boundAtUtc);
+                """;
+
+            _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+
+            _ = command.Parameters.AddWithValue(
+                "$kindCode",
+                (long)SessionCampaignBinding.ForCampaign(CampaignId).Kind);
+
+            _ = command.Parameters.AddWithValue("$campaignId", CampaignId.ToString());
+
+            _ = command.Parameters.AddWithValue(
+                "$boundAtUtc",
+                now.ToString("o", System.Globalization.CultureInfo.InvariantCulture));
+
+            _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+        finally
+        {
+
+            await SetForeignKeyEnforcementAsync(enabled: true);
+
+        }
+
+        return sessionId;
 
     }
 
-    private async Task<string?> ReadAssistantContentAsync(Guid assistantEntryId) =>
+    private async Task SetForeignKeyEnforcementAsync(bool enabled)
+    {
+
+        await using SqliteCommand pragma = Connection().CreateCommand();
+
+        pragma.CommandText = enabled ? "PRAGMA foreign_keys = ON;" : "PRAGMA foreign_keys = OFF;";
+
+        _ = await pragma.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private async Task<bool> ReadTaintAsync(Guid sessionId)
+    {
+
+        Result<SessionSensitivityProjection> projection = await new ArtifactSensitivityLedger(
+            new FixedCovenantConnectionSource(Connection()))
+            .ReadSessionProjectionAsync(sessionId, CancellationToken.None);
+
+        Assert.True(projection.IsSuccess, projection.IsFailure ? projection.Error.Message : null);
+
+        return projection.Value.IsTainted;
+
+    }
+
+    private async Task<string?> ReadLastAssistantContentAsync(Guid sessionId) =>
         await _db!.Entries
             .AsNoTracking()
-            .Where(entry => entry.Id == assistantEntryId)
+            .Where(entry => entry.SessionId == sessionId && entry.Role == MessageRole.Assistant)
+            .OrderByDescending(entry => entry.Sequence)
             .Select(entry => entry.Content)
             .FirstOrDefaultAsync(CancellationToken.None);
 
-    private static ProviderCallEnvelope ProviderCall(ProviderCallSensitivity sensitivity) =>
-        new(
-            "provider.test",
-            "model.test",
-            CovenantProviderDispatchMode.Buffered,
-            "o200k_base",
-            128_000,
-            0,
-            sensitivity,
-            FrozenProviderOptions.Create(new ProviderOptionsDigestInput(
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                [],
-                ProviderToolChoice.Auto,
-                null,
-                CovenantTriStateBoolean.Absent,
-                ProviderResponseFormat.Text,
-                null,
-                null,
-                null,
-                CovenantTriStateBoolean.Absent,
-                null,
-                null,
-                null,
-                CovenantReasoningWireDialect.Standard,
-                default)),
-            [],
-            [],
-            new ProviderCallMaterializationSnapshot(false, []),
-            [],
-            [],
-            null);
+    /// <summary>
+    /// A scripted provider that spends the turn's staging capability and then either answers or dies.
+    /// </summary>
+    /// <remarks>
+    /// It runs inside the turn's async flow, which is the whole point: the staging ambient is an
+    /// <c>AsyncLocal</c> the turn loop pushes around the provider call, so a client that cannot see it
+    /// here is a turn in which no tool call could have seen it either. The failure is thrown after the
+    /// tool has already reported the proposal staged, because a provider that failed first would leave
+    /// the collector empty and prove nothing about what happens to a batch.
+    /// </remarks>
+    private sealed class StagingChatClient(
+        CovenantToolCall toolCall,
+        string key,
+        string content,
+        string answer,
+        bool failAfterStaging) : IChatClient
+    {
+
+        public bool SawStagingCapability { get; private set; }
+
+        public CovenantMutationFailureResultWire? ToolFailure { get; private set; }
+
+        public CovenantMutationStagedResultWire? Staged { get; private set; }
+
+        public void Dispose()
+        {
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<MeAiChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+
+            SawStagingCapability = CovenantToolStagingAmbient.Current is not null;
+
+            McpToolsCallResultWire result = await toolCall.ProposeAsync(key, content).ConfigureAwait(false);
+
+            if (result.IsError)
+            {
+
+                ToolFailure = JsonSerializer.Deserialize(
+                    result.StructuredContent!.Value,
+                    McpJsonSerializerContext.Default.CovenantMutationFailureResultWire);
+
+            }
+            else
+            {
+
+                Staged = JsonSerializer.Deserialize(
+                    result.StructuredContent!.Value,
+                    McpJsonSerializerContext.Default.CovenantMutationStagedResultWire);
+
+            }
+
+            return failAfterStaging
+                ? throw new InvalidOperationException("The provider connection dropped mid-turn.")
+                : new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, answer));
+
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<MeAiChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+    }
+
+    /// <summary>
+    /// One live in-process MCP server, driven over its real transport.
+    /// </summary>
+    /// <remarks>
+    /// The binder and the server are both production. <c>ApplyAmbientBinding</c> is what mints the
+    /// capability from the staging ambient and registers it under the connection and request identity;
+    /// the server is what takes it back out and publishes it to the handler. Registering a capability
+    /// by hand would skip precisely the handover the whole capability model exists to enforce.
+    /// </remarks>
+    private sealed class CovenantToolCall : IAsyncDisposable
+    {
+
+        private readonly InProcessMcpTransport _transport;
+
+        private readonly Task _serverTask;
+
+        private readonly CancellationTokenSource _lifetime;
+
+        private readonly string _connectionKey;
+
+        private int _nextId;
+
+        private CovenantToolCall(
+            InProcessMcpTransport transport,
+            Task serverTask,
+            CancellationTokenSource lifetime,
+            string connectionKey)
+        {
+
+            _transport = transport;
+
+            _serverTask = serverTask;
+
+            _lifetime = lifetime;
+
+            _connectionKey = connectionKey;
+
+        }
+
+        public static async Task<CovenantToolCall> CreateAsync(
+            CovenantToolCapabilityRegistry registry,
+            ICovenantAvailability availability)
+        {
+
+            ServiceCollection services = [];
+
+            services.AddSingleton<ICovenantCompiler, CovenantCompiler>();
+
+            services.AddSingleton(registry);
+
+            services.AddSingleton(availability);
+
+            services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
+                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+
+            ServiceProvider provider = services.BuildServiceProvider();
+
+            IServiceScopeFactory scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
+
+            (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
+                new HumanPromptRegistry(),
+                scopeFactory,
+                new UnseenServantPacer(
+                    new SilentEventBus(),
+                    new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+                    scopeFactory,
+                    NullLogger<UnseenServantPacer>.Instance),
+                workspaceRootNormalizedOrNull: null,
+                listDirectoryMaxPaths: 64,
+                intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with
+                {
+                    EnableLexiconSystem = false,
+                    EnableArchiveSearch = false,
+                },
+                maxFileReadSizeBytes: 1024 * 1024,
+                conclaveEnabled: false,
+                sagaEnabled: false,
+                a2aClientEnabled: false,
+                attachmentsToolEnabled: false,
+                maxJsonRpcLineBytes: 2_097_152,
+                logger: NullLogger<ArcanumInternalToolServer>.Instance);
+
+            CancellationTokenSource lifetime = new();
+
+            Task serverTask = server.RunAsync(lifetime.Token);
+
+            await transport.StartAsync();
+
+            return new CovenantToolCall(transport, serverTask, lifetime, server.AmbientConnectionKey);
+
+        }
+
+        public async Task<McpToolsCallResultWire> ProposeAsync(string key, string content)
+        {
+
+            int id = Interlocked.Increment(ref _nextId);
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ProposeCovenantParams(key, content),
+                McpJsonSerializerContext.Default.ProposeCovenantParams);
+
+            JsonRpcRequest request = new()
+            {
+                Method = "tools/call",
+                Params = JsonSerializer.SerializeToElement(
+                    new McpToolsCallParams
+                    {
+                        Name = CovenantToolNames.ProposeCovenant,
+                        Arguments = arguments,
+                    },
+                    McpJsonSerializerContext.Default.McpToolsCallParams),
+                Id = JsonSerializer.SerializeToElement(id, McpJsonSerializerContext.Default.Int32),
+            };
+
+            // The production binding site. It reads the staging ambient this turn published and mints
+            // the single-use capability from it, or mints nothing at all.
+            JsonRpcRequest bound = SessionAttachmentAmbientSend.ApplyAmbientBinding(_connectionKey, request);
+
+            await _transport.WriteRequestAsync(bound).ConfigureAwait(false);
+
+            McpInboundEnvelope envelope = await _transport.InboundReader.ReadAsync().ConfigureAwait(false);
+
+            Assert.Equal(McpInboundKind.Response, envelope.Kind);
+
+            return JsonSerializer.Deserialize(
+                envelope.Response!.Result!.Value,
+                McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+
+            await _lifetime.CancelAsync();
+
+            try
+            {
+
+                await _serverTask.ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            await _transport.DisposeAsync().ConfigureAwait(false);
+
+            _lifetime.Dispose();
+
+        }
+
+    }
+
+    private sealed class SingleLeaseChatClientFactory(
+        IChatClient client,
+        ProviderSettings provider,
+        string model) : IChatClientFactory
+    {
+
+        public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken) =>
+            Task.FromResult(new ChatClientLease(client, provider, model, ownedHttpClient: null));
+
+        public Task<ChatClientLease> ResolveClientAsync(
+            ProviderSettings candidate,
+            string resolvedModel,
+            CancellationToken cancellationToken) =>
+            ResolveClientAsync(resolvedModel, cancellationToken);
+
+    }
 
     private sealed class AcceptingJournal : ICovenantDisclosureJournal
     {
@@ -675,12 +754,23 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     }
 
-    private sealed class TestOptionsSnapshot(ArcanumSettings value) : IOptionsSnapshot<ArcanumSettings>
+    private sealed class SilentEventBus : IEventBus
     {
 
-        public ArcanumSettings Value => value;
+        public void Publish<T>(T @event) where T : notnull
+        {
+        }
 
-        public ArcanumSettings Get(string? name) => value;
+        public async IAsyncEnumerable<T> Subscribe<T>(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+            where T : notnull
+        {
+
+            await Task.CompletedTask;
+
+            yield break;
+
+        }
 
     }
 

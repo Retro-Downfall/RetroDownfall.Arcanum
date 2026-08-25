@@ -73,7 +73,7 @@ internal sealed class CovenantManagementService(
                     request.CampaignId,
                     request.Lane,
                     request.Lifecycle,
-                    request.Limit,
+                    request.EffectiveLimit,
                     after.Value),
                 readLease,
                 cancellationToken)
@@ -187,7 +187,7 @@ internal sealed class CovenantManagementService(
 
         Result<CovenantVersionPage> page = await store
             .ReadVersionPageAsync(
-                new CovenantVersionQuery(request.EntryId, request.Lane, request.Limit, after.Value),
+                new CovenantVersionQuery(request.EntryId, request.Lane, request.EffectiveLimit, after.Value),
                 readLease,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -761,6 +761,17 @@ internal sealed class CovenantManagementService(
 
     }
 
+    /// <summary>
+    /// The filter a cursor binds, taken from the page size the read will actually use.
+    /// </summary>
+    /// <remarks>
+    /// The clamped size, not the raw one. The raw field is whatever the caller sent, and the digest
+    /// refuses anything outside the one-to-two-hundred range with an exception rather than an error —
+    /// so a request naming zero pages, which the contract documents as "use the default", left a
+    /// mapped route with an unhandled argument failure instead of a page. The clamp is also what keeps
+    /// the digest agreeing with the query beside it, which is the comparison a continuation cursor
+    /// rests on.
+    /// </remarks>
     private static CovenantDigest FilterDigest(CovenantListRequest request) =>
         CovenantDigests.CursorFilter(new CursorFilterDigestInput(
             CovenantCursorEndpoint.List,
@@ -770,7 +781,7 @@ internal sealed class CovenantManagementService(
             request.Lane,
             request.Lifecycle,
             QueryDigest: null,
-            checked((uint)request.Limit),
+            checked((uint)request.EffectiveLimit),
             CovenantCursorSort.CanonicalHeads));
 
     private static CovenantDigest VersionFilterDigest(CovenantVersionsRequest request) =>
@@ -782,7 +793,7 @@ internal sealed class CovenantManagementService(
             request.Lane,
             CovenantLifecycle.Any,
             QueryDigest: null,
-            checked((uint)request.Limit),
+            checked((uint)request.EffectiveLimit),
             CovenantCursorSort.CanonicalHeads));
 
     private static string Hex(CovenantDigest digest) => Convert.ToHexStringLower(digest.Bytes);

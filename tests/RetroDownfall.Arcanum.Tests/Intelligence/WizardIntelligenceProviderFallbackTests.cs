@@ -1096,12 +1096,21 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     /// refuses its own finalization, which reads as a Covenant failure rather than as a gap in the
     /// harness.
     /// </remarks>
+    /// <summary>
+    /// A provider composed for Covenant staging, with or without a batch-aware turn committer.
+    /// </summary>
+    /// <remarks>
+    /// The committer is nullable because a host that composed none is a real configuration, and the
+    /// turn's behaviour under it is a guarantee rather than an accident: a reply carrying a staged
+    /// batch must not fall through to the plain finalize path, which would write the answer and drop
+    /// the proposal the tool has already told the model was recorded.
+    /// </remarks>
     internal static WizardIntelligenceProvider CreateCovenantStagingWizard(
         IChatClientFactory factory,
         CovenantDispatchGate covenantDispatch,
         CovenantToolCapabilityRegistry covenantToolCapabilities,
         IGrimoireRepository grimoire,
-        IGrimoireTurnCommitter turnCommitter,
+        IGrimoireTurnCommitter? turnCommitter,
         params ProviderSettings[] providers) =>
         CreateWizard(
             factory,
