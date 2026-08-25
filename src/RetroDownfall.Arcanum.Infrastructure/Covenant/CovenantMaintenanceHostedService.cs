@@ -1,4 +1,8 @@
+using System.Data;
+
 using System.Diagnostics.CodeAnalysis;
+
+using Microsoft.EntityFrameworkCore;
 
 using Microsoft.Extensions.DependencyInjection;
 
@@ -10,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -118,6 +123,8 @@ internal sealed class CovenantMaintenanceHostedService(
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         await RunSweepAsync(
+                scope,
+                cancellationToken,
                 "owner cleanup",
                 async () =>
                 {
@@ -136,6 +143,8 @@ internal sealed class CovenantMaintenanceHostedService(
             .ConfigureAwait(false);
 
         await RunSweepAsync(
+                scope,
+                cancellationToken,
                 "search outbox",
                 async () =>
                 {
@@ -153,6 +162,8 @@ internal sealed class CovenantMaintenanceHostedService(
             .ConfigureAwait(false);
 
         await RunSweepAsync(
+                scope,
+                cancellationToken,
                 "turn receipt compaction",
                 async () =>
                 {
@@ -182,11 +193,36 @@ internal sealed class CovenantMaintenanceHostedService(
     /// dataset generation moved under a batch, a lease was revoked. Each is a reason to try again next
     /// pass, and none is a reason to leave the other two backlogs undrained.
     /// </remarks>
-    private async Task RunSweepAsync(string sweep, Func<Task<Result<string>>> run)
+    private async Task RunSweepAsync(
+        AsyncServiceScope scope,
+        CancellationToken cancellationToken,
+        string sweep,
+        Func<Task<Result<string>>> run)
     {
 
         try
         {
+
+            // EF opens the scope's connection before the sweep asks the connection source for it. The
+            // source opens the raw handle when it finds the connection closed, and a raw open skips
+            // EF's RelationalConnection and therefore the pragma interceptor — the only thing that
+            // registers a connection with the Covenant SQLite initializer. Every privileged Covenant
+            // statement authorizes against that registration, so a sweep on a raw-opened connection is
+            // refused by its own initializer before it reads a row. A request never meets this because
+            // EF has already opened the connection loading the turn; a maintenance scope does no EF
+            // work of its own, so it meets it on every pass. It is done here rather than in the
+            // connection source because that source is also what the erasure path drains and reopens,
+            // and moving ownership of the open to EF changed the disposition that path commits. Inside
+            // this try rather than before the sweeps, so a scope that cannot open the Grimoire reports
+            // it the same way any other refusal is reported instead of ending the pass.
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            if (db.Database.GetDbConnection().State != ConnectionState.Open)
+            {
+
+                await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            }
 
             Result<string> outcome = await run().ConfigureAwait(false);
 
