@@ -79,7 +79,7 @@ function Assert-Sha256 {
     Write-Host "  verified $Label ($actual)"
 }
 
-Assert-Command -Names @('cl.exe', 'link.exe', 'nmake.exe', 'perl', 'git', 'gpg', 'tar')
+Assert-Command -Names @('cl.exe', 'link.exe', 'dumpbin.exe', 'nmake.exe', 'perl', 'git', 'gpg', 'tar')
 
 $asset = $manifest.assets | Where-Object { $_.rid -eq $Rid }
 
@@ -240,17 +240,7 @@ try {
 
     $defines = $manifest.compileOptions | ForEach-Object { "/D$_" }
 
-    # Only the documented SQLite C API is exported; SQLCipher internals and every statically linked
-    # OpenSSL symbol stay private to the DLL.
     $exportDefinition = Join-Path $buildDirectory 'e_sqlcipher.def'
-
-    'EXPORTS' | Set-Content -Path $exportDefinition -Encoding ascii
-
-    Select-String -Path $amalgamation -Pattern '^SQLITE_API\s+.*\b(sqlite3_\w+)\s*\(' -AllMatches |
-        ForEach-Object { $_.Matches } |
-        ForEach-Object { $_.Groups[1].Value } |
-        Sort-Object -Unique |
-        Add-Content -Path $exportDefinition -Encoding ascii
 
     $objectFile = Join-Path $buildDirectory 'sqlite3.obj'
 
@@ -268,6 +258,34 @@ try {
         $compileLog | ForEach-Object { Write-Host $_ }
 
         throw 'Compilation failed.'
+    }
+
+    # Only the documented SQLite C API is exported; SQLCipher internals and every statically linked
+    # OpenSSL symbol stay private to the DLL.
+    #
+    # Read from the compiled object rather than from the amalgamation's text. The source declares
+    # every SQLITE_API entry point unconditionally and then guards the definitions, so a scan of the
+    # source exported names this build never emits: preupdate and normalize are not enabled, ICU,
+    # carray and CEROD are not present, mutex_held needs SQLITE_DEBUG, and load_extension is
+    # deliberately omitted. Windows validates a .def against the object and refused all of them,
+    # which is why no Windows library has ever linked; macOS never noticed because Mach-O exports
+    # what exists and says nothing about what does not. Taking the list from the object makes the two
+    # platforms agree by construction and keeps agreeing when a compile option changes.
+    'EXPORTS' | Set-Content -Path $exportDefinition -Encoding ascii
+
+    & dumpbin.exe /nologo /symbols $objectFile |
+        Select-String -Pattern 'SECT.*External\s+\|\s+(sqlite3_\w+)\s*$' -AllMatches |
+        ForEach-Object { $_.Matches } |
+        ForEach-Object { $_.Groups[1].Value } |
+        Sort-Object -Unique |
+        Add-Content -Path $exportDefinition -Encoding ascii
+
+    $exportCount = (Get-Content -Path $exportDefinition).Count - 1
+
+    Write-Host "  exporting $exportCount sqlite3 entry points the object actually defines"
+
+    if ($exportCount -lt 100) {
+        throw "Only $exportCount exports were found in $objectFile; the symbol scan did not match."
     }
 
     $outputPath = Join-Path $buildDirectory $outputName
