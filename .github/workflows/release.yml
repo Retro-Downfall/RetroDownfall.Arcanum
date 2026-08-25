@@ -1,0 +1,229 @@
+name: Release (all shipping platforms)
+
+# The one entry point that produces a release. macOS arm64, Windows x64, and Windows arm64 are
+# built by the same workflows that build them individually -- called here rather than copied --
+# and the single draft release is assembled at the end from what they uploaded. A release that
+# shipped whichever platforms happened to succeed would be the failure worth preventing, so this
+# workflow refuses to start unless all three can be built and refuses to finish unless all three
+# arrived.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata. Tag will be v<version>."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Validate the version and require every shipping asset
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Validate version
+        id: ver
+        env:
+          # Never interpolate a workflow_dispatch input into the run: script — the templating
+          # engine expands it into the shell source, so injected commands execute before the
+          # SemVer validation below can reject them. Read it from the environment instead.
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="$VERSION_INPUT"
+          if [[ "$VERSION" == *+* ]]; then
+            echo "error: SemVer build metadata (+...) is not allowed: '$VERSION'" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: invalid SemVer '$VERSION' (expected 0.1.0, 0.1.0-beta, or 0.1.0-beta.1)" >&2
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            if [[ "$VERSION" == *-* ]]; then
+              echo "prerelease=true"
+            else
+              echo "prerelease=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION"
+
+      - name: Require a verified hermetic SQLCipher asset for every shipping RID
+        run: |
+          set -euo pipefail
+          package=src/RetroDownfall.Arcanum.NativeSqlCipher
+          missing=0
+          # Fails rather than skips, unlike the same check inside each build workflow. A build
+          # workflow that skips a RID without an asset is reporting the truth about that RID; a
+          # release that skipped one would produce a release named for every platform and carrying
+          # a subset, and nothing downstream would say so.
+          for rid in osx-arm64 win-x64 win-arm64; do
+            status=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].status // "absent"' "$package/native-source-manifest.json")
+            path=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].path // ""' "$package/native-source-manifest.json")
+            if [[ "$status" == "verified" && -n "$path" && -f "$package/$path" ]]; then
+              echo "$rid: verified ($path)"
+            else
+              echo "error: $rid has no verified hermetic SQLCipher asset (status: $status)." >&2
+              echo "  Build it on a native runner with scripts/build-native-sqlcipher.sh or .ps1," >&2
+              echo "  verify it with the Verify native SQLCipher workflow, and check the library in" >&2
+              echo "  with its manifest entry before cutting a release." >&2
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+  macos-arm64:
+    name: macOS arm64
+    needs: prepare
+    # `secrets: inherit` rather than a named list: the six Apple secrets are already named and
+    # checked by the called workflow's own requirement step, and a second list here would be a
+    # second thing to keep in step with the first.
+    uses: ./.github/workflows/release-macos-arm64.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      # This workflow owns the release the three platforms share.
+      create_release: false
+
+  windows:
+    name: Windows
+    needs: prepare
+    strategy:
+      # Both architectures run to completion. The release still refuses to assemble without both,
+      # but an operator investigating a win-arm64 failure should not also have to re-run win-x64
+      # to see whether it was fine.
+      fail-fast: false
+      matrix:
+        rid:
+          - win-x64
+          - win-arm64
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      rid: ${{ matrix.rid }}
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: Assemble the draft release
+    needs:
+      - prepare
+      - macos-arm64
+      - windows
+    runs-on: ubuntu-latest
+    permissions:
+      # `contents: write` alone would replace the default permission set rather than add to it,
+      # and the artifact download reads the Actions API.
+      actions: read
+      contents: write
+    steps:
+      - name: Download every platform's artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          # One directory per artifact rather than merged: each Windows RID writes its own
+          # SHA256SUMS, and merging would leave whichever landed last standing in for both.
+          path: staging
+
+      - name: Collect the release assets
+        id: assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Named one by one rather than globbed. A glob over the staging tree would happily
+          # assemble a release out of whatever subset arrived, which is the thing this job exists
+          # to refuse.
+          declare -a ASSETS=(
+            "staging/macos-arm64-$VERSION/arcanum-osx-arm64.zip"
+            "staging/macos-arm64-$VERSION/compendium-osx-arm64.dmg"
+            "staging/macos-arm64-$VERSION/the-forge-osx-arm64.dmg"
+            "staging/windows-win-x64-$VERSION/arcanum-win-x64.zip"
+            "staging/windows-win-x64-$VERSION/compendium-win-x64.zip"
+            "staging/windows-win-x64-$VERSION/the-forge-win-x64.zip"
+            "staging/windows-win-arm64-$VERSION/arcanum-win-arm64.zip"
+            "staging/windows-win-arm64-$VERSION/compendium-win-arm64.zip"
+            "staging/windows-win-arm64-$VERSION/the-forge-win-arm64.zip"
+          )
+          missing=0
+          for asset in "${ASSETS[@]}"; do
+            if [[ -f "$asset" ]]; then
+              cp "$asset" dist/
+            else
+              echo "error: expected release asset is missing: $asset" >&2
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            echo "Staging tree as downloaded:" >&2
+            find staging -maxdepth 2 -type f | sort >&2
+            exit 1
+          fi
+          # One checksum file over the whole release rather than the per-RID SHA256SUMS each
+          # Windows build wrote: those name the same file three times over and cover only their
+          # own third of what a person downloads. Written outside `dist` and moved in, so the
+          # glob cannot expand over a file this command is in the middle of creating.
+          ( cd dist && sha256sum -- * ) > "$RUNNER_TEMP/SHA256SUMS.txt"
+          mv "$RUNNER_TEMP/SHA256SUMS.txt" dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+
+      - name: Create or update the draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          mapfile -t ASSETS < <(find dist -maxdepth 1 -type f | sort)
+          PRE_ARGS=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            PRE_ARGS+=(--prerelease)
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — uploading assets with --clobber"
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            echo "Creating draft release $TAG"
+            NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+            {
+              echo "Draft release for ${VERSION}, covering every platform Arcanum ships on."
+              echo
+              echo "**macOS (Apple Silicon)** — signed with Developer ID Application and notarized for Gatekeeper."
+              echo
+              echo "- \`arcanum-osx-arm64.zip\` — Native AOT \`arcanum\` command line (notarized zip; not stapled)"
+              echo "- \`compendium-osx-arm64.dmg\` — Compendium.app (stapled)"
+              echo "- \`the-forge-osx-arm64.dmg\` — The Forge.app (stapled)"
+              echo
+              echo "**Windows x64 and Windows arm64** — each built on its own architecture, unsigned."
+              echo
+              echo "- \`arcanum-win-<arch>.zip\` — Native AOT \`arcanum.exe\` command line"
+              echo "- \`compendium-win-<arch>.zip\` — Compendium"
+              echo "- \`the-forge-win-<arch>.zip\` — The Forge"
+              echo
+              echo "\`SHA256SUMS.txt\` covers every file above."
+              echo
+              echo "Distributed from GitHub only — not the Mac App Store and not the Microsoft Store. Publish this draft when ready."
+            } >"$NOTES_FILE"
+            # bash treats "${PRE_ARGS[@]}" as an unbound variable under `set -u` when the array is
+            # empty, which is exactly the case for a non-prerelease version. Use the same guard the
+            # shell scripts use.
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --draft \
+              ${PRE_ARGS[@]+"${PRE_ARGS[@]}"} \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE"
+          fi
+          echo "Draft release ready: $(gh release view "$TAG" --json url --jq .url)"

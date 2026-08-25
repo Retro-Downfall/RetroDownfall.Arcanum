@@ -7,6 +7,32 @@ on:
         description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata. Tag will be v<version>."
         required: true
         type: string
+      create_release:
+        description: "Create or update the draft GitHub Release with these artifacts."
+        required: false
+        type: boolean
+        default: true
+
+  # Called by the unified release, which builds all three RIDs and owns the single release they
+  # share. The caller says so outright rather than being detected: `github.event_name` inside a
+  # reusable workflow reports the *caller's* trigger, so it cannot tell a called run from a
+  # dispatched one. The default differs per trigger, so dispatching this workflow on its own still
+  # publishes its own draft exactly as it did before, and being called does not.
+  #
+  # No `secrets:` block: the caller passes `secrets: inherit`, and the six Apple secrets are
+  # already named and checked by the requirement step below. A second list of them here would be a
+  # second thing to keep in step with the first.
+  workflow_call:
+    inputs:
+      version:
+        description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata. Tag will be v<version>."
+        required: true
+        type: string
+      create_release:
+        description: "Create or update the draft GitHub Release with these artifacts."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -229,6 +255,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create or update draft GitHub Release
+        if: ${{ inputs.create_release }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ver.outputs.tag }}

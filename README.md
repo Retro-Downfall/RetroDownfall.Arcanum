@@ -170,7 +170,8 @@ scripts/verify-aot-il-warnings.sh        # AOT IL-warning gate
 scripts/packaging/macos/                 # signed/notarized macOS arm64 packaging
 scripts/packaging/linux/                 # unsigned Linux private-beta tarballs (CLI AOT + Forge/Compendium)
 scripts/packaging/windows/               # unsigned Windows zips (CLI AOT + Compendium; Forge optional via package-windows.ps1)
-                                         # workflow: build-windows-x64.yml (Arcanum + Compendium); private-beta-release.yml (all three)
+                                         # workflow: build-windows.yml (one RID per run, win-x64 or win-arm64)
+.github/workflows/release.yml            # cuts a release: all three RIDs, one draft GitHub Release
 Directory.Build.props                    # shared MSBuild props + CVE pin (Microsoft.Bcl.Memory)
 ```
 

@@ -1,0 +1,165 @@
+name: Build Windows (Arcanum + Compendium + The Forge)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rid:
+        description: "Windows runtime identifier to build."
+        required: true
+        type: choice
+        default: win-x64
+        options:
+          - win-x64
+          - win-arm64
+      version:
+        description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata. Defaults to project Version."
+        required: false
+        type: string
+        default: "0.1.0-beta"
+
+  # Called once per RID by the unified release. One workflow with a RID input rather than one
+  # workflow per architecture: everything below that named x64 was a runner label or an archive
+  # name, and a second copy of this file is a second place for a packaging fix to be forgotten.
+  workflow_call:
+    inputs:
+      rid:
+        description: "Windows runtime identifier to build."
+        required: true
+        type: string
+      version:
+        description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-sqlcipher-asset:
+    # A RID whose hermetic SQLCipher asset is still `pending` cannot be built at all: the targets
+    # raise ARCSQLC002 before CopyFilesToOutputDirectory, deliberately, with no probe and no
+    # fallback. Neither trigger of this workflow runs on a pull request, so nothing else reports
+    # that breakage -- without this gate an operator discovers it at the moment they reach for a
+    # release, and it presents as a packaging failure rather than as the missing prerequisite it
+    # is. Read the manifest, skip honestly, and resume with zero workflow edits the moment the
+    # asset is verified and checked in.
+    name: Native SQLCipher asset status (${{ inputs.rid }})
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.manifest.outputs.status }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the native asset manifest
+        id: manifest
+        env:
+          # Read from the environment rather than interpolated into the script: the templating
+          # engine expands an input into the shell source, so an injected command would run before
+          # anything here could reject it. The same rule the version inputs follow.
+          RID: ${{ inputs.rid }}
+        run: |
+          set -euo pipefail
+          package=src/RetroDownfall.Arcanum.NativeSqlCipher
+          status=$(jq -r --arg rid "$RID" '[.assets[] | select(.rid == $rid)][0].status // "absent"' "$package/native-source-manifest.json")
+          path=$(jq -r --arg rid "$RID" '[.assets[] | select(.rid == $rid)][0].path // ""' "$package/native-source-manifest.json")
+          if [[ "$status" == "verified" && -n "$path" && -f "$package/$path" ]]; then
+            echo "status=verified" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=$status" >> "$GITHUB_OUTPUT"
+            echo "::warning::No verified hermetic SQLCipher asset for $RID (status: $status). Its packaging job is skipped; build it on a native runner with scripts/build-native-sqlcipher.ps1, verify it with scripts/verify-native-sqlcipher.sh, and check it in."
+          fi
+
+  package:
+    name: Publish Arcanum + Compendium + The Forge (${{ inputs.rid }})
+    needs: native-sqlcipher-asset
+    if: needs.native-sqlcipher-asset.outputs.status == 'verified'
+    # Each Windows architecture builds on its own architecture. Native AOT can target win-arm64
+    # from an x64 host, but only from a shell that has already sourced the cross MSVC environment,
+    # and a publish that cannot find those tools does not fail -- it falls back to a self-contained
+    # CoreCLR folder that packages, ships, and is quietly no longer Native AOT. A native runner
+    # removes the question rather than answering it, and `windows-11-arm` is free for this
+    # repository because it is public.
+    runs-on: ${{ inputs.rid == 'win-arm64' && 'windows-11-arm' || 'windows-latest' }}
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0.x"
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+            .config/dotnet-tools.json
+
+      - name: Validate version
+        id: ver
+        shell: bash
+        env:
+          # Never interpolate a workflow_dispatch input into the run: script — the templating
+          # engine expands it into the shell source, so injected commands execute before the
+          # SemVer validation below can reject them. Read it from the environment instead.
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION_INPUT:-}"
+          if [[ -z "$VERSION" ]]; then
+            VERSION="0.1.0-beta"
+          fi
+          if [[ "$VERSION" == *+* ]]; then
+            echo "error: SemVer build metadata (+...) is not allowed: '$VERSION'" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: invalid SemVer '$VERSION'" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Assert the runner architecture matches the RID
+        shell: bash
+        env:
+          RID: ${{ inputs.rid }}
+        run: |
+          set -euo pipefail
+          echo "PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE:-unset}"
+          case "$RID" in
+            win-x64) expected="AMD64" ;;
+            win-arm64) expected="ARM64" ;;
+            *) echo "error: unsupported RID '$RID' (expected win-x64 or win-arm64)" >&2; exit 1 ;;
+          esac
+          if [[ "${PROCESSOR_ARCHITECTURE:-}" != "$expected" ]]; then
+            echo "error: $RID expects a $expected runner, got ${PROCESSOR_ARCHITECTURE:-unset}" >&2
+            exit 1
+          fi
+          dotnet --info
+
+      - name: Package Arcanum, Compendium, and The Forge
+        shell: pwsh
+        env:
+          RID: ${{ inputs.rid }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          .\scripts\packaging\windows\package-windows.ps1 `
+            -Version "${{ steps.ver.outputs.version }}" `
+            -OutputDir .\dist\windows `
+            -Rid $env:RID
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-${{ inputs.rid }}-${{ steps.ver.outputs.version }}
+          path: |
+            dist/windows/arcanum-${{ inputs.rid }}.zip
+            dist/windows/compendium-${{ inputs.rid }}.zip
+            dist/windows/the-forge-${{ inputs.rid }}.zip
+            dist/windows/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
