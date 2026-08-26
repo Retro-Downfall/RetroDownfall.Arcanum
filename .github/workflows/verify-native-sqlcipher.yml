@@ -15,9 +15,19 @@ on:
       - "scripts/build-native-sqlcipher.*"
       - "scripts/verify-native-sqlcipher.sh"
       - ".github/workflows/verify-native-sqlcipher.yml"
+  # Same paths as the pull-request trigger above. Without them this fired on every push to main,
+  # including doc-only and workflow-only ones, and each firing rebuilds SQLCipher twice on three
+  # runners -- roughly an hour of runner time re-proving assets that nothing in the push touched.
+  # The gate is not weakened by this: a release cannot start unless every RID is already recorded
+  # verified, and the recorded hash can only have been earned here.
   push:
     branches:
       - main
+    paths:
+      - "src/RetroDownfall.Arcanum.NativeSqlCipher/**"
+      - "scripts/build-native-sqlcipher.*"
+      - "scripts/verify-native-sqlcipher.sh"
+      - ".github/workflows/verify-native-sqlcipher.yml"
   workflow_dispatch:
 
 permissions:
