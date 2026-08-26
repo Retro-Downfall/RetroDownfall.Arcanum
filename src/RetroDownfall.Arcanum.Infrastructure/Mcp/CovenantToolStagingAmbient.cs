@@ -23,7 +23,29 @@ internal sealed record CovenantToolStagingContext(
     ProviderCallMaterializationSnapshot Materialization,
     ICovenantTurnHeadProbe HeadProbe,
     CovenantToolCapabilityRegistry Registry,
-    CancellationToken TurnCancellation);
+    CancellationToken TurnCancellation,
+
+    /// <summary>The retirement target a Ward showed the operator, for this one dispatch.</summary>
+    /// <remarks>
+    /// Per call rather than per turn, and pushed by the tool pipeline as a <c>with</c> copy around the
+    /// single invocation it authorizes. A field the turn could mutate would let one approved retirement
+    /// authorize the next tool call the model happened to make.
+    /// </remarks>
+    CovenantRetirementPreflight? RetirementPreflight = null,
+
+    /// <summary>The operator consent that retirement actually received.</summary>
+    CovenantToolWardReceipt? WardReceipt = null,
+
+    /// <summary>
+    /// The capability nonce this dispatch was disclosed under, or absent to mint a fresh one.
+    /// </summary>
+    /// <remarks>
+    /// A retirement's disclosure receipt is committed before the effect and binds the nonce, so the
+    /// nonce has to exist one frame earlier than the mint. Supplying it here keeps that one call to one
+    /// nonce; a second one minted at bind time would leave the receipt describing a capability that was
+    /// never used.
+    /// </remarks>
+    CovenantToolCapabilityNonce? Nonce = null);
 
 /// <summary>
 /// Carries one turn's staging material across the in-process MCP boundary.

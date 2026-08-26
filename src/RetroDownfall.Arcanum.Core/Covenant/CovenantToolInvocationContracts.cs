@@ -48,6 +48,23 @@ public interface ICovenantTurnHeadProbe
         ImmutableArray<string> excludedKeys,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Resolves the exact retirement target a Ward will show, or refuses it.
+    /// </summary>
+    /// <remarks>
+    /// Here rather than on a port of its own, because this is the one object holding both the store
+    /// and the turn's own lease — the same reason the head probe lives here. Resolving it later would
+    /// need the lease handed out, which is how a turn ends up with two owners for one admission.
+    ///
+    /// <para>It refuses before a Ward is raised, never after: a missing head, a tombstone, and a pinned
+    /// head are all things an operator must not be asked to approve, because approving them authorizes
+    /// nothing the write authority would accept.</para>
+    /// </remarks>
+    ValueTask<Result<CovenantRetirementPreflight>> ResolveRetirementPreflightAsync(
+        CovenantLane lane,
+        string normalizedKey,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
@@ -133,6 +150,21 @@ public sealed class CovenantRetirementPreflight
     public CovenantDigest PreflightBodyDigest { get; }
 
 }
+
+/// <summary>
+/// What a Ward shows an operator before they approve one retirement.
+/// </summary>
+/// <remarks>
+/// The model's arguments are a key and a lane. This is what those name: the content that will
+/// disappear, the branch it lives on, the revision it is, and whether Global content starts applying
+/// in its place. A Ward that showed the arguments would be asking somebody to approve a pointer.
+/// </remarks>
+public sealed record CovenantRetirementDisclosureWire(
+    string Key,
+    string Lane,
+    long Revision,
+    string Content,
+    bool GlobalContentAppliesAfterwards);
 
 /// <summary>
 /// The operator consent one sensitive-egress tool call actually received.

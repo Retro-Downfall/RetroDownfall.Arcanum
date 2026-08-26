@@ -108,9 +108,9 @@ public static class CovenantDigestCorpus
         recorder.RecordDigest(CorpusCategory.Domain, "domain.fragment", compiled.FragmentHash, "E645D901DB511E428E00E1EC2E2F90F218B522FDBB1E3AEECF49BDCC43ED47BC");
         recorder.RecordDigest(CorpusCategory.Domain, "domain.section", section, "66826E632897C00071F6307A2344E02795ACEF895324C61C14F603D2BDE46940");
         recorder.RecordDigest(CorpusCategory.Domain, "domain.request", request, "C11161C8989E00B9AB50791CF5B053249A5860144A4937E5E1A1B55A44EB0666");
-        recorder.RecordDigest(CorpusCategory.Domain, "domain.preflight-body", preflight, "0490723DC6B89CB04670479F8BF4DC02C7594A74E81AAB288B82AC52B9F60BAD");
-        recorder.RecordDigest(CorpusCategory.Domain, "domain.authorization", authorization, "E038746CFDB35EE391359FBF6664B909F144322BB87ED2F11C92D8460135D025");
-        recorder.RecordDigest(CorpusCategory.Domain, "domain.mutation", mutation, "46928AD92AD94825F380F2F79D92521824023D9DE54E8DC2E36AC6F2163EADE7");
+        recorder.RecordDigest(CorpusCategory.Domain, "domain.preflight-body", preflight, "F35209D3DCCF5F5B96E324D1ED734CB6D67666EFCB605D1A1B1044FE639DD653");
+        recorder.RecordDigest(CorpusCategory.Domain, "domain.authorization", authorization, "BDCCAD751EDD947E7D1CDE2B79EC1217B5906B627308E264DAD35D92485C7794");
+        recorder.RecordDigest(CorpusCategory.Domain, "domain.mutation", mutation, "5359D52F695C18826A3856F7A4877182599A04F8EC0665EDC2F9254F1A6B5DAF");
         recorder.RecordDigest(CorpusCategory.Domain, "domain.snapshot", snapshot, "95622F1A4999CC3C674FD2C83BD01E2F1FCCDD5EAE6FA4B07EE2A89DB6435F3B");
         recorder.RecordDigest(CorpusCategory.Domain, "domain.plan", plan, "64007A7EBA7FB1EA3CACF9E20912E14F8D5CEB8C16B6104D5DD2BEA8165E96A3");
         recorder.RecordDigest(CorpusCategory.Domain, "domain.materialization", materialization, "32D0013559988A9F6E215056E7A869AC39432EA89BDB54214995078D85441906");
@@ -204,7 +204,7 @@ public static class CovenantDigestCorpus
         CovenantDigest options = CovenantDigests.ProviderOptions(MinimalProviderOptions());
 
         recorder.RecordDigest(CorpusCategory.Optional, "optional.request", request, "A1A25676634D894652316B20A1B86ED734191EE976EB4054EBF0F7C8BA374D79");
-        recorder.RecordDigest(CorpusCategory.Optional, "optional.preflight", CovenantDigests.PreflightBody(new PreflightBodyDigestInput(request, 0, G2, 0, 0, 0, null, null, D(1), D(2), -1, 0)), "819E01A1072D0A86CDCF784EC96E7B82859AA206067BCAEC3F2E651D8BC62A72");
+        recorder.RecordDigest(CorpusCategory.Optional, "optional.preflight", CovenantDigests.PreflightBody(new PreflightBodyDigestInput(request, 0, G2, 0, 0, 0, null, null, D(1), D(2), -1, 0)), "B003FC48591C91B92414B82AAEEBFC28C95D9AB60BA86F6ACC62086A4A108669");
         recorder.RecordDigest(CorpusCategory.Optional, "optional.authorization", CovenantDigests.Authorization(new AuthorizationDigestInput(request, G2, null, null, null, null, null, null, CovenantAuthorizationMode.None)), "DCBAAA783EEFE32D83EC0A663C6184148EC78B6834B098DAF0C7F4D53B7A0EBB");
         recorder.RecordDigest(CorpusCategory.Optional, "optional.snapshot", CovenantDigests.Snapshot(new SnapshotDigestInput(G3, null, 0, [new SnapshotCandidateDigestInput(1, G1, G2, CovenantScope.Global, null, CovenantLane.Confirmed, CovenantOperation.Set, CovenantOrigin.Operator, 0, null, 0, 0, D(1), D(2), 0, D(13), 0)])), "FCB2B04534037F7F5C7851065AD9F781D8157E9042476C3FFB348A3AF66B5084");
         recorder.RecordDigest(CorpusCategory.Optional, "optional.plan", CovenantDigests.Plan(new PlanDigestInput(D(1), 0, 0, [], emptyGlobal, emptyCampaign, emptyProposed)), "415B650CEA66CBE222C006DEB8C2405EF60936B231D057FE9087C74632957BB2");

@@ -701,6 +701,114 @@ public sealed class CovenantCommandTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task A_declined_pin_never_reaches_the_commit_route()
+    {
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: false, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.Curate(
+            CovenantCurationKind.Pin,
+            "preference.builds",
+            campaignId: null,
+            CovenantLane.Confirmed,
+            expectedRevision: 0,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        // The preflight is a read. Nothing after it may have happened.
+        Assert.Equal(["POST /api/memory/covenant/curate/prepare"], handler.Requests);
+
+        Assert.Contains("cancelled", string.Join("\n", dispatcher.Diagnostics), StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task A_confirmed_pin_prepares_first_then_commits()
+    {
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out _);
+
+        int exitCode = await commands.Curate(
+            CovenantCurationKind.Pin,
+            "preference.builds",
+            campaignId: null,
+            CovenantLane.Confirmed,
+            expectedRevision: 0,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Equal(
+            ["POST /api/memory/covenant/curate/prepare", "POST /api/memory/covenant/curate"],
+            handler.Requests);
+
+    }
+
+    /// <summary>
+    /// The sentence an operator has to see before they approve a mask: what applies here afterwards.
+    /// It is read off the server's preflight, never off the flags this process parsed.
+    /// </summary>
+    [Fact]
+    public async Task A_mask_screen_states_that_nothing_replaces_the_Global_entry()
+    {
+
+        RecordingHandler handler = new() { GlobalConfirmedSuppressed = true };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        _ = await commands.Curate(
+            CovenantCurationKind.Mask,
+            "preference.builds",
+            campaignId: Guid.CreateVersion7(),
+            CovenantLane.Confirmed,
+            expectedRevision: 0,
+            Token);
+
+        Assert.Contains(
+            "nothing replaces it",
+            string.Join("\n", dispatcher.Payloads),
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    /// <summary>
+    /// Refused before the question is put, not after. The kernel compares exactly these two numbers,
+    /// so asking first renders a screen every line of which is true and which describes a change that
+    /// cannot succeed.
+    /// </summary>
+    [Fact]
+    public async Task A_pin_whose_expected_revision_is_stale_is_refused_before_the_confirmation()
+    {
+
+        RecordingHandler handler = new() { CurationHeadRevision = 4 };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.Curate(
+            CovenantCurationKind.Pin,
+            "preference.builds",
+            campaignId: null,
+            CovenantLane.Confirmed,
+            expectedRevision: 0,
+            Token);
+
+        Assert.NotEqual(0, exitCode);
+
+        Assert.Equal(["POST /api/memory/covenant/curate/prepare"], handler.Requests);
+
+        Assert.Contains(
+            "--expected-revision 4",
+            string.Join("\n", dispatcher.Diagnostics.Concat(dispatcher.Payloads)),
+            StringComparison.Ordinal);
+
+    }
+
     private static CovenantCommands Commands(
         RecordingHandler handler,
         bool confirm,
@@ -791,6 +899,12 @@ public sealed class CovenantCommandTests : IDisposable
         /// <summary>The revision the stubbed head sits at, as the preflight would report it.</summary>
         internal long HeadRevision { get; init; }
 
+        /// <summary>The curation revision the stubbed subject sits at.</summary>
+        internal long CurationHeadRevision { get; init; }
+
+        /// <summary>Whether the stubbed preflight reports the Global entry being suppressed.</summary>
+        internal bool GlobalConfirmedSuppressed { get; init; }
+
         /// <summary>How many list pages exist before the cursor runs out.</summary>
         internal int ListPages { get; init; } = 1;
 
@@ -811,7 +925,19 @@ public sealed class CovenantCommandTests : IDisposable
 
             string body;
 
-            if (path.EndsWith("prepare", StringComparison.Ordinal))
+            if (path.EndsWith("curate/prepare", StringComparison.Ordinal))
+            {
+
+                body = CurationPreflight(CurationHeadRevision, ExpectedRevisionOf(Bodies[^1]));
+
+            }
+            else if (path.EndsWith("curate", StringComparison.Ordinal))
+            {
+
+                body = CurationResult();
+
+            }
+            else if (path.EndsWith("prepare", StringComparison.Ordinal))
             {
 
                 // Echoed from the request, exactly as the service echoes it. A stub that reported its
@@ -942,6 +1068,52 @@ public sealed class CovenantCommandTests : IDisposable
             return 0;
 
         }
+
+        private string CurationPreflight(long headRevision, long expectedRevision) =>
+            JsonSerializer.Serialize(
+                ApiResponse<CovenantCurationPreflightDto>.FromResult(
+                    Result<CovenantCurationPreflightDto>.Success(new CovenantCurationPreflightDto(
+                        CovenantCurationKind.Pin,
+                        CovenantScope.Global,
+                        null,
+                        "preference.builds",
+                        CovenantLane.Confirmed,
+                        Guid.NewGuid(),
+                        "00",
+                        IsPinned: false,
+                        IsMasked: false,
+                        headRevision,
+                        expectedRevision,
+                        1,
+                        GlobalConfirmedSuppressed,
+                        GlobalConfirmedResurfaces: false,
+                        ChangesAnything: true,
+                        DateTimeOffset.UtcNow,
+                        DateTimeOffset.UtcNow.AddMinutes(5),
+                        "token")),
+                    "trace"),
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
+
+        private static string CurationResult() =>
+            JsonSerializer.Serialize(
+                ApiResponse<CovenantCurationResultDto>.FromResult(
+                    Result<CovenantCurationResultDto>.Success(new CovenantCurationResultDto(
+                        Guid.NewGuid(),
+                        CovenantMutationOutcome.Applied,
+                        CovenantCurationKind.Pin,
+                        CovenantScope.Global,
+                        null,
+                        "preference.builds",
+                        CovenantLane.Confirmed,
+                        IsPinned: true,
+                        IsMasked: false,
+                        Guid.NewGuid(),
+                        1,
+                        "00",
+                        "11",
+                        Replayed: false)),
+                    "trace"),
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
 
         private static string Preflight(long headRevision, long expectedRevision) =>
             JsonSerializer.Serialize(

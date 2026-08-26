@@ -110,10 +110,15 @@
         "context inspect",
         "context sources",
         "context tools",
+        "memory covenant correct",
         "memory covenant list",
+        "memory covenant mask",
+        "memory covenant pin",
         "memory covenant retire",
         "memory covenant set",
         "memory covenant show",
+        "memory covenant unmask",
+        "memory covenant unpin",
         "run"
       ]
     },
@@ -130,6 +135,7 @@
       "alias": "-f",
       "option": "--file",
       "scopes": [
+        "memory covenant correct",
         "memory covenant set"
       ]
     },
@@ -2768,6 +2774,78 @@
               "commands": []
             },
             {
+              "path": "memory covenant correct",
+              "name": "correct",
+              "description": "Replace the text of one preference, naming the exact version being corrected.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--file",
+                  "aliases": [
+                    "-f"
+                  ],
+                  "description": "Read the corrected text from this file. Omit to read from piped standard input.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--target-version",
+                  "aliases": [],
+                  "description": "The version identity being corrected, as \u0060show --history\u0060 reports it.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--target-hash",
+                  "aliases": [],
+                  "description": "The compiled hash of the version being corrected, as \u0060show\u0060 reports it.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The exact lane revision being corrected.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant correct preference.builds --file corrected.txt --target-version 0195a0f0-0000-7000-8000-0000000000aa --target-hash 0000000000000000000000000000000000000000000000000000000000000000 --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
               "path": "memory covenant list",
               "name": "list",
               "description": "List the standing preferences in one scope.",
@@ -2922,6 +3000,226 @@
               ],
               "examples": [
                 "arcanum memory covenant retire preference.builds --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant pin",
+              "name": "pin",
+              "description": "Mark one preference durable, so the agent may not write over it or retire it.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--lane",
+                  "aliases": [],
+                  "description": "Confirmed or Proposed. Defaults to Confirmed.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "Confirmed",
+                    "Proposed"
+                  ]
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant pin preference.builds"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant unpin",
+              "name": "unpin",
+              "description": "Release a pin, so the agent may propose over this preference again.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--lane",
+                  "aliases": [],
+                  "description": "Confirmed or Proposed. Defaults to Confirmed.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "Confirmed",
+                    "Proposed"
+                  ]
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant unpin preference.builds --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant mask",
+              "name": "mask",
+              "description": "Stop a Global preference applying in one Campaign, with nothing in its place.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "The Campaign this mask applies to.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--lane",
+                  "aliases": [],
+                  "description": "Confirmed or Proposed. Defaults to Confirmed.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "Confirmed",
+                    "Proposed"
+                  ]
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant mask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant unmask",
+              "name": "unmask",
+              "description": "Let a masked Global preference apply in this Campaign again.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "The Campaign this mask applies to.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--lane",
+                  "aliases": [],
+                  "description": "Confirmed or Proposed. Defaults to Confirmed.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "Confirmed",
+                    "Proposed"
+                  ]
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant unmask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77 --expected-revision 1"
               ],
               "commands": []
             }

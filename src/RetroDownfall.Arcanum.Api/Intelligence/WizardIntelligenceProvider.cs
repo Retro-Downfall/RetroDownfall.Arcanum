@@ -2444,6 +2444,7 @@ public sealed partial class WizardIntelligenceProvider(
             grimoireTurn,
             targetModel,
             streamAttachmentPrep.VisibleAttachmentIds,
+            invocationContext,
             inferenceToken).ConfigureAwait(false);
 
         bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
@@ -4219,6 +4220,7 @@ public sealed partial class WizardIntelligenceProvider(
         GrimoireTurnWriter.TurnHandle grimoireTurn,
         string targetModel,
         IReadOnlySet<Guid>? visibleAttachmentIds,
+        ArcanumInvocationContext? invocation,
         CancellationToken cancellationToken)
     {
         Campaign? campaign = null;
@@ -4281,6 +4283,7 @@ public sealed partial class WizardIntelligenceProvider(
             InvocationId = grimoireTurn.AssistantEntryId?.ToString("D"),
             ModelUsed = targetModel,
             CampaignRequiresWard = campaignRequiresWard,
+            Invocation = invocation,
             SanctumEnabled = sanctumEnabled,
             SanctumMode = sanctumMode,
             InferenceTools = inferenceTools,

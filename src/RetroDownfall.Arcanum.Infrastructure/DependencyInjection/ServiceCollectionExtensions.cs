@@ -1683,6 +1683,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantEnvelopeCodec>(),
             sp.GetRequiredService<ICovenantConnectionSource>(),
             sp.GetRequiredService<CovenantMutationKernel>(),
+            sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
             sp.GetRequiredService<TimeProvider>()));
 
@@ -1802,6 +1803,10 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped(
             static sp => new CovenantMutationKernel(sp.GetRequiredService<CovenantQuotaGuard>()));
+
+        // No quota guard: a curation change appends no compiled content and joins no Section, so there
+        // is no capacity for it to consume and nothing for a guard to measure.
+        services.AddScoped(static _ => new CovenantCurationKernel());
 
         services.AddScoped(
             static sp => new CovenantTurnReceiptCompactor(

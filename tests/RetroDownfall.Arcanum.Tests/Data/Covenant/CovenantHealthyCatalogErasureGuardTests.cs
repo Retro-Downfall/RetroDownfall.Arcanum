@@ -1,5 +1,7 @@
 using System.Data;
 
+using System.Globalization;
+
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -429,8 +431,13 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
             MetadataDamage.Unhealthy =>
                 "UPDATE grimoire_feature_schemas SET HealthCode = 1 WHERE TransactionTierCode = 1;",
 
+            // One past the declared head, read from the chain rather than written as a literal. A
+            // literal stops being a wrong version the moment the tier evolves onto it, and the case
+            // then damages nothing while still reading as a damage test.
             MetadataDamage.WrongVersion =>
-                "UPDATE grimoire_feature_schemas SET SchemaVersion = 2 WHERE TransactionTierCode = 1;",
+                "UPDATE grimoire_feature_schemas SET SchemaVersion = "
+                    + (GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion + 1).ToString(CultureInfo.InvariantCulture)
+                    + " WHERE TransactionTierCode = 1;",
 
             MetadataDamage.WrongSource =>
                 $"UPDATE grimoire_feature_schemas SET SourceDefinitionFingerprint = '{new string('A', 64)}' "

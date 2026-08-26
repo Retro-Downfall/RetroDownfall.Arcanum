@@ -58,7 +58,7 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#82** | Landed | Generation-bound operation gate and lease vocabulary, bounded canonical store, transactional mutation kernel and replay ledger, canonical and turn-capacity quotas, bounded turn-evidence folding, owner-deletion catch-up, FTS query compiler and cursor bodies, eligible search index with bounded canonical fallback, whole-sequence outbox synchronization, resumable base rebuild. |
 | **#83** | Landed | Non-serializable `ArcanumInvocationContext` at every inference seam, six-purpose AES-256-GCM envelope protocol and keyed diagnostic tag, `OperatorAuthorityContextIssuer`, canonical Campaign resolution by keyed physical directory identity (replacing `PingRequestResolver`), assistant-begin path honoring the immutable Session binding. |
 | **#84** | Landed | Deterministic Confirmed and fenced Proposed placement in `SystemPromptBuilder`, Core-owned `SystemPromptAttributionMap`, two new `ContextTokenSource` lanes, `ICovenantContextProvider`, `CovenantAdmissionPlanner`, `ICovenantDisclosureJournal`, `ICovenantMutationCollector`, `IGrimoireTurnCommitter`. |
-| **#85** | Landed; streaming barrier withdrawn | `CovenantToolInvocationContext` and `CovenantToolCapabilityRegistry`, `CovenantEgressWardPolicy`, `CovenantToolEgressGuard`, and the hand-authored `propose_covenant` / `retire_covenant` tools. `propose_covenant` now publishes; `retire_covenant` stays registered and withheld, and `CovenantToolEgressGuard` waits with it, since the tool-effect disclosure it commits belongs to the retirement path rather than to a local Proposed-lane write. `ProviderToolCallBuffer` and its frozen-call classification overload were withdrawn rather than wired: no path under `src/` ever constructed the buffer, the only live classification path takes complete framed calls from the in-process MCP server, and `Hub.ProviderToolBufferExceeded` went with it because nothing could emit it. |
+| **#85** | Landed; streaming barrier withdrawn | `CovenantToolInvocationContext` and `CovenantToolCapabilityRegistry`, `CovenantEgressWardPolicy`, `CovenantToolEgressGuard`, and the hand-authored `propose_covenant` / `retire_covenant` tools. `propose_covenant` now publishes; `retire_covenant` now publishes too, and `CovenantToolEgressGuard` commits its tool-effect disclosure before the dispatch — the retirement pipeline is delivered under #96. It is advertised wherever a Ward can be raised and withheld where one cannot, because with Wards off the egress policy denies every retirement and the tool could only refuse. `ProviderToolCallBuffer` and its frozen-call classification overload were withdrawn rather than wired: no path under `src/` ever constructed the buffer, the only live classification path takes complete framed calls from the in-process MCP server, and `Hub.ProviderToolBufferExceeded` went with it because nothing could emit it. |
 | **#86** | Landed | `ArtifactSensitivityLedger`, `DerivedArtifactWrite`, `SessionDerivedArtifactStore`, `ProtectedAssistantArtifactReader`, `CovenantProtectedLogScope`, `CovenantDerivedOutputInventory` with its architecture suite, and the two-marker host-process-tools taint gate. |
 | **#88** | Landed | Frozen operator request/response shapes with `Validate()` and bounded UTF-8 limits, the complete Covenant error vocabulary and HTTP status mapping, five service ports, `CovenantPublicContractInventory`, `CovenantProtectedJsonResult<T>` / `CovenantProtectedStreamResult`, two durable recovery checkpoints, caller-named durable operation identity. |
 | **#87** | Landed | `CovenantSensitiveArtifactPurgePolicy` (thirteen-kind table), `CovenantArtifactErasureAuthority`, `CovenantProtectedArtifactErasureKernel`, `CovenantManagedFileErasureKernel`, `CovenantLocalErasureStartupRecovery`, `CovenantSchemaRepairJournal` + startup recovery, `CovenantExclusiveDisposition`, and the `covenant-index-rebuild` / `covenant-family-reinitialize` operation kinds. |
@@ -93,12 +93,13 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 | Issue | Size | Role |
 |---|---|---|
 | **#92** | XL, partly delivered | Performance, Native AOT, documentation, and release qualification — the #74 acceptance gate. The reproducible workload, benchmark host, statistics, and absolute gates are built against the production services, and CI publishes the host, runs the absolute gate, and keeps the run it measured as a retention-pinned artifact (`scripts/benchmark-covenant.sh`, DESIGN §10.24). The baseline half is not delivered and is not claimed to be: no baseline run is recorded in the repository, and the comparative gate has never executed outside a hand run. It is a developer and release-qualification tool by design rather than a merge gate, because a paired bootstrap is only meaningful between two runs on one host; it now refuses rather than reports whenever the two runs disagree on workload, schema, runtime identifier, corpus digest, manifest digest, or the set of operations measured. What remains is that baseline half, and the evidence nobody on a Mac can produce: `win-x64` and `win-arm64` have no checked-in hermetic SQLCipher asset, so their Native AOT and runtime evidence is bound to the Windows verification workflow, and the five independent review passes the slice requires have not been run. |
+| **#96** | XL, landed | Covenant exact-version correction, pinning, unpinning, and scope masks, and the agent-retirement pipeline that had been deferred since the tool surface shipped. Curation runs the write path's own prepare-and-apply, operator authority, compare-and-swap, and idempotent-receipt protocol over three append-only tables installed as Covenant canonical schema version 2 (DESIGN §10.26). |
 | **#105** | XL | Bitemporal validity and dependency-aware claims across durable memory stores. |
 | **#106** | XL | Counterfactual memory evaluation lab. Prerequisite for #95. |
 | **#76** | XL | Campaign-scoped retrieval. |
 | **#77** | XL | Campaign rollup — a genuinely Campaign-scoped summary. |
 | **#75** | Epic | The Long Rest, via #93, #91, #95. |
-| **#78** | Epic | Memory curation, via #96, #97, #98, #99, #100. |
+| **#78** | Epic | Memory curation, via #96, #97, #98, #99, #100. #96 is landed; the other four are open. |
 | **#101** | M | Scoped read-only agent recall. |
 | **#103** | XL | Dynamic Context Injection v2 — secure provider-cacheable prefix. |
 | **#104** | L | Typed Covenant operational defaults excluding security-policy authority. |
@@ -110,7 +111,7 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.25 own the Covenant slices and the schema evolution they rest on.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.26 own the Covenant slices, the schema evolution they rest on, and the curation surfaces built over them.
 3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation authority.
@@ -859,13 +860,13 @@ The two hand-authored, source-generated MCP tools are:
 - `propose_covenant`, for Campaign Proposed content;
 - `retire_covenant`, a Forbidden Art for Campaign-bound retirement under Ward policy.
 
-Both handlers are registered on every host. `propose_covenant` is advertised; `retire_covenant` is **withheld from `tools/list` in this build**. Both stay registered whatever their advertisement, so a stale or direct invocation fails closed rather than reaching an unregistered name.
+Both handlers are registered on every host. `propose_covenant` is advertised wherever the tier is healthy; `retire_covenant` is advertised wherever a Ward can also be raised for it, and **withheld on an installation whose Wards are switched off**. Both stay registered whatever their advertisement, so a stale or direct invocation fails closed rather than reaching an unregistered name.
 
-`retire_covenant` cannot be granted at all. Minting its capability requires the preflight disclosure a Ward showed the operator and the receipt proving they approved it, and nothing resolves a Ward decision, accepts a receipt, or commits a tool-effect disclosure, so every call would refuse. A tool that always fails teaches a model that the capability is broken rather than absent.
+`retire_covenant` can now be granted. Minting its capability requires the preflight disclosure a Ward showed the operator and the receipt proving they approved it, and the tool pipeline resolves that target from canonical state, raises the Ward over the content that will disappear rather than the model's arguments, and commits the tool-effect disclosure before the dispatch. With Wards switched off the egress policy denies every retirement outright, so on that installation the tool could only refuse and is withheld: a tool that always fails teaches a model that the capability is broken rather than absent.
 
 `propose_covenant` is granted, staged, and published. A turn that reaches its completed assistant finalization seals the collector and hands the resulting batch to `IGrimoireTurnCommitter` beside the answer, so the compiled fragment and the reply it accompanied enter canonical storage in one transaction or neither does. The batch binds the dataset generation and the key-reclamation epoch the turn's own snapshot read, and binds no Campaign registry epoch: an agent proposal reaches exactly one Campaign, and a stand-in value there would be compared like a real one and refuse every proposal on any installation whose registry had ever advanced.
 
-No Ward stands in front of it, and that is a decision rather than an omission. The Proposed lane is review-only beside effective Confirmed content and cannot change it, which is the whole reason it is the lane an agent may write; the write is local canonical storage rather than egress; and the provider dispatch that produced the tool call already committed its own disclosure receipt before any bytes left the process. Retirement is the call that needs consent, and it is the one still withheld.
+No Ward stands in front of it, and that is a decision rather than an omission. The Proposed lane is review-only beside effective Confirmed content and cannot change it, which is the whole reason it is the lane an agent may write; the write is local canonical storage rather than egress; and the provider dispatch that produced the tool call already committed its own disclosure receipt before any bytes left the process. Retirement is the call that needs consent, and it is the one that asks for it.
 
 A turn that ends any other way publishes nothing. Interruption, cancellation, a refused finalization, a guardrails failure, and a turn that was never Covenant-derived all discard the collector. A turn holding a staged batch that cannot reach the atomic committer refuses rather than persisting its answer alone, and the stream-exit cleanup that runs after such a refusal drops the partial reply instead of committing it a moment later without its batch — because an answer written without the batch silently loses an acknowledgement the tool has already reported to the model.
 
@@ -1302,7 +1303,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 The following documents own or explain the detailed contracts summarized here. The **(branch)** marks are historical: they meant a section existed only on `long-term-memory`, which has since been merged into `main` and deleted. Every link below resolves on `main`.
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.25.1 **(branch)**:
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.26.6 **(branch)**:
   - §10.10 Core protocol foundation
   - §10.11 Canonical persistence and inspection search
   - §10.12 Invocation authority and Campaign binding
@@ -1316,6 +1317,7 @@ The following documents own or explain the detailed contracts summarized here. T
   - §10.20.1–§10.20.14 Retention, reset, and full erasure
   - §10.21.1–§10.21.7 The live turn's adoption of the Covenant
   - §10.22.1–§10.22.6 The operator's write and read paths, and the agent's proposal
+  - §10.26.1–§10.26.6 Curating what is already remembered
   - §10.23 What an installation holds, and what a turn had to drop
   - §10.24 The release benchmark
   - §10.25–§10.25.1 Evolving an installed tier through a declared version chain

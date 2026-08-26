@@ -340,6 +340,7 @@ public sealed class CovenantMutationServiceTests
             new StubEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
             new CovenantMutationKernel(),
+            new CovenantCurationKernel(),
             new StubAuthority(),
             clock);
 
@@ -390,6 +391,7 @@ public sealed class CovenantMutationServiceTests
             new CovenantEnvelopeCodec(keys, clock),
             new FixedCovenantConnectionSource(fixture.Connection),
             new CovenantMutationKernel(),
+            new CovenantCurationKernel(),
             new StubAuthority(),
             clock);
 
@@ -521,6 +523,7 @@ public sealed class CovenantMutationServiceTests
             new StubEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
             new CovenantMutationKernel(),
+            new CovenantCurationKernel(),
             new StubAuthority(),
             TimeProvider.System);
 

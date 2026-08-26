@@ -24,6 +24,30 @@ public enum CovenantOperation : byte
     Retire = 2
 }
 
+/// <summary>
+/// What one curation change does to the subject it names.
+/// </summary>
+/// <remarks>
+/// Curation is a separate vocabulary from <see cref="CovenantOperation"/> rather than an extension of
+/// it, because a pin is not a version of the operator's text: it carries no content, no tombstone, and
+/// no lane revision of the entry's own. Every code is written literally because it is persisted.
+/// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantCurationKind>))]
+public enum CovenantCurationKind : byte
+{
+    /// <summary>Marks the subject durable, so an agent may not author over it.</summary>
+    Pin = 1,
+
+    /// <summary>Releases a pin.</summary>
+    Unpin = 2,
+
+    /// <summary>Stops a Global key applying inside one Campaign, with nothing in its place.</summary>
+    Mask = 3,
+
+    /// <summary>Releases a mask, so the Global key applies in that Campaign again.</summary>
+    Unmask = 4
+}
+
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantOrigin>))]
 public enum CovenantOrigin : byte
 {
@@ -57,7 +81,15 @@ public enum CovenantPlanDecision : byte
     Shadowed = 3,
     ReviewOnly = 4,
     Quarantined = 5,
-    Invalid = 6
+    Invalid = 6,
+
+    /// <summary>A Global entry the evaluating Campaign masked. Nothing replaces it.</summary>
+    /// <remarks>
+    /// Distinct from <see cref="Shadowed"/>, which names the entry that replaced it. A mask names
+    /// nothing, and folding the two together would tell an operator their Global preference had been
+    /// superseded by content that does not exist.
+    /// </remarks>
+    Masked = 7
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantAdmissionDecision>))]

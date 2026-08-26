@@ -27,7 +27,8 @@ public sealed class GrimoireSchemaVersionChainTests
     }
 
     /// <summary>
-    /// Core left version 1 for Campaign-scoped recall; neither Covenant tier has moved.
+    /// Core left version 1 for Campaign-scoped recall and again for the Annals; Covenant canonical left
+    /// it for the curation substrate; the Covenant accelerator has not moved.
     /// </summary>
     /// <remarks>
     /// Pinned per tier rather than inferred, because a tier's head version is what decides whether an
@@ -40,7 +41,7 @@ public sealed class GrimoireSchemaVersionChainTests
 
         Assert.Equal(3, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
-        Assert.Equal(1, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
+        Assert.Equal(2, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 
         Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
 
@@ -55,7 +56,7 @@ public sealed class GrimoireSchemaVersionChainTests
 
         Assert.Equal(
             GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
-            chain.SourceDefinitionFingerprintFor(1));
+            chain.SourceDefinitionFingerprintFor(chain.HeadVersion));
 
     }
 

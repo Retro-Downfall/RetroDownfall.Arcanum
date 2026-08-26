@@ -264,6 +264,31 @@ internal sealed class CovenantCleanupWorker(
                 ("$campaign", campaign))
             .ConfigureAwait(false);
 
+        // Curation rows name a scoped key rather than an entry, so no entry deletion reaches them. A
+        // mask left behind here would suppress a Global preference for a Campaign identity that no
+        // longer exists, and nothing would ever remove it. The head goes before the versions it
+        // references, on the same terms as the canonical pair above.
+        await ExecuteAsync(
+                transaction,
+                "DELETE FROM covenant_curation_heads WHERE CampaignId = $campaign;",
+                cancellationToken,
+                ("$campaign", campaign))
+            .ConfigureAwait(false);
+
+        await ExecuteAsync(
+                transaction,
+                "DELETE FROM covenant_curation_versions WHERE CampaignId = $campaign;",
+                cancellationToken,
+                ("$campaign", campaign))
+            .ConfigureAwait(false);
+
+        await ExecuteAsync(
+                transaction,
+                "DELETE FROM covenant_curation_receipts WHERE CampaignId = $campaign;",
+                cancellationToken,
+                ("$campaign", campaign))
+            .ConfigureAwait(false);
+
         await ExecuteAsync(
                 transaction,
                 """

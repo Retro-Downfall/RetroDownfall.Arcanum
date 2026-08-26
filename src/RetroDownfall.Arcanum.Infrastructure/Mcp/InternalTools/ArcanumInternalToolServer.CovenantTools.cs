@@ -40,16 +40,17 @@ internal sealed partial class ArcanumInternalToolServer
     /// Whether retirement can actually be performed, rather than merely refused.
     /// </summary>
     /// <remarks>
-    /// Constant <see langword="false"/> in this build, and advertised accordingly. Retirement's
-    /// capability requires the preflight disclosure a Ward showed the operator and the receipt proving
-    /// they approved it; neither exists yet, so every call would be refused. Advertising a tool that
-    /// always refuses teaches a model the capability is broken rather than absent, and an unbuilt
-    /// capability must not look like a built one that happens to be failing.
+    /// Ward-aware rather than constant. Retirement's capability requires the preflight disclosure a
+    /// Ward showed the operator and the receipt proving they approved it, and with Wards switched off
+    /// the egress policy denies every retirement outright — switching Wards off removes the operator's
+    /// only chance to refuse, and silence is not consent to erase their own standing instructions. On
+    /// such an installation the tool could only ever refuse, and advertising a tool that always refuses
+    /// teaches a model the capability is broken rather than absent.
     ///
     /// <para>The handler stays registered regardless, so a direct or stale invocation still fails
     /// closed rather than reaching an unregistered name.</para>
     /// </remarks>
-    private static bool CovenantRetirementAvailable => false;
+    private bool CovenantRetirementAvailable => _wardsEnabled;
 
     private bool CovenantToolsAvailable()
     {

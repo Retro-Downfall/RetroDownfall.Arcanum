@@ -17,12 +17,12 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 /// <summary>
-/// The four routes an operator writes the Covenant through, and the authority each declares.
+/// The routes an operator writes the Covenant through, and the authority each declares.
 /// </summary>
 /// <remarks>
 /// Names rather than URLs: a URL is what an operator types, a name is what the contract is about.
-/// The set is exhaustive on purpose and fails in both directions — a fifth Covenant mutation route
-/// added without being written down here is a write path nobody recorded.
+/// The set is exhaustive on purpose and fails in both directions — a Covenant mutation route added
+/// without being written down here is a write path nobody recorded.
 /// </remarks>
 public sealed class CovenantMutationRouteTests
 {
@@ -33,6 +33,10 @@ public sealed class CovenantMutationRouteTests
         "PrepareCovenantRetire",
         "SetCovenantEntry",
         "RetireCovenantEntry",
+        "PrepareCovenantCuration",
+        "CurateCovenantEntry",
+        "PrepareCovenantCorrection",
+        "CorrectCovenantEntry",
     ];
 
     [Theory]
@@ -44,6 +48,14 @@ public sealed class CovenantMutationRouteTests
     [InlineData("SetCovenantEntry")]
 
     [InlineData("RetireCovenantEntry")]
+
+    [InlineData("PrepareCovenantCuration")]
+
+    [InlineData("CurateCovenantEntry")]
+
+    [InlineData("PrepareCovenantCorrection")]
+
+    [InlineData("CorrectCovenantEntry")]
 
     public async Task Every_covenant_mutation_route_requires_operator_manage_authority(string routeName)
     {
@@ -64,7 +76,7 @@ public sealed class CovenantMutationRouteTests
     }
 
     [Fact]
-    public async Task The_declared_set_is_exactly_the_four_named_mutation_routes()
+    public async Task The_declared_set_is_exactly_the_named_mutation_routes()
     {
 
         await using RouteGraph graph = await RouteGraph.CreateAsync();

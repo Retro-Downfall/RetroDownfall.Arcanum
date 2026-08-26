@@ -18,6 +18,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -70,7 +71,9 @@ public sealed class ToolExecutionPipeline(
     ILogger<ToolExecutionPipeline> logger,
     IToolResultMaterializer? toolResultMaterializer = null,
     GrimoireTurnWriter? grimoireTurnWriter = null,
-    IAttachmentSourceResolver? attachmentSourceResolver = null)
+    IAttachmentSourceResolver? attachmentSourceResolver = null,
+    CovenantToolEgressGuard? covenantEgressGuard = null,
+    ICovenantAuthoritySnapshotProvider? covenantAuthority = null)
 {
 
     /// <summary>
@@ -115,6 +118,15 @@ public sealed class ToolExecutionPipeline(
         public string? ModelUsed { get; init; }
 
         public bool CampaignRequiresWard { get; init; }
+
+        /// <summary>The invocation this turn runs under, or absent on a surface that has none.</summary>
+        /// <remarks>
+        /// Carried rather than re-derived, because <c>CanReadCovenant</c> and
+        /// <c>CanStageCovenantMutation</c> are the only eligibility answers in the system and restating
+        /// the truth table at this seam is how two callers come to disagree about what an unattended
+        /// stateless preview may do.
+        /// </remarks>
+        public ArcanumInvocationContext? Invocation { get; init; }
 
         public bool SanctumEnabled { get; init; }
 
@@ -1356,6 +1368,30 @@ public sealed class ToolExecutionPipeline(
 
         }
 
+        // Before the not-a-Forbidden-Art exit, because with Wards switched off that exit sends a
+        // retirement straight to invocation, where the handler refuses it with the wrong answer. The
+        // Covenant policy denies it instead: switching Wards off removes the operator's only chance to
+        // refuse, and silence is not consent to erase their own standing instructions.
+        if (string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal))
+        {
+
+            return await ExecuteCovenantRetirementAsync(
+                    fcc,
+                    request,
+                    chatOptions,
+                    activeSpell,
+                    turnContext,
+                    argsSnapshot,
+                    wardEvents,
+                    wardSettings,
+                    sessionId,
+                    cancellationToken,
+                    liveWardEmit,
+                    observer)
+                .ConfigureAwait(false);
+
+        }
+
         if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
         {
 
@@ -1542,6 +1578,366 @@ public sealed class ToolExecutionPipeline(
     /// <c>arcanum_tool_invocations_total{outcome="denied"}</c>) depends on this, since a Sanctum-strict
     /// block returns a synthetic result string with no corresponding <see cref="IntelligenceEvent"/>.
     /// </summary>
+    /// <summary>
+    /// Wards, discloses, and dispatches one agent-initiated Covenant retirement.
+    /// </summary>
+    /// <remarks>
+    /// The one tool whose Ward shows the operator something other than the model's arguments. A
+    /// retirement erases a standing instruction they wrote, so what they are asked to approve is the
+    /// content that will disappear, the lane it lives in, the revision it is, and whether Global content
+    /// starts applying in its place — all resolved from canonical state before the question is put.
+    ///
+    /// <para>Every refusal here happens before the Ward. A turn that may not stage, a target that does
+    /// not exist, a tombstone, and a pinned head are each things the write authority would refuse
+    /// afterwards, and asking somebody to authorize one of them is asking them to authorize nothing.</para>
+    ///
+    /// <para>The disclosure is committed before the dispatch and not before the Ward. A Ward is a
+    /// question, not an effect; the staging is the effect, and a journal written after it cannot record
+    /// the one case it exists for.</para>
+    /// </remarks>
+    private async Task<WardedToolExecutionResult> ExecuteCovenantRetirementAsync(
+        FunctionCallContent fcc,
+        PingRequest request,
+        ChatOptions chatOptions,
+        ParsedSpell? activeSpell,
+        TurnContext turnContext,
+        string argsSnapshot,
+        List<IntelligenceEvent> wardEvents,
+        WardSettings wardSettings,
+        string? sessionId,
+        CancellationToken cancellationToken,
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit,
+        Func<ToolExecutionEvent, ValueTask>? observer)
+    {
+
+        string toolName = fcc.Name ?? string.Empty;
+
+        if (CovenantToolStagingAmbient.Current is not { } staging
+            || turnContext.Invocation is not { } invocation
+            || covenantEgressGuard is null)
+        {
+
+            return CovenantRetirementDenied(
+                "This turn carries no Covenant staging capability, so it cannot retire a standing preference.",
+                wardEvents);
+
+        }
+
+        Result<ProviderToolCallClassification> classified = CovenantToolClassifier.ClassifyCovenantTool(
+            toolName,
+            Encoding.UTF8.GetBytes(argsSnapshot));
+
+        if (classified.IsFailure)
+        {
+
+            return CovenantRetirementDenied(classified.Error.Message, wardEvents);
+
+        }
+
+        CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
+            classified.Value,
+            invocation,
+            wardSettings);
+
+        if (decision.IsDenied)
+        {
+
+            return CovenantRetirementDenied(
+                decision.Authorization == CovenantEgressAuthorization.DeniedWardsDisabled
+                    ? "Wards are switched off on this installation, so a Covenant retirement cannot be approved and is refused."
+                    : "This turn may not stage a Covenant mutation.",
+                wardEvents);
+
+        }
+
+        if (!TryReadRetirementTarget(argsSnapshot, out string normalizedKey, out CovenantLane lane))
+        {
+
+            return CovenantRetirementDenied(
+                "A Covenant retirement names one preference key and a lane of Confirmed or Proposed.",
+                wardEvents);
+
+        }
+
+        Result<CovenantRetirementPreflight> resolved = await staging.HeadProbe
+            .ResolveRetirementPreflightAsync(lane, normalizedKey, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resolved.IsFailure)
+        {
+
+            return CovenantRetirementDenied(resolved.Error.Message, wardEvents);
+
+        }
+
+        CovenantRetirementPreflight preflight = resolved.Value;
+
+        // The carve-out on configured auto-approval. A target this turn never carried is one the
+        // operator has not seen in this conversation, so it reaches the interactive Ward rather than
+        // approving itself; they may still legitimately want it retired, which is why it is a
+        // downgrade rather than a refusal.
+        bool admittedHere = WasAdmittedOnThisTurn(staging.ProducingAdmission, preflight);
+
+        if (decision.Authorization == CovenantEgressAuthorization.ConfiguredAutoApproval && !admittedHere)
+        {
+
+            decision = new CovenantEgressWardDecision(
+                CovenantEgressAuthorization.AttendedWardRequired,
+                decision.RiskIdentity,
+                CovenantAuthorizationMode.WardInteractive);
+
+        }
+
+        bool autoApproved = decision.Authorization == CovenantEgressAuthorization.ConfiguredAutoApproval;
+
+        string wardId = Guid.NewGuid().ToString();
+
+        // The disclosure, never the model's arguments. It is the whole point of resolving a preflight.
+        JsonDocument disclosure = JsonDocument.Parse(
+            JsonSerializer.Serialize(
+                new CovenantRetirementDisclosureWire(
+                    preflight.NormalizedKey,
+                    preflight.Lane.ToString(),
+                    preflight.TargetLaneRevision,
+                    preflight.SanitizedAuthoredDisclosure,
+                    preflight.GlobalFallbackApplies),
+                ArcanumJsonContext.Default.CovenantRetirementDisclosureWire));
+
+        using (disclosure)
+        {
+
+            JsonElement wardArguments = disclosure.RootElement.Clone();
+
+            await EmitWardEventAsync(
+                    new IntelligenceEvent(
+                        IntelligenceEventType.Warded,
+                        toolName,
+                        null,
+                        null,
+                        null,
+                        wardId,
+                        toolName,
+                        wardArguments,
+                        null,
+                        null,
+                        DateTimeOffset.UtcNow,
+                        WardOrigin: autoApproved ? WardResolutionOrigin.AutoApproved : null),
+                    wardEvents,
+                    liveWardEmit,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            WardResolution resolution;
+
+            if (autoApproved)
+            {
+
+                resolution = ward.RecordAutomaticResolution(
+                    wardId,
+                    allowed: true,
+                    AutoApprovedReason,
+                    WardResolutionOrigin.AutoApproved);
+
+            }
+            else
+            {
+
+                if (observer is not null)
+                {
+
+                    await observer(
+                            new ToolApprovalRequestedEvent(wardId, toolName, wardArguments.GetRawText()))
+                        .ConfigureAwait(false);
+
+                }
+
+                resolution = await ward
+                    .WardAsync(
+                        wardId,
+                        toolName,
+                        disclosure,
+                        sessionId,
+                        TimeSpan.FromSeconds(ArcanumSettingClamps.WardTimeoutSeconds(wardSettings.TimeoutSeconds)),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+            RecordWardDecisionMetric(toolName, resolution.Origin);
+
+            await EmitWardEventAsync(
+                    new IntelligenceEvent(
+                        IntelligenceEventType.WardResolved,
+                        toolName,
+                        null,
+                        null,
+                        null,
+                        wardId,
+                        toolName,
+                        wardArguments,
+                        null,
+                        null,
+                        DateTimeOffset.UtcNow,
+                        WardOrigin: resolution.Origin),
+                    wardEvents,
+                    liveWardEmit,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!resolution.Allowed)
+            {
+
+                return CovenantRetirementDenied(
+                    "The operator did not approve retiring that standing preference.",
+                    wardEvents);
+
+            }
+
+        }
+
+        Result<CovenantToolWardReceipt> receipt = CovenantEgressWardPolicy.Accept(
+            decision,
+            classified.Value,
+            CovenantWardDecision.Approved,
+            staging.ProducingAdmission.Sensitivity,
+            CovenantEgressDestination.Process,
+            preflight.PreflightBodyDigest,
+            checked((ulong)Math.Max(0, covenantAuthority?.Current?.AuthorityEpoch ?? 0)));
+
+        if (receipt.IsFailure)
+        {
+
+            return CovenantRetirementDenied(receipt.Error.Message, wardEvents);
+
+        }
+
+        CovenantToolCapabilityNonce nonce = CovenantToolCapabilityNonce.Create();
+
+        CovenantToolEgressAttempt attempt = new(
+            ResolveInstallationIdentity(),
+            staging.Collector.LogicalTurnId,
+            PhysicalAttemptOrdinal: 1,
+            staging.ProducingAdmission.Digest,
+            nonce.ToDigest(),
+            ResolveCallId(fcc),
+            classified.Value.FrozenNameDigest,
+            classified.Value.CanonicalArgumentDigest,
+            CovenantEgressDestination.Process,
+
+            // Nothing left the machine, and a staged tombstone publishes only if this turn's own answer
+            // commits, so local erasure can still reach every byte of it.
+            CovenantDisclosureRevocability.LocallyRevocable,
+            preflight.PreflightBodyDigest,
+            staging.ProducingAdmission.Sensitivity,
+            receipt.Value.Digest,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        Result<WardedToolExecutionResult> disclosed = await covenantEgressGuard
+            .DiscloseThenAsync(
+                attempt,
+                async (_, effectToken) =>
+                {
+
+                    using IDisposable scope = CovenantToolStagingAmbient.Push(staging with
+                    {
+                        RetirementPreflight = preflight,
+                        WardReceipt = receipt.Value,
+                        Nonce = nonce,
+                    });
+
+                    (string text, bool denied) = await InvokeToolCallWithSanctumAsync(
+                            fcc,
+                            activeSpell,
+                            chatOptions,
+                            turnContext,
+                            argsSnapshot,
+                            effectToken)
+                        .ConfigureAwait(false);
+
+                    return Result<WardedToolExecutionResult>.Success(
+                        new WardedToolExecutionResult(text, wardEvents, denied));
+
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return disclosed.IsFailure
+            ? CovenantRetirementDenied(disclosed.Error.Message, wardEvents)
+            : disclosed.Value;
+
+    }
+
+    /// <summary>
+    /// Whether this turn's own admission carried the entry a retirement names.
+    /// </summary>
+    /// <remarks>
+    /// Read off the producing admission's plan rather than off anything the model said. It decides only
+    /// whether configured auto-approval applies; an unseen target still reaches an operator, because
+    /// they may legitimately want a preference retired that this conversation never mentioned.
+    /// </remarks>
+    private static bool WasAdmittedOnThisTurn(
+        CovenantAdmissionReceipt admission,
+        CovenantRetirementPreflight preflight) =>
+        admission.Plan.Decisions.Any(decision =>
+            decision.Candidate.VersionId == preflight.VersionId
+            && decision.Decision is CovenantPlanDecision.EligibleConfirmed or CovenantPlanDecision.EligibleProposed);
+
+    private Guid ResolveInstallationIdentity() =>
+        Guid.TryParse(covenantAuthority?.Current?.InstallationIdentity, out Guid installationId)
+            ? installationId
+            : Guid.Empty;
+
+    /// <summary>
+    /// Reads the key and lane a retirement names, on the same terms the handler reads them.
+    /// </summary>
+    private static bool TryReadRetirementTarget(
+        string argsSnapshot,
+        out string normalizedKey,
+        out CovenantLane lane)
+    {
+
+        normalizedKey = string.Empty;
+
+        lane = CovenantLane.Confirmed;
+
+        try
+        {
+
+            using JsonDocument parsed = JsonDocument.Parse(
+                string.IsNullOrWhiteSpace(argsSnapshot) ? "{}" : argsSnapshot);
+
+            if (!parsed.RootElement.TryGetProperty("key", out JsonElement keyElement)
+                || keyElement.ValueKind != JsonValueKind.String
+                || keyElement.GetString() is not { Length: > 0 } rawKey
+                || !parsed.RootElement.TryGetProperty("lane", out JsonElement laneElement)
+                || laneElement.ValueKind != JsonValueKind.String
+                || !Enum.TryParse(laneElement.GetString(), ignoreCase: false, out lane)
+                || lane is not (CovenantLane.Confirmed or CovenantLane.Proposed))
+            {
+
+                return false;
+
+            }
+
+            normalizedKey = new CovenantKey(rawKey.Trim()).Value;
+
+            return true;
+
+        }
+        catch (Exception failure) when (failure is JsonException or ArgumentException)
+        {
+
+            return false;
+
+        }
+
+    }
+
+    private static WardedToolExecutionResult CovenantRetirementDenied(
+        string message,
+        List<IntelligenceEvent> wardEvents) =>
+        new(message, wardEvents, Denied: true);
+
     private async Task<(string ResultText, bool Denied)> InvokeToolCallWithSanctumAsync(
         FunctionCallContent fcc,
         ParsedSpell? activeSpell,

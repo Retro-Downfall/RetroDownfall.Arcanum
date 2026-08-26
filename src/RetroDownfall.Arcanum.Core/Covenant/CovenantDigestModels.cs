@@ -10,7 +10,35 @@ public sealed record SectionDigestInput(CovenantPlacement Placement, ImmutableAr
 
 public sealed record MutationRequestDigestInput(CovenantMutationKind MutationKind, Guid MutationId, CovenantScope Scope, Guid? CampaignId, CovenantKey NormalizedKey, CovenantLane Lane, CovenantOperation Operation, ulong ExpectedRevision, bool Reactivation, CovenantOrigin Origin, CovenantDigest? AuthoredDigest, CovenantDigest? FragmentDigest, uint CompilerPolicy, CovenantDigest? BasePlanDigest, CovenantDigest? AdmissionDigest, ImmutableArray<CovenantDigest> ProvenanceDigests);
 
-public sealed record PreflightBodyDigestInput(CovenantDigest RequestDigest, ulong OperatorAuthorityEpoch, Guid DatasetGeneration, ulong ExpectedTargetRevision, ulong NormalizedKeyDependencyEpoch, ulong KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? CompiledArtifactDigest, CovenantDigest DependentHeadVectorDigest, CovenantDigest EffectDigest, long IssuedAt, long ExpiresAt);
+/// <summary>The canonical fields one curation change is authorized under.</summary>
+/// <remarks>
+/// It carries no compiled artifact and no origin. Curation is operator-authored by construction --
+/// there is no agent path to it -- and what it changes is not the entry's text, so a preimage shaped
+/// like <see cref="MutationRequestDigestInput"/> would carry six fields no curation request can fill
+/// and would invite a token issued for one to be honoured by the other.
+/// </remarks>
+public sealed record CurationRequestDigestInput(CovenantCurationKind Kind, Guid MutationId, CovenantScope Scope, Guid? CampaignId, CovenantKey NormalizedKey, CovenantLane Lane, ulong KeyEpoch, ulong ExpectedRevision);
+
+/// <summary>The live heads a curation preflight's broader-scope sentence was read off.</summary>
+/// <remarks>
+/// Bound into the token so a commit arriving after either head moved is refused. An operator told
+/// "the Global entry stops applying here" has approved that sentence, and a Global head retired in the
+/// meantime makes it false — the change would still be valid, and it is no longer the change they saw.
+/// </remarks>
+public sealed record CurationDependentHeadsDigestInput(CovenantScope Scope, Guid? CampaignId, CovenantKey NormalizedKey, CovenantLane Lane, ulong KeyEpoch, bool GlobalConfirmedHeadExists, bool ScopedConfirmedHeadExists);
+
+/// <summary>The state one curation change was measured against and the state it would leave.</summary>
+public sealed record CurationEffectDigestInput(CovenantCurationKind Kind, ulong CurrentRevision, bool CurrentlyPinned, bool CurrentlyMasked, bool ProjectedPinned, bool ProjectedMasked, bool GlobalConfirmedSuppressed, bool GlobalConfirmedResurfaces);
+
+/// <summary>The exact retirement target one Ward was shown.</summary>
+/// <remarks>
+/// Carried by the staged tombstone as evidence of what the operator actually approved. It binds the
+/// content as well as the identity, because "you approved retiring revision three" and "you approved
+/// retiring this text" are different statements and only the second is what an operator read.
+/// </remarks>
+public sealed record RetirementPreflightDigestInput(Guid EntryId, Guid VersionId, CovenantScope Scope, Guid? CampaignId, CovenantKey NormalizedKey, CovenantLane Lane, ulong TargetLaneRevision, ulong KeyEpoch, CovenantDigest RenderedHash, bool GlobalFallbackApplies);
+
+public sealed record PreflightBodyDigestInput(CovenantDigest RequestDigest, ulong OperatorAuthorityEpoch, Guid DatasetGeneration, ulong ExpectedTargetRevision, ulong NormalizedKeyDependencyEpoch, ulong KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? CompiledArtifactDigest, CovenantDigest DependentHeadVectorDigest, CovenantDigest EffectDigest, long IssuedAt, long ExpiresAt, Guid? TargetVersionId = null, CovenantDigest? TargetRenderedHash = null);
 
 public sealed record AuthorizationDigestInput(CovenantDigest RequestDigest, Guid DatasetGeneration, ulong? OperatorAuthorityEpoch, ulong? NormalizedKeyDependencyEpoch, ulong? KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? PreflightBodyDigest, CovenantDigest? WardReceiptDigest, CovenantAuthorizationMode Authorization);
 

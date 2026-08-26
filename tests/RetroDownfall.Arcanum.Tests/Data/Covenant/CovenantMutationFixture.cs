@@ -102,6 +102,38 @@ internal static class CovenantMutationFixture
             basePlanDigest: null,
             admissionReceiptDigest: null);
 
+    /// <summary>
+    /// One approved agent retirement, carrying the Ward evidence that origin alone may hold.
+    /// </summary>
+    internal static CovenantMutationIntent AgentRetire(
+        CovenantOperationScope scope,
+        string key,
+        CovenantLane lane,
+        long expectedRevision,
+        long expectedKeyEpoch,
+        Guid? mutationId = null,
+        byte authorizationSeed = 80) =>
+        new(
+            mutationId ?? Guid.NewGuid(),
+            CovenantMutationKind.AgentRetire,
+            CovenantOperation.Retire,
+            CovenantOrigin.AgentApproved,
+            Target(scope, key, lane),
+            expectedRevision,
+            reactivate: false,
+            expectedKeyEpoch,
+            artifact: null,
+            [],
+            Authorization(authorizationSeed) with
+            {
+                Mode = CovenantAuthorizationMode.WardInteractive,
+                WardReceiptDigest = CovenantOperationGateFixture.Digest(90),
+            },
+            sourceTurnId: Guid.NewGuid(),
+            sourceToolCallId: "call-1",
+            basePlanDigest: CovenantOperationGateFixture.Digest(70),
+            admissionReceiptDigest: CovenantOperationGateFixture.Digest(71));
+
     internal static CovenantMutationIntent AgentPropose(
         Guid campaignId,
         string key,

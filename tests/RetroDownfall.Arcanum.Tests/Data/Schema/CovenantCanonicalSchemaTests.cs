@@ -34,6 +34,9 @@ public sealed class CovenantCanonicalSchemaTests
     /// </summary>
     private static readonly string[] CanonicalTableNames =
     [
+        "covenant_curation_heads",
+        "covenant_curation_receipts",
+        "covenant_curation_versions",
         "covenant_entries",
         "covenant_heads",
         "covenant_key_epochs",
@@ -74,7 +77,7 @@ public sealed class CovenantCanonicalSchemaTests
         new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero).ToString("o", CultureInfo.InvariantCulture);
 
     [Fact]
-    public void Canonical_catalog_contains_ten_version_one_tables()
+    public void Canonical_catalog_contains_every_declared_table()
     {
 
         List<string> tables = [];

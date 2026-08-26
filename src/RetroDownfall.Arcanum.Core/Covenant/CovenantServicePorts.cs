@@ -101,6 +101,41 @@ public interface ICovenantMutationService
         CovenantWriteLease writeLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Measures what one pin, unpin, mask, or unmask would do, and issues the token that binds it.
+    /// </summary>
+    /// <remarks>
+    /// On the mutation port rather than a port of its own, because a curation change is authorized the
+    /// same way, bound the same way, and refused the same way as a write to the entry it curates. A
+    /// separate port would be a second opinion about the same authority.
+    /// </remarks>
+    ValueTask<Result<CovenantCurationPreflightDto>> PrepareCurationAsync(
+        CovenantCurationPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    ValueTask<Result<CovenantCurationResultDto>> CurateAsync(
+        CovenantCurationRequest request,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Measures a correction of one exact version, and issues the token that binds that version.
+    /// </summary>
+    /// <remarks>
+    /// It answers with the same preflight a <c>Set</c> does, because a correction <i>is</i> a Set: the
+    /// difference is what the caller had to prove, not what the installation ends up holding.
+    /// </remarks>
+    ValueTask<Result<CovenantMutationPreflightDto>> PrepareCorrectAsync(
+        CovenantCorrectPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    ValueTask<Result<CovenantMutationResultDto>> CorrectAsync(
+        CovenantCorrectRequest request,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
