@@ -92,8 +92,12 @@ internal static class ProductionSourceInventory
 
             }
 
+            // Forward slashes on every platform, because a repository-relative path is what these
+            // suites assert against and they are written the way the repository writes them. Left
+            // native, the same assertion compares "src/.../Setup.cs" against "src\\...\\Setup.cs" and
+            // fails on Windows for a reason that has nothing to do with what it is checking.
             sources.Add(new ProductionSource(
-                Path.GetRelativePath(repositoryRoot, file),
+                Path.GetRelativePath(repositoryRoot, file).Replace('\\', '/'),
                 WithoutComments(File.ReadAllText(file))));
 
         }
