@@ -21,8 +21,8 @@ public sealed class CovenantDigestCorpusTests
         Assert.Equal(16, result.CategoryCounts.DisclosureCases);
         Assert.Equal(95, result.CategoryCounts.RefusalCases);
         Assert.Equal(Digest("F6445FFA3C98B7247D8A250E01FBB9DD3D01653F3B925537D2A13230775EEE3F"), result.CaseManifestDigest);
-        Assert.Equal(Digest("BD08F0D98C4292952C2081965BBA413A28E17892D6CB6FED85EDB44FB3D285B3"), result.ResultAggregateDigest);
-        Assert.Equal(Digest("A7A19D6FA16D036B69E64FCDC6C971EB0790F0766FDDE83A4E1D8CF00D54CD93"), result.Aggregate);
+        Assert.Equal(Digest("7AF01898CCE65599249BCB4EAB99CAD7E89ECB8EB2A9868B27F4D5563E4B88DD"), result.ResultAggregateDigest);
+        Assert.Equal(Digest("231B661139A6DF328BE3440233B8C1B4E8CE42371C70E18D734BCBAC7617F4C6"), result.Aggregate);
     }
 
     [Fact]

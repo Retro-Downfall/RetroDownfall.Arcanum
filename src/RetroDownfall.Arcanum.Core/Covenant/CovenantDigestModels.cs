@@ -30,7 +30,7 @@ public sealed record CurationDependentHeadsDigestInput(CovenantScope Scope, Guid
 /// <summary>The state one curation change was measured against and the state it would leave.</summary>
 public sealed record CurationEffectDigestInput(CovenantCurationKind Kind, ulong CurrentRevision, bool CurrentlyPinned, bool CurrentlyMasked, bool ProjectedPinned, bool ProjectedMasked, bool GlobalConfirmedSuppressed, bool GlobalConfirmedResurfaces);
 
-public sealed record PreflightBodyDigestInput(CovenantDigest RequestDigest, ulong OperatorAuthorityEpoch, Guid DatasetGeneration, ulong ExpectedTargetRevision, ulong NormalizedKeyDependencyEpoch, ulong KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? CompiledArtifactDigest, CovenantDigest DependentHeadVectorDigest, CovenantDigest EffectDigest, long IssuedAt, long ExpiresAt);
+public sealed record PreflightBodyDigestInput(CovenantDigest RequestDigest, ulong OperatorAuthorityEpoch, Guid DatasetGeneration, ulong ExpectedTargetRevision, ulong NormalizedKeyDependencyEpoch, ulong KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? CompiledArtifactDigest, CovenantDigest DependentHeadVectorDigest, CovenantDigest EffectDigest, long IssuedAt, long ExpiresAt, Guid? TargetVersionId = null, CovenantDigest? TargetRenderedHash = null);
 
 public sealed record AuthorizationDigestInput(CovenantDigest RequestDigest, Guid DatasetGeneration, ulong? OperatorAuthorityEpoch, ulong? NormalizedKeyDependencyEpoch, ulong? KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? PreflightBodyDigest, CovenantDigest? WardReceiptDigest, CovenantAuthorizationMode Authorization);
 

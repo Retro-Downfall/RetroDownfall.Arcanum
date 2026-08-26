@@ -205,6 +205,7 @@ public static class CovenantDigests
         ValidateDigestFields(input.RequestDigest, input.DependentHeadVectorDigest, input.EffectDigest);
         RequireGuid(input.DatasetGeneration, nameof(input.DatasetGeneration));
         RequireOptionalDigest(input.CompiledArtifactDigest, nameof(input.CompiledArtifactDigest));
+        RequireOptionalDigest(input.TargetRenderedHash, nameof(input.TargetRenderedHash));
 
         return Hash(CovenantDomainTag.PreflightBody, writer =>
         {
@@ -220,6 +221,8 @@ public static class CovenantDigests
             WriteDigest(writer, input.EffectDigest);
             writer.WriteInt64(input.IssuedAt);
             writer.WriteInt64(input.ExpiresAt);
+            WriteOptionalGuid(writer, input.TargetVersionId);
+            WriteOptionalDigest(writer, input.TargetRenderedHash);
         });
     }
 

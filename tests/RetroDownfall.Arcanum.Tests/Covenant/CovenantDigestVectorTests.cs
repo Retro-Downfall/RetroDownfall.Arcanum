@@ -74,11 +74,44 @@ public sealed class CovenantDigestVectorTests
             CovenantAuthorizationMode.WardInteractive));
 
         AssertDigest("C11161C8989E00B9AB50791CF5B053249A5860144A4937E5E1A1B55A44EB0666", request);
-        AssertDigest("0490723DC6B89CB04670479F8BF4DC02C7594A74E81AAB288B82AC52B9F60BAD", preflight);
-        AssertDigest("E038746CFDB35EE391359FBF6664B909F144322BB87ED2F11C92D8460135D025", authorization);
+        AssertDigest("F35209D3DCCF5F5B96E324D1ED734CB6D67666EFCB605D1A1B1044FE639DD653", preflight);
+        AssertDigest("BDCCAD751EDD947E7D1CDE2B79EC1217B5906B627308E264DAD35D92485C7794", authorization);
         AssertDigest(
-            "46928AD92AD94825F380F2F79D92521824023D9DE54E8DC2E36AC6F2163EADE7",
+            "5359D52F695C18826A3856F7A4877182599A04F8EC0665EDC2F9254F1A6B5DAF",
             CovenantDigests.Mutation(new MutationDigestInput(request, authorization)));
+
+        // A correction's token binds the exact version and compiled hash it replaces. Pinned beside
+        // the targetless shape, because an appended optional nothing pins is an appended optional
+        // nothing would notice losing.
+        AssertDigest(
+            "7C657D42C5F377A29629259568BA298B8951FB465079DF975CC222908285ED0B",
+            CovenantDigests.PreflightBody(new PreflightBodyDigestInput(
+                request,
+                8,
+                G5,
+                9,
+                10,
+                11,
+                12,
+                D(7),
+                D(8),
+                D(9),
+                1700000000,
+                1700000300,
+                G1,
+                D(12))));
+
+        Assert.NotEqual(
+            CovenantDigests.PreflightBody(new PreflightBodyDigestInput(
+                request, 8, G5, 9, 10, 11, 12, D(7), D(8), D(9), 1700000000, 1700000300, G1, D(12))),
+            CovenantDigests.PreflightBody(new PreflightBodyDigestInput(
+                request, 8, G5, 9, 10, 11, 12, D(7), D(8), D(9), 1700000000, 1700000300, G2, D(12))));
+
+        Assert.NotEqual(
+            CovenantDigests.PreflightBody(new PreflightBodyDigestInput(
+                request, 8, G5, 9, 10, 11, 12, D(7), D(8), D(9), 1700000000, 1700000300, G1, D(12))),
+            CovenantDigests.PreflightBody(new PreflightBodyDigestInput(
+                request, 8, G5, 9, 10, 11, 12, D(7), D(8), D(9), 1700000000, 1700000300, G1, D(13))));
     }
 
     [Fact]
@@ -258,7 +291,7 @@ public sealed class CovenantDigestVectorTests
         AssertDigest("FECF20E8F3E930EF14884DC2E92C52A791DF2C61900D5009E45B7B70835A0065", emptyCampaign);
         AssertDigest("96F4B26A9D980CE073E9EFFEE2DFEAD4ED0C819194029390474C43C30BE35CDE", emptyProposed);
         AssertDigest("A1A25676634D894652316B20A1B86ED734191EE976EB4054EBF0F7C8BA374D79", request);
-        AssertDigest("819E01A1072D0A86CDCF784EC96E7B82859AA206067BCAEC3F2E651D8BC62A72", CovenantDigests.PreflightBody(new PreflightBodyDigestInput(request, 0, G2, 0, 0, 0, null, null, D(1), D(2), -1, 0)));
+        AssertDigest("B003FC48591C91B92414B82AAEEBFC28C95D9AB60BA86F6ACC62086A4A108669", CovenantDigests.PreflightBody(new PreflightBodyDigestInput(request, 0, G2, 0, 0, 0, null, null, D(1), D(2), -1, 0)));
         AssertDigest("DCBAAA783EEFE32D83EC0A663C6184148EC78B6834B098DAF0C7F4D53B7A0EBB", CovenantDigests.Authorization(new AuthorizationDigestInput(request, G2, null, null, null, null, null, null, CovenantAuthorizationMode.None)));
         AssertDigest("FCB2B04534037F7F5C7851065AD9F781D8157E9042476C3FFB348A3AF66B5084", CovenantDigests.Snapshot(new SnapshotDigestInput(G3, null, 0, [new SnapshotCandidateDigestInput(1, G1, G2, CovenantScope.Global, null, CovenantLane.Confirmed, CovenantOperation.Set, CovenantOrigin.Operator, 0, null, 0, 0, D(1), D(2), 0, D(13), 0)])));
         AssertDigest("415B650CEA66CBE222C006DEB8C2405EF60936B231D057FE9087C74632957BB2", CovenantDigests.Plan(new PlanDigestInput(D(1), 0, 0, [], emptyGlobal, emptyCampaign, emptyProposed)));
