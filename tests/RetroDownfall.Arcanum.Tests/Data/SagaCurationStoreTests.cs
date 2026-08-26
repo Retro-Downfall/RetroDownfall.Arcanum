@@ -555,9 +555,15 @@ public sealed class SagaCurationStoreTests
         //
         // UPPER() on both sides because the ledger canonicalizes a Guid's text as uppercase
         // (ArtifactSensitivityLedger.Format), while saga_memories.Id is free-form text carrying
-        // whatever case the caller inserted it with -- here, Guid.ToString()'s default lowercase. A
-        // raw-SQL predicate comparing the two literally has to fold case; production never compares
-        // them this way; it always resolves a label through the ledger's own accessors.
+        // whatever case the caller inserted it with -- here, Guid.ToString()'s default lowercase.
+        // This is not a harmless idiom: CovenantProtectedArtifactErasureKernel binds every Saga purge
+        // statement's $artifactId through that same Format, so its saga_memory_embeddings,
+        // saga_memory_attachment_provenance, and saga_memories deletes -- bound against lowercase ids
+        // written by SagaExtractionService under SQLite's default BINARY collation -- silently match
+        // nothing, while its artifact_sensitivity delete (both sides Format'd) succeeds and reports
+        // the erasure as complete. That is a live pre-existing defect in the erasure kernel, tracked
+        // separately; this fold exists only so this test can drive the real ledger rather than
+        // seeding a row, and must not be read as evidence the mismatch is harmless elsewhere.
         Assert.Equal(
             1,
             await harness.CountAsync("artifact_sensitivity", $"UPPER(ArtifactId) = UPPER('{id}')").ConfigureAwait(false));
@@ -690,6 +696,24 @@ public sealed class SagaCurationStoreTests
 
         Assert.Null((await harness.Store
             .ReadCurationRowAsync("m-1", CancellationToken.None).ConfigureAwait(false))!.Lifecycle.PinnedAtUtc);
+
+    }
+
+    [SkippableFact]
+    public async Task Pinning_an_unknown_identity_is_refused_and_writes_nothing()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        SagaCurationOutcome outcome = await harness.Store
+            .SetPinAsync("m-absent", true, DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.NotFound, outcome.Kind);
+
+        Assert.Null(outcome.Lifecycle);
+
+        Assert.Null(await harness.Store.ReadCurationRowAsync("m-absent", CancellationToken.None).ConfigureAwait(false));
 
     }
 

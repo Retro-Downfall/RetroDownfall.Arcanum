@@ -752,7 +752,16 @@ internal sealed partial class SagaMemoryStore
 
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
+                // A single RETURNING statement is already atomic on its own, so this transaction buys
+                // nothing today -- but CorrectAsync, RetireAsync, and ReinstateAsync all open one inside
+                // this same delegate, and a reader who has just read those three would otherwise assume
+                // the pattern holds here too. Opening one keeps that assumption true, and keeps a later
+                // edit that adds a second statement to this method from silently losing atomicity.
+                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand pinCmd = connection.CreateCommand();
+
+                pinCmd.Transaction = transaction;
 
                 // RETURNING folds the write and the read this outcome needs -- whether the memory is
                 // retired -- into the one statement, rather than an UPDATE followed by a second SELECT
@@ -770,18 +779,27 @@ internal sealed partial class SagaMemoryStore
 
                 AddParameter(pinCmd, "@id", id);
 
-                await using DbDataReader reader = await pinCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                DateTimeOffset? retiredAtUtc;
 
-                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                await using (DbDataReader reader = await pinCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
 
-                    return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
+                    if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                        return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
+
+                    }
+
+                    retiredAtUtc = reader.IsDBNull(0)
+                        ? null
+                        : DateTimeOffset.Parse(reader.GetString(0), CultureInfo.InvariantCulture);
 
                 }
 
-                DateTimeOffset? retiredAtUtc = reader.IsDBNull(0)
-                    ? null
-                    : DateTimeOffset.Parse(reader.GetString(0), CultureInfo.InvariantCulture);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return new SagaCurationOutcome(
                     SagaCurationOutcomeKind.Applied,
