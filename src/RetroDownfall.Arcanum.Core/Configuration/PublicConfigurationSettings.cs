@@ -108,6 +108,30 @@ public sealed record FeatureSettings
     /// </remarks>
     public bool CampaignScopedMemory { get; set; }
 
+    /// <summary>
+    /// Whether durable memory records what it claimed, when that was true, and when Arcanum came to hold
+    /// it. Default <c>false</c>, and the default is the contract: with it unset nothing is appended, and
+    /// every store behaves exactly as it does today.
+    /// </summary>
+    /// <remarks>
+    /// The schema installs either way, because schema evolution is not optional, and the upgrade sweep
+    /// that claims an installation's existing memories runs with it. What this governs is whether a
+    /// <i>new</i> write appends a claim.
+    ///
+    /// <para>A memory written while this is off therefore carries no claim and receives none
+    /// retroactively — the sweep runs once, when the version step runs, and nothing re-runs it. An
+    /// unclaimed durable row is a first-class state rather than an error.</para>
+    ///
+    /// <para>Erasure is deliberately not gated. A claim written while this was on stays removable after
+    /// it is turned off, or disabling the feature would strand records no surface can reach and no reset
+    /// can clear.</para>
+    ///
+    /// <para>A <c>{ get; set; }</c> property, like every other key in this record: the configuration
+    /// binding generator silently skips <c>init</c>-only properties (dotnet/runtime#107856), which would
+    /// leave the feature permanently off while <c>arcanum.json</c> said otherwise.</para>
+    /// </remarks>
+    public bool Annals { get; set; }
+
 }
 
 /// <summary>
