@@ -114,6 +114,14 @@ internal static class CliSurfaceExamples
             ["arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"],
         ["memory covenant retire"] =
             ["arcanum memory covenant retire preference.builds --expected-revision 1"],
+        ["memory covenant pin"] =
+            ["arcanum memory covenant pin preference.builds"],
+        ["memory covenant unpin"] =
+            ["arcanum memory covenant unpin preference.builds --expected-revision 1"],
+        ["memory covenant mask"] =
+            ["arcanum memory covenant mask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
+        ["memory covenant unmask"] =
+            ["arcanum memory covenant unmask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77 --expected-revision 1"],
 
         // Lore
         ["lore list"] = ["arcanum lore list"],
