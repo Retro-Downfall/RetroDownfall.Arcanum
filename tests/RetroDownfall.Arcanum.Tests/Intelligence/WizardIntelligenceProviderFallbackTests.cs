@@ -1402,7 +1402,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     private sealed class NoopSagaMemoryStore : ISagaMemoryStore
     {
 
-        public Task InsertAsync(
+        public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,
             string content,
             DateTimeOffset createdAt,

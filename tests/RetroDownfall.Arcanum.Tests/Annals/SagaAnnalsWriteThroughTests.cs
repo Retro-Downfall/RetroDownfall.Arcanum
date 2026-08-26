@@ -86,7 +86,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         DateTimeOffset createdAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture);
 
-        await store.InsertAsync("mem-1", Content, createdAt, sessionId: null, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await store.InsertAsync("mem-1", Content, createdAt, sessionId: null, null, "extraction", Vec(1f), CancellationToken.None);
 
         ClaimRow claim = await ReadClaimAsync("mem-1");
 
@@ -122,7 +122,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        await store.InsertAsync(
+        _ = await store.InsertAsync(
             "mem-scope",
             "a conclusion from an unbound session",
             DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
@@ -156,7 +156,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         ISagaMemoryStore store = CreateStore(annals: false);
 
-        await store.InsertAsync(
+        _ = await store.InsertAsync(
             "mem-off",
             "a conclusion nothing claimed",
             DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
@@ -195,7 +195,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
         for (int index = 0; index < 5; index++)
         {
 
-            await store.InsertAsync(
+            _ = await store.InsertAsync(
                 $"mem-{index}",
                 $"conclusion {index}",
                 DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
@@ -233,7 +233,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -291,7 +291,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
         // operator only ended it.
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false).ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -336,7 +336,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false).ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -366,7 +366,7 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false).ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 

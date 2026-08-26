@@ -13,7 +13,7 @@ public sealed class SagaCurationStoreTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1",
             "the operator prefers tabs",
             DateTimeOffset.UtcNow,
@@ -55,7 +55,7 @@ public sealed class SagaCurationStoreTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -87,7 +87,7 @@ public sealed class SagaCurationStoreTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -110,7 +110,7 @@ public sealed class SagaCurationStoreTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -133,7 +133,7 @@ public sealed class SagaCurationStoreTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -167,7 +167,7 @@ public sealed class SagaCurationStoreTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -195,11 +195,11 @@ public sealed class SagaCurationStoreTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(seed: 1), CancellationToken.None).ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-2", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(seed: 2), CancellationToken.None).ConfigureAwait(false);
 
@@ -231,7 +231,7 @@ public sealed class SagaCurationStoreTests
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false)
             .ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
@@ -292,7 +292,7 @@ public sealed class SagaCurationStoreTests
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
             .ConfigureAwait(false);
 
-        await harness.Store.InsertAsync(
+        _ = await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 

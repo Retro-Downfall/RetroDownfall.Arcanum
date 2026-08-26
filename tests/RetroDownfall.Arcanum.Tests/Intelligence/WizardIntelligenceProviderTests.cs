@@ -6369,7 +6369,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         // produce, and the opposite of what retirement is for.
         private readonly HashSet<string> _embeddedIds = new(StringComparer.Ordinal);
 
-        public Task InsertAsync(
+        // Mirrors the real store's suppression binding -- scope-and-content, not memory identity -- so
+        // a fake that always returned Written could not mask the defect this fake exists to catch.
+        private readonly HashSet<(SagaMemoryScopeKind ScopeKind, Guid? CampaignId, string Content)> _suppressed = [];
+
+        public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,
             string content,
             DateTimeOffset createdAt,
@@ -6380,11 +6384,20 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             CancellationToken cancellationToken)
         {
 
+            const SagaMemoryScopeKind ScopeKind = SagaMemoryScopeKind.Unclassified;
+
+            if (_suppressed.Contains((ScopeKind, null, content)))
+            {
+
+                return Task.FromResult(SagaMemoryWriteOutcome.Suppressed);
+
+            }
+
             Memories[id] = new SagaMemoryDto(id, content, createdAt, sessionId, tags, source);
 
             _embeddedIds.Add(id);
 
-            return Task.CompletedTask;
+            return Task.FromResult(SagaMemoryWriteOutcome.Written);
 
         }
 
@@ -6456,6 +6469,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
             _embeddedIds.Remove(id);
 
+            _suppressed.Add((memory.ScopeKind, memory.ScopeCampaignId, memory.Content));
+
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, memory.PinnedAtUtc)));
 
@@ -6495,6 +6510,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             Memories[id] = memory with { RetiredAtUtc = null };
 
             _embeddedIds.Add(id);
+
+            _suppressed.Remove((memory.ScopeKind, memory.ScopeCampaignId, memory.Content));
 
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, memory.PinnedAtUtc)));

@@ -493,7 +493,7 @@ public sealed class ReadSagaToolTests
 
         public Dictionary<string, SagaMemoryDto> Memories { get; } = new(StringComparer.Ordinal);
 
-        public Task InsertAsync(
+        public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,
             string content,
             DateTimeOffset createdAt,

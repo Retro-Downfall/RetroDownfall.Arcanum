@@ -485,6 +485,8 @@ public sealed class SagaExtractionService(
 
             int insertedCount = 0;
 
+            int suppressedCount = 0;
+
             int eligibleCount = 0;
 
             foreach (SagaExtractionCandidate memory in memories)
@@ -548,10 +550,12 @@ public sealed class SagaExtractionService(
 
                 string id = Guid.NewGuid().ToString();
 
+                SagaMemoryWriteOutcome outcome;
+
                 if (provenance is null)
                 {
 
-                    await store.InsertAsync(
+                    outcome = await store.InsertAsync(
                         id,
                         trimmed,
                         now,
@@ -565,7 +569,7 @@ public sealed class SagaExtractionService(
                 else
                 {
 
-                    await store.InsertAsync(
+                    outcome = await store.InsertAsync(
                         id,
                         trimmed,
                         now,
@@ -578,15 +582,35 @@ public sealed class SagaExtractionService(
 
                 }
 
+                if (outcome == SagaMemoryWriteOutcome.Suppressed)
+                {
+
+                    // A deliberate rejection, not a failure: the operator already retired an
+                    // equivalent conclusion in this scope, so extraction must not re-add it. The
+                    // watermark still advances past this page below -- treating this like a failure
+                    // would put the same page on the retry ladder forever, since the next attempt
+                    // would be refused identically.
+                    logger.LogInformation(
+                        "Saga extraction for session {SessionId} did not write a memory because the operator already retired an equivalent conclusion.",
+                        sessionId);
+
+                    suppressedCount++;
+
+                    continue;
+
+                }
+
                 insertedCount++;
 
             }
 
-            if (eligibleCount > 0 && insertedCount == 0)
+            if (eligibleCount > 0 && insertedCount == 0 && suppressedCount == 0)
             {
 
                 // Every parsed memory failed to embed/insert (e.g. embedding provider outage):
-                // leave the watermark alone so the automatic retry cannot lose these memories.
+                // leave the watermark alone so the automatic retry cannot lose these memories. A
+                // suppressed outcome does not land here -- it is a deliberate answer this page
+                // received, not a failure to process it, so it must not block the watermark either.
                 logger.LogWarning(
                     "Saga extraction for session {SessionId}: 0 of {Count} parsed memories were persisted; watermark not advanced.",
                     sessionId,

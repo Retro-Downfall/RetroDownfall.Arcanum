@@ -31,7 +31,7 @@ internal sealed partial class SagaMemoryStore(
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ISagaMemoryStore
 {
 
-    public Task InsertAsync(
+    public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -51,7 +51,7 @@ internal sealed partial class SagaMemoryStore(
             provenance: null,
             cancellationToken);
 
-    public Task InsertAsync(
+    public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -78,7 +78,7 @@ internal sealed partial class SagaMemoryStore(
 
     }
 
-    private Task InsertCoreAsync(
+    private Task<SagaMemoryWriteOutcome> InsertCoreAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -121,6 +121,40 @@ internal sealed partial class SagaMemoryStore(
                     await SagaMemoryScopeClassifier
                         .ResolveForSessionAsync(connection, transaction, sessionId, cancellationToken)
                         .ConfigureAwait(false);
+
+                // The one chokepoint every Saga write goes through, so extraction cannot re-add what an
+                // operator just retired and no future writer can reach around the check by calling
+                // something else. A null key means nothing has ever been retired.
+                byte[]? suppressionKey = await SagaSuppressionKeyStore
+                    .ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+                if (suppressionKey is not null)
+                {
+
+                    byte[] suppressionDigest = SagaSuppressionDigest.Compute(
+                        suppressionKey, scopeKind, scopeCampaignId, content);
+
+                    await using DbCommand suppressionCheckCmd = connection.CreateCommand();
+
+                    suppressionCheckCmd.Transaction = transaction;
+
+                    suppressionCheckCmd.CommandText =
+                        "SELECT 1 FROM saga_retirement_suppressions WHERE SuppressionDigest = @digest";
+
+                    AddParameter(suppressionCheckCmd, "@digest", suppressionDigest);
+
+                    object? hit = await suppressionCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (hit is not null)
+                    {
+
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                        return SagaMemoryWriteOutcome.Suppressed;
+
+                    }
+
+                }
 
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
@@ -232,6 +266,8 @@ internal sealed partial class SagaMemoryStore(
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return SagaMemoryWriteOutcome.Written;
 
             },
             cancellationToken);

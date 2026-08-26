@@ -607,7 +607,7 @@ public sealed class SagaEndpointTests
 
         ISagaMemoryStore store = scope.ServiceProvider.GetRequiredService<ISagaMemoryStore>();
 
-        await store.InsertAsync(
+        _ = await store.InsertAsync(
             id,
             content,
             DateTimeOffset.UtcNow,

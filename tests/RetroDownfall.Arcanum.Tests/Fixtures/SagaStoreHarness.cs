@@ -1,12 +1,14 @@
 using System.Data.Common;
 using System.Globalization;
 
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -141,6 +143,81 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         object? result = await command.ExecuteScalarAsync().ConfigureAwait(false);
 
         return Convert.ToInt32(result, CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// Creates a new Campaign and a Session canonically bound to it, so a caller can drive a Saga write
+    /// the production scope classifier resolves into that Campaign — never by declaring a scope the
+    /// caller chose itself.
+    /// </summary>
+    public async Task<Guid> SessionBoundToNewCampaignAsync()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid sessionId = Guid.NewGuid();
+
+        string now = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+            VALUES ($id, $name, $name, $path, 0, '{}', $now, $now);
+            """,
+            ("$id", campaignId.ToString()),
+            ("$name", campaignId.ToString("N")),
+            ("$path", $"/campaigns/{campaignId:N}"),
+            ("$now", now)).ConfigureAwait(false);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($id, $campaignId, 'active', $now, $now);
+            """,
+            ("$id", sessionId.ToString()),
+            ("$campaignId", campaignId.ToString()),
+            ("$now", now)).ConfigureAwait(false);
+
+        // The same false-by-default scope authority production borrows: nothing may state a Session's
+        // binding without it, this harness included.
+        using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
+            .Authorize((SqliteConnection)Connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+            VALUES ($id, 2, $campaignId, $now);
+            """,
+            ("$id", sessionId.ToString()),
+            ("$campaignId", campaignId.ToString()),
+            ("$now", now)).ConfigureAwait(false);
+
+        return sessionId;
+
+    }
+
+    private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
+    {
+
+        await using DbCommand command = Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        foreach ((string name, object? value) in parameters)
+        {
+
+            DbParameter parameter = command.CreateParameter();
+
+            parameter.ParameterName = name;
+
+            parameter.Value = value ?? DBNull.Value;
+
+            command.Parameters.Add(parameter);
+
+        }
+
+        _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
 
     }
 

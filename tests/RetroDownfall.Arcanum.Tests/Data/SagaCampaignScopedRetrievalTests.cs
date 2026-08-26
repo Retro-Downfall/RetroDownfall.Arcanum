@@ -334,7 +334,7 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
         string id = Guid.NewGuid().ToString();
 
-        await _store!.InsertAsync(
+        _ = await _store!.InsertAsync(
             id,
             content,
             DateTimeOffset.UtcNow,

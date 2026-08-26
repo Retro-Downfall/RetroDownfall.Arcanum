@@ -101,7 +101,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        await _store!.InsertAsync(
+        _ = await _store!.InsertAsync(
             "mem-1",
             "The operator prefers dark mode.",
             DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
@@ -146,7 +146,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             "SessionAttachmentRag",
             AttachmentSourceAvailability.Available);
 
-        await _store!.InsertAsync(
+        _ = await _store!.InsertAsync(
             "mem-provenance",
             "The architecture decision uses SQLite.",
             DateTimeOffset.Parse("2026-08-01T12:01:00Z"),
@@ -178,9 +178,9 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         Guid sessionB = Guid.NewGuid();
 
-        await _store!.InsertAsync("mem-a", "prefers dark mode", DateTimeOffset.UtcNow, sessionA, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store!.InsertAsync("mem-a", "prefers dark mode", DateTimeOffset.UtcNow, sessionA, null, "extraction", Vec(1f), CancellationToken.None);
 
-        await _store.InsertAsync("mem-b", "uses xUnit for tests", DateTimeOffset.UtcNow, sessionB, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store.InsertAsync("mem-b", "uses xUnit for tests", DateTimeOffset.UtcNow, sessionB, null, "extraction", Vec(1f), CancellationToken.None);
 
         SagaMemoryDto[] bySession = await _store.ListAsync(null, sessionA, MemoryScope.Installation, 100, 0, CancellationToken.None);
 
@@ -205,7 +205,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         for (int i = 0; i < 5; i++)
         {
 
-            await _store!.InsertAsync($"mem-{i}", $"memory {i}", DateTimeOffset.UtcNow.AddMinutes(i), null, null, "extraction", Vec(1f), CancellationToken.None);
+            _ = await _store!.InsertAsync($"mem-{i}", $"memory {i}", DateTimeOffset.UtcNow.AddMinutes(i), null, null, "extraction", Vec(1f), CancellationToken.None);
 
         }
 
@@ -229,11 +229,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
 
-        await _store.InsertAsync("mem-2", "b", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store.InsertAsync("mem-2", "b", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
 
-        await _store.InsertAsync("mem-3", "c", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store.InsertAsync("mem-3", "c", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
 
         Assert.Equal(3, await _store.CountAsync(CancellationToken.None));
 
@@ -247,7 +247,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
 
         IReadOnlyDictionary<string, SagaMemoryDto> result = await _store.GetByIdsAsync(["mem-1", "mem-missing"], CancellationToken.None);
 
@@ -280,7 +280,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
 
         Assert.True(await _store.DeleteAsync("mem-1", CancellationToken.None));
 
@@ -298,7 +298,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
 
         await _store.SetWatermarkAsync(sessionId, DateTimeOffset.UtcNow, CancellationToken.None);
 
@@ -320,9 +320,9 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         Guid sessionB = Guid.NewGuid();
 
-        await _store!.InsertAsync("mem-1", "a", DateTimeOffset.Parse("2026-01-01T00:00:00Z"), sessionA, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.Parse("2026-01-01T00:00:00Z"), sessionA, null, "extraction", Vec(1f), CancellationToken.None);
 
-        await _store.InsertAsync("mem-2", "b", DateTimeOffset.Parse("2026-03-01T00:00:00Z"), sessionB, null, "extraction", Vec(1f), CancellationToken.None);
+        _ = await _store.InsertAsync("mem-2", "b", DateTimeOffset.Parse("2026-03-01T00:00:00Z"), sessionB, null, "extraction", Vec(1f), CancellationToken.None);
 
         SagaStats stats = await _store.GetStatsAsync(CancellationToken.None);
 

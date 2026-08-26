@@ -99,7 +99,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        await _sagaStore!.InsertAsync(
+        _ = await _sagaStore!.InsertAsync(
             "mem-1",
             "a",
             DateTimeOffset.UtcNow,
@@ -133,7 +133,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        await _sagaStore!.InsertAsync(
+        _ = await _sagaStore!.InsertAsync(
             "mem-2",
             "b",
             DateTimeOffset.UtcNow,
@@ -179,7 +179,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        await _sagaStore!.InsertAsync(
+        _ = await _sagaStore!.InsertAsync(
             "mem-3",
             "c",
             DateTimeOffset.UtcNow,

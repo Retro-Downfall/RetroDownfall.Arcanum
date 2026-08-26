@@ -103,3 +103,96 @@ public sealed class SagaSuppressionKeyStoreTests
     }
 
 }
+
+/// <summary>
+/// The insert chokepoint: a retirement's suppression is checked inside <c>InsertCoreAsync</c>, after
+/// scope is derived and before the row lands, so extraction cannot re-add exactly what an operator
+/// just retired.
+/// </summary>
+public sealed class SagaSuppressionTests
+{
+
+    [SkippableFact]
+    public async Task A_retired_memory_is_not_written_again_by_the_path_that_wrote_it()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        _ = await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.RetireAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        SagaMemoryWriteOutcome outcome = await harness.Store.InsertAsync(
+            "m-2", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Suppressed, outcome);
+
+        Assert.Equal(0, await harness.CountAsync("saga_memories", "Id = 'm-2'").ConfigureAwait(false));
+
+    }
+
+    [SkippableFact]
+    public async Task A_suppression_made_in_one_Campaign_does_not_govern_another()
+    {
+
+        // Written through two Sessions the classifier resolves to different Campaigns, so the scope on each
+        // row is derived exactly as production derives it rather than declared by the test.
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        Guid first = await harness.SessionBoundToNewCampaignAsync().ConfigureAwait(false);
+
+        Guid second = await harness.SessionBoundToNewCampaignAsync().ConfigureAwait(false);
+
+        _ = await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            first, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.RetireAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        SagaMemoryWriteOutcome outcome = await harness.Store.InsertAsync(
+            "m-2", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            second, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
+
+    }
+
+    [SkippableFact]
+    public async Task Reinstating_the_memory_lets_the_same_conclusion_be_written_again()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        _ = await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] digest = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
+
+        _ = await harness.Store.RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        _ = await harness.Store.ReinstateAsync(
+            "m-1", digest, harness.Embedding(), DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Written,
+            await harness.Store.InsertAsync(
+                "m-2", "the operator prefers tabs", DateTimeOffset.UtcNow,
+                null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false));
+
+    }
+
+}

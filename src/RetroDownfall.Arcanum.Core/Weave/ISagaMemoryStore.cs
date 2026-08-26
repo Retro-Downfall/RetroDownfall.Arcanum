@@ -17,7 +17,13 @@ public interface ISagaMemoryStore
     /// <c>saga_memory_embeddings</c>, and (when sqlite-vec is available) a mirrored row in
     /// <c>saga_memory_embeddings_vec</c>.
     /// </summary>
-    Task InsertAsync(
+    /// <remarks>
+    /// Returns <see cref="SagaMemoryWriteOutcome.Suppressed"/>, writing nothing, when an operator has
+    /// already retired an equivalent conclusion in this scope. The check runs inside the insert
+    /// transaction, after scope is derived and before any row lands, so no writer — extraction included
+    /// — can reach around it.
+    /// </remarks>
+    Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -31,7 +37,7 @@ public interface ISagaMemoryStore
     /// Inserts attachment-derived memory together with typed provenance. Implementations must keep
     /// provenance after source deletion and surface the source as unavailable.
     /// </summary>
-    Task InsertAsync(
+    Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
