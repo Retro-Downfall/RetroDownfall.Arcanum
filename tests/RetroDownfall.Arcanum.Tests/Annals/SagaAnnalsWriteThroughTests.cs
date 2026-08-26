@@ -326,6 +326,92 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The refusal is not just a reported "no" -- opening a claim here would be this method guessing an
+    /// origin for a version it never saw asserted, so nothing may land in <c>annal_claims</c> either.
+    /// </summary>
+    [SkippableFact]
+    public async Task Retiring_a_subject_with_no_claim_writes_nothing_and_says_so()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false).ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        bool appended = await AnnalsClaimWriter.AppendRetirementAsync(
+            harness.Connection, null, AnnalSubjectStore.Saga, "m-1",
+            AnnalOrigin.OperatorStated, SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.False(appended);
+
+        // Not merely "no claim comes back" -- nothing was written for this subject at all.
+        Assert.Equal(
+            0,
+            await harness.CountAsync("annal_claims", "SubjectStoreCode = 1 AND SubjectId = 'm-1'")
+                .ConfigureAwait(false));
+
+    }
+
+    /// <summary>
+    /// A second retirement records no change, so the claim's version count and its head's revision must
+    /// come back exactly as they were before the second call -- not merely "some" unspecified value.
+    /// </summary>
+    [SkippableFact]
+    public async Task Retiring_an_already_retired_claim_writes_nothing_and_says_so()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false).ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await AnnalsClaimWriter.AppendAssertAsync(
+            harness.Connection, null, AnnalSubjectStore.Saga, "m-1",
+            AnnalOrigin.AgentExtracted, SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        _ = await AnnalsClaimWriter.AppendRetirementAsync(
+            harness.Connection, null, AnnalSubjectStore.Saga, "m-1",
+            AnnalOrigin.OperatorStated, SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        AnnalClaimHead headBefore = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None)
+            .ConfigureAwait(false))!;
+
+        int revisionBefore = headBefore.CurrentRevision;
+
+        int versionCountBefore = await harness.CountAsync("annal_versions", $"ClaimId = '{headBefore.ClaimId}'")
+            .ConfigureAwait(false);
+
+        bool appendedAgain = await AnnalsClaimWriter.AppendRetirementAsync(
+            harness.Connection, null, AnnalSubjectStore.Saga, "m-1",
+            AnnalOrigin.OperatorStated, SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.False(appendedAgain);
+
+        AnnalClaimHead headAfter = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None)
+            .ConfigureAwait(false))!;
+
+        Assert.Equal(revisionBefore, headAfter.CurrentRevision);
+
+        Assert.Equal(
+            versionCountBefore,
+            await harness.CountAsync("annal_versions", $"ClaimId = '{headBefore.ClaimId}'").ConfigureAwait(false));
+
+    }
+
     private static float[] Vec(params float[] leading)
     {
 
