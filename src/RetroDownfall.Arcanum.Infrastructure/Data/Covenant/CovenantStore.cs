@@ -1196,6 +1196,87 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
     }
 
+    public async ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(
+        CovenantCurationEffectQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(query);
+
+        bool campaignScoped = query.Scope.Kind == CovenantScope.Campaign;
+
+        // A curation subject names one scope, and the Global head fact it reads is a single indexed
+        // lookup rather than a scan across Campaigns, so a scoped lease covers a Campaign subject.
+        Result validated = await ValidateLeaseAsync(
+                readLease,
+                campaignScoped ? query.Scope : null,
+                requireInstallation: !campaignScoped,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (validated.IsFailure)
+        {
+
+            return validated.Error;
+
+        }
+
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                .ConfigureAwait(false);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = CovenantStoreSql.CurationEffectFacts(campaignScoped);
+
+        Bind(command, "$key", query.NormalizedKey);
+
+        Bind(command, "$lane", (int)query.Lane);
+
+        if (campaignScoped)
+        {
+
+            Bind(command, "$campaign", query.Scope.CampaignId!.Value.ToString("D"));
+
+        }
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.Unavailable,
+                "Covenant canonical state is not present on this installation.");
+
+        }
+
+        long keyEpoch = reader.GetInt64(2);
+
+        CovenantCurationEffectSnapshot snapshot = new(
+            query.Scope,
+            query.NormalizedKey,
+            query.Lane,
+            query.Kind,
+            new CovenantCurationState(reader.GetInt32(5) == 1, reader.GetInt32(6) == 1, reader.GetInt64(7)),
+            reader.GetInt32(3) == 1,
+            reader.GetInt32(4) == 1,
+            keyEpoch,
+            reader.GetInt64(1),
+            ReadGuidBlob(reader, 0));
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return Result<CovenantCurationEffectSnapshot>.Success(snapshot);
+
+    }
+
     private static async Task<EffectFacts> ReadEffectFactsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,

@@ -347,4 +347,52 @@ internal static class CovenantStoreSql
           AND h.NormalizedKey = $key;
         """;
 
+    /// <summary>
+    /// One curation subject's current state, the two head facts a broader-scope sentence is read off,
+    /// and every epoch a preflight token binds, in one round trip.
+    /// </summary>
+    /// <remarks>
+    /// The two head predicates ask about live heads only. A retired head applies to no turn, so a mask
+    /// over a key whose Global head is a tombstone suppresses nothing, and telling an operator otherwise
+    /// would be describing an effect they will not get.
+    ///
+    /// <para>The subject's key epoch is read once into a common table expression and joined from there.
+    /// Repeating the sub-select per column would let two of them disagree if the epoch advanced between
+    /// them, and the disagreement would land on the curation row a commit then failed to find.</para>
+    /// </remarks>
+    internal static string CurationEffectFacts(bool campaignScoped)
+    {
+
+        string campaignPredicate = campaignScoped ? "$campaign" : "NULL";
+
+        string scopedConfirmed = campaignScoped
+            ? "EXISTS(SELECT 1 FROM covenant_heads c WHERE c.CampaignId = $campaign AND c.NormalizedKey = $key"
+                + " AND c.LaneCode = 1 AND c.CurrentOperationCode = 1)"
+            : "0";
+
+        return $"""
+            WITH epoch(Value) AS (
+                SELECT COALESCE((SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)
+            )
+            SELECT st.DatasetGeneration,
+                   st.KeyReclamationEpoch,
+                   epoch.Value,
+                   EXISTS(SELECT 1 FROM covenant_heads g WHERE g.CampaignId IS NULL AND g.NormalizedKey = $key
+                          AND g.LaneCode = 1 AND g.CurrentOperationCode = 1),
+                   {scopedConfirmed},
+                   COALESCE(ch.IsPinned, 0),
+                   COALESCE(ch.IsMasked, 0),
+                   COALESCE(ch.CurrentRevision, 0)
+            FROM covenant_state st
+            CROSS JOIN epoch
+            LEFT JOIN covenant_curation_heads ch
+                ON ch.CampaignId IS {campaignPredicate}
+                   AND ch.NormalizedKey = $key
+                   AND ch.LaneCode = $lane
+                   AND ch.KeyEpoch = epoch.Value
+            WHERE st.StateKey = 1;
+            """;
+
+    }
+
 }

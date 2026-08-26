@@ -95,6 +95,43 @@ internal static class CovenantWireValidation
             ? InvalidScope("Global Covenant content has no Proposed lane.")
             : Result.Success();
 
+    internal static Result ValidateCurationKind(CovenantCurationKind kind) =>
+        kind is >= CovenantCurationKind.Pin and <= CovenantCurationKind.Unmask
+            ? Result.Success()
+            : InvalidScope("The requested Covenant curation kind is not a member of the contract.");
+
+    /// <summary>
+    /// Refuses the two placements a scope mask cannot have.
+    /// </summary>
+    /// <remarks>
+    /// A Global mask has no broader scope to be falling through from, and the Proposed lane is
+    /// review-only beside effective Confirmed content, so masking it would change nothing an operator
+    /// could observe. Refused on the request rather than at the table, so a caller learns it before a
+    /// read is opened rather than from a constraint inside a commit.
+    /// </remarks>
+    internal static Result ValidateMaskablePlacement(CovenantCurationKind kind, CovenantScope scope, CovenantLane lane)
+    {
+
+        if (kind is not (CovenantCurationKind.Mask or CovenantCurationKind.Unmask))
+        {
+
+            return Result.Success();
+
+        }
+
+        if (scope != CovenantScope.Campaign)
+        {
+
+            return InvalidScope("A Covenant scope mask names one Campaign, because Global content has no broader scope to fall through from.");
+
+        }
+
+        return lane != CovenantLane.Confirmed
+            ? InvalidScope("A Covenant scope mask names the Confirmed lane, because the Proposed lane is review-only beside it.")
+            : Result.Success();
+
+    }
+
     /// <summary>
     /// Validates an opaque token or cursor against the envelope's encoded bound, before anything
     /// tries to decode it.

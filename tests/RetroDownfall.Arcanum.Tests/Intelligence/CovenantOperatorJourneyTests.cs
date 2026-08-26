@@ -1081,6 +1081,7 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             _codec,
             new FixedCovenantConnectionSource(Connection()),
             new CovenantMutationKernel(),
+            new CovenantCurationKernel(),
             _authority,
             TimeProvider.System);
 

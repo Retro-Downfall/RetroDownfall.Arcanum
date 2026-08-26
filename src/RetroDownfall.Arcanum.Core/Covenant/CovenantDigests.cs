@@ -161,6 +161,44 @@ public static class CovenantDigests
         });
     }
 
+    public static CovenantDigest CurationDependentHeads(CurationDependentHeadsDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint scope = Code(input.Scope, nameof(input.Scope));
+        uint lane = Code(input.Lane, nameof(input.Lane));
+        ValidateScopeCampaign(input.Scope, input.CampaignId, nameof(input));
+        string key = RequireKey(input.NormalizedKey, nameof(input.NormalizedKey));
+
+        return Hash(CovenantDomainTag.CurationDependentHeads, writer =>
+        {
+            writer.WriteUInt32(scope);
+            WriteOptionalGuid(writer, input.CampaignId);
+            writer.WriteUtf8(key);
+            writer.WriteUInt32(lane);
+            writer.WriteUInt64(input.KeyEpoch);
+            writer.WriteByte(ToByte(input.GlobalConfirmedHeadExists));
+            writer.WriteByte(ToByte(input.ScopedConfirmedHeadExists));
+        });
+    }
+
+    public static CovenantDigest CurationEffect(CurationEffectDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint kind = Code(input.Kind, nameof(input.Kind));
+
+        return Hash(CovenantDomainTag.CurationEffect, writer =>
+        {
+            writer.WriteUInt32(kind);
+            writer.WriteUInt64(input.CurrentRevision);
+            writer.WriteByte(ToByte(input.CurrentlyPinned));
+            writer.WriteByte(ToByte(input.CurrentlyMasked));
+            writer.WriteByte(ToByte(input.ProjectedPinned));
+            writer.WriteByte(ToByte(input.ProjectedMasked));
+            writer.WriteByte(ToByte(input.GlobalConfirmedSuppressed));
+            writer.WriteByte(ToByte(input.GlobalConfirmedResurfaces));
+        });
+    }
+
     public static CovenantDigest PreflightBody(PreflightBodyDigestInput input)
     {
         ArgumentNullException.ThrowIfNull(input);

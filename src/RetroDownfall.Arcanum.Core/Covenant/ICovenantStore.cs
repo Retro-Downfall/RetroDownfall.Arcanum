@@ -102,4 +102,18 @@ public interface ICovenantStore
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Reads what one curation change would do, in one bounded transaction.
+    /// </summary>
+    /// <remarks>
+    /// The current curation state, the two head facts the broader-scope sentence is read off, and every
+    /// epoch the preflight token binds, all inside one read. Reading them separately would leave a
+    /// window in which the effect an operator was shown and the epochs their token binds describe two
+    /// different installations.
+    /// </remarks>
+    ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(
+        CovenantCurationEffectQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
 }

@@ -209,3 +209,117 @@ public sealed record CovenantRetireRequest(
             CovenantWireValidation.ValidateToken(PreflightToken));
 
 }
+
+/// <summary>
+/// The server-authoritative plan for one operator curation change, and the token that binds it.
+/// </summary>
+/// <remarks>
+/// Read-only and no-store. The two fallback flags are the sentence an operator reads before they
+/// confirm: retiring or masking a Campaign entry and masking a Global key are opposite answers to
+/// "what applies here afterwards", and only the server has measured which one this is.
+/// </remarks>
+public sealed record CovenantCurationPreflightDto(
+    CovenantCurationKind Kind,
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string NormalizedKey,
+    CovenantLane Lane,
+    Guid MutationId,
+    string RequestDigest,
+    bool IsPinned,
+    bool IsMasked,
+
+    /// <summary>The curation revision the request said it expected, carried back beside the live one.</summary>
+    /// <remarks>
+    /// Both numbers travel because only the pair can be compared. A preview reporting the head alone
+    /// renders a screen every line of which is true and which describes a change that cannot succeed.
+    /// </remarks>
+    long CurrentRevision,
+    long ExpectedRevision,
+    long KeyEpoch,
+
+    /// <summary>Whether Global content stops reaching this Campaign, with nothing in its place.</summary>
+    bool GlobalConfirmedSuppressed,
+
+    /// <summary>Whether Global content starts reaching this Campaign again.</summary>
+    bool GlobalConfirmedResurfaces,
+
+    /// <summary>Whether the change would alter anything at all, or is already the state of the subject.</summary>
+    bool ChangesAnything,
+    DateTimeOffset IssuedAtUtc,
+    DateTimeOffset ExpiresAtUtc,
+    string PreflightToken);
+
+/// <summary>
+/// The durable outcome of one committed curation change.
+/// </summary>
+public sealed record CovenantCurationResultDto(
+    Guid MutationId,
+    CovenantMutationOutcome Outcome,
+    CovenantCurationKind Kind,
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string NormalizedKey,
+    CovenantLane Lane,
+    bool IsPinned,
+    bool IsMasked,
+    Guid? ResultingVersionId,
+    long? ResultingRevision,
+    string RequestDigest,
+    string ResponseReceiptDigest,
+    bool Replayed);
+
+/// <summary>
+/// A prepared operator curation change: every canonical field the commit will carry.
+/// </summary>
+public sealed record CovenantCurationPrepareRequest(
+    CovenantCurationKind Kind,
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    CovenantLane Lane,
+    long ExpectedRevision,
+    Guid MutationId)
+{
+
+    public Result Validate() =>
+        CovenantWireValidation.First(
+            CovenantWireValidation.ValidateOperationScope(Scope, CampaignId),
+            CovenantWireValidation.ValidateKey(Key),
+            CovenantWireValidation.ValidateLane(Lane),
+            CovenantWireValidation.ValidateRetirableLane(Scope, Lane),
+            CovenantWireValidation.ValidateCurationKind(Kind),
+            CovenantWireValidation.ValidateMaskablePlacement(Kind, Scope, Lane),
+            CovenantWireValidation.RequireNonNegative(ExpectedRevision, "expected Covenant curation revision"),
+            CovenantWireValidation.RequireIdentity(MutationId, "client-generated mutation identity"));
+
+}
+
+/// <summary>
+/// The committed operator curation change, carrying the same canonical fields its preflight digested
+/// plus the token that authorizes them.
+/// </summary>
+public sealed record CovenantCurationRequest(
+    CovenantCurationKind Kind,
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    CovenantLane Lane,
+    long ExpectedRevision,
+    Guid MutationId,
+    string PreflightToken)
+{
+
+    public Result Validate() =>
+        CovenantWireValidation.First(
+            CovenantWireValidation.ValidateOperationScope(Scope, CampaignId),
+            CovenantWireValidation.ValidateKey(Key),
+            CovenantWireValidation.ValidateLane(Lane),
+            CovenantWireValidation.ValidateRetirableLane(Scope, Lane),
+            CovenantWireValidation.ValidateCurationKind(Kind),
+            CovenantWireValidation.ValidateMaskablePlacement(Kind, Scope, Lane),
+            CovenantWireValidation.RequireNonNegative(ExpectedRevision, "expected Covenant curation revision"),
+            CovenantWireValidation.RequireIdentity(MutationId, "client-generated mutation identity"),
+            CovenantWireValidation.ValidateToken(PreflightToken));
+
+}

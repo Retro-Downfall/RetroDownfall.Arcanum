@@ -26,12 +26,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// at, so a client that lost the response to a network failure gets its committed answer back rather
 /// than a stale-token refusal for work that already happened.</para>
 /// </remarks>
-internal sealed class CovenantMutationService(
+internal sealed partial class CovenantMutationService(
     ICovenantStore store,
     ICovenantCompiler compiler,
     ICovenantEnvelopeCodec codec,
     ICovenantConnectionSource connections,
     CovenantMutationKernel kernel,
+    CovenantCurationKernel curationKernel,
     ICovenantAuthoritySnapshotProvider authority,
     TimeProvider timeProvider) : ICovenantMutationService
 {

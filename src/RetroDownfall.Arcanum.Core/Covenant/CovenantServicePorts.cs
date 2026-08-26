@@ -101,6 +101,24 @@ public interface ICovenantMutationService
         CovenantWriteLease writeLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Measures what one pin, unpin, mask, or unmask would do, and issues the token that binds it.
+    /// </summary>
+    /// <remarks>
+    /// On the mutation port rather than a port of its own, because a curation change is authorized the
+    /// same way, bound the same way, and refused the same way as a write to the entry it curates. A
+    /// separate port would be a second opinion about the same authority.
+    /// </remarks>
+    ValueTask<Result<CovenantCurationPreflightDto>> PrepareCurationAsync(
+        CovenantCurationPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    ValueTask<Result<CovenantCurationResultDto>> CurateAsync(
+        CovenantCurationRequest request,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
