@@ -6416,6 +6416,78 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 ? new SagaMemoryCurationRow(memory, new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc), HasEmbedding: true)
                 : null);
 
+        public Task<SagaCurationOutcome> RetireAsync(
+            string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken)
+        {
+
+            if (!Memories.TryGetValue(id, out SagaMemoryDto? memory))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null));
+
+            }
+
+            if (memory.RetiredAtUtc is not null)
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.AlreadyRetired, null));
+
+            }
+
+            byte[] currentDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(memory.Content));
+
+            if (!currentDigest.AsSpan().SequenceEqual(expectedContentDigest))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null));
+
+            }
+
+            Memories[id] = memory with { RetiredAtUtc = retiredAt };
+
+            return Task.FromResult(
+                new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, memory.PinnedAtUtc)));
+
+        }
+
+        public Task<SagaCurationOutcome> ReinstateAsync(
+            string id,
+            byte[] expectedContentDigest,
+            float[] embedding,
+            DateTimeOffset reinstatedAt,
+            CancellationToken cancellationToken)
+        {
+
+            if (!Memories.TryGetValue(id, out SagaMemoryDto? memory))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null));
+
+            }
+
+            if (memory.RetiredAtUtc is null)
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotRetired, null));
+
+            }
+
+            byte[] currentDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(memory.Content));
+
+            if (!currentDigest.AsSpan().SequenceEqual(expectedContentDigest))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null));
+
+            }
+
+            Memories[id] = memory with { RetiredAtUtc = null };
+
+            return Task.FromResult(
+                new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, memory.PinnedAtUtc)));
+
+        }
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Memories.Remove(id));
 
         public Task DeleteAllAsync(CancellationToken cancellationToken)

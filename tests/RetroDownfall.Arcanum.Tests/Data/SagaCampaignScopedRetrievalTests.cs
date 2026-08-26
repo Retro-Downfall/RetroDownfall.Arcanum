@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -219,6 +220,37 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         Assert.Equal(managed, accelerated);
 
         Assert.Equal(Ordered(corpus.GlobalId, corpus.CampaignAId), accelerated);
+
+    }
+
+    /// <summary>
+    /// The acceptance criterion for retirement's structural exclusion: two memories the same
+    /// Campaign-scoped search would otherwise rank identically, one of them retired, and only the
+    /// survivor comes back. Retirement deletes the embedding rather than adding a predicate, so this
+    /// proves the design by construction rather than by a filter every call site would have to agree
+    /// about.
+    /// </summary>
+    [Fact]
+    public async Task A_retired_memory_is_excluded_from_a_campaign_scoped_search()
+    {
+
+        Guid session = await SeedCampaignSessionAsync(CampaignA);
+
+        float[] shared = Vec(1f);
+
+        string survivorId = await InsertAsync(session, "a conclusion that stays", shared);
+
+        string retiredId = await InsertAsync(session, "a conclusion that goes", shared);
+
+        SagaCurationOutcome outcome = await _store!.RetireAsync(
+            retiredId,
+            AnnalContentDigest.ForSagaMemory("a conclusion that goes"),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, outcome.Kind);
+
+        Assert.Equal([survivorId], await SearchAsync(CampaignA));
 
     }
 

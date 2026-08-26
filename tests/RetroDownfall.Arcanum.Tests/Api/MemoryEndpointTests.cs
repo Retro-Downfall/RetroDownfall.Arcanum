@@ -675,6 +675,18 @@ public sealed class MemoryEndpointTests
         public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<SagaCurationOutcome> RetireAsync(
+            string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> ReinstateAsync(
+            string id,
+            byte[] expectedContentDigest,
+            float[] embedding,
+            DateTimeOffset reinstatedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 

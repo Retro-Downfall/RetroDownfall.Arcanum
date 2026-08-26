@@ -97,6 +97,35 @@ public interface ISagaMemoryStore
     /// <summary>Deletes a single memory (and its embedding, from both BLOB and vec0 tables). Returns <c>false</c> when no such memory exists.</summary>
     Task<bool> DeleteAsync(string id, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Retires a memory: its embedding is removed from both <c>saga_memory_embeddings</c> and (when
+    /// available) <c>saga_memory_embeddings_vec</c>, so no retrieval path can reach it, while the
+    /// <c>saga_memories</c> row itself survives for inspection and for reversal.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="expectedContentDigest"/> is the caller's proof that it read the content it is
+    /// retiring, compared against <c>AnnalContentDigest.ForSagaMemory</c> of the content stored now.
+    /// A mismatch means the caller's view is stale and nothing is written.
+    /// </remarks>
+    Task<SagaCurationOutcome> RetireAsync(
+        string id,
+        byte[] expectedContentDigest,
+        DateTimeOffset retiredAt,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reinstates a retired memory: its embedding is restored to both <c>saga_memory_embeddings</c> and
+    /// (when available) <c>saga_memory_embeddings_vec</c> from <paramref name="embedding"/>, and the
+    /// retirement suppression over its content-and-scope is released so a later extraction pass may
+    /// write it again.
+    /// </summary>
+    Task<SagaCurationOutcome> ReinstateAsync(
+        string id,
+        byte[] expectedContentDigest,
+        float[] embedding,
+        DateTimeOffset reinstatedAt,
+        CancellationToken cancellationToken);
+
     /// <summary>Deletes every Saga memory, embedding, and extraction watermark.</summary>
     Task DeleteAllAsync(CancellationToken cancellationToken);
 

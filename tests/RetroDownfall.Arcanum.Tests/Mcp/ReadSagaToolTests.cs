@@ -536,6 +536,18 @@ public sealed class ReadSagaToolTests
         public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
 
+        public Task<SagaCurationOutcome> RetireAsync(
+            string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
+        public Task<SagaCurationOutcome> ReinstateAsync(
+            string id,
+            byte[] expectedContentDigest,
+            float[] embedding,
+            DateTimeOffset reinstatedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
 
