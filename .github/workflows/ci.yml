@@ -370,3 +370,20 @@ jobs:
         run: |
           set -euo pipefail
           find scripts -name '*.sh' -print0 | xargs -0 shellcheck -x -P SCRIPTDIR
+
+      # Two things nothing else here checks. The `run:` blocks inside a workflow are shell that the
+      # find above never sees, because they are not files. And a reusable-workflow call is checked by
+      # nothing at all until it is dispatched: a `with:` key the callee does not declare, or an
+      # expression referencing a context that is not available where it sits, first shows up as a
+      # failed run on the day somebody reaches for a release. actionlint reads both, and hands the
+      # embedded scripts to the shellcheck installed above.
+      #
+      # Installed through the Go module proxy rather than from a release page, so the download is
+      # verified against the checksum database instead of trusted for having the right URL.
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Validate workflows
+        run: |
+          set -euo pipefail
+          "$(go env GOPATH)/bin/actionlint"

@@ -183,7 +183,20 @@ jobs:
               -t cert \
               -f pkcs12 \
               -k "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed -e s/\"//g)
+          # Read into an array rather than splitting a command substitution on whitespace. The
+          # search list is a list of paths, and a path is allowed a space in it — one keychain named
+          # with a space would otherwise be handed to `security` as two arguments that name nothing,
+          # and the list would come back missing the operator's own login keychain. bash 3.2 is the
+          # macOS runner shell, which is why this is a read loop and a `${...[@]+...}` guard rather
+          # than `mapfile` and a bare expansion.
+          existing_keychains=()
+
+          while IFS= read -r keychain; do
+            existing_keychains+=("$keychain")
+          done < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            ${existing_keychains[@]+"${existing_keychains[@]}"}
           # Allow codesign to use the private key non-interactively in CI.
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
