@@ -92,14 +92,39 @@ public sealed class GrimoireSchemaTransitionResourceTests
     }
 
     /// <summary>
-    /// The shipped state, asserted positively rather than left unstated: no tier has left version 1,
-    /// so the loader runs in production and finds nothing.
+    /// The shipped state, asserted positively rather than left unstated: exactly one tier has left
+    /// version 1, and every statement the loader found belongs to that tier's one step.
     /// </summary>
+    /// <remarks>
+    /// A statement file that landed in the wrong <c>V&lt;n&gt;</c> folder, or under the wrong tier, is
+    /// silently absorbed into whichever step the folder names. It would install against a database it
+    /// was never written for, so what the loader found is pinned here rather than counted.
+    /// </remarks>
     [Fact]
-    public void The_shipped_catalog_declares_no_transition_today()
+    public void The_shipped_catalog_declares_only_the_core_version_two_step()
     {
 
-        Assert.Empty(GrimoireSchemaCatalog.TransitionStatements);
+        Assert.All(
+            GrimoireSchemaCatalog.TransitionStatements,
+            static statement =>
+            {
+
+                Assert.Equal(GrimoireSchemaTransactionTier.Core, statement.TransactionTier);
+
+                Assert.Equal(2, statement.ToVersion);
+
+            });
+
+        Assert.Equal(
+            [
+                "saga_memories_scope_kind",
+                "saga_memories_campaign_id",
+                "saga_memories_scope_index",
+                "lexicon_entries_scope",
+                "lexicon_entries_retire_name_index",
+                "lexicon_entries_scope_index",
+            ],
+            GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
 
     }
 

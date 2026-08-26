@@ -84,7 +84,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Result<LexiconEntryDto> result = await _service!.UpsertAsync("Alice", null, ["Prefers concise answers."], CancellationToken.None);
+        Result<LexiconEntryDto> result = await _service!.UpsertAsync("Alice", null, ["Prefers concise answers."], LexiconScope.Global, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
@@ -124,12 +124,14 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             "Document",
             ["Retention is thirty days."],
             provenance,
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
         Result<LexiconEntryDto?> reloaded = await _service.GetByNameAsync(
             "Privacy policy",
+            LexiconScope.Global,
             CancellationToken.None);
 
         LexiconFactProvenance factProvenance = Assert.Single(
@@ -149,9 +151,9 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Alice", "Person", ["Likes blue."], CancellationToken.None);
+        await _service!.UpsertAsync("Alice", "Person", ["Likes blue."], LexiconScope.Global, CancellationToken.None);
 
-        Result<LexiconEntryDto> second = await _service.UpsertAsync("ALICE", null, ["Works on Arcanum."], CancellationToken.None);
+        Result<LexiconEntryDto> second = await _service.UpsertAsync("ALICE", null, ["Works on Arcanum."], LexiconScope.Global, CancellationToken.None);
 
         Assert.True(second.IsSuccess);
 
@@ -159,7 +161,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Assert.Equal(2, second.Value.Facts.Length);
 
-        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["alice"], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["alice"], 10, LexiconScope.Global, CancellationToken.None);
 
         LexiconEntryDto entry = Assert.Single(matches.Value);
 
@@ -173,9 +175,9 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL."], CancellationToken.None);
+        await _service!.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL."], LexiconScope.Global, CancellationToken.None);
 
-        Result<LexiconEntryDto> updated = await _service.UpsertAsync("project phoenix", "  ", ["Uses PostgreSQL.", "Deployment target is Linux."], CancellationToken.None);
+        Result<LexiconEntryDto> updated = await _service.UpsertAsync("project phoenix", "  ", ["Uses PostgreSQL.", "Deployment target is Linux."], LexiconScope.Global, CancellationToken.None);
 
         Assert.True(updated.IsSuccess);
 
@@ -193,9 +195,9 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Bob", "Person", ["Initial."], CancellationToken.None);
+        await _service!.UpsertAsync("Bob", "Person", ["Initial."], LexiconScope.Global, CancellationToken.None);
 
-        Result<LexiconEntryDto> updated = await _service.UpsertAsync("Bob", "Contributor", ["Another."], CancellationToken.None);
+        Result<LexiconEntryDto> updated = await _service.UpsertAsync("Bob", "Contributor", ["Another."], LexiconScope.Global, CancellationToken.None);
 
         Assert.Equal("Contributor", updated.Value.Type);
 
@@ -207,7 +209,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Result<LexiconEntryDto> result = await _service!.UpsertAsync("  ", "Person", ["Fact."], CancellationToken.None);
+        Result<LexiconEntryDto> result = await _service!.UpsertAsync("  ", "Person", ["Fact."], LexiconScope.Global, CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
@@ -221,7 +223,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Result<LexiconEntryDto> result = await _service!.UpsertAsync("Carol", "Person", ["  ", ""], CancellationToken.None);
+        Result<LexiconEntryDto> result = await _service!.UpsertAsync("Carol", "Person", ["  ", ""], LexiconScope.Global, CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
@@ -235,19 +237,19 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Deletable", "Project", ["Will be removed."], CancellationToken.None);
+        await _service!.UpsertAsync("Deletable", "Project", ["Will be removed."], LexiconScope.Global, CancellationToken.None);
 
-        Result<bool> deleted = await _service.DeleteByNameAsync("deletable", CancellationToken.None);
+        Result<bool> deleted = await _service.DeleteByNameAsync("deletable", LexiconScope.Global, CancellationToken.None);
 
         Assert.True(deleted.IsSuccess);
 
         Assert.True(deleted.Value);
 
-        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["deletable"], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["deletable"], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.Empty(matches.Value);
 
-        Result<bool> secondDelete = await _service.DeleteByNameAsync("deletable", CancellationToken.None);
+        Result<bool> secondDelete = await _service.DeleteByNameAsync("deletable", LexiconScope.Global, CancellationToken.None);
 
         Assert.True(secondDelete.IsSuccess);
 
@@ -268,7 +270,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Abandoned", "Project", ["Written before the abort."], CancellationToken.None);
+        await _service!.UpsertAsync("Abandoned", "Project", ["Written before the abort."], LexiconScope.Global, CancellationToken.None);
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -296,7 +298,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         raw.sqlite3_trace(connection.Handle, trace, null);
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => _service.DeleteByNameAsync("abandoned", cts.Token));
+            () => _service.DeleteByNameAsync("abandoned", LexiconScope.Global, cts.Token));
 
         // sqlite3_get_autocommit returns 0 while an explicit transaction is open.
         Assert.NotEqual(0, raw.sqlite3_get_autocommit(connection.Handle));
@@ -309,13 +311,13 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Alice", "Person", ["Works on Arcanum."], CancellationToken.None);
+        await _service!.UpsertAsync("Alice", "Person", ["Works on Arcanum."], LexiconScope.Global, CancellationToken.None);
 
-        await _service.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL for persistence."], CancellationToken.None);
+        await _service.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL for persistence."], LexiconScope.Global, CancellationToken.None);
 
         // "Alice" resolves by exact name; "PostgreSQL" is unresolved (no entity named PostgreSQL)
         // so it falls through to FTS, which matches Project Phoenix via FactsText.
-        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["Alice", "PostgreSQL"], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["Alice", "PostgreSQL"], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.Equal(2, matches.Value.Count);
 
@@ -331,9 +333,9 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL for persistence."], CancellationToken.None);
+        await _service!.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL for persistence."], LexiconScope.Global, CancellationToken.None);
 
-        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["PostgreSQL"], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["PostgreSQL"], 10, LexiconScope.Global, CancellationToken.None);
 
         LexiconEntryDto entry = Assert.Single(matches.Value);
 
@@ -347,7 +349,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service!.MatchEntitiesAsync([], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service!.MatchEntitiesAsync([], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.True(matches.IsSuccess);
 
@@ -361,9 +363,9 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Stable", "Project", ["Holds daemon_state."], CancellationToken.None);
+        await _service!.UpsertAsync("Stable", "Project", ["Holds daemon_state."], LexiconScope.Global, CancellationToken.None);
 
-        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["daemon_state:foo OR *"], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["daemon_state:foo OR *"], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.True(matches.IsSuccess);
 
@@ -375,15 +377,15 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await _service!.UpsertAsync("Eve", "Person", ["Old fact about turtles."], CancellationToken.None);
+        await _service!.UpsertAsync("Eve", "Person", ["Old fact about turtles."], LexiconScope.Global, CancellationToken.None);
 
-        Result<IReadOnlyList<LexiconEntryDto>> oldMatch = await _service.MatchEntitiesAsync(["turtles"], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> oldMatch = await _service.MatchEntitiesAsync(["turtles"], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.Single(oldMatch.Value);
 
-        await _service.UpsertAsync("Eve", null, ["New fact about parrots."], CancellationToken.None);
+        await _service.UpsertAsync("Eve", null, ["New fact about parrots."], LexiconScope.Global, CancellationToken.None);
 
-        Result<IReadOnlyList<LexiconEntryDto>> parrotMatch = await _service.MatchEntitiesAsync(["parrots"], 10, CancellationToken.None);
+        Result<IReadOnlyList<LexiconEntryDto>> parrotMatch = await _service.MatchEntitiesAsync(["parrots"], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.Single(parrotMatch.Value);
 
@@ -395,7 +397,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Result<LexiconEntryDto?> result = await _service!.GetByNameAsync("Nobody", CancellationToken.None);
+        Result<LexiconEntryDto?> result = await _service!.GetByNameAsync("Nobody", LexiconScope.Global, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
@@ -417,6 +419,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             "Uncapped",
             "Project",
             many,
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -443,6 +446,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
                 "Durable",
                 "Project",
                 page,
+                LexiconScope.Global,
                 CancellationToken.None);
 
             Assert.True(appended.IsSuccess);
@@ -451,6 +455,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         Result<LexiconEntryDto?> reloaded = await _service!.GetByNameAsync(
             "Durable",
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(reloaded.IsSuccess);
@@ -471,6 +476,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             "Long fact",
             "Project",
             [longFact],
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -490,12 +496,14 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             "Zebra",
             "Project",
             ["Last alphabetically."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         _ = await _service.UpsertAsync(
             "alpha",
             "Person",
             ["First alphabetically."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         Result<IReadOnlyList<LexiconEntryDto>> result = await _service
@@ -538,6 +546,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             "Project",
             ["Ships on Tuesday."],
             provenance,
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(seeded.IsSuccess);
@@ -550,6 +559,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             "Project",
             ["Ships on Tuesday."],
             provenance,
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(repeated.IsSuccess);
@@ -559,13 +569,14 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             "Aetherium",
             "Project",
             ["Also ships on Wednesday."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(appended.IsSuccess);
 
         Assert.DoesNotContain(statements, IsProvenanceWrite);
 
-        Result<LexiconEntryDto?> reloaded = await _service.GetByNameAsync("Aetherium", CancellationToken.None);
+        Result<LexiconEntryDto?> reloaded = await _service.GetByNameAsync("Aetherium", LexiconScope.Global, CancellationToken.None);
 
         LexiconFactProvenance surviving = Assert.Single(reloaded.Value!.FactProvenance ?? []);
 
@@ -615,6 +626,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Result<IReadOnlyList<LexiconEntryDto>> matches = await _service!.MatchEntitiesAsync(
             names,
             10,
+            LexiconScope.Global,
             CancellationToken.None);
 
         Assert.True(matches.IsSuccess);
@@ -656,6 +668,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
                 "Project",
                 [$"Fact {index}."],
                 provenance,
+                LexiconScope.Global,
                 CancellationToken.None);
 
             Assert.True(seeded.IsSuccess);

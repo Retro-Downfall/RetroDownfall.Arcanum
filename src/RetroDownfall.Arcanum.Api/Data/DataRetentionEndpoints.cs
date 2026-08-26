@@ -251,7 +251,7 @@ internal static class DataRetentionEndpoints
                         new DataRetentionApplyRequest(
                             new DataRetentionRequest(
                                 DataRetentionOperation.ResetMemory,
-                                TargetId: null,
+                                TargetId: request.CampaignId,
                                 request.Scope),
                             request.ExpectedPlanId),
                         httpContext,
@@ -286,7 +286,7 @@ internal static class DataRetentionEndpoints
                     .PlanAdmissionAsync(
                         new DataRetentionRequest(
                             DataRetentionOperation.ResetMemory,
-                            TargetId: null,
+                            TargetId: request.CampaignId,
                             request.Scope),
                         cancellationToken)
                     .ConfigureAwait(false);

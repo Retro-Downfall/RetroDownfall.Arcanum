@@ -17,4 +17,5 @@ public sealed record LexiconEntryDto(
     string Type,
     string[] Facts,
     DateTimeOffset UpdatedAt,
-    LexiconFactProvenance[]? FactProvenance = null);
+    LexiconFactProvenance[]? FactProvenance = null,
+    Guid? ScopeCampaignId = null);

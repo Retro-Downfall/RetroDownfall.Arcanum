@@ -46,6 +46,7 @@ internal static class SagaEndpoints
                 int? limit,
                 int? offset,
                 ISagaMemoryStore store,
+                IMemoryScopeResolver scopeResolver,
                 HttpContext ctx) =>
             {
 
@@ -70,8 +71,17 @@ internal static class SagaEndpoints
 
                 int clampedOffset = Math.Max(0, offset ?? 0);
 
+                // Naming a Session asks to see what that Session's turn would draw on; naming none is
+                // an operator inspecting the whole store, and every row reports its own scope either
+                // way, so nothing becomes invisible to the operator who owns it.
+                MemoryScope scope = sessionId is null
+                    ? MemoryScope.Installation
+                    : await scopeResolver
+                        .ResolveForSessionAsync(sessionId, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
                 SagaMemoryDto[] memories = await store
-                    .ListAsync(q, sessionId, clampedLimit, clampedOffset, ctx.RequestAborted)
+                    .ListAsync(q, sessionId, scope, clampedLimit, clampedOffset, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return Results.Ok(
@@ -87,6 +97,7 @@ internal static class SagaEndpoints
                 IWeaveService weaveService,
                 IDivinationService divinationService,
                 ISagaMemoryStore store,
+                IMemoryScopeResolver scopeResolver,
                 IOptionsMonitor<ArcanumSettings> options,
                 HttpContext ctx) =>
             {
@@ -139,16 +150,34 @@ internal static class SagaEndpoints
 
                 float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold);
 
-                Result<DivinationResult[]> searchResult = await divinationService
-                    .SearchAsync(
-                        "saga_memory_embeddings_vec",
-                        "MemoryId",
-                        "Embedding",
-                        embedResult.Value,
-                        limit,
-                        similarityThreshold,
-                        ctx.RequestAborted)
+                // The same primitive the turn uses, resolved the same way, so what this surface finds is
+                // what a turn in that Session would have been offered.
+                MemoryScope scope = await scopeResolver
+                    .ResolveForSessionAsync(request.SessionId, ctx.RequestAborted)
                     .ConfigureAwait(false);
+
+                Result<DivinationResult[]> searchResult = scope.IsEnforced
+                    ? await divinationService
+                        .SearchCampaignScopedAsync(
+                            SagaStorageKeys.VectorTable,
+                            SagaStorageKeys.EmbeddingKeyColumn,
+                            SagaStorageKeys.EmbeddingColumn,
+                            scope.ToSagaScope(),
+                            embedResult.Value,
+                            limit,
+                            similarityThreshold,
+                            ctx.RequestAborted)
+                        .ConfigureAwait(false)
+                    : await divinationService
+                        .SearchAsync(
+                            SagaStorageKeys.VectorTable,
+                            SagaStorageKeys.EmbeddingKeyColumn,
+                            SagaStorageKeys.EmbeddingColumn,
+                            embedResult.Value,
+                            limit,
+                            similarityThreshold,
+                            ctx.RequestAborted)
+                        .ConfigureAwait(false);
 
                 if (searchResult.IsFailure)
                 {
@@ -377,8 +406,10 @@ internal static class SagaEndpoints
         while (true)
         {
 
+            // Deliberately unscoped: erasure has to reach every memory, including the ones no turn in
+            // any Campaign can currently retrieve.
             SagaMemoryDto[] page = await store
-                .ListAsync(null, null, PageSize, offset, cancellationToken)
+                .ListAsync(null, null, MemoryScope.Installation, PageSize, offset, cancellationToken)
                 .ConfigureAwait(false);
 
             if (page.Length == 0)

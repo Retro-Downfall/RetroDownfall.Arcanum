@@ -419,6 +419,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             await CreateStore().ListAsync(
                 null,
                 sessionId,
+                MemoryScope.Installation,
                 10,
                 0,
                 CancellationToken.None));

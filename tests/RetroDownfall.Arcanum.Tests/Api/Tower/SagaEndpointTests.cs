@@ -5,6 +5,10 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
+using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -366,7 +370,202 @@ public sealed class SagaEndpointTests
 
     }
 
-    private static ArcanumWebApplicationFactory CreateEnabledFactory(IWeaveService weaveService) =>
+    /// <summary>
+    /// The acceptance criterion, through the route an operator and a client both reach: a memory
+    /// extracted in one Campaign is not returned to a search made as a session in another.
+    /// </summary>
+    /// <remarks>
+    /// Every memory here is written through the real store, so its scope is the one production derives
+    /// from the owning Session's binding rather than one the test stated. The two Campaign memories and
+    /// the installation-scoped one share a vector, so similarity cannot be what separates the results —
+    /// what a search returns, or fails to return, is the scope predicate's doing.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Divine_WhenCampaignScopingIsOn_ReturnsThisSessionsCampaignAndTheGlobalMemoriesOnly()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid campaignA = new("A0000000-0000-4000-8000-0000000000C1");
+
+        Guid campaignB = new("B0000000-0000-4000-8000-0000000000C2");
+
+        await using ArcanumWebApplicationFactory factory =
+            CreateEnabledFactory(new FakeWeaveService(), campaignScopedMemory: true);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionA = await SeedCampaignSessionAsync(factory, campaignA);
+
+        Guid sessionB = await SeedCampaignSessionAsync(factory, campaignB);
+
+        await SeedMemoryAsync(factory, "mem-a", "campaign A concluded something", sessionA);
+
+        await SeedMemoryAsync(factory, "mem-b", "campaign B concluded something", sessionB);
+
+        await SeedMemoryAsync(factory, "mem-global", "an installation-scoped conclusion", sessionId: null);
+
+        Assert.Equal(
+            ["mem-a", "mem-global"],
+            await DivineIdsAsync(client, sessionA));
+
+        Assert.Equal(
+            ["mem-b", "mem-global"],
+            await DivineIdsAsync(client, sessionB));
+
+    }
+
+    /// <summary>
+    /// With the gate off the same route returns every memory, which is what it has always returned.
+    /// </summary>
+    [SkippableFact]
+    public async Task Divine_WhenCampaignScopingIsOff_ReturnsEveryMemoryRegardlessOfCampaign()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid campaignA = new("A0000000-0000-4000-8000-0000000000C3");
+
+        Guid campaignB = new("B0000000-0000-4000-8000-0000000000C4");
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionA = await SeedCampaignSessionAsync(factory, campaignA);
+
+        Guid sessionB = await SeedCampaignSessionAsync(factory, campaignB);
+
+        await SeedMemoryAsync(factory, "mem-a", "campaign A concluded something", sessionA);
+
+        await SeedMemoryAsync(factory, "mem-b", "campaign B concluded something", sessionB);
+
+        Assert.Equal(
+            ["mem-a", "mem-b"],
+            await DivineIdsAsync(client, sessionA));
+
+    }
+
+    /// <summary>The ids a divination returns, ordered so a comparison is about membership, not rank.</summary>
+    private static async Task<string[]> DivineIdsAsync(HttpClient client, Guid? sessionId)
+    {
+
+        using HttpResponseMessage response = await client.PostAsync(
+            "/api/saga/divine",
+            new StringContent(
+                JsonSerializer.Serialize(
+                    new SagaSearchRequest("what did we decide?", null, sessionId),
+                    ArcanumJsonContext.Default.SagaSearchRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<SagaSearchResult>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSagaSearchResult);
+
+        Assert.NotNull(body);
+
+        Assert.True(body!.IsSuccess);
+
+        return [.. body.Data!.Memories.Select(static memory => memory.Id).Order(StringComparer.Ordinal)];
+
+    }
+
+    /// <summary>
+    /// A Campaign and a Session bound to it, written the way production states a Session's authority.
+    /// </summary>
+    /// <remarks>
+    /// The binding goes through the same false-by-default write scope production borrows: nothing may
+    /// state what a Session is bound to without it, this suite included.
+    /// </remarks>
+    private static async Task<Guid> SeedCampaignSessionAsync(
+        ArcanumWebApplicationFactory factory,
+        Guid campaignId)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        string now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+            .ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT OR IGNORE INTO "Campaigns"
+                ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+            VALUES ($id, $name, $name, $path, 0, '{}', $now, $now);
+            """,
+            ("$id", campaignId.ToString()),
+            ("$name", campaignId.ToString("N")),
+            ("$path", $"/campaigns/{campaignId:N}"),
+            ("$now", now));
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($id, $campaignId, 'active', $now, $now);
+            """,
+            ("$id", sessionId.ToString()),
+            ("$campaignId", campaignId.ToString()),
+            ("$now", now));
+
+        using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+            VALUES ($id, 2, $campaignId, $now);
+            """,
+            ("$id", sessionId.ToString()),
+            ("$campaignId", campaignId.ToString()),
+            ("$now", now));
+
+        return sessionId;
+
+    }
+
+    private static async Task ExecuteAsync(
+        SqliteConnection connection,
+        string sql,
+        params (string Name, object Value)[] parameters)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters)
+        {
+
+            _ = command.Parameters.AddWithValue(name, value);
+
+        }
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private static ArcanumWebApplicationFactory CreateEnabledFactory(
+        IWeaveService weaveService,
+        bool campaignScopedMemory = false) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -375,6 +574,7 @@ public sealed class SagaEndpointTests
                 {
                     Embeddings = true,
                     Saga = true,
+                    CampaignScopedMemory = campaignScopedMemory,
                 },
                 Integrations = settings.Integrations with
                 {
@@ -515,6 +715,17 @@ public sealed class SagaEndpointTests
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<DivinationResult[]>.Failure(
                 new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated divination provider outage.")));
+
+        public Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            DivinationCampaignScope scope,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
 
     }
 

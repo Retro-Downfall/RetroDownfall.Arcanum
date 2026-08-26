@@ -61,9 +61,16 @@ public interface ISagaMemoryStore
     /// Paginated listing, optionally filtered by a case-insensitive substring match on
     /// <c>Content</c> and/or an exact <c>SessionId</c> match. Ordered by <c>CreatedAt DESC</c>.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="scope"/> narrows the listing to the candidate set retrieval would rank, so an
+    /// operator inspecting Saga sees what the model can reach rather than everything on the
+    /// installation. <see cref="MemoryScope.Installation"/> narrows nothing, which is the whole listing
+    /// this surface has always returned.
+    /// </remarks>
     Task<SagaMemoryDto[]> ListAsync(
         string? query,
         Guid? sessionId,
+        MemoryScope scope,
         int limit,
         int offset,
         CancellationToken cancellationToken);

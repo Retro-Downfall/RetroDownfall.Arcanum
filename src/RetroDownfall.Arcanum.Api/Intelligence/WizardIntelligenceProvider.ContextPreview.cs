@@ -317,7 +317,9 @@ public sealed partial class WizardIntelligenceProvider
 
             semanticContext = await RetrieveSemanticContextAsync(turn, queryEmbedding, cancellationToken).ConfigureAwait(false);
 
-            sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, cancellationToken).ConfigureAwait(false);
+            // The same invocation context the turn would carry, so the preview reports the candidate
+            // set the turn would actually draw on rather than a wider one.
+            sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, invocationContext, cancellationToken).ConfigureAwait(false);
 
             attachmentContext = await RetrieveSessionAttachmentContextAsync(
 
@@ -346,6 +348,8 @@ public sealed partial class WizardIntelligenceProvider
                 lease.Provider,
 
                 lease.ResolvedModel,
+
+                invocationContext,
 
                 cancellationToken).ConfigureAwait(false);
 

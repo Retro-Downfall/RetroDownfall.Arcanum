@@ -1197,6 +1197,10 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILexiconService, LexiconService>();
 
+        // One owner for the Campaign-scoped-memory gate, so retrieval and every inspection surface
+        // cannot disagree about which scope a turn draws from.
+        services.AddScoped<IMemoryScopeResolver, MemoryScopeResolver>();
+
         services.AddSingleton(TimeProvider.System);
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
         // internal, so the composed constructor cannot be reached by a reflective activator.

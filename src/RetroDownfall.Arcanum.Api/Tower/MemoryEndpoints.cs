@@ -142,12 +142,33 @@ internal static class MemoryEndpoints
 
     }
 
+    /// <summary>
+    /// The scope a turn on this surface would draw from, resolved through the same seam retrieval uses.
+    /// </summary>
+    /// <remarks>
+    /// Resolved from the Session the route names, because a Session's Campaign binding is the canonical
+    /// statement of its authority. A route naming no Session describes the installation-wide picture,
+    /// which is what an operator inspecting memory without a turn in mind is asking for.
+    /// </remarks>
+    private static async Task<MemoryScope> ResolveScopeAsync(Guid? sessionId, HttpContext context)
+    {
+
+        IMemoryScopeResolver? resolver = context.RequestServices.GetService<IMemoryScopeResolver>();
+
+        return resolver is null
+            ? MemoryScope.Installation
+            : await resolver.ResolveForSessionAsync(sessionId, context.RequestAborted).ConfigureAwait(false);
+
+    }
+
     private static async Task<IResult> HandleStatusAsync(
         Guid? sessionId,
         ArcanumDbContext db,
         IOptionsMonitor<ArcanumSettings> options,
         HttpContext context)
     {
+
+        MemoryScope scope = await ResolveScopeAsync(sessionId, context).ConfigureAwait(false);
 
         Result<MemoryStatusDto> result = await BuildStatusAsync(
             sessionId,
@@ -156,6 +177,14 @@ internal static class MemoryEndpoints
             context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestServices.GetService<ICovenantManagementService>(),
             context.RequestAborted).ConfigureAwait(false);
+
+        if (result.IsSuccess)
+        {
+
+            result = Result<MemoryStatusDto>.Success(
+                result.Value with { CampaignScope = MemoryCampaignScopeReport.Describe(scope) });
+
+        }
 
         string traceId = TraceId(context);
 
@@ -225,6 +254,8 @@ internal static class MemoryEndpoints
         HttpContext context)
     {
 
+        MemoryScope scope = await ResolveScopeAsync(sessionId, context).ConfigureAwait(false);
+
         Result<MemoryStatusDto> status = await BuildStatusAsync(
             sessionId,
             db,
@@ -284,7 +315,8 @@ internal static class MemoryEndpoints
                 Explain(
                     stores["Saga"],
                     stores["Saga"].Enabled && stores["Saga"].Count > 0,
-                    "Saga memories are candidates when semantic retrieval for the current prompt selects them; they remain distinct from attachments and Lexicon."),
+                    "Saga memories are candidates when semantic retrieval for the current prompt selects them; they remain distinct from attachments and Lexicon. "
+                    + MemoryCampaignScopeReport.Describe(scope).Detail),
                 Explain(
                     stores["Workspace Index"],
                     stores["Workspace Index"].Enabled && stores["Workspace Index"].Count > 0,
@@ -299,7 +331,8 @@ internal static class MemoryEndpoints
                 new MemoryExplainDto(
                     status.Value.SessionId,
                     status.Value.SessionTitle,
-                    eligibility));
+                    eligibility,
+                    MemoryCampaignScopeReport.Describe(scope)));
 
         }
 
@@ -478,6 +511,7 @@ internal static class MemoryEndpoints
                     sagaStore,
                     query,
                     request.SessionId,
+                    await ResolveScopeAsync(request.SessionId, context).ConfigureAwait(false),
                     results,
                     slice + 1,
                     context.RequestAborted).ConfigureAwait(false);
@@ -638,14 +672,21 @@ internal static class MemoryEndpoints
 
     }
 
+    /// <remarks>
+    /// <paramref name="campaignId"/> selects the tier the operator is asking about and defaults to the
+    /// global one, so a request that names no Campaign sees exactly what it saw before scopes existed.
+    /// It resolves the way a turn in that Campaign would - that Campaign first, then global - so what an
+    /// operator inspects is what the model would be shown.
+    /// </remarks>
     private static async Task<IResult> HandleLexiconShowAsync(
         string name,
+        Guid? campaignId,
         ILexiconService lexicon,
         HttpContext context)
     {
 
         Result<LexiconEntryDto?> lookup = await lexicon
-            .GetByNameAsync(name, context.RequestAborted)
+            .GetByNameAsync(name, LexiconScope.ForResolvedCampaign(campaignId), context.RequestAborted)
             .ConfigureAwait(false);
 
         Result<LexiconEntryDto> result = lookup.IsFailure
@@ -666,18 +707,26 @@ internal static class MemoryEndpoints
 
     }
 
+    /// <remarks>
+    /// Deletion targets exactly the tier <paramref name="campaignId"/> names, with no fallback: a
+    /// request aimed at a Campaign that holds no such entity deletes nothing rather than reaching past
+    /// it and removing the installation's.
+    /// </remarks>
     private static async Task<IResult> HandleLexiconDeleteAsync(
         string name,
+        Guid? campaignId,
         ILexiconService lexicon,
         ICovenantSensitiveArtifactPurger purger,
         HttpContext context)
     {
 
+        LexiconScope scope = LexiconScope.ForResolvedCampaign(campaignId);
+
         // Resolved to an identity first, because the purge boundary keys on the artifact's own id and
         // the route names an entity. A name lookup that finds nothing simply leaves the ordinary path to
         // produce its existing 404.
         Result<LexiconEntryDto?> existing = await lexicon
-            .GetByNameAsync(name, context.RequestAborted)
+            .GetByNameInScopeAsync(name, scope, context.RequestAborted)
             .ConfigureAwait(false);
 
         if (existing.IsSuccess && existing.Value is { } entity)
@@ -723,7 +772,7 @@ internal static class MemoryEndpoints
         }
 
         Result<bool> deleted = await lexicon
-            .DeleteByNameAsync(name, context.RequestAborted)
+            .DeleteByNameAsync(name, scope, context.RequestAborted)
             .ConfigureAwait(false);
 
         if (deleted.IsFailure)
@@ -1226,15 +1275,19 @@ internal static class MemoryEndpoints
         ISagaMemoryStore store,
         string query,
         Guid? sessionId,
+        MemoryScope scope,
         List<MemorySearchResultDto> results,
         int limit,
         CancellationToken cancellationToken)
     {
 
+        MemoryCampaignScopeDto reported = MemoryCampaignScopeReport.Describe(scope);
+
         SagaMemoryDto[] memories = await store
             .ListAsync(
                 query,
                 sessionId,
+                scope,
                 limit,
                 0,
                 cancellationToken)
@@ -1261,13 +1314,29 @@ internal static class MemoryEndpoints
 
             }
 
+            // Per memory, so a result set spanning scopes is readable: the row says which Campaign owns
+            // it, and the block on it says which scope this search drew from.
+            provenance += memory.ScopeKind switch
+            {
+
+                SagaMemoryScopeKind.Campaign => $"; campaign {memory.ScopeCampaignId:D}",
+
+                SagaMemoryScopeKind.Global => "; installation-scoped",
+
+                SagaMemoryScopeKind.LegacyUnresolved => "; ownership unresolved, retrievable nowhere",
+
+                _ => "; ownership not yet classified",
+
+            };
+
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Saga,
                 "Saga memory",
                 memory.Content,
                 provenance,
                 SagaRetention,
-                memory.Id));
+                memory.Id,
+                reported));
 
         }
 
@@ -1299,7 +1368,11 @@ internal static class MemoryEndpoints
 
             }
 
-            string provenance = $"Lexicon entity: {entry.Name}";
+            // The tier is part of the entity's identity now: two rows may share a name, and a listing that
+            // did not say which scope each belongs to would show them as duplicates.
+            string provenance = entry.ScopeCampaignId is { } entryCampaign
+                ? $"Lexicon entity: {entry.Name}; campaign {entryCampaign:D}"
+                : $"Lexicon entity: {entry.Name}; installation-scoped";
 
             if (entry.FactProvenance is { Length: > 0 } factSources)
             {

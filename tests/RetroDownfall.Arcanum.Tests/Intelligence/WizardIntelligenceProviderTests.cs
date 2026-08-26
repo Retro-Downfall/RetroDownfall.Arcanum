@@ -5473,6 +5473,188 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The gate's default is the guarantee: with it unset, a turn asks for the same unscoped candidate
+    /// set it always has, and the same memory reaches the prompt.
+    /// </summary>
+    [Fact]
+    public async Task ScenarioSaga05_CampaignScopingOff_LeavesTheCandidateSetUnscoped()
+    {
+        FakeRagWeaveService weave = new() { Available = true };
+
+        FakeRagDivinationService divination = new()
+        {
+            Results = [new DivinationResult("memory-1", 0.88f, EmptyDivinationMetadata)],
+        };
+
+        FakeSagaMemoryStore store = new();
+
+        store.Memories["memory-1"] = new SagaMemoryDto(
+            "memory-1",
+            "The operator prefers dark mode.",
+            new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
+            SessionId: null,
+            Tags: null,
+            Source: "extraction");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with
+            {
+                Embeddings = true,
+                Saga = true,
+            },
+        };
+
+        Assert.False(settings.Features.CampaignScopedMemory);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            weaveService: weave,
+            divinationService: divination,
+            sagaMemoryStore: store);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "what theme do I like?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Null(divination.LastCampaignScope);
+
+        Assert.Contains(
+            "The operator prefers dark mode.",
+            ExtractSystemPromptText(chat.LastBufferedMessages),
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// With the gate on, the scope is the Campaign the turn already resolved — never anything the
+    /// request carried.
+    /// </summary>
+    [Fact]
+    public async Task ScenarioSaga06_CampaignScopingOn_ScopesToTheTurnsResolvedCampaign()
+    {
+        Guid campaign = new("3B7C1E90-2A44-4D18-8F65-9C0E1D2A3B4C");
+
+        FakeRagWeaveService weave = new() { Available = true };
+
+        FakeRagDivinationService divination = new()
+        {
+            Results = [new DivinationResult("memory-1", 0.88f, EmptyDivinationMetadata)],
+        };
+
+        FakeSagaMemoryStore store = new();
+
+        store.Memories["memory-1"] = new SagaMemoryDto(
+            "memory-1",
+            "The operator prefers dark mode.",
+            new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
+            SessionId: null,
+            Tags: null,
+            Source: "extraction");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with
+            {
+                Embeddings = true,
+                Saga = true,
+                CampaignScopedMemory = true,
+            },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            weaveService: weave,
+            divinationService: divination,
+            sagaMemoryStore: store);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "what theme do I like?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedSession(campaign),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.NotNull(divination.LastCampaignScope);
+
+        Assert.Equal(campaign, divination.LastCampaignScope!.CampaignId);
+
+        Assert.Equal(SagaStorageKeys.MemoryTable, divination.LastCampaignScope.OwnerTableName);
+
+    }
+
+    /// <summary>
+    /// A turn that resolved to no Campaign asks for the installation-scoped memories alone, rather than
+    /// falling back to every memory on the installation.
+    /// </summary>
+    [Fact]
+    public async Task ScenarioSaga07_CampaignScopingOn_WithNoResolvedCampaign_ScopesToGlobalOnly()
+    {
+        FakeRagWeaveService weave = new() { Available = true };
+
+        FakeRagDivinationService divination = new()
+        {
+            Results = [new DivinationResult("memory-1", 0.88f, EmptyDivinationMetadata)],
+        };
+
+        FakeSagaMemoryStore store = new();
+
+        store.Memories["memory-1"] = new SagaMemoryDto(
+            "memory-1",
+            "The operator prefers dark mode.",
+            new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
+            SessionId: null,
+            Tags: null,
+            Source: "extraction");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with
+            {
+                Embeddings = true,
+                Saga = true,
+                CampaignScopedMemory = true,
+            },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            weaveService: weave,
+            divinationService: divination,
+            sagaMemoryStore: store);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "what theme do I like?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            InvocationContexts.AttendedGlobalOnlySession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.NotNull(divination.LastCampaignScope);
+
+        Assert.Null(divination.LastCampaignScope!.CampaignId);
+
+    }
+
     [Fact]
     public async Task ScenarioSaga02_EmbeddingFailure_DegradesGracefully_NoSagaMemories()
     {
@@ -6133,6 +6315,26 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
 
+        /// <summary>The scope the turn asked for, or null when the turn used the unscoped search.</summary>
+        public DivinationCampaignScope? LastCampaignScope { get; private set; }
+
+        public Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            DivinationCampaignScope scope,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken)
+        {
+
+            LastCampaignScope = scope;
+
+            return SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
+
+        }
+
     }
 
     private sealed class FakeRagWorkspaceIndexingService : IWorkspaceIndexingService
@@ -6183,7 +6385,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
             Task.FromResult(Memories.Values.Count(m => m.SessionId == sessionId));
 
-        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, int limit, int offset, CancellationToken cancellationToken) =>
+        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
             Task.FromResult(Memories.Values.Skip(offset).Take(limit).ToArray());
 
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(

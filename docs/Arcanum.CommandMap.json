@@ -2514,6 +2514,16 @@
               "takesValue": true,
               "repeatable": false,
               "values": []
+            },
+            {
+              "name": "--session",
+              "aliases": [],
+              "description": "Search as this session, honoring the Campaign scope its turns draw from.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": [],
+              "completion": "session"
             }
           ],
           "examples": [
@@ -7418,6 +7428,16 @@
               "takesValue": true,
               "repeatable": false,
               "values": []
+            },
+            {
+              "name": "--campaign",
+              "aliases": [],
+              "description": "Optional Campaign GUID. Saga and Lexicon only; other Campaigns\u0027 memories are untouched.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": [],
+              "completion": "campaign"
             }
           ],
           "examples": [],

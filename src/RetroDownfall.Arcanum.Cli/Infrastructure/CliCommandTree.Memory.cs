@@ -184,10 +184,12 @@ internal static partial class CliCommandTree
         Command divine = new("divine", "Semantic search over Saga memories.");
         Argument<string> query = new("query") { Description = "Search query text." };
         Option<int?> divineLimit = new("--limit") { Description = "Maximum number of results to return." };
-        divine.Add(query); divine.Add(divineLimit);
+        Option<string?> divineSession = new("--session") { Description = "Search as this session, honoring the Campaign scope its turns draw from." };
+        divine.Add(query); divine.Add(divineLimit); divine.Add(divineSession);
         divine.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Divine(
             pr.GetValue(query)!,
             pr.GetValue(divineLimit),
+            ActiveSession(sp, pr.GetValue(divineSession)),
             ct).ConfigureAwait(false));
 
         Command delete = new("delete", "Delete a single Saga memory.");

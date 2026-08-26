@@ -12,7 +12,7 @@ public sealed class GrimoireSchemaVersionChainTests
 {
 
     [Fact]
-    public void Every_shipped_tier_is_at_version_one_with_no_step()
+    public void Every_shipped_tier_declares_exactly_the_steps_its_head_version_needs()
     {
 
         foreach (GrimoireSchemaTransactionTier tier in Enum.GetValues<GrimoireSchemaTransactionTier>())
@@ -20,11 +20,29 @@ public sealed class GrimoireSchemaVersionChainTests
 
             GrimoireSchemaVersionChain chain = GrimoireSchemaVersionChains.Default.ForTier(tier);
 
-            Assert.Equal(1, chain.HeadVersion);
-
-            Assert.Empty(chain.Steps);
+            Assert.Equal(chain.HeadVersion - 1, chain.Steps.Count);
 
         }
+
+    }
+
+    /// <summary>
+    /// Core left version 1 for Campaign-scoped recall; neither Covenant tier has moved.
+    /// </summary>
+    /// <remarks>
+    /// Pinned per tier rather than inferred, because a tier's head version is what decides whether an
+    /// existing installation is recognized, evolved, or refused, and a version that moved without a step
+    /// being authored for it refuses every installation at the version below it.
+    /// </remarks>
+    [Fact]
+    public void The_shipped_head_versions_are_the_ones_this_binary_declares()
+    {
+
+        Assert.Equal(2, GrimoireSchemaVersionChains.CoreSchemaVersion);
+
+        Assert.Equal(1, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
+
+        Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
 
     }
 
@@ -48,7 +66,7 @@ public sealed class GrimoireSchemaVersionChainTests
         GrimoireSchemaVersionChain chain = GrimoireSchemaVersionChains.Default
             .ForTier(GrimoireSchemaTransactionTier.Core);
 
-        Assert.Null(chain.SourceDefinitionFingerprintFor(2));
+        Assert.Null(chain.SourceDefinitionFingerprintFor(chain.HeadVersion + 1));
 
     }
 

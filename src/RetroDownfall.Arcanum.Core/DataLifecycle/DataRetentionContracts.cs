@@ -160,9 +160,16 @@ public sealed record RetentionRuleUpdateRequest(
     [property: JsonRequired] bool Enabled,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Days = null);
 
+/// <remarks>
+/// <paramref name="CampaignId"/> narrows the reset to the memories one Campaign owns, leaving every
+/// other Campaign's and every installation-scoped memory in place. Only the two stores that carry an
+/// owning Campaign - <see cref="MemoryResetScope.Saga"/> and <see cref="MemoryResetScope.Lexicon"/> -
+/// accept it; naming it for any other store is refused rather than silently widened to all of it.
+/// </remarks>
 public sealed record MemoryResetRequest(
     [property: JsonRequired] MemoryResetScope Scope,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? CampaignId = null);
 
 public sealed record FactoryResetRequest(
     [property: JsonRequired] string Confirmation,

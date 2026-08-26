@@ -33,26 +33,28 @@ internal sealed class LexiconService(
 
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
 
-    private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt";
+    private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId";
 
     public Task<Result<LexiconEntryDto>> UpsertAsync(
         string name,
         string? type,
         IReadOnlyList<string> facts,
+        LexiconScope scope,
         CancellationToken cancellationToken = default) =>
-        UpsertCoreAsync(name, type, facts, provenance: null, cancellationToken);
+        UpsertCoreAsync(name, type, facts, scope, provenance: null, cancellationToken);
 
     public Task<Result<LexiconEntryDto>> UpsertAsync(
         string name,
         string? type,
         IReadOnlyList<string> facts,
         AttachmentMemoryProvenance provenance,
+        LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
 
         ArgumentNullException.ThrowIfNull(provenance);
 
-        return UpsertCoreAsync(name, type, facts, provenance, cancellationToken);
+        return UpsertCoreAsync(name, type, facts, scope, provenance, cancellationToken);
 
     }
 
@@ -60,6 +62,7 @@ internal sealed class LexiconService(
         string name,
         string? type,
         IReadOnlyList<string> facts,
+        LexiconScope scope,
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
@@ -111,7 +114,7 @@ internal sealed class LexiconService(
 
                     try
                     {
-                        LexiconEntryDto? existing = await ReadByNormalizedAsync(connection, normalized, cancellationToken).ConfigureAwait(false);
+                        LexiconEntryDto? existing = await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken).ConfigureAwait(false);
 
                         string resolvedType = ResolveType(existing, trimmedType);
 
@@ -127,11 +130,11 @@ internal sealed class LexiconService(
 
                         if (existing is null)
                         {
-                            await InsertAsync(connection, id, trimmedName, normalized, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
+                            await InsertAsync(connection, id, trimmedName, normalized, scope.Key, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
                         }
                         else
                         {
-                            await UpdateAsync(connection, id, trimmedName, normalized, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
+                            await UpdateAsync(connection, id, trimmedName, normalized, scope.Key, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
                         }
 
                         LexiconFactProvenance[] factProvenance = await ReplaceFactProvenanceAsync(
@@ -152,7 +155,8 @@ internal sealed class LexiconService(
                                 resolvedType,
                                 merged.ToArray(),
                                 now,
-                                factProvenance));
+                                factProvenance,
+                                scope.CampaignId));
                     }
                     catch
                     {
@@ -172,7 +176,10 @@ internal sealed class LexiconService(
 
     }
 
-    public async Task<Result<bool>> DeleteByNameAsync(string name, CancellationToken cancellationToken = default)
+    public async Task<Result<bool>> DeleteByNameAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
     {
 
         string trimmedName = name?.Trim() ?? string.Empty;
@@ -189,7 +196,7 @@ internal sealed class LexiconService(
         if (_labeledArtifactGuard is { } guard)
         {
 
-            Result<LexiconEntryDto?> existing = await GetByNameAsync(trimmedName, cancellationToken)
+            Result<LexiconEntryDto?> existing = await GetByNameInScopeAsync(trimmedName, scope, cancellationToken)
                 .ConfigureAwait(false);
 
             if (existing.IsSuccess && existing.Value is { } entity)
@@ -228,13 +235,17 @@ internal sealed class LexiconService(
                             """
                             DELETE FROM lexicon_fact_attachment_provenance
                             WHERE EntryId = (
-                                SELECT Id FROM lexicon_entries WHERE NameNormalized = @normalized
+                                SELECT Id FROM lexicon_entries
+                                WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey
                             );
 
-                            DELETE FROM lexicon_entries WHERE NameNormalized = @normalized;
+                            DELETE FROM lexicon_entries
+                            WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey;
                             """;
 
                         AddParameter(cmd, "@normalized", normalized);
+
+                        AddParameter(cmd, "@scopeKey", scope.Key);
 
                         int affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -265,6 +276,7 @@ internal sealed class LexiconService(
     public async Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
         IReadOnlyList<string> entities,
         int limit,
+        LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
 
@@ -294,33 +306,45 @@ internal sealed class LexiconService(
 
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    // Exact-name hits first (ordered by UpdatedAt DESC), then FTS hits (bm25 ASC).
-                    // Deduplicate by Id across both passes.
-                    List<LexiconEntryDto> exactHits = new(clampedLimit);
-
+                    // The Campaign tier is resolved whole - exact hits, then FTS hits - before the
+                    // global one, and a name the Campaign answered is never answered again from the
+                    // global tier. Shadowing rather than merging: two contradictory facts about one term
+                    // reaching the same prompt is the outcome this scoping exists to prevent.
                     HashSet<Guid> seenIds = new(clampedLimit);
 
-                    HashSet<string> exactNames = new(StringComparer.Ordinal);
+                    HashSet<string> shadowedNames = new(StringComparer.Ordinal);
 
-                    await FillExactMatchesAsync(connection, normalized, clampedLimit, exactHits, seenIds, exactNames, cancellationToken).ConfigureAwait(false);
+                    List<LexiconEntryDto> ordered = new(clampedLimit);
 
-                    List<LexiconEntryDto> ftsHits = new(Math.Max(0, clampedLimit - exactHits.Count));
-
-                    if (exactHits.Count < clampedLimit)
+                    if (!scope.IsGlobal)
                     {
-                        List<string> unresolved = normalized.Where(n => !exactNames.Contains(n)).ToList();
 
-                        if (unresolved.Count > 0)
-                        {
-                            await FillFtsMatchesAsync(connection, unresolved, clampedLimit - exactHits.Count, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
-                        }
+                        await FillTierAsync(
+                            connection,
+                            scope.Key,
+                            normalized,
+                            clampedLimit,
+                            seenIds,
+                            shadowedNames,
+                            ordered,
+                            cancellationToken).ConfigureAwait(false);
+
                     }
 
-                    List<LexiconEntryDto> ordered = new(exactHits.Count + ftsHits.Count);
+                    if (ordered.Count < clampedLimit)
+                    {
 
-                    ordered.AddRange(exactHits);
+                        await FillTierAsync(
+                            connection,
+                            LexiconScope.Global.Key,
+                            normalized,
+                            clampedLimit,
+                            seenIds,
+                            shadowedNames,
+                            ordered,
+                            cancellationToken).ConfigureAwait(false);
 
-                    ordered.AddRange(ftsHits);
+                    }
 
                     if (ordered.Count > clampedLimit)
                     {
@@ -359,7 +383,10 @@ internal sealed class LexiconService(
 
     }
 
-    public async Task<Result<LexiconEntryDto?>> GetByNameAsync(string name, CancellationToken cancellationToken = default)
+    public async Task<Result<LexiconEntryDto?>> GetByNameAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
     {
 
         string trimmedName = name?.Trim() ?? string.Empty;
@@ -379,7 +406,18 @@ internal sealed class LexiconService(
 
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    return await ReadByNormalizedAsync(connection, normalized, cancellationToken).ConfigureAwait(false);
+                    // The Campaign tier answers first and the global one only when it has not, which is
+                    // the same shadowing MatchEntitiesAsync applies. A lookup that resolved differently
+                    // from a match would let inspection describe an entity no turn would ever see.
+                    return await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
+                            .ConfigureAwait(false)
+                        ?? (scope.IsGlobal
+                            ? null
+                            : await ReadByNormalizedAsync(
+                                connection,
+                                normalized,
+                                LexiconScope.Global.Key,
+                                cancellationToken).ConfigureAwait(false));
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -388,6 +426,45 @@ internal sealed class LexiconService(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(ex, "Lexicon get failed for entity {Name}.", trimmedName);
+
+            return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon lookup failed.");
+        }
+
+    }
+
+    public async Task<Result<LexiconEntryDto?>> GetByNameInScopeAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
+    {
+
+        string trimmedName = name?.Trim() ?? string.Empty;
+
+        if (trimmedName.Length == 0)
+        {
+            return new Error(ErrorCodes.Lexicon.InvalidName, "Lexicon entity name is required.");
+        }
+
+        string normalized = NormalizeName(trimmedName);
+
+        try
+        {
+            LexiconEntryDto? entry = await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    return await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
+                        .ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            return Result<LexiconEntryDto?>.Success(entry);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Lexicon scoped get failed for entity {Name}.", trimmedName);
 
             return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon lookup failed.");
         }
@@ -412,9 +489,9 @@ internal sealed class LexiconService(
 
                     command.CommandText =
                         """
-                        SELECT Id, Name, Type, FactsJson, UpdatedAt
+                        SELECT Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId
                         FROM lexicon_entries
-                        ORDER BY Name COLLATE NOCASE, Id
+                        ORDER BY Name COLLATE NOCASE, ScopeCampaignId, Id
                         """;
 
                     await using DbDataReader reader = await command
@@ -589,8 +666,77 @@ internal sealed class LexiconService(
 
     }
 
+    /// <summary>
+    /// Runs one tier's whole exact-then-FTS pass and appends what it admits, minus anything a
+    /// higher-precedence tier already answered.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="shadowedNames"/> is the shadowing record, and it collects a tier's hits by the
+    /// entity's own normalized name rather than by the term that found it: an FTS hit may be reached by
+    /// a word that appears in its facts, and shadowing has to be about which entity answered for a name.
+    /// </remarks>
+    private async Task FillTierAsync(
+        DbConnection connection,
+        string scopeKey,
+        List<string> normalized,
+        int limit,
+        HashSet<Guid> seenIds,
+        HashSet<string> shadowedNames,
+        List<LexiconEntryDto> ordered,
+        CancellationToken cancellationToken)
+    {
+
+        int remaining = limit - ordered.Count;
+
+        if (remaining <= 0)
+        {
+            return;
+        }
+
+        List<string> unshadowed = normalized.Where(name => !shadowedNames.Contains(name)).ToList();
+
+        if (unshadowed.Count == 0)
+        {
+            return;
+        }
+
+        List<LexiconEntryDto> exactHits = new(remaining);
+
+        HashSet<string> exactNames = new(StringComparer.Ordinal);
+
+        await FillExactMatchesAsync(connection, scopeKey, unshadowed, remaining, exactHits, seenIds, exactNames, cancellationToken).ConfigureAwait(false);
+
+        List<LexiconEntryDto> ftsHits = new(Math.Max(0, remaining - exactHits.Count));
+
+        if (exactHits.Count < remaining)
+        {
+            List<string> unresolved = unshadowed.Where(n => !exactNames.Contains(n)).ToList();
+
+            if (unresolved.Count > 0)
+            {
+                await FillFtsMatchesAsync(connection, scopeKey, unresolved, remaining - exactHits.Count, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        foreach (LexiconEntryDto entry in exactHits.Concat(ftsHits))
+        {
+
+            if (ordered.Count >= limit)
+            {
+                break;
+            }
+
+            _ = shadowedNames.Add(NormalizeName(entry.Name));
+
+            ordered.Add(entry);
+
+        }
+
+    }
+
     private async Task FillExactMatchesAsync(
         DbConnection connection,
+        string scopeKey,
         List<string> normalized,
         int limit,
         List<LexiconEntryDto> exactHits,
@@ -620,7 +766,9 @@ internal sealed class LexiconService(
             AddParameter(cmd, paramName, normalized[i]);
         }
 
-        _ = sql.Append(") ORDER BY UpdatedAt DESC LIMIT @limit");
+        _ = sql.Append(") AND ScopeCampaignId = @scopeKey ORDER BY UpdatedAt DESC LIMIT @limit");
+
+        AddParameter(cmd, "@scopeKey", scopeKey);
 
         AddParameter(cmd, "@limit", limit);
 
@@ -644,6 +792,7 @@ internal sealed class LexiconService(
 
     private async Task FillFtsMatchesAsync(
         DbConnection connection,
+        string scopeKey,
         List<string> unresolved,
         int remaining,
         HashSet<Guid> seenIds,
@@ -660,19 +809,20 @@ internal sealed class LexiconService(
 
         try
         {
-            await FillFtsMatchesViaMatchAsync(connection, matchQuery, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+            await FillFtsMatchesViaMatchAsync(connection, scopeKey, matchQuery, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
         }
         catch (SqliteException ex)
         {
             logger.LogWarning(ex, "Lexicon FTS MATCH failed; falling back to LIKE search.");
 
-            await FillFtsMatchesViaLikeAsync(connection, unresolved, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+            await FillFtsMatchesViaLikeAsync(connection, scopeKey, unresolved, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
         }
 
     }
 
     private static async Task FillFtsMatchesViaMatchAsync(
         DbConnection connection,
+        string scopeKey,
         string matchQuery,
         int remaining,
         HashSet<Guid> seenIds,
@@ -688,13 +838,15 @@ internal sealed class LexiconService(
         // support it; mathematical boosting lives only in bm25().
         cmd.CommandText =
             """
-            SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt
+            SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt, e.ScopeCampaignId
             FROM lexicon_fts
             INNER JOIN lexicon_entries e ON e.rowid = lexicon_fts.rowid
-            WHERE lexicon_fts MATCH @query
+            WHERE lexicon_fts MATCH @query AND e.ScopeCampaignId = @scopeKey
             ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC
             LIMIT @limit
             """;
+
+        AddParameter(cmd, "@scopeKey", scopeKey);
 
         AddParameter(cmd, "@query", matchQuery);
 
@@ -721,6 +873,7 @@ internal sealed class LexiconService(
 
     private static async Task FillFtsMatchesViaLikeAsync(
         DbConnection connection,
+        string scopeKey,
         List<string> unresolved,
         int remaining,
         HashSet<Guid> seenIds,
@@ -733,7 +886,9 @@ internal sealed class LexiconService(
         StringBuilder sql = new();
         _ = sql.Append("SELECT ")
             .Append(SelectColumns)
-            .Append(" FROM lexicon_entries WHERE ");
+            .Append(" FROM lexicon_entries WHERE ScopeCampaignId = @scopeKey AND (");
+
+        AddParameter(cmd, "@scopeKey", scopeKey);
 
         for (int i = 0; i < unresolved.Count; i++)
         {
@@ -755,7 +910,7 @@ internal sealed class LexiconService(
             AddParameter(cmd, factsParam, "%" + EscapeLikePattern(unresolved[i]) + "%");
         }
 
-        _ = sql.Append(" ORDER BY UpdatedAt DESC LIMIT @limit");
+        _ = sql.Append(") ORDER BY UpdatedAt DESC LIMIT @limit");
 
         AddParameter(cmd, "@limit", remaining);
 
@@ -813,14 +968,19 @@ internal sealed class LexiconService(
     private async Task<LexiconEntryDto?> ReadByNormalizedAsync(
         DbConnection connection,
         string normalized,
+        string scopeKey,
         CancellationToken cancellationToken)
     {
 
         await using DbCommand cmd = connection.CreateCommand();
 
-        cmd.CommandText = $"SELECT {SelectColumns} FROM lexicon_entries WHERE NameNormalized = @normalized LIMIT 1";
+        cmd.CommandText =
+            $"SELECT {SelectColumns} FROM lexicon_entries "
+            + "WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1";
 
         AddParameter(cmd, "@normalized", normalized);
+
+        AddParameter(cmd, "@scopeKey", scopeKey);
 
         LexiconEntryDto? entry;
 
@@ -1143,6 +1303,7 @@ internal sealed class LexiconService(
         Guid id,
         string name,
         string normalized,
+        string scopeKey,
         string type,
         string factsJson,
         string factsText,
@@ -1154,9 +1315,12 @@ internal sealed class LexiconService(
 
         cmd.CommandText =
             """
-            INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
-            VALUES (@id, @name, @normalized, @type, @factsJson, @factsText, @updatedAt)
+            INSERT INTO lexicon_entries (
+                Id, Name, NameNormalized, ScopeCampaignId, Type, FactsJson, FactsText, UpdatedAt)
+            VALUES (@id, @name, @normalized, @scopeKey, @type, @factsJson, @factsText, @updatedAt)
             """;
+
+        AddParameter(cmd, "@scopeKey", scopeKey);
 
         AddParameter(cmd, "@id", id.ToString("N"));
         AddParameter(cmd, "@name", name);
@@ -1175,6 +1339,7 @@ internal sealed class LexiconService(
         Guid id,
         string name,
         string normalized,
+        string scopeKey,
         string type,
         string factsJson,
         string factsText,
@@ -1189,12 +1354,15 @@ internal sealed class LexiconService(
             UPDATE lexicon_entries
             SET Name = @name,
                 NameNormalized = @normalized,
+                ScopeCampaignId = @scopeKey,
                 Type = @type,
                 FactsJson = @factsJson,
                 FactsText = @factsText,
                 UpdatedAt = @updatedAt
             WHERE Id = @id
             """;
+
+        AddParameter(cmd, "@scopeKey", scopeKey);
 
         AddParameter(cmd, "@id", id.ToString("N"));
         AddParameter(cmd, "@name", name);
@@ -1221,7 +1389,16 @@ internal sealed class LexiconService(
 
         DateTimeOffset updatedAt = DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture);
 
-        return new LexiconEntryDto(id, name, type, DeserializeFacts(factsJson), updatedAt);
+        string scopeKey = reader.GetString(5);
+
+        return new LexiconEntryDto(
+            id,
+            name,
+            type,
+            DeserializeFacts(factsJson),
+            updatedAt,
+            FactProvenance: null,
+            ScopeCampaignId: scopeKey.Length == 0 ? null : Guid.Parse(scopeKey));
 
     }
 

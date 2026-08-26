@@ -29,6 +29,18 @@ internal static class InvocationContexts
             ToolPolicy.AllTools,
             Epoch());
 
+    /// <summary>
+    /// An attended, session-backed turn that resolved to no Campaign: the Global-only binding.
+    /// </summary>
+    internal static ArcanumInvocationContext AttendedGlobalOnlySession() =>
+        Create(
+            ArcanumExecutionSurface.SessionBackedOperatorTurn,
+            CanonicalCampaignContext.GlobalOnly,
+            InvocationAttendance.Attended,
+            CovenantContextPolicy.Default,
+            ToolPolicy.AllTools,
+            Epoch());
+
     /// <summary>An attended stateless operator turn: eligible context, no mutation tool.</summary>
     internal static ArcanumInvocationContext StatelessOperator() =>
         Create(

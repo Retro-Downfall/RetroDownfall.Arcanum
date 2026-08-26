@@ -207,8 +207,14 @@ internal sealed class DataRetentionCommands(
             token => apiClient.DeleteDataAttachmentAsync(attachmentId, token),
             cancellationToken);
 
+    /// <param name="campaign">
+    /// Optional Campaign GUID. Only Saga and Lexicon record an owning Campaign, so only those two
+    /// scopes accept it; every other Campaign's memories, and every installation-scoped one, are left
+    /// exactly where they were.
+    /// </param>
     public async Task<int> ResetMemory(
         string scope,
+        string? campaign,
         CancellationToken cancellationToken)
     {
 
@@ -222,12 +228,30 @@ internal sealed class DataRetentionCommands(
 
         }
 
+        Guid? campaignId = null;
+
+        if (!string.IsNullOrWhiteSpace(campaign))
+        {
+
+            if (!Guid.TryParse(campaign, out Guid parsedCampaign))
+            {
+
+                dispatcher.WriteDiagnostic("--campaign must be a GUID.");
+
+                return (int)CliExitCode.ConfigurationError;
+
+            }
+
+            campaignId = parsedCampaign;
+
+        }
+
         // Written before the prompt, and before any operation starts. The order is the contract: an
         // operator has to be told what local erasure cannot revoke while they can still decline, and a
         // refusal after the disclosure must leave nothing started (§10.20.2).
         Result<DataRetentionPlan> preview = await apiClient
             .PlanDataMemoryResetAsync(
-                new MemoryResetRequest(parsedScope),
+                new MemoryResetRequest(parsedScope, CampaignId: campaignId),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -241,10 +265,12 @@ internal sealed class DataRetentionCommands(
         disclosureWriter.Write(preview.Value.Covenant);
 
         return await ConfirmAndApply(
-                $"Reset the {scope} memory scope?",
+                campaignId is { } confirmCampaign
+                    ? $"Reset the {scope} memory scope for campaign {confirmCampaign:D}?"
+                    : $"Reset the {scope} memory scope?",
                 "Memory reset cancelled.",
                 token => apiClient.ResetDataMemoryAsync(
-                    new MemoryResetRequest(parsedScope, preview.Value.PlanId),
+                    new MemoryResetRequest(parsedScope, preview.Value.PlanId, campaignId),
                     token),
                 cancellationToken)
             .ConfigureAwait(false);
