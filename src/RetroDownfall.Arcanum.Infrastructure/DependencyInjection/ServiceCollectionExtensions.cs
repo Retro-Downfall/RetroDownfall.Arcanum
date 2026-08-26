@@ -284,7 +284,16 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<GrimoireSchemaManifestInspector>();
 
+        // The chains say which versions each tier has had and how to reach the one this binary
+        // declares. Injected rather than read statically so the installer has exactly one source of
+        // that answer, and so a suite can drive a longer chain through the same entry point.
+        services.AddSingleton(static _ => GrimoireSchemaVersionChains.Default);
+
         services.AddSingleton<GrimoireSchemaInstaller>();
+
+        services.AddSingleton<GrimoireSchemaBackfillRunner>();
+
+        services.AddScoped<GrimoireSchemaTransitionCoordinator>();
 
         // One table for the whole host: a Covenant capability is registered by the API pipeline and
         // taken by the in-process MCP server, and those two run on different tasks.
@@ -947,7 +956,16 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<GrimoireSchemaManifestInspector>();
 
+        // The chains say which versions each tier has had and how to reach the one this binary
+        // declares. Injected rather than read statically so the installer has exactly one source of
+        // that answer, and so a suite can drive a longer chain through the same entry point.
+        services.AddSingleton(static _ => GrimoireSchemaVersionChains.Default);
+
         services.AddSingleton<GrimoireSchemaInstaller>();
+
+        services.AddSingleton<GrimoireSchemaBackfillRunner>();
+
+        services.AddScoped<GrimoireSchemaTransitionCoordinator>();
 
         // One table for the whole host: a Covenant capability is registered by the API pipeline and
         // taken by the in-process MCP server, and those two run on different tasks.
@@ -1046,6 +1064,13 @@ public static class ServiceCollectionExtensions
         // composition is short-lived, and a sweep that started with a command and died with it would
         // drain a backlog only for whoever happened to run one.
         services.AddInstallationResetRecoveryAwareHostedService<CovenantMaintenanceHostedService>();
+
+        // Journal-gated rather than availability-gated, which is the opposite of the sweep above and
+        // deliberately so. A tier with a version run in flight is not healthy by design, so a driver
+        // that waited for health could never run the sweep that restores it; for Core, whose run
+        // stands its dependents down, that would leave the installation unrepairable by the only
+        // process able to repair it.
+        services.AddInstallationResetRecoveryAwareHostedService<GrimoireSchemaTransitionHostedService>();
 
         // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until
         // Arcanum:Features:SessionSearch / CodebaseRetrieval are enabled, so registering them

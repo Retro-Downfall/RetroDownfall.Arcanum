@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -81,15 +82,28 @@ internal static class GrimoireSchemaTestInstaller
     /// Composes the installer exactly as the container does, minus the logger, which every suite can
     /// supply when it wants to assert on a warning.
     /// </summary>
-    internal static GrimoireSchemaInstaller Create() =>
+    internal static GrimoireSchemaInstaller Create() => Create(GrimoireSchemaVersionChains.Default);
+
+    /// <summary>
+    /// Composes the installer over an explicit chain set, with the ownership registry built from that
+    /// set's head manifests rather than the shipped ones.
+    /// </summary>
+    /// <remarks>
+    /// A suite driving a longer chain must inspect against the objects that chain declares. Building
+    /// the registry from the shipped manifests instead would report every object the chain adds as
+    /// unexpected, and the tempting wrong fix at that point is to weaken the inspector.
+    /// </remarks>
+    internal static GrimoireSchemaInstaller Create(GrimoireSchemaVersionChainSet chains) =>
         new(
-            new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault()),
+            new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.ForChains(chains)),
             new GrimoireSchemaDataInitializers(
             [
                 new CoreGrimoireSchemaDataInitializer(),
                 new CovenantCanonicalSchemaDataInitializer(),
                 new CovenantAcceleratorSchemaDataInitializer(),
-            ]));
+            ]),
+            chains,
+            TimeProvider.System);
 
     /// <summary>
     /// The installation-local facts the three tier initializers run against.
@@ -110,7 +124,17 @@ internal static class GrimoireSchemaTestInstaller
         SqliteConnection connection,
         int embeddingDimensions,
         CancellationToken cancellationToken) =>
-        Create().InstallAsync(connection, embeddingDimensions, CreateContext(), cancellationToken);
+        InstallAsync(connection, GrimoireSchemaVersionChains.Default, embeddingDimensions, cancellationToken);
+
+    /// <summary>
+    /// Installs all three tiers over an explicit chain set, the way the host bootstrap does.
+    /// </summary>
+    internal static Task<GrimoireSchemaInstallResult> InstallAsync(
+        SqliteConnection connection,
+        GrimoireSchemaVersionChainSet chains,
+        int embeddingDimensions,
+        CancellationToken cancellationToken) =>
+        Create(chains).InstallAsync(connection, embeddingDimensions, CreateContext(), cancellationToken);
 
     /// <summary>
     /// Registers the schema-installation graph the bootstrapper resolves out of its scope.
@@ -138,6 +162,10 @@ internal static class GrimoireSchemaTestInstaller
         services.AddSingleton(static _ => GrimoireSchemaTierOwnershipRegistry.CreateDefault());
 
         services.AddSingleton<GrimoireSchemaManifestInspector>();
+
+        services.AddSingleton(static _ => GrimoireSchemaVersionChains.Default);
+
+        services.TryAddSingleton(TimeProvider.System);
 
         services.AddSingleton<GrimoireSchemaInstaller>();
 

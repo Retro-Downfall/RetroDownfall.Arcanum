@@ -449,7 +449,9 @@ public sealed class GrimoireSchemaInstallerTests
                 new ThrowingCoreDataInitializer(),
                 new CovenantCanonicalSchemaDataInitializer(),
                 new CovenantAcceleratorSchemaDataInitializer(),
-            ]));
+            ]),
+            GrimoireSchemaVersionChains.Default,
+            TimeProvider.System);
 
         _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             installer.InstallAsync(
@@ -668,6 +670,22 @@ public sealed class GrimoireSchemaInstallerTests
             GrimoireSchemaInitializationContext context,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The core tier seed failed for this test.");
+
+    }
+
+    /// <summary>
+    /// The transition journal is a core object like any other: it has to exist on a fresh install,
+    /// because the very first thing a version run does is write a row into it.
+    /// </summary>
+    [Fact]
+    public async Task InstallAsync_creates_the_transition_journal()
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        Assert.True(await TableExistsAsync(connection, "grimoire_schema_transitions"));
+
+        Assert.True(await IndexExistsAsync(connection, "idx_grimoire_schema_transitions_target"));
 
     }
 

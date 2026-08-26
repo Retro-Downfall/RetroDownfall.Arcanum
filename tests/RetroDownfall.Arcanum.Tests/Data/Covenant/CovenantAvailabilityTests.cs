@@ -99,7 +99,9 @@ public sealed class CovenantAvailabilityTests
 
         Assert.Equal(10, (int)CovenantHealthTransition.FeatureConfiguration);
 
-        Assert.Equal(10, Enum.GetValues<CovenantHealthTransition>().Length);
+        Assert.Equal(11, (int)CovenantHealthTransition.SchemaEvolution);
+
+        Assert.Equal(11, Enum.GetValues<CovenantHealthTransition>().Length);
 
     }
 

@@ -28,6 +28,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 internal sealed class GrimoireSchemaInstaller(
     GrimoireSchemaManifestInspector inspector,
     GrimoireSchemaDataInitializers initializers,
+    GrimoireSchemaVersionChainSet chains,
+    TimeProvider timeProvider,
     ILogger<GrimoireSchemaInstaller>? logger = null)
 {
 
@@ -36,6 +38,11 @@ internal sealed class GrimoireSchemaInstaller(
 
     private readonly GrimoireSchemaDataInitializers _initializers =
         initializers ?? throw new ArgumentNullException(nameof(initializers));
+
+    private readonly GrimoireSchemaVersionChainSet _chains =
+        chains ?? throw new ArgumentNullException(nameof(chains));
+
+    private readonly TimeProvider _time = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
     /// <summary>
     /// Installs or converges all three tiers.
@@ -154,7 +161,7 @@ internal sealed class GrimoireSchemaInstaller(
         CancellationToken cancellationToken)
     {
 
-        GrimoireSchemaManifest manifest = GrimoireSchemaManifests.ForTier(tier);
+        GrimoireSchemaManifest manifest = _chains.ForTier(tier).HeadManifest;
 
         if (!dependencyHealthy)
         {
@@ -189,8 +196,8 @@ internal sealed class GrimoireSchemaInstaller(
     }
 
     /// <summary>
-    /// The single tier algorithm: inspect what is already recorded, refuse anything this binary
-    /// cannot honor, then install DDL, seed data, re-inspect, and record metadata in one transaction.
+    /// The single tier algorithm: classify what is recorded, refuse anything this binary cannot
+    /// honor, then either install the head shape or walk the declared version chain toward it.
     /// </summary>
     private async Task<GrimoireSchemaTierInstallResult> InstallTierAsync(
         SqliteConnection connection,
@@ -200,26 +207,88 @@ internal sealed class GrimoireSchemaInstaller(
         CancellationToken cancellationToken)
     {
 
-        GrimoireSchemaManifest manifest = GrimoireSchemaManifests.ForTier(tier);
+        GrimoireSchemaVersionChain chain = _chains.ForTier(tier);
 
-        GrimoireSchemaTierHealth? refusal = await ClassifyExistingAsync(
-            connection,
-            manifest,
-            cancellationToken).ConfigureAwait(false);
+        GrimoireSchemaRecordedTier? recorded = await ReadRecordedTierAsync(connection, chain, cancellationToken)
+            .ConfigureAwait(false);
 
-        if (refusal is GrimoireSchemaTierHealth reason)
+        GrimoireSchemaTransitionJournalRow? journal = await ReadJournalAsync(connection, tier, cancellationToken)
+            .ConfigureAwait(false);
+
+        bool anyObjectPresent = recorded is null
+            && await AnyManifestObjectExistsAsync(connection, chain.HeadManifest, cancellationToken)
+                .ConfigureAwait(false);
+
+        GrimoireSchemaEvolutionDecision decision =
+            GrimoireSchemaEvolutionPlanner.Decide(chain, recorded, anyObjectPresent, journal);
+
+        switch (decision.Action)
         {
 
-            if (tier == GrimoireSchemaTransactionTier.Core)
-            {
+            case GrimoireSchemaEvolutionAction.Refuse:
 
-                throw new GrimoireSchemaRefusedException(tier, reason);
+                return Refuse(chain, tier, decision.Refusal!.Value);
 
-            }
+            case GrimoireSchemaEvolutionAction.FreshInstall:
+            case GrimoireSchemaEvolutionAction.Converge:
 
-            return Failed(manifest, reason);
+                return await InstallHeadAsync(
+                    connection,
+                    chain,
+                    embeddingDimensions,
+                    context,
+                    cancellationToken).ConfigureAwait(false);
+
+            case GrimoireSchemaEvolutionAction.ResumeRun when decision.PendingBackfillName is not null:
+
+                // That step's DDL is already committed and its sweep has not drained. Running the
+                // statements again would throw on the first non-idempotent one, and on Core that
+                // failure would abort startup and leave the sweep unrunnable by the only process
+                // able to run it.
+                return Incomplete(chain, recorded!.SchemaVersion);
+
+            case GrimoireSchemaEvolutionAction.BeginRun:
+
+                return await BeginRunAsync(
+                    connection,
+                    chain,
+                    tier,
+                    recorded!.SchemaVersion,
+                    embeddingDimensions,
+                    context,
+                    cancellationToken).ConfigureAwait(false);
+
+            case GrimoireSchemaEvolutionAction.ResumeRun:
+
+                return await RunStepsAsync(
+                    connection,
+                    chain,
+                    journal,
+                    recorded!.SchemaVersion,
+                    decision.ResumeFromVersion,
+                    embeddingDimensions,
+                    context,
+                    cancellationToken).ConfigureAwait(false);
+
+            default:
+
+                throw new InvalidOperationException($"Unhandled schema evolution action {decision.Action}.");
 
         }
+
+    }
+
+    /// <summary>
+    /// Installs or converges the head shape in one transaction, which is what a fresh database and an
+    /// already-current one both need.
+    /// </summary>
+    private async Task<GrimoireSchemaTierInstallResult> InstallHeadAsync(
+        SqliteConnection connection,
+        GrimoireSchemaVersionChain chain,
+        int? embeddingDimensions,
+        GrimoireSchemaInitializationContext context,
+        CancellationToken cancellationToken)
+    {
 
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -227,85 +296,54 @@ internal sealed class GrimoireSchemaInstaller(
         try
         {
 
-            foreach (GrimoireSchemaObject definition in ObjectsFor(tier))
+            foreach (GrimoireSchemaObject definition in chain.HeadObjects)
             {
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                await using SqliteCommand command = connection.CreateCommand();
-
-                command.Transaction = transaction;
-
-                command.CommandText = GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions);
-
-                _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions),
+                    cancellationToken).ConfigureAwait(false);
 
             }
 
-            await _initializers.For(tier)
-                .InitializeAsync(connection, transaction, context, cancellationToken)
-                .ConfigureAwait(false);
+            GrimoireSchemaTierInstallResult result = await FinalizeRunAsync(
+                connection,
+                transaction,
+                chain,
+                journal: null,
+                context,
+                cancellationToken).ConfigureAwait(false);
 
-            GrimoireSchemaInspectionResult inspection = await _inspector
-                .InspectAsync(connection, transaction, manifest, cancellationToken)
-                .ConfigureAwait(false);
+            if (result.IsHealthy)
+            {
 
-            if (!inspection.IsValid)
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+            else
             {
 
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
-                GrimoireSchemaTierHealth health =
-                    inspection.Failure == GrimoireSchemaInspectionFailure.CatalogReadFailed
-                        ? GrimoireSchemaTierHealth.Unavailable
-                        : GrimoireSchemaTierHealth.InstalledCatalogDrift;
-
-                if (tier == GrimoireSchemaTransactionTier.Core)
+                if (chain.TransactionTier == GrimoireSchemaTransactionTier.Core)
                 {
 
-                    throw new GrimoireSchemaRefusedException(tier, health);
+                    throw new GrimoireSchemaRefusedException(chain.TransactionTier, result.Health);
 
                 }
 
-                return Failed(manifest, health, inspection.DiagnosticCode);
-
             }
 
-            await WriteMetadataAsync(
-                connection,
-                transaction,
-                manifest,
-                inspection.InstalledCatalogFingerprint!,
-                context,
-                cancellationToken).ConfigureAwait(false);
-
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-            return new GrimoireSchemaTierInstallResult(
-                tier,
-                manifest.Version,
-                GrimoireSchemaTierHealth.Healthy,
-                manifest.SourceDefinitionFingerprint,
-                inspection.InstalledCatalogFingerprint,
-                DiagnosticCode: null);
+            return result;
 
         }
         catch
         {
 
-            try
-            {
-
-                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
-            }
-            catch (Exception)
-            {
-
-                // Best-effort: disposal rolls an uncommitted transaction back anyway, and keeping
-                // the original failure is worth more than reporting the rollback's.
-
-            }
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
 
             throw;
 
@@ -314,17 +352,334 @@ internal sealed class GrimoireSchemaInstaller(
     }
 
     /// <summary>
-    /// Decides whether an already-recorded tier may be converged, before any DDL runs.
+    /// Opens a version run, after proving the catalog has not already been advanced behind the
+    /// metadata's back.
     /// </summary>
     /// <remarks>
-    /// Returning a value here means refuse; returning null means proceed. There is no legacy-upgrade
-    /// arm: Arcanum has no installed base, so the only databases this can meet are ones some build
-    /// of Arcanum itself wrote, and one that disagrees with this binary is repaired deliberately
-    /// rather than migrated in place.
+    /// The probe is the whole of <see cref="GrimoireSchemaTierHealth.MixedCatalogVersions"/>. A
+    /// database whose objects already validate at head while its metadata names an older version was
+    /// changed by something other than this engine - a restore, or a hand edit - and nothing proves
+    /// the sweeps those skipped versions depend on were ever run. Recording head there would be
+    /// exactly the silent advance past uncommitted work this design exists to prevent.
     /// </remarks>
-    private static async Task<GrimoireSchemaTierHealth?> ClassifyExistingAsync(
+    private async Task<GrimoireSchemaTierInstallResult> BeginRunAsync(
         SqliteConnection connection,
-        GrimoireSchemaManifest manifest,
+        GrimoireSchemaVersionChain chain,
+        GrimoireSchemaTransactionTier tier,
+        int recordedVersion,
+        int? embeddingDimensions,
+        GrimoireSchemaInitializationContext context,
+        CancellationToken cancellationToken)
+    {
+
+        GrimoireSchemaInspectionResult probe = await _inspector
+            .InspectAsync(connection, transaction: null, chain.HeadManifest, cancellationToken)
+            .ConfigureAwait(false);
+
+        return probe.IsValid
+            ? Refuse(chain, tier, GrimoireSchemaTierHealth.MixedCatalogVersions)
+            : await RunStepsAsync(
+                connection,
+                chain,
+                journal: null,
+                recordedVersion,
+                recordedVersion,
+                embeddingDimensions,
+                context,
+                cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Walks the chain from <paramref name="fromVersion"/> toward head, one step per transaction.
+    /// </summary>
+    /// <remarks>
+    /// A step's statements, the journal write that records the step, and - for the last step - the
+    /// metadata write all commit together, so a step either fully applies or leaves nothing behind.
+    /// That is what makes a step's DDL free to be non-idempotent, and it is why nothing here has to
+    /// reason about a half-applied step.
+    ///
+    /// <para>The journal row is written only when the run will <i>not</i> finish in this transaction.
+    /// A run that completes in one transaction needs no record of progress between transactions, and
+    /// a row saying the run is finished is a row the table's own CHECK forbids.</para>
+    /// </remarks>
+    private async Task<GrimoireSchemaTierInstallResult> RunStepsAsync(
+        SqliteConnection connection,
+        GrimoireSchemaVersionChain chain,
+        GrimoireSchemaTransitionJournalRow? journal,
+        int recordedVersion,
+        int fromVersion,
+        int? embeddingDimensions,
+        GrimoireSchemaInitializationContext context,
+        CancellationToken cancellationToken)
+    {
+
+        GrimoireSchemaTransitionJournalRow? row = journal;
+
+        int through = fromVersion;
+
+        while (chain.TryGetStep(through, out GrimoireSchemaVersionStep step))
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await using SqliteTransaction transaction =
+                (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+
+                foreach (GrimoireSchemaTransitionStatement statement in step.Statements.OrderBy(
+                    static candidate => candidate.Ordinal))
+                {
+
+                    await ExecuteAsync(
+                        connection,
+                        transaction,
+                        ResolveStatement(statement, embeddingDimensions),
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                if (step.Backfill is not null)
+                {
+
+                    row = await OpenOrAdvanceAsync(
+                        connection,
+                        transaction,
+                        chain,
+                        row,
+                        recordedVersion,
+                        through,
+                        step.Backfill.Name,
+                        cancellationToken).ConfigureAwait(false);
+
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                    return Incomplete(chain, recordedVersion);
+
+                }
+
+                if (step.ToVersion == chain.HeadVersion)
+                {
+
+                    GrimoireSchemaTierInstallResult result = await FinalizeRunAsync(
+                        connection,
+                        transaction,
+                        chain,
+                        row,
+                        context,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (result.IsHealthy)
+                    {
+
+                        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                    }
+                    else
+                    {
+
+                        // The journal row is left exactly as it was, so the run is retried rather
+                        // than half-recorded.
+                        await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                    }
+
+                    return result;
+
+                }
+
+                row = await OpenOrAdvanceAsync(
+                    connection,
+                    transaction,
+                    chain,
+                    row,
+                    recordedVersion,
+                    step.ToVersion,
+                    backfillName: null,
+                    cancellationToken).ConfigureAwait(false);
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                through = step.ToVersion;
+
+            }
+            catch
+            {
+
+                await TryRollbackAsync(transaction).ConfigureAwait(false);
+
+                throw;
+
+            }
+
+        }
+
+        // Reached only when the chain has no step leaving this version, which the planner already
+        // refuses. Fail closed rather than reporting a health nothing established.
+        return Incomplete(chain, recordedVersion);
+
+    }
+
+    /// <summary>
+    /// Ends a run inside the caller's transaction: seed, validate against the head manifest, record
+    /// the head version, and close the journal.
+    /// </summary>
+    /// <remarks>
+    /// Shared by the head install, by the last backfill-free step, and by the backfill runner's final
+    /// batch, on the division the Covenant maintenance sweeps already keep: the driver owns the
+    /// transaction, this owns what finishing means. Two copies would be two ideas of when a version is
+    /// installed, and the journal deliberately has no completion flag for them to disagree through.
+    ///
+    /// <para>The caller commits on a healthy result and rolls back on any other, which is what leaves
+    /// a failed validation retryable instead of half-recorded.</para>
+    /// </remarks>
+    internal async Task<GrimoireSchemaTierInstallResult> FinalizeRunAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        GrimoireSchemaVersionChain chain,
+        GrimoireSchemaTransitionJournalRow? journal,
+        GrimoireSchemaInitializationContext context,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        ArgumentNullException.ThrowIfNull(chain);
+
+        ArgumentNullException.ThrowIfNull(context);
+
+        await _initializers.For(chain.TransactionTier)
+            .InitializeAsync(connection, transaction, context, cancellationToken)
+            .ConfigureAwait(false);
+
+        GrimoireSchemaInspectionResult inspection = await _inspector
+            .InspectAsync(connection, transaction, chain.HeadManifest, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!inspection.IsValid)
+        {
+
+            return Failed(
+                chain.HeadManifest,
+                inspection.Failure == GrimoireSchemaInspectionFailure.CatalogReadFailed
+                    ? GrimoireSchemaTierHealth.Unavailable
+                    : GrimoireSchemaTierHealth.InstalledCatalogDrift,
+                inspection.DiagnosticCode);
+
+        }
+
+        await WriteMetadataAsync(
+            connection,
+            transaction,
+            chain.HeadManifest,
+            chain.HeadVersion,
+            inspection.InstalledCatalogFingerprint!,
+            context,
+            cancellationToken).ConfigureAwait(false);
+
+        if (journal is not null
+            && !await GrimoireSchemaTransitionJournal
+                .DeleteAsync(connection, transaction, journal, cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            throw new InvalidOperationException(
+                $"The {chain.TransactionTier} schema transition journal moved while this run was finishing.");
+
+        }
+
+        return new GrimoireSchemaTierInstallResult(
+            chain.TransactionTier,
+            chain.HeadVersion,
+            GrimoireSchemaTierHealth.Healthy,
+            chain.HeadManifest.SourceDefinitionFingerprint,
+            inspection.InstalledCatalogFingerprint,
+            DiagnosticCode: null);
+
+    }
+
+    /// <summary>
+    /// Writes the journal row on the first step of a run, or advances it on every step after.
+    /// </summary>
+    private async Task<GrimoireSchemaTransitionJournalRow> OpenOrAdvanceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        GrimoireSchemaVersionChain chain,
+        GrimoireSchemaTransitionJournalRow? row,
+        int recordedVersion,
+        int completedThroughVersion,
+        string? backfillName,
+        CancellationToken cancellationToken)
+    {
+
+        DateTimeOffset now = _time.GetUtcNow();
+
+        if (row is null)
+        {
+
+            GrimoireSchemaTransitionJournalRow opened = new(
+                chain.Family,
+                chain.TransactionTier,
+                recordedVersion,
+                chain.HeadVersion,
+                completedThroughVersion,
+                chain.HeadManifest.SourceDefinitionFingerprint,
+                backfillName,
+                BackfillCursor: null,
+                BackfillRowsProcessed: 0,
+                Revision: 0);
+
+            await GrimoireSchemaTransitionJournal
+                .InsertAsync(connection, transaction, opened, now, cancellationToken)
+                .ConfigureAwait(false);
+
+            return opened;
+
+        }
+
+        if (!await GrimoireSchemaTransitionJournal.AdvanceAsync(
+                connection,
+                transaction,
+                row,
+                completedThroughVersion,
+                backfillName,
+                backfillCursor: null,
+                row.BackfillRowsProcessed,
+                now,
+                cancellationToken).ConfigureAwait(false))
+        {
+
+            throw new InvalidOperationException(
+                $"The {chain.TransactionTier} schema transition journal moved while this run was advancing.");
+
+        }
+
+        return row with
+        {
+
+            CompletedThroughVersion = completedThroughVersion,
+
+            BackfillName = backfillName,
+
+            BackfillCursor = null,
+
+            Revision = row.Revision + 1,
+
+        };
+
+    }
+
+    /// <summary>
+    /// Reads the two metadata fields that decide what may happen next, or null when nothing is
+    /// recorded.
+    /// </summary>
+    private static async Task<GrimoireSchemaRecordedTier?> ReadRecordedTierAsync(
+        SqliteConnection connection,
+        GrimoireSchemaVersionChain chain,
         CancellationToken cancellationToken)
     {
 
@@ -332,10 +687,7 @@ internal sealed class GrimoireSchemaInstaller(
             .ConfigureAwait(false))
         {
 
-            return await AnyManifestObjectExistsAsync(connection, manifest, cancellationToken)
-                .ConfigureAwait(false)
-                ? GrimoireSchemaTierHealth.MetadataMissing
-                : null;
+            return null;
 
         }
 
@@ -347,45 +699,130 @@ internal sealed class GrimoireSchemaInstaller(
             WHERE FamilyCode = $familyCode AND TransactionTierCode = $tierCode;
             """;
 
-        _ = command.Parameters.AddWithValue("$familyCode", (long)manifest.Family);
+        _ = command.Parameters.AddWithValue("$familyCode", (long)chain.Family);
 
-        _ = command.Parameters.AddWithValue("$tierCode", (long)manifest.TransactionTier);
+        _ = command.Parameters.AddWithValue("$tierCode", (long)chain.TransactionTier);
 
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-
-            return await AnyManifestObjectExistsAsync(connection, manifest, cancellationToken)
-                .ConfigureAwait(false)
-                ? GrimoireSchemaTierHealth.MetadataMissing
-                : null;
-
-        }
-
-        long installedVersion = reader.GetInt64(0);
-
-        string installedSource = reader.GetString(1);
-
-        if (installedVersion > manifest.Version)
-        {
-
-            return GrimoireSchemaTierHealth.IncompatibleNewerVersion;
-
-        }
-
-        return installedVersion == manifest.Version
-            && !string.Equals(installedSource, manifest.SourceDefinitionFingerprint, StringComparison.Ordinal)
-                ? GrimoireSchemaTierHealth.SourceDefinitionMismatch
-                : null;
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new GrimoireSchemaRecordedTier(reader.GetInt32(0), reader.GetString(1))
+            : null;
 
     }
+
+    /// <summary>
+    /// Reads this tier's in-flight run, tolerating a database old enough not to have the journal at
+    /// all - which is every database before the first install of this build.
+    /// </summary>
+    private static async Task<GrimoireSchemaTransitionJournalRow?> ReadJournalAsync(
+        SqliteConnection connection,
+        GrimoireSchemaTransactionTier tier,
+        CancellationToken cancellationToken) =>
+        await ObjectExistsAsync(connection, "grimoire_schema_transitions", cancellationToken)
+            .ConfigureAwait(false)
+            ? await GrimoireSchemaTransitionJournal
+                .ReadAsync(connection, transaction: null, tier, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+
+    /// <summary>
+    /// Substitutes install-time template values into a step statement and refuses to return one that
+    /// still carries an unresolved placeholder, exactly as a head object is resolved.
+    /// </summary>
+    private static string ResolveStatement(GrimoireSchemaTransitionStatement statement, int? embeddingDimensions)
+    {
+
+        string resolved = embeddingDimensions is int width
+            ? statement.Sql.Replace(
+                GrimoireSchemaCatalog.EmbeddingDimensionsToken,
+                width.ToString(CultureInfo.InvariantCulture),
+                StringComparison.Ordinal)
+            : statement.Sql;
+
+        return resolved.Contains("{{", StringComparison.Ordinal)
+            ? throw new InvalidOperationException(
+                $"Grimoire transition statement '{statement.ResourcePath}.sql' contains an unresolved template placeholder.")
+            : resolved;
+
+    }
+
+    private static async Task ExecuteAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task TryRollbackAsync(SqliteTransaction transaction)
+    {
+
+        try
+        {
+
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            // Best-effort: disposal rolls an uncommitted transaction back anyway, and keeping the
+            // original failure is worth more than reporting the rollback's.
+
+        }
+
+    }
+
+    /// <summary>
+    /// Turns a refusal into a result, throwing for the one tier whose refusal aborts startup.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="GrimoireSchemaTierHealth.TransitionIncomplete"/> never arrives here, and that is
+    /// the point: an unfinished run is a state to resume, not a refusal, so Core reports it and keeps
+    /// running.
+    /// </remarks>
+    private static GrimoireSchemaTierInstallResult Refuse(
+        GrimoireSchemaVersionChain chain,
+        GrimoireSchemaTransactionTier tier,
+        GrimoireSchemaTierHealth health) =>
+        tier == GrimoireSchemaTransactionTier.Core
+            ? throw new GrimoireSchemaRefusedException(tier, health)
+            : Failed(chain.HeadManifest, health);
+
+    /// <summary>
+    /// A tier whose DDL has reached a version its recorded metadata deliberately does not yet claim.
+    /// </summary>
+    /// <remarks>
+    /// The version reported is the recorded one rather than head, because that is the version whose
+    /// promises have actually been kept.
+    /// </remarks>
+    private static GrimoireSchemaTierInstallResult Incomplete(
+        GrimoireSchemaVersionChain chain,
+        int recordedVersion) =>
+        new(
+            chain.TransactionTier,
+            recordedVersion,
+            GrimoireSchemaTierHealth.TransitionIncomplete,
+            chain.HeadManifest.SourceDefinitionFingerprint,
+            InstalledCatalogFingerprint: null,
+            $"Grimoire.Schema.{GrimoireSchemaTierHealth.TransitionIncomplete}");
 
     private static async Task WriteMetadataAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         GrimoireSchemaManifest manifest,
+        int schemaVersion,
         string installedFingerprint,
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
@@ -413,7 +850,7 @@ internal sealed class GrimoireSchemaInstaller(
 
         _ = command.Parameters.AddWithValue("$tierCode", (long)manifest.TransactionTier);
 
-        _ = command.Parameters.AddWithValue("$version", manifest.Version);
+        _ = command.Parameters.AddWithValue("$version", schemaVersion);
 
         _ = command.Parameters.AddWithValue("$source", manifest.SourceDefinitionFingerprint);
 
@@ -426,20 +863,6 @@ internal sealed class GrimoireSchemaInstaller(
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
-
-    private static IReadOnlyList<GrimoireSchemaObject> ObjectsFor(GrimoireSchemaTransactionTier tier) =>
-        tier switch
-        {
-
-            GrimoireSchemaTransactionTier.Core => GrimoireSchemaCatalog.CoreObjects,
-
-            GrimoireSchemaTransactionTier.CovenantCanonical => GrimoireSchemaCatalog.CovenantCanonicalObjects,
-
-            GrimoireSchemaTransactionTier.CovenantAccelerator => GrimoireSchemaCatalog.CovenantAcceleratorObjects,
-
-            _ => throw new ArgumentOutOfRangeException(nameof(tier)),
-
-        };
 
     private static GrimoireSchemaTierInstallResult Failed(
         GrimoireSchemaManifest manifest,
@@ -643,8 +1066,9 @@ internal sealed class GrimoireSchemaRefusedException(
     GrimoireSchemaTierHealth health)
     : InvalidOperationException(
         $"The {tier} Grimoire schema tier was refused: {health}. "
-        + "This build will not migrate a database written by a different one: Arcanum has no installed "
-        + "base yet, so a disagreeing database is repaired deliberately rather than upgraded in place. "
+        + "This build carries an existing database forward only through a version step it declares; a "
+        + "database that disagrees with it in any other way is repaired deliberately rather than "
+        + "guessed at, because nothing records what its shape was or what would have to be rewritten. "
         + "Restore a .arcbackup generation taken by this build with 'arcanum backup restore', or start "
         + "fresh by moving arcanum.db and arcanum.db.kdf aside under ~/.config/arcanum/ — session data "
         + "in the old file is not readable by this build either way.")

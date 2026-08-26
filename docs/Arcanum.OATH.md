@@ -81,6 +81,7 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#122** | Landed | Exact host-tools marker-pair compare-deletion and Campaign-marker cleanup: the authenticated four-phase checkpoint and its restart proof, the signed-attestation, pair-evidence, Campaign-inventory, and effect digests, kind-four Campaign cleanup children with write-once companion observation evidence, the retained native operating-system marker capability and the shared process-wide mutation gate, reconciliation of every child to a terminal phase with a receipt whose deleted and orphaned counts add up under a checked addition, and composition through the one locked full-reset seam authorized to reach it. |
 | **#123** | Landed | The complete attested full installation reset. Managed-file reconciliation: the four-phase authenticated checkpoint nested in the marker-pair checkpoint and null until the Campaign receipt is terminal, the source and work-item inventory vectors, the terminal classification and content-free per-arm blocker digests, the write-intent recovery that terminalizes every unfinished managed write by created-child physical identity, two stopped-host overloads on the existing erasure kernel adding no second opener or delete algorithm, and a journal proof and one-shot authority reasserted before every transaction and filesystem effect. The ending: the locked service continues into the ordinary reset sequence only when that reconciliation is terminal, deleting the Grimoire and with it the joined nonrevocable disclosure evidence, then — between the sweep and verification — observing the database file absent, proving the restore history terminal, and compare-removing the three profile credentials in anchor, journal-key, installation-identity order. The terminal projection is persisted before the first removal and each completed phase is published after it, so a crash mid-trio resumes against the proof made while all three were present rather than re-deriving one from a credential set it has already started taking; a surviving Campaign root-identity key refuses the whole step before anything is removed; and the publication is handed back so the reset's own writer adopts it rather than conflicting on the record it just superseded. The active record is retired and the installation reports clean. |
 | **#128** | Implemented | Dedicated Covenant reset preview; lifecycle authority and protected plan serialization; direct V3 reset coordinator entry; healthy-catalog V1 factory composition with ordinary cleanup between `ManagedArtifactsProcessed` and `HandlesClosed`; authenticated global/all plan rebinding; owner-only `Prepared + HostFactoryErasure` replay handoff and monotonic proof-before-shutdown; exact-owner lease maintenance through direct and recovered terminalization; and shared reset/global-factory external-retention disclosure before confirmation. |
+| **#102** | Landed | Resumable raw-SQL feature-schema evolution: an ordered, closed version chain per family and tier with a pinned source fingerprint for every version a step leaves; transition statements as one statement per file under each tier's own `Transitions/V<n>/` folder, excluded from every source fingerprint because a step that changed the fingerprint of the version it leaves would refuse the very installations it exists to carry; the `grimoire_schema_transitions` core journal whose row is its own phase, advanced only under the revision it was read at; `IGrimoireSchemaBackfill` with bounded, idempotent, restart-safe batches whose cursor is written inside the batch's own transaction, so no cursor can describe work that did not commit; a pure classifier over metadata, journal, and chain that decides fresh install, converge, begin, resume, or refuse without I/O; one shared finalization both drivers call, so there is one idea of when a version is installed; a journal-gated hosted coordinator that drains a sweep after readiness and re-enters convergence without a restart, deliberately not availability-gated because a tier mid-run is unavailable by design and Core's would otherwise be unrepairable; and the three new fail-closed health codes `TransitionIncomplete`, `TransitionUnresumable`, and `MixedCatalogVersions`. Shared prerequisite for #75–#78. Every tier still ships at version 1: no step and no sweep is shipped, and the machinery runs and finds nothing to do. |
 | **#74** | Landed | The live turn's adoption: `CovenantDispatchGate` (one `CovenantTurnScope` per logical run, one admission per provider attempt against the head-room the rest of the prompt leaves, and one durable disclosure receipt before every dispatch carrying admitted content or tainted history), `CovenantProviderCallFreezer` (the exact messages, options, name-ordered tool surface, canonicalized tool-call arguments, and rendered prompt frozen into the signed `ProviderCallEnvelope`, refusing any content kind it cannot bind), the `covenant` argument finally reaching `SystemPromptBuilder` from the live loop, and Covenant-derived replies finalized through `IGrimoireTurnCommitter` so content and sensitivity label share one transaction. Then the surfaces that write and read it: `CovenantOperatorMutationFactory` and `CovenantOperatorPreflightBody`, `CovenantMutationService` with receipt-first replay, four mutation routes and five inspection routes, `arcanum memory covenant set|list|show|retire`, agent proposal minting through the MCP staging seam, `CovenantTurnHeadProbe`, and the seal that carries a staged proposal all the way to canonical storage — the completed assistant finalization freezes the turn's collector and publishes the batch inside the transaction that persists the answer, so `propose_covenant` is advertised again and the `Proposed` lane exists on a real installation for the first time. The first proposal is reachable because the admission a staging tool call runs under is minted for any turn that holds a collector and a head probe, not only for one that injected Covenant bytes or inherited taint: on an empty Covenant neither of those can arise until a proposal already exists, so coupling the two obligations left the tool advertised and refused forever on exactly the installations it exists to serve. And the two surfaces that answer "why was my preference not honored": a content-free scope census behind `memory status` under the one installation read capability, and Proposed-lane admission pressure counted into the materialization ledger and named in `context inspect`. Proven end to end — a preference written through the real prepare-and-commit path is rendered by a later turn that shares no logical turn and no Campaign with the one that wrote it, scope holds in both directions, and a retirement travels exactly as far as the statement did. |
 
 The shared persistence graph is registered in CLI and host with host-only initiation and recovery handlers. The existing `/api/data` reset/factory lifecycle is activated, including `arcanum data reset-memory --scope covenant`. The dedicated Covenant mutation and inspection routes are now mapped and the four `arcanum memory covenant` verbs reach them; the repair (`doctor`), Campaign path, and Session-binding branches remain unmapped, and free-text query is composed but routed nowhere and offered by no CLI option, its service method keeping a typed `Covenant.Unavailable` refusal for a stale caller rather than answering an empty page. The inference path is wired end to end — a turn with canonical content admits it, discloses it, injects it, and labels the reply it produces — and an operator can now put content there and read it back. Agent retirement stays unavailable by construction. The feature remains off by default.
@@ -92,7 +93,6 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 | Issue | Size | Role |
 |---|---|---|
 | **#92** | XL, partly delivered | Performance, Native AOT, documentation, and release qualification — the #74 acceptance gate. The reproducible workload, benchmark host, statistics, and absolute gates are built against the production services, and CI publishes the host, runs the absolute gate, and keeps the run it measured as a retention-pinned artifact (`scripts/benchmark-covenant.sh`, DESIGN §10.24). The baseline half is not delivered and is not claimed to be: no baseline run is recorded in the repository, and the comparative gate has never executed outside a hand run. It is a developer and release-qualification tool by design rather than a merge gate, because a paired bootstrap is only meaningful between two runs on one host; it now refuses rather than reports whenever the two runs disagree on workload, schema, runtime identifier, corpus digest, manifest digest, or the set of operations measured. What remains is that baseline half, and the evidence nobody on a Mac can produce: `win-x64` and `win-arm64` have no checked-in hermetic SQLCipher asset, so their Native AOT and runtime evidence is bound to the Windows verification workflow, and the five independent review passes the slice requires have not been run. |
-| **#102** | XL | Resumable raw-SQL feature-schema evolution and backfills. Shared prerequisite for #75–#78. |
 | **#105** | XL | Bitemporal validity and dependency-aware claims across durable memory stores. |
 | **#106** | XL | Counterfactual memory evaluation lab. Prerequisite for #95. |
 | **#76** | XL | Campaign-scoped retrieval. |
@@ -110,7 +110,7 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 When documents disagree, use this precedence:
 
 1. Shipped code and its verified tests describe current behavior.
-2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.24 own the Covenant slices.
+2. [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) describes the shipped architectural contract — §10.10 through §10.25 own the Covenant slices and the schema evolution they rest on.
 3. The approved Covenant design specification describes the target Covenant contract.
 4. The coordinated implementation plans describe sequencing and file-level execution. The specification wins if a plan conflicts with it.
 5. This document supplies the OATH synthesis and navigation, not an independent implementation authority.
@@ -610,13 +610,21 @@ Schema family and transaction tier are independent dimensions:
 | **Covenant canonical** | Failure-isolated; Covenant canonical paths become unavailable while ordinary Arcanum remains operable | Entries, state/generation, versions, heads, provenance, mutation and turn receipts, aggregates, key epochs, search outbox, rebuild state, and canonical recovery metadata. |
 | **Covenant accelerator** | Search degrades while canonical prompt authority remains available | FTS5 virtual table, shadow tables, and accelerator projection state. |
 
-Each tier installs in its own transaction from a closed, ordered declarative catalog. A metadata row records schema version, source-definition fingerprint, installed-catalog fingerprint, and health. Unknown objects, missing objects, altered DDL, unexpected indexes, or a newer version fail that tier closed. FTS-generated shadow tables are part of the closed manifest.
+Each tier installs in its own transaction from a closed, ordered declarative catalog. A metadata row records schema version, source-definition fingerprint, installed-catalog fingerprint, and health, and its version means the tier is completely at that version and was validated there. Unknown objects, missing objects, altered DDL, unexpected indexes, or a newer version fail that tier closed. FTS-generated shadow tables are part of the closed manifest.
 
 Schema resources remain one object per SQL file, and the file's path picks its install transaction: directly under a category folder is the startup-blocking core tier, while `Capabilities/Covenant/{Canonical,Accelerator}/<Category>/` is a capability tier that fails on its own. Code-owned data initializers run inside their owning install transaction after DDL and before fingerprint capture.
 
+### 9.2 Declared version steps
+
+An installed tier is carried forward only through a version step this build declares. Each tier has an ordered, closed chain of integer versions; a step ships its statements as one file each under the tier's own `Transitions/V<n>/` folder, pins the source fingerprint of the version it leaves, and may depend on one resumable data sweep. An undeclared schema change is still fresh-install only, and a database that disagrees with this build in any other way is repaired deliberately rather than upgraded in place.
+
+A sweep is bounded, checkpointed, idempotent, and restart-safe, and its cursor is written inside the same transaction as the work it describes, so no cursor can ever describe work that did not commit. A tier's version is recorded only once its whole run finishes and its catalog validates against the closed manifest, so an interrupted run leaves the capability unavailable rather than claiming a version whose promises were not kept. Every condition a run cannot honor — a newer installed version, a definition disagreement, unknown objects, a catalog and its metadata disagreeing about version, and an interrupted run this build cannot finish — resolves to a typed, content-free, fail-closed health rather than a guess.
+
+All three tiers ship at version 1 today. No version step and no sweep is shipped; the machinery runs and finds nothing to do until a feature authors the first one.
+
 Issue #102 generalizes this into reusable, versioned, resumable feature-schema evolution with checkpointed backfills — the prerequisite that lets #75 through #78 evolve existing stores without introducing an EF migration.
 
-### 9.2 Canonical records
+### 9.3 Canonical records
 
 The principal canonical structures are:
 
@@ -633,7 +641,7 @@ The principal canonical structures are:
 
 Canonical history does not depend on FTS health. The outbox can collapse to `FullRebuildRequired` instead of allowing accelerator failure to become an unbounded canonical write tax.
 
-### 9.3 Core support records
+### 9.4 Core support records
 
 Core tables hold invariants that must survive optional Covenant damage, including:
 
@@ -650,7 +658,7 @@ Core tables hold invariants that must survive optional Covenant damage, includin
 
 Cross-tier core owner IDs are historical identities rather than fragile optional foreign keys. Canonical reads prove the current owner exists, and core deletion emits durable cleanup work. This keeps Campaign or Session deletion available when optional Covenant state is degraded.
 
-### 9.4 Hermetic SQLite and SQLCipher
+### 9.5 Hermetic SQLite and SQLCipher
 
 The database runtime contract pins **SQLCipher 4.17.0** on **SQLite 3.53.3** with statically linked **OpenSSL 3.5.7**. Native assets are built from pinned sources, hash-verified, SBOM-described, and delivered by RID with no system-library or extension fallback. `SQLITE_OMIT_LOAD_EXTENSION` is a compile option, not a runtime setting.
 
@@ -1294,7 +1302,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 The following documents own or explain the detailed contracts summarized here. The **(branch)** marks are historical: they meant a section existed only on `long-term-memory`, which has since been merged into `main` and deleted. Every link below resolves on `main`.
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.22.6 **(branch)**:
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.25.1 **(branch)**:
   - §10.10 Core protocol foundation
   - §10.11 Canonical persistence and inspection search
   - §10.12 Invocation authority and Campaign binding
@@ -1308,6 +1316,9 @@ The following documents own or explain the detailed contracts summarized here. T
   - §10.20.1–§10.20.14 Retention, reset, and full erasure
   - §10.21.1–§10.21.7 The live turn's adoption of the Covenant
   - §10.22.1–§10.22.6 The operator's write and read paths, and the agent's proposal
+  - §10.23 What an installation holds, and what a turn had to drop
+  - §10.24 The release benchmark
+  - §10.25–§10.25.1 Evolving an installed tier through a declared version chain
 - [`README.md`](../README.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
 - [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): the shared model/tool-loop and attachment continuation ordering that the OATH runtime integration extends.

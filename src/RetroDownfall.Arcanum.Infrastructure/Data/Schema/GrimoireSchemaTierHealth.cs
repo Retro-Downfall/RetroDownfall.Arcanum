@@ -31,6 +31,30 @@ internal enum GrimoireSchemaTierHealth
     /// <summary>An earlier tier this one depends on is not healthy, so it was never attempted.</summary>
     DependencyUnavailable = 6,
 
+    /// <summary>
+    /// A journaled version run this binary can finish has not finished. The tier is not healthy, so
+    /// the capability is unavailable and a dependent tier reports
+    /// <see cref="DependencyUnavailable"/> — but this is deliberately not a refusal. Core in
+    /// particular must not throw here: a Core tier whose pending sweep aborted startup could never
+    /// run that sweep, and the installation would be permanently unopenable by the only process able
+    /// to repair it.
+    /// </summary>
+    TransitionIncomplete = 7,
+
+    /// <summary>
+    /// A journal row this binary cannot finish — a target above head, a head that changed under the
+    /// run, a from-version the metadata row no longer agrees with, or a pending sweep this binary
+    /// does not declare. Fail-closed, and a refusal for Core.
+    /// </summary>
+    TransitionUnresumable = 8,
+
+    /// <summary>
+    /// The metadata row and the catalog disagree about version with no journal row to explain it — a
+    /// catalog advanced without its metadata, which a restore or a hand edit can produce. Recording
+    /// the newer version would advance past work nothing proves was ever done.
+    /// </summary>
+    MixedCatalogVersions = 9,
+
 }
 
 /// <summary>

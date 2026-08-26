@@ -18,9 +18,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 internal static class GrimoireSchemaManifestBuilder
 {
 
-    /// <summary>Both Covenant tiers ship at schema version 1.</summary>
-    internal const int CovenantSchemaVersion = 1;
-
     public static GrimoireSchemaManifest Build(
         GrimoireSchemaFamily family,
         GrimoireSchemaTransactionTier transactionTier,
