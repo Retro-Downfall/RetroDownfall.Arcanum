@@ -711,6 +711,8 @@ Local package creation:
 
 Use `-SkipForge` for Windows Arcanum + Compendium only. Cross-OS builds are manual GitHub workflows: `Private beta release (Windows / Linux)` builds all three products; `Build Windows x64 (Arcanum + Compendium)` omits The Forge.
 
+A push to `main` that changes `src/`, `scripts/packaging/`, `Directory.Build.props`, `Directory.Packages.props`, or the solution file cuts a beta automatically once every CI gate passes. The version lives in `Directory.Build.props`: leave `<Version>0.1.0-beta</Version>` alone and each build takes the next number (`0.1.0-beta.1`, `.2`, …); write a full version there (`0.1.0-beta.12`, or `0.1.0`) and that exact version is used. The result is a draft GitHub Release carrying all three platforms; publishing it stays a human action.
+
 The manual **Release macOS arm64** workflow builds on `macos-26`, signs with a Developer ID Application certificate, notarizes all outputs, and creates or updates a draft GitHub Release. Required repository secrets are `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_SPECIFIC_PASSWORD`. Enter a version such as `0.1.0-beta.1`; build metadata is rejected. Outputs are:
 
 - `arcanum-osx-arm64.zip` — signed, notarized folder-based self-contained CLI plus this document as `README.md`; zip is not stapled;

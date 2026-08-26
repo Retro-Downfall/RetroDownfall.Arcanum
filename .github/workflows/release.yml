@@ -11,8 +11,18 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata. Tag will be v<version>."
-        required: true
+        description: "SemVer (e.g. 0.1.0-beta.1). Blank uses Directory.Build.props and picks the next beta number."
+        required: false
+        type: string
+
+  # Called by CI after every gate on a push to main has passed, with no version, so the number comes
+  # from Directory.Build.props the same way it would for a blank dispatch. One derivation, two ways
+  # in, rather than a second idea of what version this build is.
+  workflow_call:
+    inputs:
+      version:
+        description: "SemVer (e.g. 0.1.0-beta.1). Blank uses Directory.Build.props and picks the next beta number."
+        required: false
         type: string
 
 permissions:
@@ -22,6 +32,12 @@ jobs:
   prepare:
     name: Validate the version and require every shipping asset
     runs-on: ubuntu-latest
+    permissions:
+      # `write` for a job that writes nothing: the releases API lists draft releases only to callers
+      # with push access, and every release this workflow makes starts as a draft. With `read` the
+      # drafts are invisible, the highest existing beta reads as none, and the next push hands out a
+      # number some unpublished draft already holds.
+      contents: write
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
@@ -30,13 +46,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Directory.Build.props is the one place a version is written, and it is what the build already
+      # stamps into every assembly, so the release cannot disagree with the binaries it ships.
+      #
+      # Two shapes, deliberately. A bare channel -- `0.1.0-beta` -- means "cut the next beta", and the
+      # number is chosen here. Anything fully specified -- `0.1.0-beta.12`, or `0.1.0` for a real
+      # release -- is used exactly as written, which is the manual path: edit the file, push, get that
+      # version. So the automatic stream needs no decision per push, and taking one is a one-line edit.
+      #
+      # The next number comes from the releases API rather than from git tags, because a draft release
+      # holds its tag name without creating the ref. Counting tags would hand out the same number to
+      # every unpublished draft. `github.run_number` would avoid that too, but it jumps whenever any
+      # workflow runs, and beta.7 following beta.4 reads as three lost builds.
+      - name: Resolve the version
+        id: props
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          # Never interpolate an input into the run: script — the templating engine expands it into
+          # the shell source, so injected commands execute before any validation can reject them.
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION_INPUT:-}"
+          if [[ -z "$VERSION" ]]; then
+            DECLARED="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)"
+            if [[ -z "$DECLARED" ]]; then
+              echo "error: Directory.Build.props declares no <Version>, so there is nothing to release" >&2
+              exit 1
+            fi
+            echo "Directory.Build.props declares: $DECLARED"
+            if [[ "$DECLARED" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-([0-9A-Za-z-]+)$ ]]; then
+              CORE="${BASH_REMATCH[1]}"
+              CHANNEL="${BASH_REMATCH[2]}"
+              HIGHEST="$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' \
+                | sed -n "s/^v${CORE}-${CHANNEL}\.\([0-9][0-9]*\)$/\1/p" \
+                | sort -n \
+                | tail -1)"
+              VERSION="${CORE}-${CHANNEL}.$(( ${HIGHEST:-0} + 1 ))"
+              echo "highest existing ${CORE}-${CHANNEL}: ${HIGHEST:-none}"
+            else
+              VERSION="$DECLARED"
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "resolved version: $VERSION"
+
       - name: Validate version
         id: ver
         env:
-          # Never interpolate a workflow_dispatch input into the run: script — the templating
-          # engine expands it into the shell source, so injected commands execute before the
-          # SemVer validation below can reject them. Read it from the environment instead.
-          VERSION_INPUT: ${{ inputs.version }}
+          VERSION_INPUT: ${{ steps.props.outputs.version }}
         run: |
           set -euo pipefail
           VERSION="$VERSION_INPUT"
