@@ -94,7 +94,8 @@ internal static class CovenantStoreSql
 
     internal static string LaneHeadProbe(bool campaignScoped) => $"""
         SELECT epochs.KeyEpoch, h.EntryId, h.CurrentVersionId, h.CurrentLaneRevision,
-               h.CurrentOperationCode, h.OriginCode, h.CompiledByteCost
+               h.CurrentOperationCode, h.OriginCode, h.CompiledByteCost,
+               COALESCE(c.IsPinned, 0)
         FROM (
             SELECT COALESCE(MAX(KeyEpoch), 0) AS KeyEpoch
             FROM covenant_key_epochs
@@ -103,6 +104,10 @@ internal static class CovenantStoreSql
         LEFT JOIN covenant_heads h
             ON {(campaignScoped ? "h.CampaignId = $campaign" : "h.CampaignId IS NULL")}
                AND h.NormalizedKey = $key AND h.LaneCode = $lane
+        LEFT JOIN covenant_curation_heads c
+            ON {(campaignScoped ? "c.CampaignId = $campaign" : "c.CampaignId IS NULL")}
+               AND c.NormalizedKey = $key AND c.LaneCode = $lane
+               AND c.KeyEpoch = epochs.KeyEpoch
         LIMIT 1;
         """;
 

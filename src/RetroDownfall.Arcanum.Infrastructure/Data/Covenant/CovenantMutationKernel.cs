@@ -315,6 +315,19 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         }
 
+        // A pin refuses agent authorship of the head it marks, and it is enforced here rather than only
+        // at staging: the staging probe is an early courtesy so a refused proposal does not cost the
+        // turn its answer, and this transaction is the one place a mutation cannot get past.
+        if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved
+            && await IsPinnedAsync(transaction, intent, keyEpoch, cancellationToken).ConfigureAwait(false))
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.ForbiddenAuthority,
+                "This Covenant entry is pinned, so the agent may not write over it or retire it.");
+
+        }
+
         bool retired = head is { OperationCode: (int)CovenantOperation.Retire };
 
         Result<bool> lifecycle = ValidateLifecycle(intent, head, retired);
@@ -430,6 +443,45 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
     /// Decides whether this intent may append at all. <see langword="true"/> means append,
     /// <see langword="false"/> means the deliberate no-op, and a failure means a lifecycle refusal.
     /// </summary>
+    /// <summary>
+    /// Whether the operator has pinned the scoped lane this intent targets.
+    /// </summary>
+    /// <remarks>
+    /// Bound to the key epoch the intent already proved current, so a pin recorded against a key that
+    /// was retired and reclaimed cannot refuse a write to the key that re-created the name.
+    /// </remarks>
+    private static async ValueTask<bool> IsPinnedAsync(
+        CovenantMutationTransaction transaction,
+        CovenantMutationIntent intent,
+        long keyEpoch,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = """
+            SELECT COALESCE(MAX(IsPinned), 0)
+            FROM covenant_curation_heads
+            WHERE CampaignId IS $campaign AND NormalizedKey = $key AND LaneCode = $lane AND KeyEpoch = $epoch;
+            """;
+
+        Bind(
+            command,
+            "$campaign",
+            intent.Target.Scope.CampaignId is { } campaignId ? campaignId.ToString("D") : DBNull.Value);
+
+        Bind(command, "$key", intent.Target.NormalizedKey.Value);
+
+        Bind(command, "$lane", (int)intent.Target.Lane);
+
+        Bind(command, "$epoch", keyEpoch);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is not (null or DBNull) && Convert.ToInt64(value, CultureInfo.InvariantCulture) == 1;
+
+    }
+
     private static Result<bool> ValidateLifecycle(CovenantMutationIntent intent, HeadRow? head, bool retired)
     {
 

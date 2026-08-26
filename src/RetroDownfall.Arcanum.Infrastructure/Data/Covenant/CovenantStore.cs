@@ -236,8 +236,10 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 long keyEpoch = reader.GetInt64(0);
 
+                bool pinned = reader.GetInt32(7) == 1;
+
                 probe = reader.IsDBNull(1)
-                    ? CovenantLaneHeadProbe.NotFound(scope, lane, normalizedKey, keyEpoch)
+                    ? CovenantLaneHeadProbe.NotFound(scope, lane, normalizedKey, keyEpoch) with { IsPinned = pinned }
                     : new CovenantLaneHeadProbe(
                         scope,
                         lane,
@@ -250,7 +252,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                         reader.GetInt64(3),
                         (CovenantOrigin)reader.GetInt32(5),
                         reader.GetInt64(6),
-                        keyEpoch);
+                        keyEpoch,
+                        pinned);
 
             }
 
