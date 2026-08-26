@@ -659,6 +659,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(CovenantRetirePrepareRequest))]
 [JsonSerializable(typeof(CovenantSetRequest))]
 [JsonSerializable(typeof(CovenantRetireRequest))]
+[JsonSerializable(typeof(CovenantRetirementDisclosureWire))]
 [JsonSerializable(typeof(CovenantCorrectPrepareRequest))]
 [JsonSerializable(typeof(CovenantCorrectRequest))]
 [JsonSerializable(typeof(CovenantCurationPrepareRequest))]

@@ -152,6 +152,21 @@ public sealed class CovenantRetirementPreflight
 }
 
 /// <summary>
+/// What a Ward shows an operator before they approve one retirement.
+/// </summary>
+/// <remarks>
+/// The model's arguments are a key and a lane. This is what those name: the content that will
+/// disappear, the branch it lives on, the revision it is, and whether Global content starts applying
+/// in its place. A Ward that showed the arguments would be asking somebody to approve a pointer.
+/// </remarks>
+public sealed record CovenantRetirementDisclosureWire(
+    string Key,
+    string Lane,
+    long Revision,
+    string Content,
+    bool GlobalContentAppliesAfterwards);
+
+/// <summary>
 /// The operator consent one sensitive-egress tool call actually received.
 /// </summary>
 /// <remarks>
