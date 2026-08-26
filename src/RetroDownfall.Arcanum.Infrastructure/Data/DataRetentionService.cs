@@ -23,6 +23,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Daemons;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
@@ -941,6 +942,7 @@ internal sealed partial class DataRetentionService(
                         operation.Id,
                         current,
                         request.Request.MemoryScope!.Value,
+                        request.Request.TargetId,
                         cancellationToken).ConfigureAwait(false),
 
                 DataRetentionOperation.ResetWorkspace =>
@@ -2106,65 +2108,35 @@ internal sealed partial class DataRetentionService(
 
         }
 
-        (RetentionDataClass dataClass, string[] tables) = request.MemoryScope switch
+        if (request.TargetId is { } targeted && !CampaignTargetedResetIsSupported(request.MemoryScope!.Value))
         {
 
-            MemoryResetScope.Entry =>
-                (RetentionDataClass.SessionEntryEmbeddings,
-                    new[] { "entry_embeddings", "entry_embeddings_vec" }),
+            return EmptyPlan(
+                request,
+                new DataRetentionBlocker(
+                    MemoryResetDataClass(request.MemoryScope!.Value),
+                    targeted.ToString("D"),
+                    ErrorCodes.Data.InvalidRequest,
+                    "Only Saga and Lexicon memories record an owning Campaign, so only those two can be "
+                    + "reset for one Campaign. Reset this store without a Campaign, or choose one that "
+                    + "carries an owner."));
 
-            MemoryResetScope.Attachments =>
-                (RetentionDataClass.AttachmentEmbeddings,
-                    new[]
-                    {
-                        "session_attachment_embeddings",
-                        "session_attachment_embeddings_vec",
-                        "session_attachment_chunks",
-                        "session_attachment_index_state",
-                    }),
+        }
 
-            MemoryResetScope.Workspace =>
-                (RetentionDataClass.WorkspaceEmbeddings,
-                    new[]
-                    {
-                        "workspace_file_embeddings",
-                        "workspace_file_embeddings_vec",
-                        "workspace_file_chunks",
-                    }),
-
-            MemoryResetScope.Saga =>
-                (RetentionDataClass.SagaMemories,
-                    new[]
-                    {
-                        "saga_memory_embeddings",
-                        "saga_memory_embeddings_vec",
-                        "saga_memory_attachment_provenance",
-                        "saga_extraction_watermarks",
-                        "saga_memories",
-                    }),
-
-            MemoryResetScope.Lexicon =>
-                (RetentionDataClass.LexiconEntries,
-                    new[]
-                    {
-                        "lexicon_fact_attachment_provenance",
-                        "lexicon_fts",
-                        "lexicon_entries",
-                    }),
-
-            _ => throw new InvalidOperationException("Unsupported memory reset scope."),
-
-        };
+        RetentionDataClass dataClass = MemoryResetDataClass(request.MemoryScope!.Value);
 
         long rows = 0;
 
-        foreach (string table in tables)
+        foreach (MemoryResetSelection selection in BuildMemoryResetSelections(
+                     request.MemoryScope!.Value,
+                     request.TargetId))
         {
 
             rows += await CountTableAsync(
-                table,
-                null,
-                cancellationToken).ConfigureAwait(false);
+                selection.Table,
+                selection.Predicate,
+                cancellationToken,
+                selection.Parameters).ConfigureAwait(false);
 
         }
 
@@ -2177,10 +2149,176 @@ internal sealed partial class DataRetentionService(
             await ReadMemoryResetConflictsAsync(
                 request.MemoryScope!.Value,
                 cancellationToken).ConfigureAwait(false),
-            rows == 0 ? [] : [request.MemoryScope!.Value.ToString()],
+            rows == 0 ? [] : [MemoryResetCandidateId(request.MemoryScope!.Value, request.TargetId)],
             requiresConfirmation: true);
 
     }
+
+    /// <summary>
+    /// One table to clear, and the rows of it this reset owns.
+    /// </summary>
+    /// <remarks>
+    /// A null predicate is the whole table, which is what an untargeted reset has always meant. Ordered
+    /// dependents-first so a delete's subquery still sees the rows it selects on.
+    /// </remarks>
+    private readonly record struct MemoryResetSelection(
+        string Table,
+        string? Predicate,
+        (string Name, object Value)[] Parameters);
+
+    /// <summary>Only these two stores record who owns a memory.</summary>
+    private static bool CampaignTargetedResetIsSupported(MemoryResetScope scope) =>
+        scope is MemoryResetScope.Saga or MemoryResetScope.Lexicon;
+
+    private static RetentionDataClass MemoryResetDataClass(MemoryResetScope scope) =>
+        scope switch
+        {
+
+            MemoryResetScope.Entry => RetentionDataClass.SessionEntryEmbeddings,
+
+            MemoryResetScope.Attachments => RetentionDataClass.AttachmentEmbeddings,
+
+            MemoryResetScope.Workspace => RetentionDataClass.WorkspaceEmbeddings,
+
+            MemoryResetScope.Saga => RetentionDataClass.SagaMemories,
+
+            MemoryResetScope.Lexicon => RetentionDataClass.LexiconEntries,
+
+            _ => throw new InvalidOperationException("Unsupported memory reset scope."),
+
+        };
+
+    /// <summary>
+    /// The candidate the plan pins and the apply re-checks, so a plan for one Campaign can never be
+    /// applied as a reset of the whole store.
+    /// </summary>
+    private static string MemoryResetCandidateId(MemoryResetScope scope, Guid? campaignId) =>
+        campaignId is { } campaign
+            ? $"{scope}:{campaign:D}"
+            : scope.ToString();
+
+    /// <summary>
+    /// Every table one memory reset clears, and the rows of each it owns, in delete order.
+    /// </summary>
+    /// <remarks>
+    /// The plan, the apply, and the post-delete reconciliation all read this one list. Three separate
+    /// lists is how a reset ends up counting one set of rows, deleting another, and calling a third
+    /// reconciled.
+    ///
+    /// <para>A Campaign-targeted Lexicon reset deliberately omits <c>lexicon_fts</c>. The index is
+    /// external-content and its rows are retired by the <c>lexicon_entries_ad</c> trigger as the entries
+    /// go; deleting from it directly would clear every other scope's index entries and leave those
+    /// entities unsearchable while still present.</para>
+    /// </remarks>
+    private static IReadOnlyList<MemoryResetSelection> BuildMemoryResetSelections(
+        MemoryResetScope scope,
+        Guid? campaignId)
+    {
+
+        if (campaignId is not { } campaign)
+        {
+
+            return
+            [
+                .. UntargetedMemoryResetTables(scope)
+                    .Select(static table => new MemoryResetSelection(table, null, [])),
+            ];
+
+        }
+
+        (string Name, object Value)[] campaignOnly = [("@campaignId", campaign.ToString("D"))];
+
+        (string Name, object Value)[] campaignAndKind =
+        [
+            ("@campaignId", campaign.ToString("D")),
+            ("@campaignKind", (int)SagaMemoryScopeKind.Campaign),
+        ];
+
+        const string OwnedMemories =
+            "\"MemoryId\" IN (SELECT \"Id\" FROM \"saga_memories\""
+            + " WHERE \"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind)";
+
+        return scope switch
+        {
+
+            MemoryResetScope.Saga =>
+            [
+                new("saga_memory_embeddings_vec", OwnedMemories, campaignAndKind),
+                new("saga_memory_embeddings", OwnedMemories, campaignAndKind),
+                new("saga_memory_attachment_provenance", OwnedMemories, campaignAndKind),
+
+                // Watermarks are per Session, so this Campaign's Sessions and no others: clearing them
+                // all would make every other Campaign re-extract its whole transcript history.
+                new(
+                    "saga_extraction_watermarks",
+                    "\"SessionId\" IN (SELECT SessionId FROM session_campaign_bindings"
+                        + " WHERE CampaignId = @campaignId AND BindingKindCode = @campaignKind)",
+                    campaignAndKind),
+
+                new(
+                    "saga_memories",
+                    "\"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
+                    campaignAndKind),
+            ],
+
+            MemoryResetScope.Lexicon =>
+            [
+                new(
+                    "lexicon_fact_attachment_provenance",
+                    "EntryId IN (SELECT Id FROM lexicon_entries WHERE ScopeCampaignId = @campaignId)",
+                    campaignOnly),
+
+                new("lexicon_entries", "ScopeCampaignId = @campaignId", campaignOnly),
+            ],
+
+            _ => throw new InvalidOperationException(
+                "Only Saga and Lexicon memories record an owning Campaign."),
+
+        };
+
+    }
+
+    private static string[] UntargetedMemoryResetTables(MemoryResetScope scope) =>
+        scope switch
+        {
+
+            MemoryResetScope.Entry =>
+                ["entry_embeddings_vec", "entry_embeddings"],
+
+            MemoryResetScope.Attachments =>
+                [
+                    "session_attachment_embeddings_vec",
+                    "session_attachment_embeddings",
+                    "session_attachment_chunks",
+                    "session_attachment_index_state",
+                ],
+
+            MemoryResetScope.Workspace =>
+                [
+                    "workspace_file_embeddings_vec",
+                    "workspace_file_embeddings",
+                    "workspace_file_chunks",
+                ],
+
+            MemoryResetScope.Saga =>
+                [
+                    "saga_memory_embeddings_vec",
+                    "saga_memory_embeddings",
+                    "saga_memory_attachment_provenance",
+                    "saga_extraction_watermarks",
+                    "saga_memories",
+                ],
+
+            MemoryResetScope.Lexicon =>
+                [
+                    "lexicon_fact_attachment_provenance",
+                    "lexicon_fts",
+                    "lexicon_entries",
+                ],
+
+            _ => throw new InvalidOperationException("Unsupported memory reset scope."),
+
+        };
 
     /// <summary>
     /// Plans a content-free Covenant memory-reset inventory.
@@ -2795,63 +2933,32 @@ internal sealed partial class DataRetentionService(
 
     }
 
+    /// <summary>
+    /// Clears one memory store, or the part of it one Campaign owns.
+    /// </summary>
+    /// <remarks>
+    /// The selections, the pre-delete count, the deletes, and the reconciliation all read the same list,
+    /// so a Campaign-targeted reset cannot count one set of rows and delete another. Reconciliation
+    /// re-counts through the same predicate: an untargeted reset must leave its tables empty, and a
+    /// targeted one must leave every other Campaign's rows exactly where they were.
+    /// </remarks>
     private async Task<DataRetentionApplyResult> ApplyMemoryResetAsync(
         Guid operationId,
         DataRetentionPlan plan,
         MemoryResetScope scope,
+        Guid? campaignId,
         CancellationToken cancellationToken)
     {
 
-        string[] tables = scope switch
+        List<MemoryResetSelection> selections = [];
+
+        foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))
         {
 
-            MemoryResetScope.Entry =>
-                ["entry_embeddings_vec", "entry_embeddings"],
-
-            MemoryResetScope.Attachments =>
-                [
-                    "session_attachment_embeddings_vec",
-                    "session_attachment_embeddings",
-                    "session_attachment_chunks",
-                    "session_attachment_index_state",
-                ],
-
-            MemoryResetScope.Workspace =>
-                [
-                    "workspace_file_embeddings_vec",
-                    "workspace_file_embeddings",
-                    "workspace_file_chunks",
-                ],
-
-            MemoryResetScope.Saga =>
-                [
-                    "saga_memory_embeddings_vec",
-                    "saga_memory_embeddings",
-                    "saga_memory_attachment_provenance",
-                    "saga_extraction_watermarks",
-                    "saga_memories",
-                ],
-
-            MemoryResetScope.Lexicon =>
-                [
-                    "lexicon_fact_attachment_provenance",
-                    "lexicon_fts",
-                    "lexicon_entries",
-                ],
-
-            _ => [],
-
-        };
-
-        List<string> existingTables = [];
-
-        foreach (string table in tables)
-        {
-
-            if (await TableExistsAsync(table, cancellationToken).ConfigureAwait(false))
+            if (await TableExistsAsync(selection.Table, cancellationToken).ConfigureAwait(false))
             {
 
-                existingTables.Add(table);
+                selections.Add(selection);
 
             }
 
@@ -2885,15 +2992,16 @@ internal sealed partial class DataRetentionService(
 
             long currentRows = 0;
 
-            foreach (string table in existingTables)
+            foreach (MemoryResetSelection selection in selections)
             {
 
                 currentRows += await CountInTransactionAsync(
                     connection,
                     transaction,
-                    table,
-                    null,
-                    cancellationToken).ConfigureAwait(false);
+                    selection.Table,
+                    selection.Predicate,
+                    cancellationToken,
+                    selection.Parameters).ConfigureAwait(false);
 
             }
 
@@ -2901,7 +3009,7 @@ internal sealed partial class DataRetentionService(
                 || plan.Rows != 0
                 || plan.Files != 0
                 || plan.EstimatedBytes != 0
-                || !plan.CandidateIds.SequenceEqual([scope.ToString()]))
+                || !plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)]))
             {
 
                 throw new RetentionConflictException(
@@ -2909,14 +3017,17 @@ internal sealed partial class DataRetentionService(
 
             }
 
-            foreach (string table in existingTables)
+            foreach (MemoryResetSelection selection in selections)
             {
 
                 deleted += await ExecuteAsync(
                     connection,
                     transaction,
-                    $"DELETE FROM \"{table}\"",
-                    cancellationToken).ConfigureAwait(false);
+                    selection.Predicate is null
+                        ? $"DELETE FROM \"{selection.Table}\""
+                        : $"DELETE FROM \"{selection.Table}\" WHERE {selection.Predicate}",
+                    cancellationToken,
+                    selection.Parameters).ConfigureAwait(false);
 
             }
 
@@ -2934,13 +3045,14 @@ internal sealed partial class DataRetentionService(
 
         bool reconciled = true;
 
-        foreach (string table in existingTables)
+        foreach (MemoryResetSelection selection in selections)
         {
 
             reconciled &= await CountTableAsync(
-                table,
-                null,
-                cancellationToken).ConfigureAwait(false) == 0;
+                selection.Table,
+                selection.Predicate,
+                cancellationToken,
+                selection.Parameters).ConfigureAwait(false) == 0;
 
         }
 
@@ -5836,8 +5948,11 @@ internal sealed partial class DataRetentionService(
             case DataRetentionOperation.ResetMemory:
                 subtype = "reset-memory";
 
-                target = ((int)request.MemoryScope!.Value).ToString(
-                    CultureInfo.InvariantCulture);
+                // The Campaign is part of the target, not a detail beside it. A checkpoint that recorded
+                // only the store would let a resumed reset clear every Campaign's memories when the
+                // operator asked for one Campaign's.
+                target = ((int)request.MemoryScope!.Value).ToString(CultureInfo.InvariantCulture)
+                    + (request.TargetId is { } resetCampaignId ? ":" + resetCampaignId.ToString("N") : string.Empty);
 
                 attachments = [];
 

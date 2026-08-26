@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -70,12 +71,17 @@ internal sealed partial class ArcanumInternalToolServer
 
             ILexiconService lexicon = scope.ServiceProvider.GetRequiredService<ILexiconService>();
 
+            // The tier written is the turn's, and the turn's alone: with the gate off this is the global
+            // tier, which is where every scribe_lexicon fact has always landed.
+            LexiconScope lexiconScope = await ResolveLexiconScopeAsync(scope, cancellationToken)
+                .ConfigureAwait(false);
+
             Result<LexiconEntryDto> result = provenance is null
                 ? await lexicon
-                    .UpsertAsync(name, args.Type, args.Facts, cancellationToken)
+                    .UpsertAsync(name, args.Type, args.Facts, lexiconScope, cancellationToken)
                     .ConfigureAwait(false)
                 : await lexicon
-                    .UpsertAsync(name, args.Type, args.Facts, provenance, cancellationToken)
+                    .UpsertAsync(name, args.Type, args.Facts, provenance, lexiconScope, cancellationToken)
                     .ConfigureAwait(false);
 
             if (result.IsFailure)
@@ -142,7 +148,14 @@ internal sealed partial class ArcanumInternalToolServer
 
             ILexiconService lexicon = scope.ServiceProvider.GetRequiredService<ILexiconService>();
 
-            Result<bool> result = await lexicon.DeleteByNameAsync(name, cancellationToken).ConfigureAwait(false);
+            // Deletion is aimed at the tier the turn writes to, so a Forbidden Art cast inside one
+            // Campaign can never take the installation's entity of the same name with it.
+            Result<bool> result = await lexicon
+                .DeleteByNameAsync(
+                    name,
+                    await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (result.IsFailure)
             {
@@ -322,6 +335,31 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         return low;
+    }
+
+
+    /// <summary>
+    /// The Lexicon tier this tool call belongs to, resolved from the ambient Session's canonical
+    /// Campaign binding.
+    /// </summary>
+    /// <remarks>
+    /// The Session identity is the host's, bound to this request before dispatch, never an argument the
+    /// model supplied. That is what stops a model from naming a Campaign and writing into - or reading
+    /// out of - a scope its turn does not hold.
+    /// </remarks>
+    private static async Task<LexiconScope> ResolveLexiconScopeAsync(
+        AsyncServiceScope scope,
+        CancellationToken cancellationToken)
+    {
+
+        IMemoryScopeResolver resolver = scope.ServiceProvider.GetRequiredService<IMemoryScopeResolver>();
+
+        MemoryScope resolved = await resolver
+            .ResolveForSessionAsync(SessionAttachmentToolAmbient.CurrentSessionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return resolved.ToLexiconScope();
+
     }
 
 }

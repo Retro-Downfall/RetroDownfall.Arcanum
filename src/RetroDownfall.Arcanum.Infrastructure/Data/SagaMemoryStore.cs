@@ -112,15 +112,28 @@ internal sealed class SagaMemoryStore(
                 // across saga_memories/saga_memory_embeddings/saga_memory_embeddings_vec.
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
+                // Derived here, from the owning Session's canonical binding, rather than accepted from
+                // the caller. A memory's scope is a statement about authority, and a writer that could
+                // name its own Campaign could fabricate one for a Session that never carried it.
+                (SagaMemoryScopeKind scopeKind, string? scopeCampaignId) =
+                    await SagaMemoryScopeClassifier
+                        .ResolveForSessionAsync(connection, transaction, sessionId, cancellationToken)
+                        .ConfigureAwait(false);
+
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
                 memoryCmd.Transaction = transaction;
 
                 memoryCmd.CommandText =
                     """
-                    INSERT INTO "saga_memories" ("Id", "Content", "CreatedAt", "SessionId", "Tags", "Source")
-                    VALUES (@id, @content, @createdAt, @sessionId, @tags, @source)
+                    INSERT INTO "saga_memories" (
+                        "Id", "Content", "CreatedAt", "SessionId", "Tags", "Source", ScopeKindCode, CampaignId)
+                    VALUES (@id, @content, @createdAt, @sessionId, @tags, @source, @scopeKindCode, @scopeCampaignId)
                     """;
+
+                AddParameter(memoryCmd, "@scopeKindCode", (int)scopeKind);
+
+                AddParameter(memoryCmd, "@scopeCampaignId", (object?)scopeCampaignId ?? DBNull.Value);
 
                 AddParameter(memoryCmd, "@id", id);
 
@@ -248,6 +261,7 @@ internal sealed class SagaMemoryStore(
     public async Task<SagaMemoryDto[]> ListAsync(
         string? query,
         Guid? sessionId,
+        MemoryScope scope,
         int limit,
         int offset,
         CancellationToken cancellationToken)
@@ -269,7 +283,8 @@ internal sealed class SagaMemoryStore(
                            EXISTS(
                                SELECT 1 FROM "SessionAttachments" a
                                WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
-                           )
+                           ),
+                           m.ScopeKindCode, m.CampaignId
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE 1 = 1
@@ -290,6 +305,34 @@ internal sealed class SagaMemoryStore(
                     sql.Append(" AND m.\"SessionId\" = @sessionId");
 
                     AddParameter(cmd, "@sessionId", sessionId.Value.ToString());
+
+                }
+
+                // The same candidate set retrieval would rank, so a listing never shows an operator a
+                // memory the model cannot reach, or hides one it can.
+                if (scope.IsEnforced)
+                {
+
+                    if (scope.CampaignId is { } campaignId)
+                    {
+
+                        sql.Append(
+                            " AND (m.ScopeKindCode = @globalScopeKind"
+                            + " OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId))");
+
+                        AddParameter(cmd, "@campaignScopeKind", (int)SagaMemoryScopeKind.Campaign);
+
+                        AddParameter(cmd, "@campaignId", campaignId.ToString());
+
+                    }
+                    else
+                    {
+
+                        sql.Append(" AND m.ScopeKindCode = @globalScopeKind");
+
+                    }
+
+                    AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
 
                 }
 
@@ -359,7 +402,8 @@ internal sealed class SagaMemoryStore(
                            EXISTS(
                                SELECT 1 FROM "SessionAttachments" a
                                WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
-                           )
+                           ),
+                           m.ScopeKindCode, m.CampaignId
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE m."Id" IN ({string.Join(", ", parameterNames)})
@@ -744,7 +788,9 @@ internal sealed class SagaMemoryStore(
             sessionId,
             tags,
             source,
-            provenance);
+            provenance,
+            (SagaMemoryScopeKind)reader.GetInt32(14),
+            reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)));
 
     }
 

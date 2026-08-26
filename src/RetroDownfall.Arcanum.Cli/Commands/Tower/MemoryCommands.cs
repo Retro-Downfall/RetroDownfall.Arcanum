@@ -95,9 +95,33 @@ public sealed class MemoryCommands(
 
         AnsiConsole.Write(table);
 
+        WriteCampaignScope(result.Value.CampaignScope);
+
         WriteCovenantStatus(result.Value.Covenant);
 
         return 0;
+
+    }
+
+    /// <summary>
+    /// States which Campaign scope a turn on this session would draw memory from, before one runs.
+    /// </summary>
+    /// <remarks>
+    /// Printed even when nothing is narrowed, because "every memory on the installation is a candidate"
+    /// is the fact an operator most needs stated plainly, and silence would read as though scoping were
+    /// in force.
+    /// </remarks>
+    private void WriteCampaignScope(MemoryCampaignScopeDto? scope)
+    {
+
+        if (scope is null)
+        {
+
+            return;
+
+        }
+
+        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(scope.Detail)));
 
     }
 
@@ -320,6 +344,17 @@ public sealed class MemoryCommands(
 
         dispatcher.WritePayload($"Scope: {result.Value.Scope.ToString().ToLowerInvariant()}");
 
+        // Reported once, from the first result that carries it: the Campaign scope is a property of the
+        // search, not of a row, and repeating it per match would bury it.
+        if (result.Value.Results
+                .Select(static match => match.CampaignScope)
+                .FirstOrDefault(static campaignScope => campaignScope is not null) is { } searchScope)
+        {
+
+            dispatcher.WritePayload($"Campaign scope: {searchScope.Detail}");
+
+        }
+
         foreach (MemorySearchResultDto match in result.Value.Results)
         {
 
@@ -407,6 +442,8 @@ public sealed class MemoryCommands(
         }
 
         AnsiConsole.Write(table);
+
+        WriteCampaignScope(result.Value.CampaignScope);
 
         return 0;
 

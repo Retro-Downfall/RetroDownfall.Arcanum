@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -85,16 +86,36 @@ internal sealed partial class ArcanumInternalToolServer
 
             IDivinationService divinationService = scope.ServiceProvider.GetRequiredService<IDivinationService>();
 
-            Result<DivinationResult[]> searchResult = await divinationService
-                .SearchAsync(
-                    "saga_memory_embeddings_vec",
-                    "MemoryId",
-                    "Embedding",
-                    embedResult.Value,
-                    limit,
-                    similarityThreshold,
-                    cancellationToken)
+            // The turn's own scope, from the Session the host bound to this call - never a Campaign the
+            // model could name. read_saga is read-only precisely so the model cannot steer its memory;
+            // letting it steer which Campaign's memory it reads would give that back.
+            MemoryScope memoryScope = await scope.ServiceProvider
+                .GetRequiredService<IMemoryScopeResolver>()
+                .ResolveForSessionAsync(SessionAttachmentToolAmbient.CurrentSessionId, cancellationToken)
                 .ConfigureAwait(false);
+
+            Result<DivinationResult[]> searchResult = memoryScope.IsEnforced
+                ? await divinationService
+                    .SearchCampaignScopedAsync(
+                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingKeyColumn,
+                        SagaStorageKeys.EmbeddingColumn,
+                        memoryScope.ToSagaScope(),
+                        embedResult.Value,
+                        limit,
+                        similarityThreshold,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : await divinationService
+                    .SearchAsync(
+                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingKeyColumn,
+                        SagaStorageKeys.EmbeddingColumn,
+                        embedResult.Value,
+                        limit,
+                        similarityThreshold,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             if (searchResult.IsFailure)
             {

@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -3315,6 +3316,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             });
 
         ServiceCollection services = new();
+
+        services.AddSingleton<IMemoryScopeResolver>(new FakeMemoryScopeResolver());
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 

@@ -234,13 +234,24 @@ internal static partial class CliCommandTree
 
         };
 
+        Option<string?> memoryCampaign = new("--campaign")
+        {
+
+            Description =
+                "Optional Campaign GUID. Saga and Lexicon only; other Campaigns' memories are untouched.",
+
+        };
+
         resetMemory.Add(memoryScope);
+
+        resetMemory.Add(memoryCampaign);
 
         resetMemory.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
                 await handler
                     .ResetMemory(
                         result.GetValue(memoryScope)!,
+                        result.GetValue(memoryCampaign),
                         cancellationToken)
                     .ConfigureAwait(false));
 

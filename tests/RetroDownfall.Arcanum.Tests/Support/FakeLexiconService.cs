@@ -11,12 +11,18 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 public sealed class FakeLexiconService : ILexiconService
 {
 
-    private readonly Dictionary<string, LexiconEntryDto> _entries = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Keyed by tier and then name, the way the real table's unique index now is: one name may exist
+    /// once per scope, so a fake keyed by name alone would let a Campaign write silently overwrite the
+    /// global entity and hide exactly the bug these tests are meant to catch.
+    /// </summary>
+    private readonly Dictionary<(string Scope, string Name), LexiconEntryDto> _entries = [];
 
     public Task<Result<LexiconEntryDto>> UpsertAsync(
         string name,
         string? type,
         IReadOnlyList<string> facts,
+        LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
 
@@ -36,7 +42,7 @@ public sealed class FakeLexiconService : ILexiconService
             return Task.FromResult(Result<LexiconEntryDto>.Failure(new Error(ErrorCodes.Lexicon.InvalidFact, "facts required")));
         }
 
-        if (_entries.TryGetValue(normalized, out LexiconEntryDto? existing))
+        if (_entries.TryGetValue((scope.Key, normalized), out LexiconEntryDto? existing))
         {
             List<string> merged = [.. existing.Facts, .. incoming];
 
@@ -44,7 +50,7 @@ public sealed class FakeLexiconService : ILexiconService
 
             LexiconEntryDto updated = existing with { Type = resolvedType, Facts = merged.ToArray(), UpdatedAt = DateTimeOffset.UtcNow };
 
-            _entries[normalized] = updated;
+            _entries[(scope.Key, normalized)] = updated;
 
             return Task.FromResult(Result<LexiconEntryDto>.Success(updated));
         }
@@ -54,19 +60,24 @@ public sealed class FakeLexiconService : ILexiconService
             trimmedName,
             string.IsNullOrWhiteSpace(type) ? LexiconLimits.DefaultType : type!,
             incoming.ToArray(),
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            FactProvenance: null,
+            ScopeCampaignId: scope.CampaignId);
 
-        _entries[normalized] = entry;
+        _entries[(scope.Key, normalized)] = entry;
 
         return Task.FromResult(Result<LexiconEntryDto>.Success(entry));
     }
 
-    public Task<Result<bool>> DeleteByNameAsync(string name, CancellationToken cancellationToken = default)
+    public Task<Result<bool>> DeleteByNameAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
     {
 
         string normalized = name.Trim().ToUpperInvariant();
 
-        bool removed = _entries.Remove(normalized);
+        bool removed = _entries.Remove((scope.Key, normalized));
 
         return Task.FromResult(Result<bool>.Success(removed));
     }
@@ -74,20 +85,65 @@ public sealed class FakeLexiconService : ILexiconService
     public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
         IReadOnlyList<string> entities,
         int limit,
+        LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
 
-        IReadOnlyList<LexiconEntryDto> results = _entries.Values.Take(limit).ToArray();
+        // The Campaign tier first, then whatever global names it has not answered: the same shadowing
+        // the real service applies, so a test using this fake cannot pass on a merge the real one
+        // refuses to perform.
+        HashSet<string> shadowed = new(StringComparer.Ordinal);
 
-        return Task.FromResult(Result<IReadOnlyList<LexiconEntryDto>>.Success(results));
+        List<LexiconEntryDto> results = [];
+
+        foreach (string scopeKey in scope.IsGlobal ? [LexiconScope.Global.Key] : new[] { scope.Key, LexiconScope.Global.Key })
+        {
+
+            foreach (((string Scope, string Name) key, LexiconEntryDto entry) in _entries)
+            {
+
+                if (!string.Equals(key.Scope, scopeKey, StringComparison.Ordinal)
+                    || !shadowed.Add(key.Name)
+                    || results.Count >= limit)
+                {
+                    continue;
+                }
+
+                results.Add(entry);
+
+            }
+
+        }
+
+        return Task.FromResult<Result<IReadOnlyList<LexiconEntryDto>>>(
+            Result<IReadOnlyList<LexiconEntryDto>>.Success(results));
     }
 
-    public Task<Result<LexiconEntryDto?>> GetByNameAsync(string name, CancellationToken cancellationToken = default)
+    public Task<Result<LexiconEntryDto?>> GetByNameAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
     {
 
         string normalized = name.Trim().ToUpperInvariant();
 
-        _entries.TryGetValue(normalized, out LexiconEntryDto? entry);
+        if (!_entries.TryGetValue((scope.Key, normalized), out LexiconEntryDto? entry) && !scope.IsGlobal)
+        {
+
+            _ = _entries.TryGetValue((LexiconScope.Global.Key, normalized), out entry);
+
+        }
+
+        return Task.FromResult(Result<LexiconEntryDto?>.Success(entry));
+    }
+
+    public Task<Result<LexiconEntryDto?>> GetByNameInScopeAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
+    {
+
+        _ = _entries.TryGetValue((scope.Key, name.Trim().ToUpperInvariant()), out LexiconEntryDto? entry);
 
         return Task.FromResult(Result<LexiconEntryDto?>.Success(entry));
     }

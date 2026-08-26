@@ -150,12 +150,14 @@ public sealed class MemoryEndpointTests
             "Operator",
             "Person",
             ["Prefers dark mode."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         _ = await lexicon.UpsertAsync(
             "Arcanum",
             "Project",
             ["Uses C#."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -215,9 +217,9 @@ public sealed class MemoryEndpointTests
 
         Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
 
-        Result<LexiconEntryDto?> remainingOperator = await lexicon.GetByNameAsync("Operator");
+        Result<LexiconEntryDto?> remainingOperator = await lexicon.GetByNameAsync("Operator", LexiconScope.Global);
 
-        Result<LexiconEntryDto?> remainingArcanum = await lexicon.GetByNameAsync("Arcanum");
+        Result<LexiconEntryDto?> remainingArcanum = await lexicon.GetByNameAsync("Arcanum", LexiconScope.Global);
 
         Assert.Null(remainingOperator.Value);
 
@@ -293,6 +295,7 @@ public sealed class MemoryEndpointTests
             "Operator",
             "Person",
             ["Prefers dark mode."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -354,6 +357,7 @@ public sealed class MemoryEndpointTests
                 $"Moonlit-{index}",
                 "Person",
                 ["Works by moonlight."],
+                LexiconScope.Global,
                 CancellationToken.None);
 
         }
@@ -618,7 +622,7 @@ public sealed class MemoryEndpointTests
 
         public Task<SagaMemoryDto[]> ListAsync(
             string? query,
-            Guid? sessionId,
+            Guid? sessionId, MemoryScope scope,
             int limit,
             int offset,
             CancellationToken cancellationToken)

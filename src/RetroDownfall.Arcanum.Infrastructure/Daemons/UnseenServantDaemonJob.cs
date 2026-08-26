@@ -80,8 +80,10 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
 
             try
             {
+                // Explicitly global: daemon state belongs to the installation that scheduled the job,
+                // not to whichever Campaign a turn happened to resolve.
                 Result<LexiconEntryDto?> lookup = await lexicon
-                    .GetByNameAsync(stateName, ct)
+                    .GetByNameAsync(stateName, LexiconScope.Global, ct)
                     .ConfigureAwait(false);
 
                 priorState = lookup.IsSuccess ? lookup.Value : null;

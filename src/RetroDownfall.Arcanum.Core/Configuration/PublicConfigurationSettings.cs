@@ -91,6 +91,23 @@ public sealed record FeatureSettings
     /// </remarks>
     public bool Covenant { get; set; }
 
+    /// <summary>
+    /// Whether cross-session memory follows the work rather than the installation. Default
+    /// <c>false</c>, and the default is the contract: with it unset, Saga retrieval and Lexicon matching
+    /// see exactly the candidate sets and the ordering they see today.
+    /// </summary>
+    /// <remarks>
+    /// Turning it on <i>narrows</i> what the model can recall, which is the point: a conclusion drawn
+    /// inside one Campaign stops competing for a bounded top-K against the Campaign in front of the
+    /// model, and stops contradicting it. Widening it again is a configuration change and not a data
+    /// change — nothing is deleted, re-scoped, or re-embedded either way.
+    ///
+    /// <para>A <c>{ get; set; }</c> property, like every other key in this record: the configuration
+    /// binding generator silently skips <c>init</c>-only properties (dotnet/runtime#107856), which would
+    /// leave the feature permanently off while <c>arcanum.json</c> said otherwise.</para>
+    /// </remarks>
+    public bool CampaignScopedMemory { get; set; }
+
 }
 
 /// <summary>

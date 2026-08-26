@@ -720,6 +720,7 @@ public sealed class DataRetentionCommandTests
 
         int exitCode = await commands.ResetMemory(
             "covenant",
+            campaign: null,
             CancellationToken.None);
 
         Assert.Equal((int)CliExitCode.Success, exitCode);

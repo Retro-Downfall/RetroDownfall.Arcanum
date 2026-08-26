@@ -1370,6 +1370,17 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
 
+        public Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            DivinationCampaignScope scope,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
+
     }
 
     private sealed class NoopWorkspaceIndexingService : IWorkspaceIndexingService
@@ -1408,7 +1419,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 
-        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, int limit, int offset, CancellationToken cancellationToken) =>
+        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken) =>

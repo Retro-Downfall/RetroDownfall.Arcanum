@@ -98,6 +98,7 @@ public static class SettingDescriptors
         new("features.guardrails", ConfigSection.Features, "Content filters", "Apply safety filters to block inappropriate content.", SettingKind.Bool),
         new("features.workspaceChecks", ConfigSection.Features, "Workspace validation", "Verify workspace setup before running commands.", SettingKind.Bool),
         new("features.memoryManagement", ConfigSection.Features, "Memory controls", "Allow users to delete, pin, or compress conversation memory.", SettingKind.Bool),
+        new("features.campaignScopedMemory", ConfigSection.Features, "Keep memory inside its campaign", "Let long-term memory follow the work rather than the whole installation. When on, the AI recalls what it learned in this campaign plus anything saved for every campaign, and nothing from other campaigns. Turning it off again restores the wider recall; no memory is deleted either way.", SettingKind.Bool),
         new("features.covenant", ConfigSection.Features, "Use The Covenant", CovenantExternalRetentionDisclosure.EnablementText, SettingKind.Bool, HelpRoute: SettingHelpRoute.ConfiguredProviderRetention),
 
         // Integration facts and allowlists

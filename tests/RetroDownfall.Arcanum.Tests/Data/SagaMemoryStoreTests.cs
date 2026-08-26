@@ -111,7 +111,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             Vec(1f),
             CancellationToken.None);
 
-        SagaMemoryDto[] page = await _store.ListAsync(null, null, 100, 0, CancellationToken.None);
+        SagaMemoryDto[] page = await _store.ListAsync(null, null, MemoryScope.Installation, 100, 0, CancellationToken.None);
 
         SagaMemoryDto memory = Assert.Single(page);
 
@@ -158,7 +158,7 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         SagaMemoryDto memory = Assert.Single(
-            await _store.ListAsync(null, sessionId, 10, 0, CancellationToken.None));
+            await _store.ListAsync(null, sessionId, MemoryScope.Installation, 10, 0, CancellationToken.None));
 
         Assert.NotNull(memory.AttachmentProvenance);
 
@@ -182,13 +182,13 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         await _store.InsertAsync("mem-b", "uses xUnit for tests", DateTimeOffset.UtcNow, sessionB, null, "extraction", Vec(1f), CancellationToken.None);
 
-        SagaMemoryDto[] bySession = await _store.ListAsync(null, sessionA, 100, 0, CancellationToken.None);
+        SagaMemoryDto[] bySession = await _store.ListAsync(null, sessionA, MemoryScope.Installation, 100, 0, CancellationToken.None);
 
         Assert.Single(bySession);
 
         Assert.Equal("mem-a", bySession[0].Id);
 
-        SagaMemoryDto[] byQuery = await _store.ListAsync("xunit", null, 100, 0, CancellationToken.None);
+        SagaMemoryDto[] byQuery = await _store.ListAsync("xunit", null, MemoryScope.Installation, 100, 0, CancellationToken.None);
 
         Assert.Single(byQuery);
 
@@ -209,9 +209,9 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         }
 
-        SagaMemoryDto[] page1 = await _store!.ListAsync(null, null, 2, 0, CancellationToken.None);
+        SagaMemoryDto[] page1 = await _store!.ListAsync(null, null, MemoryScope.Installation, 2, 0, CancellationToken.None);
 
-        SagaMemoryDto[] page2 = await _store.ListAsync(null, null, 2, 2, CancellationToken.None);
+        SagaMemoryDto[] page2 = await _store.ListAsync(null, null, MemoryScope.Installation, 2, 2, CancellationToken.None);
 
         Assert.Equal(2, page1.Length);
 
