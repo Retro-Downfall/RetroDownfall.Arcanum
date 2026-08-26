@@ -570,7 +570,22 @@ internal sealed partial class PhysicalCampaignRootOpener
             {
                 Mode = FileMode.CreateNew,
                 Access = FileAccess.ReadWrite,
-                Share = FileShare.None,
+
+                // Windows needs FILE_SHARE_DELETE to let the *owner* rename or unlink a file it still
+                // holds open, and this capability does exactly that: it writes the temporary, flushes
+                // it, and renames it onto the marker leaf without ever letting go of the handle,
+                // because the handle is the proof. Without the flag every rename here fails with a
+                // sharing violation and the marker can never be committed, which is what the whole
+                // CampaignPath family did on Windows. It is not a weakening: read and write sharing
+                // stay denied, and this code already assumes an entry can move under it — that is why
+                // it proves identity by volume and file id rather than by path. POSIX has always
+                // permitted the rename, so this makes Windows agree with the semantics the design was
+                // written against rather than the other way round.
+                //
+                // Unix keeps FileShare.None, which .NET implements as an exclusive flock. Naming
+                // Delete there instead would downgrade that to a shared lock, and the enum cannot say
+                // "exclusive and deletable" — FileShare.None is zero, so None | Delete is just Delete.
+                Share = OperatingSystem.IsWindows() ? FileShare.Delete : FileShare.None,
             };
 
             if (!OperatingSystem.IsWindows())

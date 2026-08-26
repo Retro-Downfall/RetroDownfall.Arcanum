@@ -57,6 +57,41 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         }
     }
 
+    /// <summary>
+    /// Puts a finished temporary in place of a destination that a reader may still hold open.
+    /// </summary>
+    /// <remarks>
+    /// <c>File.Move(overwrite: true)</c> is <c>MoveFileEx</c> with <c>MOVEFILE_REPLACE_EXISTING</c> on
+    /// Windows, which unlinks the destination and renames the source onto the freed name. A reader
+    /// that opened the destination with <c>FILE_SHARE_DELETE</c> — which
+    /// <see cref="OpenReadAsync"/> deliberately does — turns that unlink into a delete-pending: the
+    /// entry stays until the last handle closes, the name is never freed, and the move fails with
+    /// <c>UnauthorizedAccessException</c>. So the share flag that exists to keep readers from blocking
+    /// a replacement was the thing blocking it, and only on Windows, which is why every macOS run
+    /// passed.
+    ///
+    /// <para><c>ReplaceFile</c> is the API for this: it writes the source's contents into the
+    /// destination's existing entry rather than replacing the entry, so open readers keep reading the
+    /// bytes they opened and the name never has to be freed. It requires the destination to exist,
+    /// hence the plain move for a first write. On Unix both arms are a rename, which has always
+    /// permitted this; the behaviour there is unchanged.</para>
+    /// </remarks>
+    private static void ReplaceOrMove(string temporaryPath, string destinationPath)
+    {
+
+        if (!File.Exists(destinationPath))
+        {
+
+            File.Move(temporaryPath, destinationPath);
+
+            return;
+
+        }
+
+        File.Replace(temporaryPath, destinationPath, destinationBackupFileName: null);
+
+    }
+
     public bool HasEnvelope(string path)
     {
         try
@@ -135,7 +170,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
 
             await VerifyEnvelopeAsync(tempPath, purpose, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            File.Move(tempPath, fullDestinationPath, overwrite: true);
+            ReplaceOrMove(tempPath, fullDestinationPath);
             SecureFilePermissions.ApplyOwnerOnlyFile(fullDestinationPath);
 
             return ParseDescriptor(header);

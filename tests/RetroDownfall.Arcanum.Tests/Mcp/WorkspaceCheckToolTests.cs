@@ -2816,6 +2816,28 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             return false;
         }
 
+        // A runnable sandbox was only half the precondition. These tests spawn the real dotnet host
+        // through the production executable boundary, and that boundary refuses any host outside the
+        // canonical trusted installation roots -- so on a machine whose dotnet came from
+        // actions/setup-dotnet, which installs under the runner's home, all eight failed with
+        // capability_unavailable while claiming to be about builds and jails. The question is asked
+        // of the production policy rather than answered from a copy of its root list: this suite's own
+        // ResolveInstalledDotNet already carries a list that includes /opt/homebrew/bin and
+        // /usr/local/bin, neither of which the policy trusts, and a guard built on that list would
+        // reproduce the mismatch as a skip condition instead of naming it.
+        //
+        // The CI lane that exists for these tests pins a trusted root-owned host, so they still run
+        // where they were meant to, and ARCANUM_REQUIRE_MACOS_WORKSPACE_CHECK keeps that lane from
+        // going quietly green if the pin ever stops working.
+        if (!WorkspaceCheckExecutableRuntimePolicy
+                .ForCurrentPlatform()
+                .ResolveConfiguredOrInstalled(configuredPath: null, workspaceRoot: Path.GetTempPath())
+                .Success)
+        {
+
+            return false;
+        }
+
         try
         {
 

@@ -787,7 +787,12 @@ internal static partial class FileHandleIdentityInterop
             handle = CreateFile(
                 path,
                 GenericRead,
-                FileShare.Read,
+                // Delete alongside Read so a caller holding this handle can still rename or unlink the
+                // entry it opened. Windows refuses both to everyone while any handle omits
+                // FILE_SHARE_DELETE, so without it the marker quarantine rename and the compare-delete
+                // both fail against a marker this function opened. Write sharing stays denied, which is
+                // the exclusion that matters: nobody may change the bytes this handle proved.
+                FileShare.Read | FileShare.Delete,
                 IntPtr.Zero,
                 OpenExisting,
                 FileFlagOpenReparsePoint

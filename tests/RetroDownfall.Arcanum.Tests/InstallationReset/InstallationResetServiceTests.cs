@@ -3732,14 +3732,40 @@ public sealed partial class InstallationResetServiceTests
 
             }
 
-            return Task.FromResult(Result<InstallationResetWorkspaceResolution>.Success(
-                Resolutions
-                    .Where(resolution => Path.GetFullPath(invocationDirectory).StartsWith(
-                        resolution.Workspace.WorkspaceRoot + Path.DirectorySeparatorChar,
-                        StringComparison.Ordinal))
+            // Both sides through GetFullPath, and the comparison the platform actually uses. Only the
+            // invocation directory was normalised before, and the comparison was Ordinal, so on
+            // Windows a root recorded in one casing never matched a directory reported in another and
+            // every caller got "Sequence contains no elements" from the First() below — sixteen tests,
+            // none of them about paths. macOS passed throughout because its temp paths came back in
+            // the casing they were written.
+            StringComparison comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+
+            string invocation = Path.GetFullPath(invocationDirectory);
+
+            InstallationResetWorkspaceResolution[] matches =
+            [
+                .. Resolutions
+                    .Where(resolution => invocation.StartsWith(
+                        Path.TrimEndingDirectorySeparator(
+                            Path.GetFullPath(resolution.Workspace.WorkspaceRoot))
+                            + Path.DirectorySeparatorChar,
+                        comparison))
                     .OrderByDescending(static resolution =>
-                        resolution.Workspace.WorkspaceRoot.Length)
-                    .First()));
+                        resolution.Workspace.WorkspaceRoot.Length),
+            ];
+
+            // Named rather than left to First(): "Sequence contains no elements" says nothing about
+            // which directory failed to match which root, and that is the whole content of the bug
+            // this fake had.
+            Assert.True(
+                matches.Length > 0,
+                $"No seeded workspace root contains '{invocation}'. Seeded roots: "
+                + string.Join(", ", Resolutions.Select(r => r.Workspace.WorkspaceRoot)));
+
+            return Task.FromResult(
+                Result<InstallationResetWorkspaceResolution>.Success(matches[0]));
 
         }
 

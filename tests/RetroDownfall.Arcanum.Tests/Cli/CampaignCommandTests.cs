@@ -11,12 +11,21 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 
+using System.Text.RegularExpressions;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
 [Collection("GlobalConsole")]
 public sealed class CampaignCommandTests
 {
+
+    /// <summary>
+    /// CSI and OSC sequences, so an assertion about a message's text is not also an assertion
+    /// about whether the terminal Spectre found supports colour.
+    /// </summary>
+    private static readonly Regex AnsiEscapePattern =
+        new("\u001b\\[[0-9;?]*[ -/]*[@-~]|\u001b\\][^\u0007\u001b]*(?:\u0007|\u001b\\\\)", RegexOptions.Compiled);
 
     private static readonly Guid SampleId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
@@ -232,10 +241,16 @@ public sealed class CampaignCommandTests
 
             Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
-            // Spectre wraps at the profile width, so the path can carry a line break.
-            string reported = (result.Output + result.Error)
-                .Replace("\r", string.Empty, StringComparison.Ordinal)
-                .Replace("\n", string.Empty, StringComparison.Ordinal);
+            // Spectre wraps at the profile width, so the path can carry a line break -- and it styles,
+            // so the path can carry colour escapes too. Both are presentation the assertion below is
+            // not about, and both depend on the terminal Spectre detects: this passed on a developer
+            // machine and failed on a CI runner, where Detect answered yes and the wrap landed inside
+            // the path with an escape on either side of it.
+            string reported = AnsiEscapePattern.Replace(
+                (result.Output + result.Error)
+                    .Replace("\r", string.Empty, StringComparison.Ordinal)
+                    .Replace("\n", string.Empty, StringComparison.Ordinal),
+                string.Empty);
 
             Assert.Contains(output, reported, StringComparison.Ordinal);
 
