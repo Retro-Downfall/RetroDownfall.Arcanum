@@ -4,10 +4,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 3 and declares two steps; both Covenant tiers are still at version 1 and declare
-/// none. A tier that never left version 1 keeps the cheapest state there is - the loader, the planner's
-/// evolve arm, the installer's step arm, and the backfill driver all run in production and find nothing
-/// to do - and a tier that has left it pays for each step exactly once per installation.
+/// Core is at version 3 and declares two steps, Covenant canonical is at version 2 and declares one, and
+/// the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
+/// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
+/// and the backfill driver all run in production and find nothing to do - and a tier that has left it
+/// pays for each step exactly once per installation.
 ///
 /// <para>Authoring a version step means three edits in one change: the statement files under the
 /// tier's <c>Transitions/V&lt;n&gt;/</c> folder, the tier's version constant here, and the pin for
@@ -28,7 +29,13 @@ internal static class GrimoireSchemaVersionChains
     internal const int CoreSchemaVersion = 3;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
-    internal const int CovenantCanonicalSchemaVersion = 1;
+    /// <remarks>
+    /// Version 2 added the curation substrate: which scoped lane heads an operator has pinned against
+    /// agent authorship, and which Global keys a Campaign has masked. Every object is new, so the step
+    /// adds and alters nothing - which is what lets a fresh installation and an evolved one describe
+    /// the same tree, since CREATE TABLE stores its statement verbatim and ALTER TABLE does not.
+    /// </remarks>
+    internal const int CovenantCanonicalSchemaVersion = 2;
 
     /// <summary>The version of Covenant's inspection index this binary declares.</summary>
     internal const int CovenantAcceleratorSchemaVersion = 1;
@@ -55,6 +62,14 @@ internal static class GrimoireSchemaVersionChains
             // there rather than against every operator's version-2 installation.
             [(GrimoireSchemaTransactionTier.Core, 3)] =
                 "CEFA40F472EB4815F13B257327F8FA78C00B6F671C78DCAB89E4A38B40646F2C",
+
+            // Read out of the Covenant canonical head tree immediately before the curation objects were
+            // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture
+            // reconstructs that tree by removing those objects from the shipped list and a test hashes
+            // it, so a wrong value here fails there rather than against every operator's version-1
+            // installation.
+            [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
+                "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",
 
         };
 

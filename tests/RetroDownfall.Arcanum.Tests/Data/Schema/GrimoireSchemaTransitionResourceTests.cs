@@ -92,8 +92,8 @@ public sealed class GrimoireSchemaTransitionResourceTests
     }
 
     /// <summary>
-    /// The shipped state, asserted positively rather than left unstated: exactly one tier has left
-    /// version 1, and every statement the loader found belongs to one of that tier's steps.
+    /// The shipped state, asserted positively rather than left unstated: which tiers have left version 1,
+    /// and that every statement the loader found belongs to one of their steps.
     /// </summary>
     /// <remarks>
     /// A statement file that landed in the wrong <c>V&lt;n&gt;</c> folder, or under the wrong tier, is
@@ -105,7 +105,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
     /// SQLite as a statement against an object that does not exist yet.</para>
     /// </remarks>
     [Fact]
-    public void The_shipped_catalog_declares_only_the_core_steps()
+    public void The_shipped_catalog_declares_only_the_steps_its_tiers_have_taken()
     {
 
         Assert.All(
@@ -113,9 +113,14 @@ public sealed class GrimoireSchemaTransitionResourceTests
             static statement =>
             {
 
-                Assert.Equal(GrimoireSchemaTransactionTier.Core, statement.TransactionTier);
-
-                Assert.Contains(statement.ToVersion, (int[])[2, 3]);
+                Assert.Contains(
+                    (statement.TransactionTier, statement.ToVersion),
+                    ((GrimoireSchemaTransactionTier Tier, int ToVersion)[])
+                    [
+                        (GrimoireSchemaTransactionTier.Core, 2),
+                        (GrimoireSchemaTransactionTier.Core, 3),
+                        (GrimoireSchemaTransactionTier.CovenantCanonical, 2),
+                    ]);
 
             });
 
@@ -147,6 +152,24 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "annal_versions_guard_update",
                 "annal_dependencies_guard_update",
                 "annal_heads_validate_update",
+                "covenant_curation_versions",
+                "covenant_curation_versions_head_candidate_index",
+                "covenant_curation_versions_global_revision_index",
+                "covenant_curation_versions_campaign_revision_index",
+                "covenant_curation_versions_mutation_index",
+                "covenant_curation_versions_campaign_cleanup_index",
+                "covenant_curation_heads",
+                "covenant_curation_heads_global_subject_index",
+                "covenant_curation_heads_campaign_subject_index",
+                "covenant_curation_heads_current_version_index",
+                "covenant_curation_heads_campaign_masks_index",
+                "covenant_curation_receipts",
+                "covenant_curation_receipts_campaign_cleanup_index",
+                "covenant_curation_receipts_resulting_version_index",
+                "covenant_curation_versions_guard_delete",
+                "covenant_curation_versions_guard_update",
+                "covenant_curation_receipts_guard_delete",
+                "covenant_curation_receipts_guard_update",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
 
