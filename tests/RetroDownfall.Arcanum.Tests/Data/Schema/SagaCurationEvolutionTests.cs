@@ -36,6 +36,11 @@ public sealed class SagaCurationEvolutionTests
             "2CC5BB384111470F86668C4928B54306C7B8F7DCFDBBB152DF9F7C0CF162CC2F",
             CoreSchemaVersionThreeFixture.Fingerprint);
 
+        GrimoireSchemaVersionChain core =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        Assert.Equal(CoreSchemaVersionThreeFixture.Fingerprint, core.SourceDefinitionFingerprintFor(3));
+
     }
 
     /// <summary>
@@ -128,11 +133,16 @@ public sealed class SagaCurationEvolutionTests
         if (evolve)
         {
 
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            GrimoireSchemaInstallResult seed = await GrimoireSchemaTestInstaller.InstallAsync(
                 connection,
                 CoreSchemaVersionThreeFixture.ChainSet(),
                 1536,
                 CancellationToken.None);
+
+            // If this fixture ever regressed to producing a version-4 tree, the "evolved" arm below
+            // would install nothing further and the comparison against "fresh" would pass vacuously —
+            // exactly the failure mode this precondition rules out.
+            Assert.Equal(3, seed.Core.SchemaVersion);
 
         }
 

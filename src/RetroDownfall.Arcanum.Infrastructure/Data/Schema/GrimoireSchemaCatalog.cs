@@ -126,9 +126,10 @@ internal static class GrimoireSchemaCatalog
     /// <c>SourceDefinitionMismatch</c> before that step could run. The feature would break itself on
     /// its first use.
     ///
-    /// <para>Core is the tier that has moved the most, and it declares steps to versions 2, 3, and 4;
-    /// the Covenant accelerator is still at version 1 and declares none, so the loader finds nothing for
-    /// it and it pays for no step it has no use for.</para>
+    /// <para>Core is the tier that has moved the most, and it declares steps to versions 2, 3, and 4.
+    /// Covenant canonical left version 1 once, for its curation substrate, and declares one step to
+    /// version 2. The Covenant accelerator is still at version 1 and declares none, so the loader finds
+    /// nothing for it, which is the cost a tier that never left version 1 does not pay.</para>
     /// </remarks>
     public static IReadOnlyList<GrimoireSchemaTransitionStatementResource> TransitionStatements =>
         LoadedTransitions.Value;

@@ -8,16 +8,23 @@
 -- columns reports DefinitionDrift on every evolved installation and on none of the fresh ones, which is
 -- the hardest shape of that failure to reproduce.
 --
--- The two columns are separate on purpose. A single nullable CampaignId would make "explicitly
--- installation-global" and "ownership never resolved" the same null, and those two answers are
--- opposites: the first is retrievable inside every Campaign, the second inside none until an operator
--- resolves the binding. Codes 1 to 3 are the codes session_campaign_bindings.BindingKindCode already
--- uses, because a memory's scope is its owning Session's binding at the moment it was written; 0 means
--- an upgrade has not classified the row yet and is likewise retrievable nowhere.
+-- ScopeKindCode and CampaignId are separate on purpose. A single nullable CampaignId would make
+-- "explicitly installation-global" and "ownership never resolved" the same null, and those two answers
+-- are opposites: the first is retrievable inside every Campaign, the second inside none until an
+-- operator resolves the binding. Codes 1 to 3 are the codes session_campaign_bindings.BindingKindCode
+-- already uses, because a memory's scope is its owning Session's binding at the moment it was written;
+-- 0 means an upgrade has not classified the row yet and is likewise retrievable nowhere.
 --
--- The invariant "CampaignId is present exactly when ScopeKindCode is 2" is not a table CHECK, because
--- SQLite's ALTER cannot add one and an evolved installation could therefore never match a file that
--- declared it. SagaMemoryScopeKind and its writers own it instead.
+-- The invariant that pair alone carries — CampaignId is present exactly when ScopeKindCode is 2 — is
+-- not a table CHECK, because SQLite's ALTER cannot add one and an evolved installation could therefore
+-- never match a file that declared it. SagaMemoryScopeKind and its writers own it instead.
+--
+-- RetiredAtUtc and PinnedAtUtc are independent of that pair and of each other, and each is nullable on
+-- its own terms rather than by that invariant. A null RetiredAtUtc means the memory is active; a
+-- timestamp means an operator retired it then, and saga_retirement_suppressions is what keeps the next
+-- extraction pass from re-adding it. A null PinnedAtUtc means the memory carries no operator
+-- protection; a timestamp means an operator pinned it then. Nothing in this step writes either column —
+-- the curation verbs that will are a later step.
 CREATE TABLE IF NOT EXISTS saga_memories (
     Id TEXT PRIMARY KEY,
     Content TEXT NOT NULL,
