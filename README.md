@@ -711,7 +711,7 @@ Local package creation:
 
 Use `-SkipForge` for Windows Arcanum + Compendium only. Cross-OS builds are manual GitHub workflows: `Private beta release (Windows / Linux)` builds all three products; `Build Windows x64 (Arcanum + Compendium)` omits The Forge.
 
-The manual **Release macOS arm64** workflow builds on `macos-15-xlarge`, signs with a Developer ID Application certificate, notarizes all outputs, and creates or updates a draft GitHub Release. Required repository secrets are `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_SPECIFIC_PASSWORD`. Enter a version such as `0.1.0-beta.1`; build metadata is rejected. Outputs are:
+The manual **Release macOS arm64** workflow builds on `macos-26`, signs with a Developer ID Application certificate, notarizes all outputs, and creates or updates a draft GitHub Release. Required repository secrets are `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_SPECIFIC_PASSWORD`. Enter a version such as `0.1.0-beta.1`; build metadata is rejected. Outputs are:
 
 - `arcanum-osx-arm64.zip` — signed, notarized folder-based self-contained CLI plus this document as `README.md`; zip is not stapled;
 - `compendium-osx-arm64.dmg` — signed, notarized, stapled `Compendium.app`; and
