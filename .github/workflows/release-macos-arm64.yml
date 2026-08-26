@@ -210,6 +210,35 @@ jobs:
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
+      # The requirement step above checks the *shape* of APPLE_SIGNING_IDENTITY. Nothing checked that
+      # the certificate in APPLE_CERTIFICATE is the one that name refers to, and the first release run
+      # found out the hard way: the p12 held "Mac Developer: ... (2WMZ9U99F7)" while the identity named
+      # a Developer ID Application certificate, so codesign answered "no identity found" — twenty-four
+      # minutes in, after a full Native AOT compile, at the first Mach-O it tried to sign.
+      #
+      # Two secrets have to agree for a release to be possible and neither one alone can say whether
+      # they do. Comparing them takes a second, so it happens before anything is built. The available
+      # identities are printed because that is what makes the failure actionable: a Mac Developer
+      # certificate cannot be notarized at all, so the answer is always to export a different one.
+      - name: Require the certificate to be the identity the release names
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          FOUND="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")"
+          echo "Identities in the signing keychain:"
+          printf '%s\n' "$FOUND"
+          if [[ "$FOUND" != *"$APPLE_SIGNING_IDENTITY"* ]]; then
+            echo "error: APPLE_CERTIFICATE does not contain the identity APPLE_SIGNING_IDENTITY names." >&2
+            echo "  The keychain holds the identities listed above, and none of them is that one." >&2
+            echo "  Export the Developer ID Application certificate — with its private key, as a .p12 —" >&2
+            echo "  and base64 it into APPLE_CERTIFICATE, with the export password in" >&2
+            echo "  APPLE_CERTIFICATE_PASSWORD. A Mac Developer certificate signs locally and can never" >&2
+            echo "  be notarized, so substituting one cannot produce a release." >&2
+            exit 1
+          fi
+          echo "The signing keychain holds the identity this release names."
+
       - name: Package Arcanum (notarized zip)
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
