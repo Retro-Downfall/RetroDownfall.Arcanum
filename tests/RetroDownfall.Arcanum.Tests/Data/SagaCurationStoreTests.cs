@@ -184,7 +184,10 @@ public sealed class SagaCurationStoreTests
 
     /// <summary>
     /// Two memories with identical content in one scope hash to the same suppression digest.
-    /// <c>INSERT OR IGNORE</c> is what keeps the second retirement from aborting on the first's row.
+    /// <c>ON CONFLICT(SuppressionDigest) DO NOTHING</c> is what keeps the second retirement from
+    /// aborting on the first's row: the conflict target names the digest specifically, so a duplicate
+    /// digest is tolerated while a malformed row still aborts the transaction -- the distinction a bare
+    /// <c>INSERT OR IGNORE</c> would not draw.
     /// </summary>
     [SkippableFact]
     public async Task Retiring_two_memories_that_share_content_and_scope_produces_one_suppression()
