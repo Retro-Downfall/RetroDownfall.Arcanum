@@ -550,17 +550,16 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         IReadOnlyList<string> branches = PushTriggerBranches(FindRepositoryRoot());
 
-        foreach (string branch in new[] { "main", "long-term-memory" })
-        {
-
-            Assert.True(
-                branches.Contains(branch, StringComparer.Ordinal),
-                $"A direct push to {branch} runs no CI at all: .github/workflows/ci.yml lists "
-                + $"on.push.branches as [{string.Join(", ", branches)}]. Every workstream lands on "
-                + "long-term-memory before main, so leaving it off means coverage, the Windows "
-                + "suite and the AOT IL gate never execute for the commits that integrate.");
-
-        }
+        // main, and whatever else the project integrates on at the time. long-term-memory was named
+        // here for as long as it was the branch every workstream landed on; it was merged into main
+        // and deleted, and a rule that keeps asserting a branch nobody can push to is asserting the
+        // past. Add the next integration branch here when there is one -- the reason has not changed:
+        // a direct push to a branch this list omits runs no gate at all, so coverage, the Windows
+        // suite, and the AOT IL closure analysis would execute only on pull requests.
+        Assert.True(
+            branches.Contains("main", StringComparer.Ordinal),
+            "A direct push to main runs no CI at all: .github/workflows/ci.yml lists on.push.branches "
+            + $"as [{string.Join(", ", branches)}].");
 
     }
 
