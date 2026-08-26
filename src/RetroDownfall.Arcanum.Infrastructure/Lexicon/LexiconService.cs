@@ -7,13 +7,18 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 
@@ -28,6 +33,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 internal sealed class LexiconService(
     ArcanumDbContext db,
     ILogger<LexiconService> logger,
+    IOptionsMonitor<ArcanumSettings> options,
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ILexiconService
 {
 
@@ -135,6 +141,37 @@ internal sealed class LexiconService(
                         else
                         {
                             await UpdateAsync(connection, id, trimmedName, normalized, scope.Key, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
+                        }
+
+                        if (options.CurrentValue.Features.Annals)
+                        {
+
+                            // One call for both arms. The writer decides between an assertion and a
+                            // correction from the claim it finds, so a first write and a later one cannot
+                            // disagree about which this is, and a merge that added no fact appends
+                            // nothing at all.
+                            //
+                            // AgentAsserted rather than AgentExtracted: a Lexicon write is a tool call a
+                            // model chose to make, not something taken from a transcript behind its back.
+                            //
+                            // The transaction argument is null because this method drives its transaction
+                            // with raw BEGIN IMMEDIATE text and has no object to hand over. The commands
+                            // run on this same connection, so they are inside it regardless.
+                            _ = await AnnalsClaimWriter.AppendCorrectionAsync(
+                                connection,
+                                transaction: null,
+                                AnnalSubjectStore.Lexicon,
+                                id.ToString(),
+                                AnnalOrigin.AgentAsserted,
+                                scope.CampaignId is null ? SagaMemoryScopeKind.Global : SagaMemoryScopeKind.Campaign,
+                                scope.CampaignId?.ToString(),
+                                ContentSensitivity.None,
+                                AnnalContentDigest.ForLexiconEntry(resolvedType, factsText),
+                                now,
+                                now,
+                                sourceSessionId: null,
+                                cancellationToken).ConfigureAwait(false);
+
                         }
 
                         LexiconFactProvenance[] factProvenance = await ReplaceFactProvenanceAsync(

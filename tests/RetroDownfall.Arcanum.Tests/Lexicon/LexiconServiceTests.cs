@@ -6,12 +6,14 @@ using System.Reflection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Lexicon;
@@ -53,7 +55,10 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         _db = _fixture.CreateContext(_dbPath);
 
-        _service = new LexiconService(_db, NullLogger<LexiconService>.Instance);
+        _service = new LexiconService(
+            _db,
+            NullLogger<LexiconService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         return Task.CompletedTask;
 
