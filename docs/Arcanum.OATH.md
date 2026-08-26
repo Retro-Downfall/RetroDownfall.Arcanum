@@ -1,6 +1,6 @@
 # OATH: Origin-Bound, Authority-Conserving Transactional History
 
-> **Focused architecture companion.** OATH is the formal name for Arcanum's governed durable-memory architecture — the thing the `long-term-memory` branch is building. Its core law is: **Memory cannot outrank its origin.**
+> **Focused architecture companion.** OATH is the formal name for Arcanum's governed durable-memory architecture. Its core law is: **Memory cannot outrank its origin.**
 >
 > [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) remains authoritative for shipped architecture, persistence, runtime behavior, and testing. [`Arcanum.API.md`](Arcanum.API.md), [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md), and [`Compendium.README.md`](Compendium.README.md) remain authoritative for API, CLI, and configuration contracts. This document explains how those contracts form one memory architecture. It does not create a new API resource named `OATH`, rename existing `Covenant*` types, or supersede an owning document.
 
@@ -10,7 +10,7 @@
 
 **Document status:** current as of **2026-08-24**, reconciled through GitHub issue #128 and issue #123's complete attested full installation reset.
 
-**Branch status.** This #122 update is intentionally branch-local on `long-term-memory` until the normal project mirror reaches `main`; delivery of this issue does not merge or rewrite `main`. Read this copy together with the implementation branch. The implementation and the `Arcanum.DESIGN.md` sections it cites (§10.10–§10.22.6) live on `long-term-memory`; §22 marks those links.
+**Branch status.** None. `long-term-memory` was the implementation branch this document was written against; it was merged into `main` and deleted, and everything described here — including the `Arcanum.DESIGN.md` sections cited in §22 — is on `main`. Nothing in this document is waiting on a mirror.
 
 ---
 
@@ -48,7 +48,7 @@ OATH supplies the rules that those systems must obey when content crosses betwee
 
 OATH spans implemented foundations, active implementation work, approved target contracts, and explicit research extensions. These categories must not be conflated.
 
-### 2.1 What has landed on `long-term-memory`
+### 2.1 What has landed
 
 | Issue | State | Delivered |
 |---|---|---|
@@ -1292,7 +1292,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 
 ## 22. Source map
 
-The following documents own or explain the detailed contracts summarized here. Documents marked **(branch)** currently exist only on `long-term-memory` and will resolve on `main` through the project's normal mirror. This #122 delivery does not itself merge `main`.
+The following documents own or explain the detailed contracts summarized here. The **(branch)** marks are historical: they meant a section existed only on `long-term-memory`, which has since been merged into `main` and deleted. Every link below resolves on `main`.
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md): shipped architecture, persistence, runtime, security, testing, and implementation evidence. Covenant slices are §10.10 through §10.22.6 **(branch)**:
   - §10.10 Core protocol foundation

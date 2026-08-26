@@ -6,7 +6,7 @@
 >
 > This is the approachable guide. [`Arcanum.OATH.md`](Arcanum.OATH.md) provides the complete technical explanation and source map. The broader shipped design remains authoritative in [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md).
 >
-> **Branch status.** This guide is intentionally local to `long-term-memory` until the project's normal mirror reaches `main`; nothing here merges or rewrites `main`. Read it with the implementation branch; section 11 is the boundary.
+> **Branch status.** None. This guide was written on `long-term-memory`, which has since been merged into `main` and deleted; everything it describes is on `main`. Section 11 is still the boundary between what ships and what does not.
 
 ---
 
@@ -369,7 +369,7 @@ This prevents a restart from treating half-finished work as permission for a dif
 
 ## 11. What exists now and what comes next
 
-**Status as of 2026-08-22**, on the `long-term-memory` branch.
+**Status as of 2026-08-22**, written on `long-term-memory` and since merged into `main`.
 
 OATH combines built foundations with an activated data-lifecycle erasure surface and dedicated management work that remains unregistered. The feature is still off by default.
 
