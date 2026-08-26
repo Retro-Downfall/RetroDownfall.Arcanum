@@ -269,6 +269,27 @@ public sealed record CovenantMutationEffectQuery(
     CovenantOperation Operation);
 
 /// <summary>
+/// Everything a Ward has to show before an operator can approve one retirement.
+/// </summary>
+/// <remarks>
+/// The compiled fragment travels because an operator approving a retirement reads the content, not a
+/// hash of it. The pin travels because a pinned head must be refused before a Ward is raised at all:
+/// asking somebody to approve what the write authority will refuse anyway is asking them to authorize
+/// nothing.
+/// </remarks>
+public sealed record CovenantRetirementTarget(
+    Guid EntryId,
+    Guid VersionId,
+    CovenantLane Lane,
+    long LaneRevision,
+    string NormalizedKey,
+    string CompiledContent,
+    CovenantDigest RenderedHash,
+    bool GlobalFallbackApplies,
+    long KeyEpoch,
+    bool IsPinned);
+
+/// <summary>
 /// The subject one curation preflight measures, before its key epoch is known.
 /// </summary>
 /// <remarks>

@@ -71,6 +71,40 @@ internal static class CovenantStoreSql
         """;
 
     /// <summary>
+    /// One live retirement target: its identity, the fragment a Ward shows, and the two facts the
+    /// broader-scope sentence turns on.
+    /// </summary>
+    /// <remarks>
+    /// The Global sibling counts only when it is live and not masked here. A retired Global head
+    /// applies to no turn, and a masked one applies to no turn in this Campaign, so reporting either as
+    /// a fallback would promise an operator content that will not arrive when their entry goes.
+    /// </remarks>
+    internal static string RetirementTarget() => """
+        WITH epoch(Value) AS (
+            SELECT COALESCE((SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)
+        )
+        SELECT h.EntryId, h.CurrentVersionId, h.CurrentLaneRevision, h.CurrentOperationCode,
+               v.CompiledContent, v.RenderedHash,
+               epoch.Value,
+               COALESCE(pin.IsPinned, 0),
+               EXISTS(
+                   SELECT 1 FROM covenant_heads g
+                   WHERE g.CampaignId IS NULL AND g.NormalizedKey = $key
+                     AND g.LaneCode = 1 AND g.CurrentOperationCode = 1),
+               EXISTS(
+                   SELECT 1 FROM covenant_curation_heads m
+                   WHERE m.CampaignId = $campaign AND m.NormalizedKey = $key
+                     AND m.LaneCode = 1 AND m.IsMasked = 1 AND m.KeyEpoch = epoch.Value)
+        FROM covenant_heads h
+        JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
+        CROSS JOIN epoch
+        LEFT JOIN covenant_curation_heads pin
+            ON pin.CampaignId = $campaign AND pin.NormalizedKey = $key
+               AND pin.LaneCode = $lane AND pin.KeyEpoch = epoch.Value
+        WHERE h.CampaignId = $campaign AND h.NormalizedKey = $key AND h.LaneCode = $lane;
+        """;
+
+    /// <summary>
     /// The Global keys one Campaign has masked, for the turn that Campaign is about to take.
     /// </summary>
     /// <remarks>

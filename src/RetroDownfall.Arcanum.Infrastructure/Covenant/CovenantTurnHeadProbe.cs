@@ -34,6 +34,77 @@ internal sealed class CovenantTurnHeadProbe(
         store.ProbeLaneHeadAsync(campaign, lane, normalizedKey, readLease, cancellationToken);
 
     /// <summary>
+    /// Resolves the exact retirement target a Ward will show, under the turn's own lease.
+    /// </summary>
+    /// <remarks>
+    /// A pinned head is refused here rather than at the write authority, because the write authority
+    /// runs after the operator has already approved. Asking somebody to authorize a change that cannot
+    /// be applied is asking them to authorize nothing.
+    /// </remarks>
+    public async ValueTask<Result<CovenantRetirementPreflight>> ResolveRetirementPreflightAsync(
+        CovenantLane lane,
+        string normalizedKey,
+        CancellationToken cancellationToken)
+    {
+
+        Result<CovenantRetirementTarget> target = await store
+            .ReadRetirementTargetAsync(campaign, lane, normalizedKey, readLease, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (target.IsFailure)
+        {
+
+            return target.Error;
+
+        }
+
+        if (target.Value.IsPinned)
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.ForbiddenAuthority,
+                "This Covenant entry is pinned, so the agent may not retire it.");
+
+        }
+
+        try
+        {
+
+            return Result<CovenantRetirementPreflight>.Success(new CovenantRetirementPreflight(
+                target.Value.EntryId,
+                target.Value.VersionId,
+                target.Value.Lane,
+                target.Value.LaneRevision,
+                target.Value.NormalizedKey,
+                target.Value.CompiledContent,
+                target.Value.RenderedHash,
+                target.Value.GlobalFallbackApplies,
+                target.Value.KeyEpoch,
+                CovenantDigests.RetirementPreflight(new RetirementPreflightDigestInput(
+                    target.Value.EntryId,
+                    target.Value.VersionId,
+                    CovenantScope.Campaign,
+                    campaign.CampaignId,
+                    new CovenantKey(target.Value.NormalizedKey),
+                    target.Value.Lane,
+                    checked((ulong)target.Value.LaneRevision),
+                    checked((ulong)target.Value.KeyEpoch),
+                    target.Value.RenderedHash,
+                    target.Value.GlobalFallbackApplies))));
+
+        }
+        catch (ArgumentException refused)
+        {
+
+            // The stored head failed the disclosure's own invariants, which means the row cannot be
+            // described to an operator honestly. Refusing is the only answer that is not a guess.
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, refused.Message);
+
+        }
+
+    }
+
+    /// <summary>
     /// Measures the turn's own Campaign Section, under the turn's own lease.
     /// </summary>
     /// <remarks>

@@ -30,6 +30,14 @@ public sealed record CurationDependentHeadsDigestInput(CovenantScope Scope, Guid
 /// <summary>The state one curation change was measured against and the state it would leave.</summary>
 public sealed record CurationEffectDigestInput(CovenantCurationKind Kind, ulong CurrentRevision, bool CurrentlyPinned, bool CurrentlyMasked, bool ProjectedPinned, bool ProjectedMasked, bool GlobalConfirmedSuppressed, bool GlobalConfirmedResurfaces);
 
+/// <summary>The exact retirement target one Ward was shown.</summary>
+/// <remarks>
+/// Carried by the staged tombstone as evidence of what the operator actually approved. It binds the
+/// content as well as the identity, because "you approved retiring revision three" and "you approved
+/// retiring this text" are different statements and only the second is what an operator read.
+/// </remarks>
+public sealed record RetirementPreflightDigestInput(Guid EntryId, Guid VersionId, CovenantScope Scope, Guid? CampaignId, CovenantKey NormalizedKey, CovenantLane Lane, ulong TargetLaneRevision, ulong KeyEpoch, CovenantDigest RenderedHash, bool GlobalFallbackApplies);
+
 public sealed record PreflightBodyDigestInput(CovenantDigest RequestDigest, ulong OperatorAuthorityEpoch, Guid DatasetGeneration, ulong ExpectedTargetRevision, ulong NormalizedKeyDependencyEpoch, ulong KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? CompiledArtifactDigest, CovenantDigest DependentHeadVectorDigest, CovenantDigest EffectDigest, long IssuedAt, long ExpiresAt, Guid? TargetVersionId = null, CovenantDigest? TargetRenderedHash = null);
 
 public sealed record AuthorizationDigestInput(CovenantDigest RequestDigest, Guid DatasetGeneration, ulong? OperatorAuthorityEpoch, ulong? NormalizedKeyDependencyEpoch, ulong? KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? PreflightBodyDigest, CovenantDigest? WardReceiptDigest, CovenantAuthorizationMode Authorization);

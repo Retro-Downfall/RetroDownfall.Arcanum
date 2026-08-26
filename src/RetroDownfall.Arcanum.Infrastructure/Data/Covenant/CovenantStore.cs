@@ -1310,6 +1310,100 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
     }
 
+    public async ValueTask<Result<CovenantRetirementTarget>> ReadRetirementTargetAsync(
+        CanonicalCampaignContext campaign,
+        CovenantLane lane,
+        string normalizedKey,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentException.ThrowIfNullOrEmpty(normalizedKey);
+
+        if (!campaign.IsCampaignBound)
+        {
+
+            // A retirement is authored by an agent, and agent staging requires a Campaign binding by
+            // the capability's own constructor. A Global-only turn has no target here at all.
+            return new Error(
+                ErrorCodes.Covenant.InvalidScope,
+                "A Covenant retirement target is resolved within one Campaign.");
+
+        }
+
+        CovenantOperationScope scope = CovenantOperationScope.ForCampaign(campaign.CampaignId!.Value);
+
+        Result validated = await ValidateLeaseAsync(readLease, scope, requireInstallation: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (validated.IsFailure)
+        {
+
+            return validated.Error;
+
+        }
+
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                .ConfigureAwait(false);
+
+        CovenantRetirementTarget? target = null;
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+
+            command.Transaction = transaction;
+
+            command.CommandText = CovenantStoreSql.RetirementTarget();
+
+            Bind(command, "$key", normalizedKey);
+
+            Bind(command, "$lane", (int)lane);
+
+            Bind(command, "$campaign", campaign.CampaignId!.Value.ToString("D"));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                && reader.GetInt32(3) == (int)CovenantOperation.Set)
+            {
+
+                // Global content starts applying only where the retirement removes what was covering
+                // it: retiring a Proposed head reveals nothing, because a proposal never covered the
+                // Global entry in the first place.
+                bool fallback = lane == CovenantLane.Confirmed
+                    && reader.GetInt32(8) == 1
+                    && reader.GetInt32(9) == 0;
+
+                target = new CovenantRetirementTarget(
+                    Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
+                    Guid.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
+                    lane,
+                    reader.GetInt64(2),
+                    normalizedKey,
+                    reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                    reader.IsDBNull(5) ? default : new CovenantDigest((byte[])reader.GetValue(5)),
+                    fallback,
+                    reader.GetInt64(6),
+                    reader.GetInt32(7) == 1);
+
+            }
+
+        }
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return target is null
+            ? new Error(
+                ErrorCodes.Covenant.StaleSnapshot,
+                "This Covenant key has no live head in that lane, so there is nothing to retire.")
+            : Result<CovenantRetirementTarget>.Success(target);
+
+    }
+
     private static async Task<EffectFacts> ReadEffectFactsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,

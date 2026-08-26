@@ -372,7 +372,8 @@ public sealed class CovenantCanonicalEncoderTests
             "Arcanum.Covenant.DependentHeadVector.v1",
             "Arcanum.Covenant.CurationRequest.v1",
             "Arcanum.Covenant.CurationDependentHeads.v1",
-            "Arcanum.Covenant.CurationEffect.v1"
+            "Arcanum.Covenant.CurationEffect.v1",
+            "Arcanum.Covenant.RetirementPreflight.v1"
         ];
 
         Assert.Equal(expected.Length, CovenantPolicyV1Manifest.DomainTags.Count);

@@ -43,7 +43,8 @@ public enum CovenantDomainTag : byte
     DependentHeadVector = 35,
     CurationRequest = 36,
     CurationDependentHeads = 37,
-    CurationEffect = 38
+    CurationEffect = 38,
+    RetirementPreflight = 39
 }
 
 public static class CovenantPolicyV1Manifest
@@ -87,7 +88,8 @@ public static class CovenantPolicyV1Manifest
         CovenantDomainTag.DependentHeadVector,
         CovenantDomainTag.CurationRequest,
         CovenantDomainTag.CurationDependentHeads,
-        CovenantDomainTag.CurationEffect
+        CovenantDomainTag.CurationEffect,
+        CovenantDomainTag.RetirementPreflight
     ]);
 
     public static IReadOnlyList<CovenantDomainTag> DomainTags => PolicyDomainTags;
@@ -133,6 +135,7 @@ public static class CovenantPolicyV1Manifest
             CovenantDomainTag.CurationRequest => "Arcanum.Covenant.CurationRequest.v1",
             CovenantDomainTag.CurationDependentHeads => "Arcanum.Covenant.CurationDependentHeads.v1",
             CovenantDomainTag.CurationEffect => "Arcanum.Covenant.CurationEffect.v1",
+            CovenantDomainTag.RetirementPreflight => "Arcanum.Covenant.RetirementPreflight.v1",
             _ => throw new ArgumentOutOfRangeException(nameof(domainTag))
         };
 

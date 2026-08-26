@@ -199,6 +199,32 @@ public static class CovenantDigests
         });
     }
 
+    public static CovenantDigest RetirementPreflight(RetirementPreflightDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint scope = Code(input.Scope, nameof(input.Scope));
+        uint lane = Code(input.Lane, nameof(input.Lane));
+        RequireGuid(input.EntryId, nameof(input.EntryId));
+        RequireGuid(input.VersionId, nameof(input.VersionId));
+        ValidateScopeCampaign(input.Scope, input.CampaignId, nameof(input));
+        string key = RequireKey(input.NormalizedKey, nameof(input.NormalizedKey));
+        RequireDigest(input.RenderedHash, nameof(input.RenderedHash));
+
+        return Hash(CovenantDomainTag.RetirementPreflight, writer =>
+        {
+            writer.WriteGuid(input.EntryId);
+            writer.WriteGuid(input.VersionId);
+            writer.WriteUInt32(scope);
+            WriteOptionalGuid(writer, input.CampaignId);
+            writer.WriteUtf8(key);
+            writer.WriteUInt32(lane);
+            writer.WriteUInt64(input.TargetLaneRevision);
+            writer.WriteUInt64(input.KeyEpoch);
+            WriteDigest(writer, input.RenderedHash);
+            writer.WriteByte(ToByte(input.GlobalFallbackApplies));
+        });
+    }
+
     public static CovenantDigest PreflightBody(PreflightBodyDigestInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
