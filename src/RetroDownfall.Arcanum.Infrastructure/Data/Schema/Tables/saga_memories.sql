@@ -1,12 +1,12 @@
--- ScopeKindCode and CampaignId are laid out the way SQLite lays out an added column, not the way the
--- rest of this file is indented, and that is deliberate. Version 2 reaches an existing installation
--- through ALTER TABLE ... ADD COLUMN, which rewrites the stored table declaration by splicing
--- ", <column-def>" in front of the closing parenthesis and taking the definition verbatim. The
--- installer then compares that stored text with this file, normalized. A version-2 installation built
--- fresh from this file and one evolved from version 1 have to normalize to the same string, so this
--- file has to be written in the shape ALTER produces. Reindenting these two columns reports
--- DefinitionDrift on every evolved installation and on none of the fresh ones, which is the hardest
--- shape of that failure to reproduce.
+-- ScopeKindCode, CampaignId, RetiredAtUtc, and PinnedAtUtc are laid out the way SQLite lays out an
+-- added column, not the way the rest of this file is indented, and that is deliberate. Versions 2 and
+-- 4 both reach an existing installation through ALTER TABLE ... ADD COLUMN, which rewrites the stored
+-- table declaration by splicing ", <column-def>" in front of the closing parenthesis and taking the
+-- definition verbatim. The installer then compares that stored text with this file, normalized. An
+-- installation built fresh from this file and one evolved through every ALTER have to normalize to the
+-- same string, so this file has to be written in the shape ALTER produces. Reindenting any of these
+-- columns reports DefinitionDrift on every evolved installation and on none of the fresh ones, which is
+-- the hardest shape of that failure to reproduce.
 --
 -- The two columns are separate on purpose. A single nullable CampaignId would make "explicitly
 -- installation-global" and "ownership never resolved" the same null, and those two answers are
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS saga_memories (
     SessionId TEXT,
     Tags TEXT,
     Source TEXT
-, ScopeKindCode INTEGER NOT NULL DEFAULT 0, CampaignId TEXT);
+, ScopeKindCode INTEGER NOT NULL DEFAULT 0, CampaignId TEXT, RetiredAtUtc TEXT, PinnedAtUtc TEXT);
 
 CREATE INDEX IF NOT EXISTS idx_saga_memories_session ON saga_memories(SessionId);
 

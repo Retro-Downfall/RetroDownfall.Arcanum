@@ -4,8 +4,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 3 and declares two steps, Covenant canonical is at version 2 and declares one, and
-/// the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
+/// Core is at version 4 and declares three steps, Covenant canonical is at version 2 and declares one,
+/// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
 /// pays for each step exactly once per installation.
@@ -25,8 +25,13 @@ internal static class GrimoireSchemaVersionChains
     ///
     /// <para>Version 3 added the Annals: durable memory now records what it claimed, who asserted it,
     /// when that was true, when Arcanum came to hold it, and which earlier claims it rests on.</para>
+    ///
+    /// <para>Version 4 gave <c>saga_memories</c> two nullable lifecycle columns, <c>RetiredAtUtc</c> and
+    /// <c>PinnedAtUtc</c>, and added <c>saga_retirement_suppressions</c> and <c>saga_suppression_key</c>:
+    /// the storage an operator's curation verbs need to retire or pin a memory, and to keep a retired
+    /// memory from being re-extracted. No verb writes to any of it yet.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 3;
+    internal const int CoreSchemaVersion = 4;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -62,6 +67,13 @@ internal static class GrimoireSchemaVersionChains
             // there rather than against every operator's version-2 installation.
             [(GrimoireSchemaTransactionTier.Core, 3)] =
                 "CEFA40F472EB4815F13B257327F8FA78C00B6F671C78DCAB89E4A38B40646F2C",
+
+            // Read out of the Core head tree immediately before saga_memories.sql gained its lifecycle
+            // columns and the two suppression objects were added. Nothing can recompute it either.
+            // CoreSchemaVersionThreeFixture reconstructs that tree and a test hashes it, so a wrong
+            // value here fails there rather than against every operator's version-3 installation.
+            [(GrimoireSchemaTransactionTier.Core, 4)] =
+                "2CC5BB384111470F86668C4928B54306C7B8F7DCFDBBB152DF9F7C0CF162CC2F",
 
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture

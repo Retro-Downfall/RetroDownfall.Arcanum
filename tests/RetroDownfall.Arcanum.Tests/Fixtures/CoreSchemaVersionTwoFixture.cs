@@ -7,14 +7,20 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// real version-2 installation rather than from a hand-written metadata row.
 /// </summary>
 /// <remarks>
-/// Version 3 only <i>adds</i> objects and edits none, so the reconstruction is the shipped Core tree
-/// with every Annals object removed. That is also what keeps it honest: the fingerprint this list
-/// produces is compared against the pin the shipped chain carries for version 2, so a reconstruction
-/// that drifted fails rather than quietly certifying the wrong pin.
+/// Version 3 only <i>adds</i> objects and edits none, so the reconstruction is the version-3 tree with
+/// every Annals object removed. That is also what keeps it honest: the fingerprint this list produces
+/// is compared against the pin the shipped chain carries for version 2, so a reconstruction that
+/// drifted fails rather than quietly certifying the wrong pin.
 ///
-/// <para>A later version step that <i>edits</i> a Core object has to freeze that object's version-2 text
-/// here, exactly as <see cref="CoreSchemaVersionOneFixture"/> freezes two objects, or the reconstruction
-/// stops describing version 2 and the pin assertion says so.</para>
+/// <para>Each fixture peels back exactly one version, which is why this one starts from
+/// <see cref="CoreSchemaVersionThreeFixture"/> rather than from the shipped catalog. Version 4 edits
+/// <c>saga_memories</c>, and versions 2 and 3 declared that table identically, so
+/// <see cref="CoreSchemaVersionThreeFixture"/> has already frozen the text this fixture needs and no
+/// freeze of its own is required here — only the objects version 3 added have to come back off.</para>
+///
+/// <para>A later version step that <i>edits</i> a Core object also present at version 2 has to freeze
+/// that object's version-2 text here, exactly as <see cref="CoreSchemaVersionOneFixture"/> freezes two
+/// objects, or the reconstruction stops describing version 2 and the pin assertion says so.</para>
 /// </remarks>
 internal static class CoreSchemaVersionTwoFixture
 {
@@ -25,7 +31,7 @@ internal static class CoreSchemaVersionTwoFixture
     /// <summary>Every Core object as version 2 declared it.</summary>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects.Where(
+        .. CoreSchemaVersionThreeFixture.Objects.Where(
             static definition => !definition.Name.StartsWith(AnnalsObjectPrefix, StringComparison.Ordinal)),
     ];
 
