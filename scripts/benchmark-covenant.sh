@@ -39,6 +39,24 @@
 # retention, which is where that evidence comes from. Before any ceiling is tightened, read several of
 # those artifacts, and state the observed p95 and p99 per operation and the date of the runs here, so
 # the next person tightening a ceiling can see how much room they are taking away rather than guessing.
+#
+# First observations from a shared runner, both macos-26, 2026-08-26, microseconds:
+#
+#                     run A p95 / p99      run B p95 / p99      dev machine p95 / p99
+#   turn.plan          550.2 / 1099.5       242.7 /  441.4        175.5 /  376.6
+#   turn.admission       4.1 /  119.7         2.8 /    3.2          2.0 /    2.2
+#   mutation.prepare   371.1 /  530.3       111.3 /  127.4         71.7 /  107.0
+#   mutation.commit   2141.1 / 4729.1      1427.6 / 3248.1        863.0 / 1908.5
+#   status.census       50.6 /   76.7        48.3 /   58.0         38.2 /   46.8
+#
+# Run A breached turn.admission p99 and mutation.prepare p95; run B passed everything with room, at
+# the same commit-adjacent tree on the same runner label. So the ceilings are not too tight and were
+# not loosened. What the two runs establish is the size of the noise: turn.admission p99 moved by a
+# factor of thirty-seven between them, on an operation whose p50 is two and a half microseconds. At
+# that scale one scheduler preemption is the whole measurement, so the p99 of the microsecond
+# operations reports the runner rather than the code, and a red one is a reason to re-run before it is
+# a reason to investigate. Allocations are the half that holds still -- identical to within sixteen
+# bytes across all three columns -- and are the number to reach for when a regression needs catching.
 
 set -euo pipefail
 
