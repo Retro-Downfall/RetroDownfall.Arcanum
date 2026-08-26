@@ -193,6 +193,14 @@ rm -rf "$APP_PATH"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 render_plist_template "$PLIST_TEMPLATE" "$APP_PATH/Contents/Info.plist" "$MARKETING_VERSION" "$BUNDLE_VERSION"
 cp -a "$PUBLISH_DIR"/. "$APP_PATH/Contents/MacOS/"
+
+# Debug symbols are not part of a shipped app. They are several megabytes of internals nobody
+# installing the DMG can use, and every one of them is another file the bundle seal has to cover --
+# codesign treats everything under Contents/MacOS as nested code, whatever its type, so a .pdb that
+# does not belong here still has to be signed before the bundle will seal. Removing them is cheaper
+# than signing them and is what a release should carry either way.
+find "$APP_PATH/Contents/MacOS" -type f -name '*.pdb' -delete
+
 chmod +x "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 
 # Guard: marketing version in plist must stay numeric-only.

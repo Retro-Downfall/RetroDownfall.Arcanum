@@ -241,7 +241,20 @@ sign_app_bundle() {
   require_cmd file
   require_cmd codesign
 
-  # Collect nested Mach-O files except the main apphost, which is signed after everything it loads.
+  # Everything under Contents/MacOS except the main apphost, which is signed after all of it.
+  #
+  # Not "every Mach-O" -- everything. Contents/MacOS is the bundle's executables directory, and
+  # codesign seals every file in it as nested code regardless of what the file actually is. These apps
+  # are not Native AOT, so that directory holds several hundred managed assemblies beside the dylibs,
+  # and the first release to reach this point failed on Microsoft.CSharp.dll being unsigned. Narrowing
+  # the fix to Mach-O plus .dll then failed on a .pdb, which is how the real rule showed itself: file
+  # type is not the question, location is.
+  #
+  # Signing a managed assembly is not the same operation as signing a Mach-O -- there is nowhere in a
+  # PE file to embed a signature, so codesign attaches a detached one and the seal covers it -- but it
+  # still has to happen, and it still has to happen before the executable that sits above them.
+  #
+  # The bundle assembler deletes .pdb files before this runs, so what is left is what ships.
   MACHO_PATHS=()
   local file
   local base
@@ -250,16 +263,15 @@ sign_app_bundle() {
     if [[ "$base" == "$executable_name" ]]; then
       continue
     fi
-    if file -b "$file" | grep -q 'Mach-O'; then
-      MACHO_PATHS+=("$file")
-    fi
+    MACHO_PATHS+=("$file")
   done < <(find "$macos_dir" -type f -print0)
 
   order_macho_paths_deepest_first sign_app_bundle
 
+  echo "==> Signing ${#MACHO_PATHS_ORDERED[@]} nested code item(s) under $macos_dir"
+
   local path
   for path in "${MACHO_PATHS_ORDERED[@]+"${MACHO_PATHS_ORDERED[@]}"}"; do
-    echo "==> Signing nested Mach-O: $path"
     codesign_item "$path" "$entitlements"
   done
 
