@@ -75,7 +75,7 @@ public sealed class AnnalsStoreTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await InsertMemoryAsync(CreateSagaStore(annals: true), "mem-1", "a conclusion");
+        _ = await InsertMemoryAsync(CreateSagaStore(annals: true), "mem-1", "a conclusion");
 
         AnnalClaimHead? head = await CreateStore().GetClaimAsync(
             AnnalSubjectStore.Saga,
@@ -104,7 +104,7 @@ public sealed class AnnalsStoreTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await InsertMemoryAsync(CreateSagaStore(annals: false), "mem-unclaimed", "a conclusion");
+        _ = await InsertMemoryAsync(CreateSagaStore(annals: false), "mem-unclaimed", "a conclusion");
 
         Assert.Null(
             await CreateStore().GetClaimAsync(AnnalSubjectStore.Saga, "mem-unclaimed", CancellationToken.None));
@@ -223,7 +223,7 @@ public sealed class AnnalsStoreTests : IAsyncLifetime
 
     }
 
-    private static Task InsertMemoryAsync(ISagaMemoryStore store, string id, string content) =>
+    private static Task<SagaMemoryWriteOutcome> InsertMemoryAsync(ISagaMemoryStore store, string id, string content) =>
         store.InsertAsync(
             id,
             content,

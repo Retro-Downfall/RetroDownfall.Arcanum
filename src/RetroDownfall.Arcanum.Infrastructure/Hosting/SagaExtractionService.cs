@@ -604,6 +604,11 @@ public sealed class SagaExtractionService(
 
             }
 
+            // All-or-nothing on this page: a single Written or Suppressed candidate is enough to
+            // advance the watermark below, even when another candidate on the same page failed to
+            // embed/insert. That is not a new loss mode -- this guard already advanced on any partial
+            // success before suppression existed -- and a suppression is deliberately treated as the
+            // same kind of progress a partial success already was, not as a reason to hold the page.
             if (eligibleCount > 0 && insertedCount == 0 && suppressedCount == 0)
             {
 

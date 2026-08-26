@@ -78,9 +78,9 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
 
         ISagaMemoryStore store = CreateSagaStore(annals: true);
 
-        await InsertMemoryAsync(store, "mem-doomed", "a conclusion to forget");
+        _ = await InsertMemoryAsync(store, "mem-doomed", "a conclusion to forget");
 
-        await InsertMemoryAsync(store, "mem-kept", "a conclusion to keep");
+        _ = await InsertMemoryAsync(store, "mem-kept", "a conclusion to keep");
 
         Assert.True(await store.DeleteAsync("mem-doomed", CancellationToken.None));
 
@@ -102,9 +102,9 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
 
         ISagaMemoryStore store = CreateSagaStore(annals: true);
 
-        await InsertMemoryAsync(store, "mem-1", "one");
+        _ = await InsertMemoryAsync(store, "mem-1", "one");
 
-        await InsertMemoryAsync(store, "mem-2", "two");
+        _ = await InsertMemoryAsync(store, "mem-2", "two");
 
         ILexiconService lexicon = CreateLexiconService(annals: true);
 
@@ -169,7 +169,7 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await InsertMemoryAsync(CreateSagaStore(annals: true), "mem-stranded", "a conclusion");
+        _ = await InsertMemoryAsync(CreateSagaStore(annals: true), "mem-stranded", "a conclusion");
 
         Assert.Equal(1, await CountClaimsAsync(1, "mem-stranded"));
 
@@ -181,7 +181,7 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
 
     }
 
-    private static Task InsertMemoryAsync(ISagaMemoryStore store, string id, string content) =>
+    private static Task<SagaMemoryWriteOutcome> InsertMemoryAsync(ISagaMemoryStore store, string id, string content) =>
         store.InsertAsync(
             id,
             content,

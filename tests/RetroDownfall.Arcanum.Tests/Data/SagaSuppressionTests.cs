@@ -1,3 +1,6 @@
+using System.Data.Common;
+using System.Globalization;
+
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -165,6 +168,34 @@ public sealed class SagaSuppressionTests
             second, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
+
+        // Pins that both writes actually resolved to a Campaign rather than merely to two distinct
+        // scopes -- an asymmetric classifier failure (one Campaign, one LegacyUnresolved) would also
+        // produce different digests and let this test pass for the wrong reason.
+        Assert.Equal((int)SagaMemoryScopeKind.Campaign, await ScopeKindCodeAsync(harness, "m-1"));
+
+        Assert.Equal((int)SagaMemoryScopeKind.Campaign, await ScopeKindCodeAsync(harness, "m-2"));
+
+    }
+
+    private static async Task<int> ScopeKindCodeAsync(SagaStoreHarness harness, string id)
+    {
+
+        await using DbCommand command = harness.Connection.CreateCommand();
+
+        command.CommandText = """SELECT ScopeKindCode FROM saga_memories WHERE Id = @id""";
+
+        DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@id";
+
+        parameter.Value = id;
+
+        command.Parameters.Add(parameter);
+
+        object? result = await command.ExecuteScalarAsync().ConfigureAwait(false);
+
+        return Convert.ToInt32(result, CultureInfo.InvariantCulture);
 
     }
 

@@ -193,7 +193,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         Guid sessionId = await CreateSessionAsync();
 
-        await CreateEntryAsync(sessionId, "I like dark mode.");
+        DateTimeOffset latestEntryCreatedAt = await CreateEntryAsync(sessionId, "I like dark mode.");
 
         FakeWeaveService weave = new();
 
@@ -212,6 +212,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             await service.ExtractForSessionAsync(firstScope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None);
 
         }
+
+        // One call for the first pass, established before the retirement so the later "2" at the end
+        // of the test means one call per pass rather than an uneven split across the two.
+        Assert.Equal(1, intelligence.CallCount);
 
         Assert.Equal(1, await CountMemoriesAsync());
 
@@ -247,12 +251,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountMemoriesAsync());
 
         // A deliberate rejection is not a failure: the watermark still advanced past the suppressed
-        // page rather than leaving it stuck for an automatic retry that could never converge.
+        // page, to the same place the happy path advances it to -- not merely away from the sentinel
+        // this test parked it on to force the replay.
         DateTimeOffset? watermark = await GetWatermarkAsync(sessionId);
 
         Assert.NotNull(watermark);
 
-        Assert.NotEqual(DateTimeOffset.MinValue, watermark!.Value);
+        Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
 
     }
 
