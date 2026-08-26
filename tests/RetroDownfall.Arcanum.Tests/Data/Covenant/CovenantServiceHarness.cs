@@ -51,10 +51,45 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     internal CovenantCanonicalFixture Fixture => _fixture;
 
-    internal static async Task<CovenantServiceHarness> StartAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Composes the service over a canonical tier that also carries the core objects owner cleanup
+    /// needs, so a suite can drive a Campaign deletion through the same worker the host runs.
+    /// </summary>
+    internal static async Task<CovenantServiceHarness> StartAsync(
+        CancellationToken cancellationToken,
+        bool withOwnerCleanup = false)
     {
 
-        CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(cancellationToken);
+        CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
+            cancellationToken,
+            coreObjects: withOwnerCleanup
+                ?
+                [
+                    .. CovenantCapacityFixture.CoreObjects,
+                    "capability_cleanup_state",
+                    "owner_deletion_events",
+                    "owner_deletion_operation_intents",
+                    "Campaigns_owner_deletion_event",
+                    "Sessions_owner_deletion_event",
+                    "owner_deletion_events_guard_delete",
+                    "owner_deletion_events_guard_update",
+                ]
+                : null);
+
+        if (withOwnerCleanup)
+        {
+
+            await using Microsoft.Data.Sqlite.SqliteCommand seed = fixture.Connection.CreateCommand();
+
+            seed.CommandText = """
+                INSERT OR IGNORE INTO capability_cleanup_state
+                    (CapabilityFamilyCode, AppliedCampaignSequence, AppliedSessionSequence, FullSweepRequired, UpdatedAtUtc)
+                VALUES (1, 0, 0, 0, '2026-01-01T00:00:00.0000000Z');
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync(cancellationToken);
+
+        }
 
         HarnessClock clock = new();
 
@@ -291,6 +326,34 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                 mutationId,
                 prepared.Value.PreflightToken),
             cancellationToken);
+
+    }
+
+    /// <summary>Runs one owner-cleanup batch the way the maintenance host does.</summary>
+    internal async Task<CovenantCleanupOutcome> RunCleanupAsync(CancellationToken cancellationToken)
+    {
+
+        Guid generation = await _fixture.ReadDatasetGenerationAsync(cancellationToken);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(current => current with { DatasetGeneration = generation });
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
+
+        await using CovenantCleanupLease lease =
+            (await gate.AcquireCleanupAsync(CovenantOperationScope.Global, cancellationToken)).Value;
+
+        Result<CovenantCleanupOutcome> outcome = await CovenantCapacityFixture.InTransactionAsync(
+            _fixture,
+            transaction => new CovenantCleanupWorker()
+                .RunBatchAsync(lease, transaction, cancellationToken, CovenantCleanupWorker.DefaultBatchSize)
+                .AsTask(),
+            cancellationToken);
+
+        Assert.True(outcome.IsSuccess, outcome.IsFailure ? outcome.Error.Message : string.Empty);
+
+        return outcome.Value;
 
     }
 
