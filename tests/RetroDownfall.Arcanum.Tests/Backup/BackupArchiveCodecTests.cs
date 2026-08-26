@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 [Collection("WorkspacePathPolicy")]
@@ -425,7 +427,7 @@ public sealed class BackupArchiveCodecTests : IDisposable
         try
         {
 
-            IOException error = await Assert.ThrowsAsync<IOException>(
+            Exception error = await FilesystemRefusal.ThrowsAsync(
                 () => codec.WriteAsync(
                     archive,
                     manifest,

@@ -374,7 +374,7 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         // fails the atomic replace, which is the only way the cleanup arm of the finally runs.
         Directory.CreateDirectory(path);
 
-        await Assert.ThrowsAnyAsync<IOException>(() => store.SaveApiKeyAsync("super-secret-key"));
+        await FilesystemRefusal.ThrowsAsync(() => store.SaveApiKeyAsync("super-secret-key"));
 
         string[] leftovers = Directory.GetFiles(
             ArcanumPaths.SecretStoreDirectory,

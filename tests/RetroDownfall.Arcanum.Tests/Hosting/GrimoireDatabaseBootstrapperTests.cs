@@ -28,6 +28,8 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Security;
 using SQLitePCL;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
@@ -333,7 +335,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         // or a read-only ~/.config/arcanum would.
         Directory.CreateDirectory(GrimoireKdfSidecarFile.GetPendingSidecarPath(_dbPath));
 
-        _ = await Assert.ThrowsAnyAsync<IOException>(() =>
+        _ = await FilesystemRefusal.ThrowsAsync(() =>
             GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
                 _secretStore,
                 _passphraseSource,

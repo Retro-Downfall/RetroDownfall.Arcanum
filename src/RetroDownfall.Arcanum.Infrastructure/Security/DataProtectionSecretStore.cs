@@ -279,9 +279,15 @@ public sealed class DataProtectionSecretStore(
                 {
                     File.Delete(tempPath);
                 }
-                catch (IOException)
+                catch (Exception cleanupFailure)
+                    when (cleanupFailure is IOException or UnauthorizedAccessException)
                 {
-                    // Best effort cleanup of temp file.
+                    // Best effort cleanup of temp file. UnauthorizedAccessException belongs here as
+                    // much as IOException: Windows raises it for a delete the filesystem refuses, and
+                    // an uncaught throw from a finally does not merely fail to clean up -- it replaces
+                    // the exception that explains why the save failed with one about the tidying
+                    // afterwards. TheForge's OpenAiCompatApiClient already catches the pair for the
+                    // same reason.
                 }
 
             }

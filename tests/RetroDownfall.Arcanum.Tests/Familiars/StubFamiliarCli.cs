@@ -93,7 +93,7 @@ internal sealed class StubFamiliarCli : IDisposable
             File.WriteAllText(
                 windowsScriptPath,
                 $"Get-Content -LiteralPath '{payloadPath}'\n"
-                + $"$input | Out-String | Set-Content -LiteralPath '{stdinLogPath}'\n"
+                + $"[System.IO.File]::WriteAllText('{stdinLogPath}', [Console]::In.ReadToEnd(), (New-Object System.Text.UTF8Encoding $false))\n"
                 + "exit 0\n");
 
             return new StubFamiliarCli(
@@ -225,8 +225,15 @@ internal sealed class StubFamiliarCli : IDisposable
         _ = script.Append(
             $"Get-ChildItem env: | ForEach-Object {{ \"$($_.Name)=$($_.Value)\" }} | Set-Content -LiteralPath '{Path.Combine(directory, "env.log")}'\n");
 
+        // Verbatim, the way `cat > stdin.log` is on the Unix stub. `$input | Out-String` was not:
+        // $input splits stdin into lines, Out-String rejoins them with CRLF, and Set-Content adds a
+        // trailing newline -- so the recording differed from what the runner actually wrote, and the
+        // suite that exists to prove the prompt arrives unaltered was reading the harness's own
+        // line endings back to itself. [Console]::In.ReadToEnd() does no line splitting, and
+        // WriteAllText appends nothing; the encoding is named because the runner writes UTF-8
+        // without a BOM and a recording in any other encoding would not compare equal.
         _ = script.Append(
-            $"$input | Out-String | Set-Content -LiteralPath '{Path.Combine(directory, "stdin.log")}'\n");
+            $"[System.IO.File]::WriteAllText('{Path.Combine(directory, "stdin.log")}', [Console]::In.ReadToEnd(), (New-Object System.Text.UTF8Encoding $false))\n");
 
         _ = perLineDelayMilliseconds > 0
             ? script.Append(
