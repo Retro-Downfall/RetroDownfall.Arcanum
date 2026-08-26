@@ -147,6 +147,12 @@ jobs:
   macos-arm64:
     name: macOS arm64
     needs: prepare
+    permissions:
+      # release-macos-arm64.yml declares `contents: write` at workflow level, and a called workflow
+      # may not request more than its caller granted it. Without this the calling job inherits this
+      # file's `contents: read` default and the whole run is rejected before any job starts -- a
+      # startup failure, with no job to attach the reason to.
+      contents: write
     # `secrets: inherit` rather than a named list: the six Apple secrets are already named and
     # checked by the called workflow's own requirement step, and a second list here would be a
     # second thing to keep in step with the first.
@@ -160,6 +166,11 @@ jobs:
   windows:
     name: Windows
     needs: prepare
+    permissions:
+      # build-windows.yml asks for `contents: read`, which the default already covers. Stated anyway,
+      # beside the macOS grant above, so the two calls read as a pair and the difference between them
+      # is deliberate rather than an omission.
+      contents: read
     strategy:
       # Both architectures run to completion. The release still refuses to assemble without both,
       # but an operator investigating a win-arm64 failure should not also have to re-run win-x64
