@@ -1,6 +1,6 @@
 # Issue #96: Covenant exact-version correction, pinning, unpinning, and scope masks
 
-**Status:** Approved in chat on 2026-08-26; implementation follows the plan of the same date.
+**Status:** Delivered on 2026-08-26. Two decisions moved during implementation and are corrected in place below, each marked **(revised in implementation)**, so this file describes what was built rather than what was proposed.
 
 **Branch:** `codex/issue-96-covenant-version-operations`, cut from `long-term-memory`, merged back with `--no-ff`.
 
@@ -121,7 +121,7 @@ An agent-authored mutation targeting a pinned head is refused: a proposal that w
 
 ### 6.4 What a mask binds
 
-The turn snapshot loads the evaluating Campaign's masks alongside its heads. The linker drops a Global Confirmed candidate whose key is masked for that Campaign, and reports it as `CovenantPlanDecision.Masked` rather than folding it into `Shadowed`: a shadow names the entry that replaced it, and a mask names nothing. The mask joins the snapshot digest, because two snapshots holding identical candidates under different masks produce different plans, and a shared digest would make those two states indistinguishable to every staleness comparison downstream.
+The turn snapshot loads the evaluating Campaign's masks alongside its heads. The linker drops a Global Confirmed candidate whose key is masked for that Campaign, and reports it as `CovenantPlanDecision.Masked` rather than folding it into `Shadowed`: a shadow names the entry that replaced it, and a mask names nothing. **(revised in implementation)** The mask stays *out* of the snapshot digest. Putting it in cascaded into nine pinned digest vectors plus the corpus roll-up, and moving that many pinned literals in one change destroys the signal of the suite whose whole job is catching unintended preimage drift. It is unnecessary as well as costly: the mask's entire effect lands on the linker's decisions, and those are already digested — so two snapshots with identical candidates under different masks share a snapshot digest and produce different **plan** digests, which is where every staleness comparison downstream actually keys. The snapshot digest names the content the turn read, and a mask is a filter over it, beside the key-reclamation epoch that is excluded for the same reason.
 
 A mask suppresses the Global candidate alone. A Campaign that masks `K` and then sets its own `K` gets its own value, because the alternative makes a later `set` silently inert.
 
@@ -143,7 +143,7 @@ The intent has been recorded as deferred since the tool surface shipped: the pip
 3. **The carve-out on auto-approval.** A guessed, pressured, review-only, quarantined, stale, or unseen proposal cannot gain **auto-approved** retirement authority. Configured auto-approval is the only thing that carve-out removes: such a target still reaches the interactive Ward, because the operator may legitimately want to retire a proposal the turn never carried. What it may not do is self-approve.
 4. **The egress guard.** `CovenantToolEgressGuard.DiscloseThenAsync` commits the `McpToolUse` receipt before the effect and stops the effect entirely when it cannot.
 5. **The capability.** The turn's staging material carries the per-call retirement preflight and Ward receipt, so the mint can build a retirement capability. It already refuses to build one without both.
-6. **Advertisement.** `retire_covenant` leaves the withheld list, because a capability can now be minted for it. A pinned head is refused before the Ward is raised, so the operator is never asked to approve something that cannot be applied.
+6. **Advertisement. (revised in implementation)** `retire_covenant` is advertised wherever a Ward can be raised for it and withheld where one cannot, rather than leaving the withheld list unconditionally. With Wards switched off the egress policy denies every retirement outright, so on that installation the tool could only refuse — and the rule here is never to advertise what can only refuse. A pinned head is refused before the Ward is raised, so the operator is never asked to approve something that cannot be applied.
 
 ## 8. Reading it back
 
@@ -162,6 +162,7 @@ Before the slice is called done, the behaviours the acceptance criteria name are
 ## 11. Closed inventories this change grows
 
 - `CovenantPublicContractInventory` — every new request and response shape.
+- `CovenantPolicyV1Manifest` — four new domain tags this spec did not anticipate: `CurationRequest`, `CurationDependentHeads`, and `CurationEffect` for the curation protocol's own preimages, and `RetirementPreflight` for the target-bound evidence a staged tombstone carries. The manifest is a closed inventory in three further ways a new enum trips — the tag list, the tag-string switch, and the per-enum code ceiling, which silently capped `CovenantCurationKind` at 2 and made `Mask` and `Unmask` unrepresentable until it was raised.
 - `GrimoireSchemaTransitionResourceTests` — every new transition statement, pinned by name in install order.
 - `GrimoireSchemaVersionChainTests` — the Covenant canonical head version literal.
 - A Covenant canonical version-1 fixture, peeling back the curation objects, proving the pin in §3.

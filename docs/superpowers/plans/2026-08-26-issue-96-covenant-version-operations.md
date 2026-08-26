@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-26-issue-96-covenant-version-operations-design.md`
 
+**Status:** Complete. Every task below is delivered; the steps are left unticked because they were executed as a sequence rather than tracked in the file. Three decisions moved during implementation and are recorded in the spec, marked there rather than rewritten here: masks stay out of the snapshot digest, `retire_covenant` is ward-gated rather than unconditionally advertised, and the curation subject binds the key's reclamation epoch.
+
 ## Global Constraints
 
 - **No new `CovenantOperation` member and no new `CovenantMutationKind` member.** `covenant_versions.OperationCode`, `covenant_heads.CurrentOperationCode`, and `covenant_mutation_receipts.MutationKindCode` bake their vocabularies into `CHECK` constraints SQLite cannot alter.

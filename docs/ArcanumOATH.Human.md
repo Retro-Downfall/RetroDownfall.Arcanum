@@ -305,6 +305,8 @@ These words describe separate operations:
 |---|---|---|
 | **Correct** | Adds a new immutable version and moves the current view | Does not rewrite the old version |
 | **Retire** | Adds a tombstone so a claim stops current participation | Does not pretend the claim never existed |
+| **Pin** | Marks one entry as the operator's, so the agent may not write over it or retire it | Does not stop the operator changing it, and does not exempt it from anything a timer does — nothing here runs on a timer |
+| **Mask** | Stops an installation-wide preference applying inside one campaign, with nothing in its place | Does not delete it, does not touch any other campaign, and does not stop that campaign writing its own value for the same thing |
 | **Backup** | Preserves encrypted state and the evidence needed to interpret it | Does not make protected data public or source-free |
 | **Restore** | Creates a fresh dataset generation, reconciles imported state, and preserves valid labels and history | Does not import deletion authority for source-machine files or resume stale in-flight turns |
 | **Reset** | Removes a governed local memory family and its owned local derivatives | Does not revoke past external disclosure, and is never something a timer does |
@@ -390,14 +392,15 @@ OATH combines built foundations with an activated data-lifecycle erasure surface
 | **Managed file reconciliation** | After that, every file the database records outside itself is accounted for: unfinished writes are cleaned up or reported, finished ones are removed only after being proven to be the exact file recorded, and the reset refuses to go further unless the counts match the list written down first. |
 | **Restore-credential proof** | Arcanum proves a profile's restore history is over and removes its three restore credentials in a fixed order, one at a time, checking each still holds what the proof said. It runs only after the database is provably deleted. |
 | **A full reset that finishes** | An externally authorized full reset now deletes the database, removes what is left, checks nothing survived, and reports the installation clean. Every ordinary cleanup still keeps the things a full reset takes. |
-| **Storage upgrades** | An existing installation can now be carried from one storage version to the next through changes the build declares, including data passes that run in bounded batches and survive a restart. Nothing has moved past version one yet, so the machinery runs and finds nothing to do. |
-| **Still unregistered** | Dedicated Covenant inspection, mutation, repair, rebuild, path, and Session-binding management routes and commands remain separate work. |
+| **Storage upgrades** | An existing installation can now be carried from one storage version to the next through changes the build declares, including data passes that run in bounded batches and survive a restart. Three upgrades have shipped since, and an installation that has taken them is compared against the same tree a brand-new one installs — which is the thing that would otherwise go wrong silently, because a developer's own database is always brand new. |
+| **Curating what is remembered** | An operator can now correct one preference in place, naming the exact version and the exact text they decided was wrong so a correction can never land on something they never read; pin one so the agent may not touch it; and stop an installation-wide preference applying inside a single campaign. Every one of them says what will be true afterwards before it asks. The agent can now ask to retire a preference too, and the operator is shown the words that will disappear rather than the model's request. |
+| **Still unregistered** | Covenant repair, rebuild, path, and Session-binding management routes and commands remain separate work. |
 | **Campaign-scoped recall** | Every Saga memory now records who owns it, and the Lexicon can hold one entity per Campaign. `features.campaignScopedMemory` makes retrieval, inspection, and reset honor that ownership together. It ships **off**, so an installation that never names it recalls exactly what it recalled before. |
 | **Remaining roadmap** | Full-installation marker/Campaign compare-deletion, remaining managed-file and credential cleanup, identity rotation, release qualification, and later rollup, consolidation, curation, evaluation, scoped-recall, caching, delegation, and bitemporal work. |
 
 One practical caveat worth knowing: the shipping build targets `osx-arm64`, `win-x64`, and `win-arm64`. Only the macOS native asset is verified today; the two Windows assets are absent, and those builds intentionally fail rather than quietly falling back to a system library.
 
-The formal [OATH architecture](Arcanum.OATH.md) carries the precise status. The reset/factory data-lifecycle machinery is composed and activated; the dedicated Covenant management surface remains separate.
+The formal [OATH architecture](Arcanum.OATH.md) carries the precise status. The reset/factory data-lifecycle machinery is composed and activated; the Covenant write, read, and curation surfaces are registered, and the repair, rebuild, path, and Session-binding surfaces remain separate.
 
 ## 12. What OATH does not claim
 
