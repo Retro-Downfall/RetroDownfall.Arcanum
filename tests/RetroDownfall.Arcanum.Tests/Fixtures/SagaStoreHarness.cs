@@ -3,8 +3,10 @@ using System.Globalization;
 
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -37,7 +39,11 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
     private bool _disposed;
 
-    private SagaStoreHarness(GrimoireFixture fixture, ArcanumDbContext db, SagaMemoryStore store)
+    private SagaStoreHarness(
+        GrimoireFixture fixture,
+        ArcanumDbContext db,
+        SagaMemoryStore store,
+        IAnnalsStore annals)
     {
 
         _fixture = fixture;
@@ -45,6 +51,8 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         _db = db;
 
         Store = store;
+
+        Annals = annals;
 
     }
 
@@ -54,8 +62,20 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// <summary>A live <see cref="SagaMemoryStore"/> over the temporary Grimoire.</summary>
     internal SagaMemoryStore Store { get; }
 
-    /// <summary>Builds a fresh temporary Grimoire, skipping the calling test when SQLCipher is unavailable.</summary>
-    public static Task<SagaStoreHarness> CreateAsync()
+    /// <summary>A live <see cref="IAnnalsStore"/> reading the same temporary Grimoire.</summary>
+    public IAnnalsStore Annals { get; }
+
+    /// <summary>
+    /// Builds a fresh temporary Grimoire with <c>Arcanum:Features:Annals</c> off, skipping the calling
+    /// test when SQLCipher is unavailable.
+    /// </summary>
+    public static Task<SagaStoreHarness> CreateAsync() => CreateAsync(annalsEnabled: false);
+
+    /// <summary>
+    /// Builds a fresh temporary Grimoire with <c>Arcanum:Features:Annals</c> set to
+    /// <paramref name="annalsEnabled"/>, skipping the calling test when SQLCipher is unavailable.
+    /// </summary>
+    public static Task<SagaStoreHarness> CreateAsync(bool annalsEnabled)
     {
 
         // Must run before the fixture is constructed: GrimoireFixture's constructor silently no-ops
@@ -73,6 +93,7 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {
+                    Features = new FeatureSettings { Annals = annalsEnabled },
                     Integrations = new IntegrationSettings
                     {
                         Embeddings = new EmbeddingIntegrationSettings
@@ -82,7 +103,7 @@ public sealed class SagaStoreHarness : IAsyncDisposable
                     },
                 }));
 
-        return Task.FromResult(new SagaStoreHarness(fixture, db, store));
+        return Task.FromResult(new SagaStoreHarness(fixture, db, store, new AnnalsStore(db)));
 
     }
 

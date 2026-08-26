@@ -5,8 +5,10 @@ using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -222,6 +224,105 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
                     SELECT 1 FROM annal_claims AS claim
                     WHERE claim.SubjectStoreCode = 1 AND claim.SubjectId = memory.Id);
                 """));
+
+    }
+
+    [SkippableFact]
+    public async Task A_retirement_appends_a_tombstone_that_supersedes_the_version_it_ends()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        bool appended = await AnnalsClaimWriter.AppendRetirementAsync(
+            harness.Connection,
+            null,
+            AnnalSubjectStore.Saga,
+            "m-1",
+            AnnalOrigin.OperatorStated,
+            SagaMemoryScopeKind.Global,
+            null,
+            ContentSensitivity.None,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(appended);
+
+        AnnalClaimHead? head = await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.NotNull(head);
+
+        Assert.Equal(AnnalOperation.Retire, head.CurrentOperation);
+
+        Assert.Equal(2, head.CurrentRevision);
+
+        IReadOnlyList<AnnalClaimVersion> history = await harness.Annals
+            .GetVersionsAsync(head.ClaimId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        // The tombstone binds to nothing, and it names the version it ended.
+        AnnalClaimVersion tombstone = history[^1];
+
+        Assert.Equal(AnnalOperation.Retire, tombstone.Operation);
+
+        Assert.Equal(history[0].VersionId, tombstone.PredecessorVersionId);
+
+        IReadOnlyList<AnnalDependencyEdge> edges = await harness.Annals
+            .GetDependenciesAsync(tombstone.VersionId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.Equal(AnnalDependencyRelation.Supersedes, Assert.Single(edges).Relation);
+
+    }
+
+    [SkippableFact]
+    public async Task Retiring_a_claim_less_memory_records_who_asserted_it_before_who_ended_it()
+    {
+
+        // A memory written while the Annals was disabled has no claim. Opening one at the retirement with
+        // the operator as its author would rewrite history: extraction asserted this memory, and the
+        // operator only ended it.
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false).ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Null(await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None)
+            .ConfigureAwait(false));
+
+        _ = await AnnalsClaimWriter.AppendAssertAsync(
+            harness.Connection, null, AnnalSubjectStore.Saga, "m-1",
+            AnnalOrigin.AgentExtracted, SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        _ = await AnnalsClaimWriter.AppendRetirementAsync(
+            harness.Connection, null, AnnalSubjectStore.Saga, "m-1",
+            AnnalOrigin.OperatorStated, SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        AnnalClaimHead head = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None)
+            .ConfigureAwait(false))!;
+
+        IReadOnlyList<AnnalClaimVersion> history = await harness.Annals
+            .GetVersionsAsync(head.ClaimId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.Equal(AnnalOrigin.AgentExtracted, history[0].Origin);
+
+        Assert.Equal(AnnalOrigin.OperatorStated, history[1].Origin);
 
     }
 

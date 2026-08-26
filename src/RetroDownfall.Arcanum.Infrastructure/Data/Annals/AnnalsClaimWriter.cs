@@ -247,6 +247,125 @@ internal static class AnnalsClaimWriter
 
     }
 
+    /// <summary>
+    /// Ends a claim: appends a tombstone version that supersedes the head and moves the head to it.
+    /// </summary>
+    /// <remarks>
+    /// Binds to no content by construction -- <see cref="InsertVersionAsync"/> is called with a null
+    /// hash, which is the only value <c>annal_versions</c> permits for a <see cref="AnnalOperation.Retire"/>
+    /// row, and there is no <c>contentHash</c> parameter here for a caller to be tempted to fill in.
+    ///
+    /// <para>Two refusals, both silent. A subject with no claim gets none here: opening one would mean
+    /// guessing an origin for a version this method never saw asserted, and that guess belongs to the
+    /// caller, not to this method. The Saga retirement path opens the claim itself first, with
+    /// <see cref="AnnalOrigin.AgentExtracted"/> and the memory's own content, precisely so the history
+    /// reads "extraction asserted this, then the operator ended it" rather than a warrant nobody
+    /// held.</para>
+    ///
+    /// <para>A head already at <see cref="AnnalOperation.Retire"/> gets no second tombstone, because
+    /// retiring an already-retired claim records no change.</para>
+    /// </remarks>
+    /// <returns>
+    /// <see langword="false"/> without writing when the subject has no claim, or when its head is
+    /// already a retirement.
+    /// </returns>
+    internal static async Task<bool> AppendRetirementAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        AnnalSubjectStore subjectStore,
+        string subjectId,
+        AnnalOrigin origin,
+        SagaMemoryScopeKind scopeKind,
+        string? campaignId,
+        ContentSensitivity sensitivity,
+        DateTimeOffset validFrom,
+        DateTimeOffset recordedAt,
+        Guid? sourceSessionId,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentException.ThrowIfNullOrEmpty(subjectId);
+
+        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (head is null)
+        {
+
+            return false;
+
+        }
+
+        if (head.CurrentOperation == AnnalOperation.Retire)
+        {
+
+            return false;
+
+        }
+
+        int revision = head.CurrentRevision + 1;
+
+        string versionId = await InsertVersionAsync(
+            connection,
+            transaction,
+            head.ClaimId,
+            revision,
+            AnnalOperation.Retire,
+            origin,
+            scopeKind,
+            campaignId,
+            sensitivity,
+            contentHash: null,
+            validFrom,
+            recordedAt,
+            head.CurrentVersionId,
+            sourceSessionId,
+            cancellationToken).ConfigureAwait(false);
+
+        long dependentSequence = await ReadSequenceAsync(connection, transaction, versionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        await ExecuteAsync(
+            connection,
+            transaction,
+            cancellationToken,
+            """
+            INSERT INTO annal_dependencies (
+                DependentVersionId, DependentSequence, DependencyVersionId, DependencySequence,
+                RelationCode, Ordinal, CreatedAtUtc)
+            VALUES (@dependent, @dependentSequence, @dependency, @dependencySequence, @relationCode, 1, @createdAt)
+            """,
+            ("@dependent", versionId),
+            ("@dependentSequence", dependentSequence),
+            ("@dependency", head.CurrentVersionId),
+            ("@dependencySequence", head.CurrentSequence),
+            ("@relationCode", (int)AnnalDependencyRelation.Supersedes),
+            ("@createdAt", Format(recordedAt)));
+
+        await ExecuteAsync(
+            connection,
+            transaction,
+            cancellationToken,
+            """
+            UPDATE annal_heads
+            SET CurrentVersionId = @versionId,
+                CurrentRevision = @revision,
+                CurrentOperationCode = @operationCode,
+                UpdatedAtUtc = @updatedAt
+            WHERE ClaimId = @claimId
+            """,
+            ("@versionId", versionId),
+            ("@revision", revision),
+            ("@operationCode", (int)AnnalOperation.Retire),
+            ("@updatedAt", Format(recordedAt)),
+            ("@claimId", head.ClaimId));
+
+        return true;
+
+    }
+
     /// <summary>Removes the claim describing one durable row, with every version and edge it owns.</summary>
     internal static async Task DeleteClaimsForSubjectAsync(
         DbConnection connection,
@@ -357,7 +476,7 @@ internal static class AnnalsClaimWriter
         SagaMemoryScopeKind scopeKind,
         string? campaignId,
         ContentSensitivity sensitivity,
-        byte[] contentHash,
+        byte[]? contentHash,
         DateTimeOffset validFrom,
         DateTimeOffset recordedAt,
         string? predecessorVersionId,
@@ -414,7 +533,7 @@ internal static class AnnalsClaimWriter
 
         command.CommandText =
             """
-            SELECT head.ClaimId, head.CurrentVersionId, head.CurrentRevision,
+            SELECT head.ClaimId, head.CurrentVersionId, head.CurrentRevision, head.CurrentOperationCode,
                    version.Sequence, version.ContentHash
             FROM annal_heads AS head
             JOIN annal_claims AS claim ON claim.ClaimId = head.ClaimId
@@ -439,8 +558,9 @@ internal static class AnnalsClaimWriter
             reader.GetString(0),
             reader.GetString(1),
             reader.GetInt32(2),
-            reader.GetInt64(3),
-            reader.IsDBNull(4) ? null : (byte[])reader.GetValue(4));
+            (AnnalOperation)reader.GetInt32(3),
+            reader.GetInt64(4),
+            reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5));
 
     }
 
@@ -511,6 +631,7 @@ internal static class AnnalsClaimWriter
         string ClaimId,
         string CurrentVersionId,
         int CurrentRevision,
+        AnnalOperation CurrentOperation,
         long CurrentSequence,
         byte[]? ContentHash);
 
