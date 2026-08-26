@@ -278,6 +278,7 @@ public static class CovenantPolicyV1Manifest
         }
 
         if (typeof(TEnum) == typeof(CovenantMutationKind)
+            || typeof(TEnum) == typeof(CovenantCurationKind)
             || typeof(TEnum) == typeof(CovenantFinalOutcome)
             || typeof(TEnum) == typeof(AssistantFinalizationOrigin)
             || typeof(TEnum) == typeof(CovenantProviderRole)
