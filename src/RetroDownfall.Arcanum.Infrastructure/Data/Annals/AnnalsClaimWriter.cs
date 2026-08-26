@@ -205,7 +205,7 @@ internal static class AnnalsClaimWriter
             sourceSessionId,
             cancellationToken).ConfigureAwait(false);
 
-        await AppendSupersedingTailAsync(
+        await SupersedeAndAdvanceHeadAsync(
             connection,
             transaction,
             head,
@@ -296,7 +296,7 @@ internal static class AnnalsClaimWriter
             sourceSessionId,
             cancellationToken).ConfigureAwait(false);
 
-        await AppendSupersedingTailAsync(
+        await SupersedeAndAdvanceHeadAsync(
             connection,
             transaction,
             head,
@@ -464,14 +464,13 @@ internal static class AnnalsClaimWriter
     }
 
     /// <summary>
-    /// The tail shared by every write that replaces a claim's current version with a new one: an edge
-    /// recording what the new version supersedes, and the head move that makes it current.
+    /// Links a new version to the one it supersedes, then advances the claim's current pointer to it.
     /// </summary>
     /// <remarks>
-    /// Not shared with <see cref="AppendAssertAsync"/>, which inserts a head rather than moving one --
-    /// folding that in would mean a branch here saying which of two different things this call is doing.
+    /// Not shared with <see cref="AppendAssertAsync"/>: that method opens a claim's first version and
+    /// creates its head, where this one requires a head that already exists and moves it.
     /// </remarks>
-    private static async Task AppendSupersedingTailAsync(
+    private static async Task SupersedeAndAdvanceHeadAsync(
         DbConnection connection,
         DbTransaction? transaction,
         HeadRow head,
