@@ -113,6 +113,99 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     }
 
+    /// <summary>Retires one lane head through the production prepare-and-commit path.</summary>
+    internal async Task RetireAsync(
+        CovenantScope scope,
+        Guid? campaignId,
+        string key,
+        long expectedRevision,
+        CancellationToken cancellationToken)
+    {
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        Result<CovenantMutationPreflightDto> prepared;
+
+        await using (ICovenantSnapshotReadLease read = await AcquireReadAsync(scope, campaignId, cancellationToken))
+        {
+
+            prepared = await Service.PrepareRetireAsync(
+                new CovenantRetirePrepareRequest(
+                    scope,
+                    campaignId,
+                    key,
+                    CovenantLane.Confirmed,
+                    expectedRevision,
+                    mutationId),
+                read,
+                cancellationToken);
+
+        }
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        await using CovenantWriteLease write =
+            (await Gate.AcquireWriteAsync(Scope(scope, campaignId), cancellationToken)).Value;
+
+        Result<CovenantMutationResultDto> committed = await Service.RetireAsync(
+            new CovenantRetireRequest(
+                scope,
+                campaignId,
+                key,
+                CovenantLane.Confirmed,
+                expectedRevision,
+                mutationId,
+                prepared.Value.PreflightToken),
+            write,
+            cancellationToken);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+    }
+
+    internal async Task<Result<CovenantMutationPreflightDto>> PrepareCorrectAsync(
+        CovenantScope scope,
+        Guid? campaignId,
+        string key,
+        string content,
+        Guid targetVersionId,
+        string targetRenderedHash,
+        long expectedRevision,
+        CancellationToken cancellationToken,
+        Guid? mutationId = null,
+        CovenantLane targetLane = CovenantLane.Confirmed)
+    {
+
+        await using ICovenantSnapshotReadLease read = await AcquireReadAsync(scope, campaignId, cancellationToken);
+
+        return await Service.PrepareCorrectAsync(
+            new CovenantCorrectPrepareRequest(
+                scope,
+                campaignId,
+                key,
+                content,
+                targetVersionId,
+                targetLane,
+                expectedRevision,
+                targetRenderedHash,
+                mutationId ?? Guid.CreateVersion7()),
+            read,
+            cancellationToken);
+
+    }
+
+    internal async Task<Result<CovenantMutationResultDto>> CommitCorrectAsync(
+        CovenantCorrectRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        await using CovenantWriteLease write =
+            (await Gate.AcquireWriteAsync(Scope(request.Scope, request.CampaignId), cancellationToken)).Value;
+
+        return await Service.CorrectAsync(request, write, cancellationToken);
+
+    }
+
     internal async Task<Result<CovenantCurationPreflightDto>> PrepareCurationAsync(
         CovenantCurationKind kind,
         CovenantScope scope,

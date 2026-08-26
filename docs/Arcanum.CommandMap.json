@@ -110,6 +110,7 @@
         "context inspect",
         "context sources",
         "context tools",
+        "memory covenant correct",
         "memory covenant list",
         "memory covenant mask",
         "memory covenant pin",
@@ -134,6 +135,7 @@
       "alias": "-f",
       "option": "--file",
       "scopes": [
+        "memory covenant correct",
         "memory covenant set"
       ]
     },
@@ -2768,6 +2770,78 @@
               ],
               "examples": [
                 "arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant correct",
+              "name": "correct",
+              "description": "Replace the text of one preference, naming the exact version being corrected.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--file",
+                  "aliases": [
+                    "-f"
+                  ],
+                  "description": "Read the corrected text from this file. Omit to read from piped standard input.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--target-version",
+                  "aliases": [],
+                  "description": "The version identity being corrected, as \u0060show --history\u0060 reports it.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--target-hash",
+                  "aliases": [],
+                  "description": "The compiled hash of the version being corrected, as \u0060show\u0060 reports it.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "The exact lane revision being corrected.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant correct preference.builds --file corrected.txt --target-version 0195a0f0-0000-7000-8000-0000000000aa --target-hash 0000000000000000000000000000000000000000000000000000000000000000 --expected-revision 1"
               ],
               "commands": []
             },

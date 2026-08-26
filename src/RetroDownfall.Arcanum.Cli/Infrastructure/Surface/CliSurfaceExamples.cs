@@ -114,6 +114,8 @@ internal static class CliSurfaceExamples
             ["arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"],
         ["memory covenant retire"] =
             ["arcanum memory covenant retire preference.builds --expected-revision 1"],
+        ["memory covenant correct"] =
+            ["arcanum memory covenant correct preference.builds --file corrected.txt --target-version 0195a0f0-0000-7000-8000-0000000000aa --target-hash 0000000000000000000000000000000000000000000000000000000000000000 --expected-revision 1"],
         ["memory covenant pin"] =
             ["arcanum memory covenant pin preference.builds"],
         ["memory covenant unpin"] =

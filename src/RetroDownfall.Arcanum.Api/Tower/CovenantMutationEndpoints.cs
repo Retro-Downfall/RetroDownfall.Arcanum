@@ -120,6 +120,47 @@ internal static class CovenantMutationEndpoints
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
 
         apiGroup.MapPost(
+            "/memory/covenant/correct/prepare",
+            static async (
+                CovenantCorrectPrepareRequest? request,
+                ICovenantMutationService? service,
+                ICovenantOperationGate? gate,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+                await PrepareAsync(
+                        request,
+                        service,
+                        gate,
+                        httpContext,
+                        static (mutation, body, lease, token) =>
+                            mutation.PrepareCorrectAsync(body, lease, token),
+                        cancellationToken)
+                    .ConfigureAwait(false))
+            .WithName("PrepareCovenantCorrection")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
+
+        apiGroup.MapPost(
+            "/memory/covenant/correct",
+            static async (
+                CovenantCorrectRequest? request,
+                ICovenantMutationService? service,
+                ICovenantOperationGate? gate,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+                await CommitAsync(
+                        request,
+                        service,
+                        gate,
+                        httpContext,
+                        request?.Scope,
+                        request?.CampaignId,
+                        static (mutation, body, lease, token) => mutation.CorrectAsync(body, lease, token),
+                        cancellationToken)
+                    .ConfigureAwait(false))
+            .WithName("CorrectCovenantEntry")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
+
+        apiGroup.MapPost(
             "/memory/covenant/curate/prepare",
             static async (
                 CovenantCurationPrepareRequest? request,

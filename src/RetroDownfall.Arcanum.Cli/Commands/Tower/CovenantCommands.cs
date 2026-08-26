@@ -182,6 +182,95 @@ public sealed class CovenantCommands(
     }
 
     /// <summary>
+    /// Corrects one preference, naming the exact version, revision and compiled hash it replaces.
+    /// </summary>
+    /// <remarks>
+    /// The three target values come off <c>show</c>, which is where an operator reads the preference
+    /// they decided was wrong. Requiring all three is what makes a correction a statement about
+    /// something they looked at rather than about whatever is current when the request lands.
+    /// </remarks>
+    public async Task<int> Correct(
+        string key,
+        Guid? campaignId,
+        string? file,
+        Guid targetVersionId,
+        long expectedRevision,
+        string targetRenderedHash,
+        CancellationToken cancellationToken)
+    {
+
+        Result<string> content = await ReadContentAsync(file, cancellationToken).ConfigureAwait(false);
+
+        if (content.IsFailure)
+        {
+
+            return Fail(content.Error, CliExitCode.ConfigurationError);
+
+        }
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        CovenantScope scope = campaignId is null ? CovenantScope.Global : CovenantScope.Campaign;
+
+        Result<CovenantMutationPreflightDto> prepared = await apiClient
+            .PrepareCovenantCorrectAsync(
+                new CovenantCorrectPrepareRequest(
+                    scope,
+                    campaignId,
+                    key,
+                    content.Value,
+                    targetVersionId,
+                    CovenantLane.Confirmed,
+                    expectedRevision,
+                    targetRenderedHash,
+                    mutationId),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (prepared.IsFailure)
+        {
+
+            return Fail(prepared.Error, CliExitCode.GenericError);
+
+        }
+
+        if (RevisionConflict(prepared.Value, "correction") is { } conflict)
+        {
+
+            return conflict;
+
+        }
+
+        if (!await ConfirmAsync(prepared.Value, "Correct", cancellationToken).ConfigureAwait(false))
+        {
+
+            dispatcher.WriteDiagnostic("Covenant correction cancelled.");
+
+            return (int)CliExitCode.Success;
+
+        }
+
+        Result<CovenantMutationResultDto> committed = await apiClient
+            .CorrectCovenantAsync(
+                new CovenantCorrectRequest(
+                    scope,
+                    campaignId,
+                    key,
+                    content.Value,
+                    targetVersionId,
+                    CovenantLane.Confirmed,
+                    expectedRevision,
+                    targetRenderedHash,
+                    mutationId,
+                    prepared.Value.PreflightToken),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return WriteMutation(committed);
+
+    }
+
+    /// <summary>
     /// Pins, unpins, masks, or unmasks one subject, after printing the server's own measurement.
     /// </summary>
     /// <remarks>

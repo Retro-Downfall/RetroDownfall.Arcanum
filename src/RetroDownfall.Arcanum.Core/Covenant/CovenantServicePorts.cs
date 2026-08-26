@@ -119,6 +119,23 @@ public interface ICovenantMutationService
         CovenantWriteLease writeLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Measures a correction of one exact version, and issues the token that binds that version.
+    /// </summary>
+    /// <remarks>
+    /// It answers with the same preflight a <c>Set</c> does, because a correction <i>is</i> a Set: the
+    /// difference is what the caller had to prove, not what the installation ends up holding.
+    /// </remarks>
+    ValueTask<Result<CovenantMutationPreflightDto>> PrepareCorrectAsync(
+        CovenantCorrectPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    ValueTask<Result<CovenantMutationResultDto>> CorrectAsync(
+        CovenantCorrectRequest request,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>

@@ -35,6 +35,8 @@ public sealed class CovenantMutationRouteTests
         "RetireCovenantEntry",
         "PrepareCovenantCuration",
         "CurateCovenantEntry",
+        "PrepareCovenantCorrection",
+        "CorrectCovenantEntry",
     ];
 
     [Theory]
@@ -50,6 +52,10 @@ public sealed class CovenantMutationRouteTests
     [InlineData("PrepareCovenantCuration")]
 
     [InlineData("CurateCovenantEntry")]
+
+    [InlineData("PrepareCovenantCorrection")]
+
+    [InlineData("CorrectCovenantEntry")]
 
     public async Task Every_covenant_mutation_route_requires_operator_manage_authority(string routeName)
     {

@@ -323,3 +323,74 @@ public sealed record CovenantCurationRequest(
             CovenantWireValidation.ValidateToken(PreflightToken));
 
 }
+
+/// <summary>
+/// A prepared operator correction: a <c>Set</c> that names the exact version it replaces.
+/// </summary>
+/// <remarks>
+/// Correction is not a separate operation. <c>Set</c> already appends an immutable version, links its
+/// predecessor, and preserves provenance and sensitivity by construction; what a correction adds is
+/// the binding. The four target fields are what make "I am replacing this" checkable rather than
+/// asserted: a version that has moved, a lane that is not the one an operator authors, a revision that
+/// is no longer current, and a compiled hash that names content the operator never saw are each
+/// refused before anything is appended.
+///
+/// <para><paramref name="TargetLane"/> is carried and validated rather than omitted. <c>Set</c> has no
+/// lane because there is nothing to name; a correction names an existing version, and a version id
+/// alone does not say which lane it belongs to — which is exactly the mistake an operator makes after
+/// reading a history that lists both.</para>
+/// </remarks>
+public sealed record CovenantCorrectPrepareRequest(
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    string Content,
+    Guid TargetVersionId,
+    CovenantLane TargetLane,
+    long ExpectedRevision,
+    string TargetRenderedHash,
+    Guid MutationId)
+{
+
+    public Result Validate() =>
+        CovenantWireValidation.First(
+            CovenantWireValidation.ValidateOperationScope(Scope, CampaignId),
+            CovenantWireValidation.ValidateKey(Key),
+            CovenantWireValidation.ValidateAuthoredContent(Content),
+            CovenantWireValidation.RequireIdentity(TargetVersionId, "target Covenant version identity"),
+            CovenantWireValidation.ValidateCorrectableLane(TargetLane),
+            CovenantWireValidation.ValidateDigestText(TargetRenderedHash, "target rendered hash"),
+            CovenantWireValidation.RequirePositive(ExpectedRevision, "expected Covenant revision"),
+            CovenantWireValidation.RequireIdentity(MutationId, "client-generated mutation identity"));
+
+}
+
+/// <summary>
+/// The committed operator correction, repeating every field its preflight digested plus the token.
+/// </summary>
+public sealed record CovenantCorrectRequest(
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key,
+    string Content,
+    Guid TargetVersionId,
+    CovenantLane TargetLane,
+    long ExpectedRevision,
+    string TargetRenderedHash,
+    Guid MutationId,
+    string PreflightToken)
+{
+
+    public Result Validate() =>
+        CovenantWireValidation.First(
+            CovenantWireValidation.ValidateOperationScope(Scope, CampaignId),
+            CovenantWireValidation.ValidateKey(Key),
+            CovenantWireValidation.ValidateAuthoredContent(Content),
+            CovenantWireValidation.RequireIdentity(TargetVersionId, "target Covenant version identity"),
+            CovenantWireValidation.ValidateCorrectableLane(TargetLane),
+            CovenantWireValidation.ValidateDigestText(TargetRenderedHash, "target rendered hash"),
+            CovenantWireValidation.RequirePositive(ExpectedRevision, "expected Covenant revision"),
+            CovenantWireValidation.RequireIdentity(MutationId, "client-generated mutation identity"),
+            CovenantWireValidation.ValidateToken(PreflightToken));
+
+}

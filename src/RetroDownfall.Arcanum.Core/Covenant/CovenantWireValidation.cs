@@ -95,6 +95,46 @@ internal static class CovenantWireValidation
             ? InvalidScope("Global Covenant content has no Proposed lane.")
             : Result.Success();
 
+    /// <summary>
+    /// Refuses a correction target outside the lane an operator authors.
+    /// </summary>
+    /// <remarks>
+    /// The Proposed lane belongs to the agent. An operator who wants a proposal promotes it with a
+    /// write of their own, which makes them its author; correcting it in place would make them the
+    /// author of a lane whose whole meaning is that they have not yet agreed to it.
+    /// </remarks>
+    internal static Result ValidateCorrectableLane(CovenantLane lane) =>
+        lane == CovenantLane.Confirmed
+            ? Result.Success()
+            : InvalidScope("A Covenant correction names the Confirmed lane, because that is the lane an operator authors.");
+
+    /// <summary>Validates a lowercase hexadecimal digest on the wire, before anything tries to read it.</summary>
+    internal static Result ValidateDigestText(string? value, string subject)
+    {
+
+        if (value is not { Length: 64 })
+        {
+
+            return InvalidScope($"The {subject} must be a 64-character hexadecimal digest.");
+
+        }
+
+        foreach (char character in value)
+        {
+
+            if (character is not ((>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F')))
+            {
+
+                return InvalidScope($"The {subject} must be a 64-character hexadecimal digest.");
+
+            }
+
+        }
+
+        return Result.Success();
+
+    }
+
     internal static Result ValidateCurationKind(CovenantCurationKind kind) =>
         kind is >= CovenantCurationKind.Pin and <= CovenantCurationKind.Unmask
             ? Result.Success()

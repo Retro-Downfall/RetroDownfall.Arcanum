@@ -167,7 +167,64 @@ internal static partial class CliCommandTree
                     pr.GetValue(retireRevision),
                     ct).ConfigureAwait(false));
 
+        Command correct = new(
+            "correct",
+            "Replace the text of one preference, naming the exact version being corrected.");
+
+        Argument<string> correctKey = new("key") { Description = "The preference key." };
+
+        Option<string?> correctFile = new("--file", "-f")
+        {
+            Description = "Read the corrected text from this file. Omit to read from piped standard input.",
+        };
+
+        Option<Guid> targetVersion = new("--target-version")
+        {
+            Description = "The version identity being corrected, as `show --history` reports it.",
+            Required = true,
+        };
+
+        Option<string> targetHash = new("--target-hash")
+        {
+            Description = "The compiled hash of the version being corrected, as `show` reports it.",
+            Required = true,
+        };
+
+        Option<long> correctRevision = new("--expected-revision")
+        {
+            Description = "The exact lane revision being corrected.",
+
+            // Required for the same reason a retirement's is: a live head is never at revision zero, so
+            // an omitted flag would send the one number guaranteed to be refused.
+            Required = true,
+        };
+
+        correct.Add(correctKey);
+
+        correct.Add(campaign);
+
+        correct.Add(correctFile);
+
+        correct.Add(targetVersion);
+
+        correct.Add(targetHash);
+
+        correct.Add(correctRevision);
+
+        correct.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Correct(
+                    pr.GetValue(correctKey)!,
+                    pr.GetValue(campaign),
+                    pr.GetValue(correctFile),
+                    pr.GetValue(targetVersion),
+                    pr.GetValue(correctRevision),
+                    pr.GetValue(targetHash)!,
+                    ct).ConfigureAwait(false));
+
         covenant.Add(set);
+
+        covenant.Add(correct);
 
         covenant.Add(list);
 

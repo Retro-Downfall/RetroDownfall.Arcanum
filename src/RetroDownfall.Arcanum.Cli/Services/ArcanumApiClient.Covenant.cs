@@ -37,6 +37,24 @@ public sealed partial class ArcanumApiClient
             ArcanumJsonContext.Default.ApiResponseCovenantMutationPreflightDto,
             cancellationToken);
 
+    public Task<Result<CovenantMutationPreflightDto>> PrepareCovenantCorrectAsync(
+        CovenantCorrectPrepareRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostCovenantAsync(
+            "api/memory/covenant/correct/prepare",
+            JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CovenantCorrectPrepareRequest),
+            ArcanumJsonContext.Default.ApiResponseCovenantMutationPreflightDto,
+            cancellationToken);
+
+    public Task<Result<CovenantMutationResultDto>> CorrectCovenantAsync(
+        CovenantCorrectRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostCovenantAsync(
+            "api/memory/covenant/correct",
+            JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CovenantCorrectRequest),
+            ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto,
+            cancellationToken);
+
     public Task<Result<CovenantCurationPreflightDto>> PrepareCovenantCurationAsync(
         CovenantCurationPrepareRequest request,
         CancellationToken cancellationToken = default) =>
