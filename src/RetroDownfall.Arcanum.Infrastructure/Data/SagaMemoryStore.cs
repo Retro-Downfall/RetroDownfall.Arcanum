@@ -24,7 +24,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// so all access goes through <see cref="DbCommand"/> rather than LINQ, mirroring
 /// <see cref="UnseenServantWatermarkStore"/> and <see cref="SanctumBreachRepository"/>.
 /// </summary>
-internal sealed class SagaMemoryStore(
+internal sealed partial class SagaMemoryStore(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
@@ -313,7 +313,7 @@ internal sealed class SagaMemoryStore(
                                SELECT 1 FROM "SessionAttachments" a
                                WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
                            ),
-                           m.ScopeKindCode, m.CampaignId
+                           m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE 1 = 1
@@ -432,7 +432,7 @@ internal sealed class SagaMemoryStore(
                                SELECT 1 FROM "SessionAttachments" a
                                WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
                            ),
-                           m.ScopeKindCode, m.CampaignId
+                           m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE m."Id" IN ({string.Join(", ", parameterNames)})
@@ -828,6 +828,14 @@ internal sealed class SagaMemoryStore(
                     ? AttachmentSourceAvailability.Available
                     : AttachmentSourceAvailability.Unavailable);
 
+        DateTimeOffset? retiredAtUtc = reader.IsDBNull(16)
+            ? null
+            : DateTimeOffset.Parse(reader.GetString(16), CultureInfo.InvariantCulture);
+
+        DateTimeOffset? pinnedAtUtc = reader.IsDBNull(17)
+            ? null
+            : DateTimeOffset.Parse(reader.GetString(17), CultureInfo.InvariantCulture);
+
         return new SagaMemoryDto(
             id,
             content,
@@ -837,7 +845,9 @@ internal sealed class SagaMemoryStore(
             source,
             provenance,
             (SagaMemoryScopeKind)reader.GetInt32(14),
-            reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)));
+            reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)),
+            retiredAtUtc,
+            pinnedAtUtc);
 
     }
 

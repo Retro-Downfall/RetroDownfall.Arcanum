@@ -3,7 +3,10 @@ using System.Globalization;
 
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -21,23 +24,35 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 public sealed class SagaStoreHarness : IAsyncDisposable
 {
 
+    /// <summary>
+    /// Matches <see cref="ArcanumSettingClamps.EmbeddingsDimensions"/>'s 64-dimension floor — the
+    /// smallest configured value that is not itself clamped up, so <see cref="Store"/>'s
+    /// dimension-validation guard sees exactly this length.
+    /// </summary>
+    private const int Dimensions = 64;
+
     private readonly GrimoireFixture _fixture;
 
     private readonly ArcanumDbContext _db;
 
     private bool _disposed;
 
-    private SagaStoreHarness(GrimoireFixture fixture, ArcanumDbContext db)
+    private SagaStoreHarness(GrimoireFixture fixture, ArcanumDbContext db, SagaMemoryStore store)
     {
 
         _fixture = fixture;
 
         _db = db;
 
+        Store = store;
+
     }
 
     /// <summary>The open connection into the temporary Grimoire.</summary>
     public DbConnection Connection => _db.Database.GetDbConnection();
+
+    /// <summary>A live <see cref="SagaMemoryStore"/> over the temporary Grimoire.</summary>
+    internal SagaMemoryStore Store { get; }
 
     /// <summary>Builds a fresh temporary Grimoire, skipping the calling test when SQLCipher is unavailable.</summary>
     public static Task<SagaStoreHarness> CreateAsync()
@@ -52,7 +67,41 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
         ArcanumDbContext db = fixture.CreateContext(fixture.CopyDatabase());
 
-        return Task.FromResult(new SagaStoreHarness(fixture, db));
+        SagaMemoryStore store = new(
+            db,
+            new WeaveIndexAvailability(),
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+                    Integrations = new IntegrationSettings
+                    {
+                        Embeddings = new EmbeddingIntegrationSettings
+                        {
+                            Dimensions = Dimensions,
+                        },
+                    },
+                }));
+
+        return Task.FromResult(new SagaStoreHarness(fixture, db, store));
+
+    }
+
+    /// <summary>A deterministic <see cref="Dimensions"/>-length vector, distinct per <paramref name="seed"/>.</summary>
+    public float[] Embedding(int seed = 0)
+    {
+
+        Random random = new(seed);
+
+        float[] vector = new float[Dimensions];
+
+        for (int i = 0; i < vector.Length; i++)
+        {
+
+            vector[i] = (float)(random.NextDouble() * 2.0 - 1.0);
+
+        }
+
+        return vector;
 
     }
 

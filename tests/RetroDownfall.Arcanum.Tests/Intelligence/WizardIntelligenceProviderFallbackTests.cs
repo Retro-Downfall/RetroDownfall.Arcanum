@@ -1425,6 +1425,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 
+        public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 

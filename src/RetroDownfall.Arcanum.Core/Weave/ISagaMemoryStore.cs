@@ -84,6 +84,16 @@ public interface ISagaMemoryStore
         IReadOnlyList<string> ids,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// One memory's row, its curation lifecycle, and whether it still has an embedding, read together.
+    /// </summary>
+    /// <remarks>
+    /// One read rather than three. A caller that asked for the row, then the lifecycle, then the embedding
+    /// would be describing three instants as though they were one, and the detail view exists to say what
+    /// is true now.
+    /// </remarks>
+    Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken);
+
     /// <summary>Deletes a single memory (and its embedding, from both BLOB and vec0 tables). Returns <c>false</c> when no such memory exists.</summary>
     Task<bool> DeleteAsync(string id, CancellationToken cancellationToken);
 

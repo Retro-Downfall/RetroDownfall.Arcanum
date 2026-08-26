@@ -672,6 +672,9 @@ public sealed class MemoryEndpointTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 

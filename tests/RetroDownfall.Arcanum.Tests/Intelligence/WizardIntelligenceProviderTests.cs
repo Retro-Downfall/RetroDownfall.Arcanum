@@ -6411,6 +6411,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         }
 
+        public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
+            Task.FromResult(Memories.TryGetValue(id, out SagaMemoryDto? memory)
+                ? new SagaMemoryCurationRow(memory, new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc), HasEmbedding: true)
+                : null);
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Memories.Remove(id));
 
         public Task DeleteAllAsync(CancellationToken cancellationToken)
