@@ -81,7 +81,15 @@ public enum CovenantPlanDecision : byte
     Shadowed = 3,
     ReviewOnly = 4,
     Quarantined = 5,
-    Invalid = 6
+    Invalid = 6,
+
+    /// <summary>A Global entry the evaluating Campaign masked. Nothing replaces it.</summary>
+    /// <remarks>
+    /// Distinct from <see cref="Shadowed"/>, which names the entry that replaced it. A mask names
+    /// nothing, and folding the two together would tell an operator their Global preference had been
+    /// superseded by content that does not exist.
+    /// </remarks>
+    Masked = 7
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantAdmissionDecision>))]

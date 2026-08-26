@@ -152,7 +152,8 @@ public sealed class CovenantLinker : ICovenantLinker
             }
 
             if (candidate.Scope == CovenantScope.Global
-                && campaignConfirmedByKey.ContainsKey(candidate.NormalizedKey.Value))
+                && (campaignConfirmedByKey.ContainsKey(candidate.NormalizedKey.Value)
+                    || IsMasked(snapshot, candidate)))
             {
                 continue;
             }
@@ -162,6 +163,18 @@ public sealed class CovenantLinker : ICovenantLinker
 
         return result;
     }
+
+    /// <summary>
+    /// Whether the evaluating Campaign has masked this Global candidate.
+    /// </summary>
+    /// <remarks>
+    /// A mask suppresses the Global candidate and nothing else. A Campaign that masks a key and then
+    /// writes its own value for it gets its own value, because the alternative makes that later write
+    /// silently inert — the one outcome an operator could not diagnose from what a turn was shown.
+    /// </remarks>
+    private static bool IsMasked(CovenantTurnSnapshot snapshot, CovenantSnapshotCandidate candidate) =>
+        candidate.Scope == CovenantScope.Global
+        && snapshot.MaskedGlobalKeys.Contains(candidate.NormalizedKey.Value, StringComparer.Ordinal);
 
     private static CovenantPlanCandidateDecision Decide(
         CovenantTurnSnapshot snapshot,
@@ -191,6 +204,17 @@ public sealed class CovenantLinker : ICovenantLinker
                     candidate,
                     CovenantPlanDecision.Shadowed,
                     shadowingCandidate.VersionId,
+                    placement);
+            }
+
+            // Reported after the shadow, because a Campaign holding its own value is already not
+            // reading the Global one and naming the entry that replaced it is the more useful answer.
+            if (IsMasked(snapshot, candidate))
+            {
+                return new CovenantPlanCandidateDecision(
+                    candidate,
+                    CovenantPlanDecision.Masked,
+                    null,
                     placement);
             }
 

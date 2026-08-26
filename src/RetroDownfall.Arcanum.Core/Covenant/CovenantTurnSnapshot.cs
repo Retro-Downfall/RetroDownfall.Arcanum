@@ -301,13 +301,28 @@ public sealed class CovenantTurnSnapshot
         long keyReclamationEpoch,
         Guid? canonicalCampaignId,
         ulong canonicalSearchSequence,
-        ImmutableArray<CovenantSnapshotCandidate> candidates)
+        ImmutableArray<CovenantSnapshotCandidate> candidates,
+        ImmutableArray<string> maskedGlobalKeys = default)
     {
         DatasetGeneration = ValidateGeneration(datasetGeneration);
         KeyReclamationEpoch = CovenantValidation.RequirePositive(keyReclamationEpoch, nameof(keyReclamationEpoch));
         CanonicalCampaignId = ValidateCampaign(canonicalCampaignId);
         CanonicalSearchSequence = canonicalSearchSequence;
         Candidates = FreezeCandidates(candidates);
+
+        // A mask is Campaign-scoped by construction, so a Global-only turn carries none and says so by
+        // holding an empty vector rather than by leaving one uninitialized for a reader to interpret.
+        MaskedGlobalKeys = maskedGlobalKeys.IsDefault
+            ? []
+            : [.. maskedGlobalKeys.Order(StringComparer.Ordinal)];
+
+        if (CanonicalCampaignId is null && !MaskedGlobalKeys.IsEmpty)
+        {
+            throw new ArgumentException(
+                "A Global-only turn evaluates no Campaign, so it can carry no scope mask.",
+                nameof(maskedGlobalKeys));
+        }
+
         _digestInput = new SnapshotDigestInput(
             DatasetGeneration.Value,
             CanonicalCampaignId,
@@ -315,6 +330,16 @@ public sealed class CovenantTurnSnapshot
             [.. Candidates.Select(static candidate => candidate.ToDigestInput())]);
         Digest = CovenantDigests.Snapshot(_digestInput);
     }
+
+    /// <summary>The Global keys the evaluating Campaign has masked, ordered.</summary>
+    /// <remarks>
+    /// Deliberately outside <see cref="Digest"/>, on the same terms as the key-reclamation epoch beside
+    /// it. The snapshot digest names the content this turn read, and a mask is not content — it is a
+    /// filter applied to it. Its whole effect lands on the linker's decisions, and those are digested:
+    /// two snapshots holding identical candidates under different masks therefore produce different
+    /// <i>plan</i> digests, which is where every staleness comparison downstream actually keys.
+    /// </remarks>
+    public ImmutableArray<string> MaskedGlobalKeys { get; }
 
     public CovenantGenerationId DatasetGeneration { get; }
 

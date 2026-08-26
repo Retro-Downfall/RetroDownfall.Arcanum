@@ -271,8 +271,12 @@ public static class CovenantPolicyV1Manifest
             return 7;
         }
 
-        if (typeof(TEnum) == typeof(CovenantPlanDecision)
-            || typeof(TEnum) == typeof(SessionTurnClaimState)
+        if (typeof(TEnum) == typeof(CovenantPlanDecision))
+        {
+            return 7;
+        }
+
+        if (typeof(TEnum) == typeof(SessionTurnClaimState)
             || typeof(TEnum) == typeof(CovenantReasoningEffort))
         {
             return 6;

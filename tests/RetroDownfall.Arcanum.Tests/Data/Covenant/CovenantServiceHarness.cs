@@ -74,8 +74,13 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     internal void Advance(TimeSpan amount) => _clock.Advance(amount);
 
+    /// <summary>Registers one Campaign, named after its own identity.</summary>
+    /// <remarks>
+    /// The name is derived rather than fixed because the core table keys a Campaign's path uniquely, so
+    /// a shared name makes the second Campaign a constraint failure rather than a second Campaign.
+    /// </remarks>
     internal Task AddCampaignAsync(Guid campaignId, CancellationToken cancellationToken) =>
-        _fixture.AddCampaignAsync(campaignId, "Harness Campaign", cancellationToken);
+        _fixture.AddCampaignAsync(campaignId, $"Harness Campaign {campaignId:N}", cancellationToken);
 
     /// <summary>Writes one entry through the production prepare-and-commit path.</summary>
     internal async Task SetAsync(

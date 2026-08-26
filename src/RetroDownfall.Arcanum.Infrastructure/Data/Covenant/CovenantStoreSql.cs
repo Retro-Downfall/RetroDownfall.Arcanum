@@ -70,6 +70,28 @@ internal static class CovenantStoreSql
         LIMIT {CovenantLimits.ActiveSnapshotProbeRows};
         """;
 
+    /// <summary>
+    /// The Global keys one Campaign has masked, for the turn that Campaign is about to take.
+    /// </summary>
+    /// <remarks>
+    /// A separate command from the turn snapshot rather than another arm of its union, and issued only
+    /// for a Campaign-bound turn: a mask is Campaign-scoped by construction, so a Global-only turn can
+    /// hold none and pays nothing. It seeks <c>idx_covenant_curation_heads_campaign_masks</c>.
+    ///
+    /// <para>The key epoch is joined rather than ignored. A mask recorded against a key that was later
+    /// retired and reclaimed describes a key this installation no longer has, and applying it to the
+    /// one that re-created the name would suppress content the operator never masked.</para>
+    /// </remarks>
+    internal static string CampaignMasks() => """
+        SELECT h.NormalizedKey
+        FROM covenant_curation_heads h
+        WHERE h.CampaignId = $campaign
+          AND h.IsMasked = 1
+          AND h.LaneCode = 1
+          AND h.KeyEpoch = COALESCE(
+              (SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = h.NormalizedKey), 0);
+        """;
+
     internal static string LaneHeadProbe(bool campaignScoped) => $"""
         SELECT epochs.KeyEpoch, h.EntryId, h.CurrentVersionId, h.CurrentLaneRevision,
                h.CurrentOperationCode, h.OriginCode, h.CompiledByteCost

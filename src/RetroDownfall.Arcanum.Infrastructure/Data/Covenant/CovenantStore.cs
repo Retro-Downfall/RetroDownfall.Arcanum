@@ -107,6 +107,35 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         }
 
+        List<string> maskedKeys = [];
+
+        // Inside the same read snapshot the candidates came from, and only for a Campaign-bound turn:
+        // a mask is Campaign-scoped by construction, so a Global-only turn can hold none and pays
+        // nothing. Reading it in a second snapshot would let a mask applied between the two describe a
+        // Covenant this turn was never shown.
+        if (campaignId is { } evaluating)
+        {
+
+            await using SqliteCommand masks = connection.CreateCommand();
+
+            masks.Transaction = transaction;
+
+            masks.CommandText = CovenantStoreSql.CampaignMasks();
+
+            Bind(masks, "$campaign", evaluating.ToString("D"));
+
+            await using SqliteDataReader maskReader = await masks.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            while (await maskReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                maskedKeys.Add(maskReader.GetString(0));
+
+            }
+
+        }
+
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         if (datasetGeneration == Guid.Empty)
@@ -135,7 +164,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                 keyReclamationEpoch,
                 campaignId,
                 canonicalSequence,
-                [.. candidates]);
+                [.. candidates],
+                [.. maskedKeys]);
 
         }
         catch (ArgumentException exception)
