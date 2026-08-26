@@ -352,6 +352,7 @@ OATH fails closed when the missing fact is about authority rather than convenien
 - Uncertain external dispatch preserves disclosure evidence and uses a new physical attempt identity for any retry.
 - Destructive work closes the affected scope, waits for existing work to finish, and keeps it closed until the journaled operation completes or recovery safely resumes that exact operation.
 - A file identity or hash mismatch leaves the bytes untouched and reports a manual blocker.
+- A storage layout that is part-way through a declared upgrade reports itself unavailable until the upgrade finishes, rather than claiming a version whose work has not been done.
 
 These rules favor an explicit unavailable state over a plausible but unauthorized result.
 
@@ -367,6 +368,14 @@ The operation eventually chooses one outcome:
 
 This prevents a restart from treating half-finished work as permission for a different operation.
 
+### 10.2 Upgrading storage is one of those operations
+
+Arcanum's storage layout carries a version number. Moving an existing installation from one version to the next runs a short, ordered list of changes the build itself declares, and some of those changes need a pass over data that is too large to do all at once. Such a pass runs in small batches after startup, and each batch records how far it got in the same moment it records what it did — so a batch that never finished simply runs again, and nothing is ever counted as done twice or skipped once.
+
+The version number moves only when the whole upgrade finishes and the result is checked against what the build expects. Until then the affected capability reports itself unavailable, which is the honest answer: the storage says version one, and version two's promises have not been kept yet. An installation the build cannot make sense of — one written by a newer build, one whose layout was changed by something else, or one whose half-finished upgrade this build cannot pick up — is refused and named, rather than upgraded on a guess.
+
+Nothing in the shipped build has moved past version one yet. The machinery runs, finds nothing to do, and says so.
+
 ## 11. What exists now and what comes next
 
 **Status as of 2026-08-22**, written on `long-term-memory` and since merged into `main`.
@@ -381,6 +390,7 @@ OATH combines built foundations with an activated data-lifecycle erasure surface
 | **Managed file reconciliation** | After that, every file the database records outside itself is accounted for: unfinished writes are cleaned up or reported, finished ones are removed only after being proven to be the exact file recorded, and the reset refuses to go further unless the counts match the list written down first. |
 | **Restore-credential proof** | Arcanum proves a profile's restore history is over and removes its three restore credentials in a fixed order, one at a time, checking each still holds what the proof said. It runs only after the database is provably deleted. |
 | **A full reset that finishes** | An externally authorized full reset now deletes the database, removes what is left, checks nothing survived, and reports the installation clean. Every ordinary cleanup still keeps the things a full reset takes. |
+| **Storage upgrades** | An existing installation can now be carried from one storage version to the next through changes the build declares, including data passes that run in bounded batches and survive a restart. Nothing has moved past version one yet, so the machinery runs and finds nothing to do. |
 | **Still unregistered** | Dedicated Covenant inspection, mutation, repair, rebuild, path, and Session-binding management routes and commands remain separate work. |
 | **Remaining roadmap** | Full-installation marker/Campaign compare-deletion, remaining managed-file and credential cleanup, identity rotation, release qualification, and later retrieval, rollup, consolidation, curation, evaluation, scoped-recall, caching, delegation, and bitemporal work. |
 

@@ -54,7 +54,8 @@ public enum CovenantHealthTransition : byte
     Reset = 7,
     Restore = 8,
     FamilyReinitialize = 9,
-    FeatureConfiguration = 10
+    FeatureConfiguration = 10,
+    SchemaEvolution = 11
 }
 
 /// <summary>

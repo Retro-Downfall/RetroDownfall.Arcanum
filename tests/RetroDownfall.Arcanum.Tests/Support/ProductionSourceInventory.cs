@@ -14,6 +14,33 @@ internal readonly record struct ProductionSource(string RelativePath, string Tex
     internal bool Names(string construct) => Text.Contains(construct, StringComparison.Ordinal);
 
     /// <summary>
+    /// How many times this file's code names the supplied construct.
+    /// </summary>
+    /// <remarks>
+    /// For a rule that is about a count rather than a presence - a registration every composition root
+    /// needs, where one root having it and the other not is exactly the failure.
+    /// </remarks>
+    internal int Occurrences(string construct)
+    {
+
+        int found = 0;
+
+        int index = Text.IndexOf(construct, StringComparison.Ordinal);
+
+        while (index >= 0)
+        {
+
+            found++;
+
+            index = Text.IndexOf(construct, index + construct.Length, StringComparison.Ordinal);
+
+        }
+
+        return found;
+
+    }
+
+    /// <summary>
     /// Reports whether this file carries exactly the supplied name.
     /// </summary>
     /// <remarks>

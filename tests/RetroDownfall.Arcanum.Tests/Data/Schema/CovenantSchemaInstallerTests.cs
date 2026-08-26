@@ -622,7 +622,9 @@ public sealed class CovenantSchemaInstallerTests
 
         GrimoireSchemaInstaller installer = new(
             new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault()),
-            new GrimoireSchemaDataInitializers(initializers));
+            new GrimoireSchemaDataInitializers(initializers),
+            GrimoireSchemaVersionChains.Default,
+            TimeProvider.System);
 
         return installer.InstallAsync(
             connection,

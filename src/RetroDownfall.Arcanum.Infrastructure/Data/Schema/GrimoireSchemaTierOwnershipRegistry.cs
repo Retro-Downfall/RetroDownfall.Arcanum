@@ -62,6 +62,24 @@ internal sealed class GrimoireSchemaTierOwnershipRegistry
             GrimoireSchemaManifests.CovenantAccelerator,
         ]);
 
+    /// <summary>
+    /// Builds the registry over the head manifests of an explicit chain set, so a caller driving a
+    /// chain other than the shipped one inspects against the objects that chain declares.
+    /// </summary>
+    internal static GrimoireSchemaTierOwnershipRegistry ForChains(GrimoireSchemaVersionChainSet chains)
+    {
+
+        ArgumentNullException.ThrowIfNull(chains);
+
+        return new GrimoireSchemaTierOwnershipRegistry(
+        [
+            .. Enum.GetValues<GrimoireSchemaTransactionTier>()
+                .Select(chains.ForTier)
+                .Select(static chain => chain.HeadManifest),
+        ]);
+
+    }
+
     internal bool TryGetObjectOwner(string name, out GrimoireSchemaTransactionTier tier) =>
         _objects.TryGetValue(name, out tier);
 
@@ -100,7 +118,7 @@ internal static class GrimoireSchemaManifests
             () => GrimoireSchemaManifestBuilder.Build(
                 GrimoireSchemaFamily.Core,
                 GrimoireSchemaTransactionTier.Core,
-                GrimoireSchemaManifestBuilder.CovenantSchemaVersion,
+                GrimoireSchemaVersionChains.CoreSchemaVersion,
                 GrimoireSchemaCatalog.CoreSchemaFingerprint,
                 GrimoireSchemaCatalog.CoreObjects),
             LazyThreadSafetyMode.ExecutionAndPublication);
@@ -110,7 +128,7 @@ internal static class GrimoireSchemaManifests
             () => GrimoireSchemaManifestBuilder.Build(
                 GrimoireSchemaFamily.Covenant,
                 GrimoireSchemaTransactionTier.CovenantCanonical,
-                GrimoireSchemaManifestBuilder.CovenantSchemaVersion,
+                GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion,
                 GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
                 GrimoireSchemaCatalog.CovenantCanonicalObjects),
             LazyThreadSafetyMode.ExecutionAndPublication);
@@ -120,7 +138,7 @@ internal static class GrimoireSchemaManifests
             () => GrimoireSchemaManifestBuilder.Build(
                 GrimoireSchemaFamily.Covenant,
                 GrimoireSchemaTransactionTier.CovenantAccelerator,
-                GrimoireSchemaManifestBuilder.CovenantSchemaVersion,
+                GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion,
                 GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint,
                 GrimoireSchemaCatalog.CovenantAcceleratorObjects),
             LazyThreadSafetyMode.ExecutionAndPublication);
