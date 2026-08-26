@@ -161,7 +161,10 @@ internal sealed class LexiconService(
                                 connection,
                                 transaction: null,
                                 AnnalSubjectStore.Lexicon,
-                                id.ToString(),
+                                // The "N" format, because that is the exact text lexicon_entries.Id
+                                // stores. A subject id in any other format is one nothing can ever join
+                                // back to its row: not an erasure, not a retention sweep, not a reader.
+                                id.ToString("N"),
                                 AnnalOrigin.AgentAsserted,
                                 scope.CampaignId is null ? SagaMemoryScopeKind.Global : SagaMemoryScopeKind.Campaign,
                                 scope.CampaignId?.ToString(),
@@ -266,6 +269,22 @@ internal sealed class LexiconService(
 
                     try
                     {
+                        // Before the entity goes, because the claim is found through the row that names
+                        // it. Deliberately ungated: a claim written while the Annals was enabled has to
+                        // stay removable after it is disabled, or turning the feature off would strand
+                        // records no surface can reach and no reset can clear.
+                        await AnnalsClaimWriter.DeleteClaimsForSubjectQueryAsync(
+                            connection,
+                            transaction: null,
+                            AnnalSubjectStore.Lexicon,
+                            """
+                            SELECT Id FROM lexicon_entries
+                            WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey
+                            """,
+                            cancellationToken,
+                            ("@normalized", normalized),
+                            ("@scopeKey", scope.Key)).ConfigureAwait(false);
+
                         await using DbCommand cmd = connection.CreateCommand();
 
                         cmd.CommandText =

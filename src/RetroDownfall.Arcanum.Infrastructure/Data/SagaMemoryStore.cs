@@ -543,6 +543,16 @@ internal sealed class SagaMemoryStore(
 
                 }
 
+                // Deliberately ungated. A claim written while the Annals was enabled has to stay
+                // removable after it is disabled, or turning the feature off would strand records no
+                // surface can reach and no reset can clear.
+                await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    id,
+                    cancellationToken).ConfigureAwait(false);
+
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return true;
@@ -626,6 +636,14 @@ internal sealed class SagaMemoryStore(
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 }
+
+                // Saga's claims and no others. The Lexicon's stay exactly where they are, which is what
+                // makes a store-scoped reset mean what the operator asked for.
+                await AnnalsClaimWriter.DeleteClaimsForStoreAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 

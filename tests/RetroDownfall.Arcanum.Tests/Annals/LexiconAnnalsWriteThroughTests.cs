@@ -69,6 +69,37 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A claim's subject id has to be the <i>exact</i> text its table stores, or nothing can ever join
+    /// the two: not an erasure, not a retention sweep, not a reader. This joins them the way production
+    /// does rather than reformatting the id to match, which is how the mismatch hid in the first place.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_claim_names_its_entity_by_the_id_the_lexicon_table_actually_stores()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ILexiconService service = CreateService(annals: true);
+
+        _ = await service.UpsertAsync(
+            "config",
+            "Project",
+            ["ships on Friday"],
+            LexiconScope.Global,
+            CancellationToken.None);
+
+        Assert.Equal(
+            1,
+            await CountAsync(
+                """
+                SELECT COUNT(*) FROM lexicon_entries AS entry
+                JOIN annal_claims AS claim
+                    ON claim.SubjectStoreCode = 2 AND claim.SubjectId = entry.Id;
+                """));
+
+    }
+
     [SkippableFact]
     public async Task A_first_upsert_asserts_revision_one()
     {
@@ -86,7 +117,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
         Assert.True(written.IsSuccess);
 
-        IReadOnlyList<VersionRow> versions = await ReadVersionsAsync(written.Value.Id.ToString());
+        IReadOnlyList<VersionRow> versions = await ReadVersionsAsync(written.Value.Id.ToString("N"));
 
         VersionRow only = Assert.Single(versions);
 
@@ -126,7 +157,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             LexiconScope.Global,
             CancellationToken.None);
 
-        IReadOnlyList<VersionRow> versions = await ReadVersionsAsync(first.Value.Id.ToString());
+        IReadOnlyList<VersionRow> versions = await ReadVersionsAsync(first.Value.Id.ToString("N"));
 
         Assert.Equal(2, versions.Count);
 
@@ -144,7 +175,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
         Assert.Equal(versions[0].VersionId, edge.DependencyVersionId);
 
-        HeadRow head = await ReadHeadAsync(first.Value.Id.ToString());
+        HeadRow head = await ReadHeadAsync(first.Value.Id.ToString("N"));
 
         Assert.Equal(2, head.CurrentRevision);
 
@@ -171,7 +202,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             LexiconScope.Global,
             CancellationToken.None);
 
-        VersionRow before = Assert.Single(await ReadVersionsAsync(first.Value.Id.ToString()));
+        VersionRow before = Assert.Single(await ReadVersionsAsync(first.Value.Id.ToString("N")));
 
         _ = await service.UpsertAsync(
             "config",
@@ -180,7 +211,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             LexiconScope.Global,
             CancellationToken.None);
 
-        VersionRow after = (await ReadVersionsAsync(first.Value.Id.ToString()))[0];
+        VersionRow after = (await ReadVersionsAsync(first.Value.Id.ToString("N")))[0];
 
         Assert.Equal(before, after);
 
@@ -206,7 +237,7 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             LexiconScope.Global,
             CancellationToken.None);
 
-        HeadRow before = await ReadHeadAsync(first.Value.Id.ToString());
+        HeadRow before = await ReadHeadAsync(first.Value.Id.ToString("N"));
 
         _ = await service.UpsertAsync(
             "config",
@@ -215,9 +246,9 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             LexiconScope.Global,
             CancellationToken.None);
 
-        Assert.Single(await ReadVersionsAsync(first.Value.Id.ToString()));
+        Assert.Single(await ReadVersionsAsync(first.Value.Id.ToString("N")));
 
-        Assert.Equal(before, await ReadHeadAsync(first.Value.Id.ToString()));
+        Assert.Equal(before, await ReadHeadAsync(first.Value.Id.ToString("N")));
 
     }
 
@@ -243,13 +274,13 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             LexiconScope.ForCampaign(CampaignA),
             CancellationToken.None);
 
-        VersionRow globalVersion = Assert.Single(await ReadVersionsAsync(global.Value.Id.ToString()));
+        VersionRow globalVersion = Assert.Single(await ReadVersionsAsync(global.Value.Id.ToString("N")));
 
         Assert.Equal(SagaMemoryScopeKind.Global, globalVersion.ScopeKind);
 
         Assert.Null(globalVersion.CampaignId);
 
-        VersionRow scopedVersion = Assert.Single(await ReadVersionsAsync(scoped.Value.Id.ToString()));
+        VersionRow scopedVersion = Assert.Single(await ReadVersionsAsync(scoped.Value.Id.ToString("N")));
 
         Assert.Equal(SagaMemoryScopeKind.Campaign, scopedVersion.ScopeKind);
 

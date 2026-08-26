@@ -22,6 +22,10 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Core.Annals;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class DataRetentionService
@@ -2319,6 +2323,12 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", id)).ConfigureAwait(false);
 
+            derived += await CountTableAsync(
+                "annal_claims",
+                "SubjectStoreCode = 1 AND SubjectId = @id",
+                cancellationToken,
+                ("@id", id)).ConfigureAwait(false);
+
             candidates.Add(SagaCandidatePrefix + id);
 
             items.Add(
@@ -2374,6 +2384,12 @@ internal sealed partial class DataRetentionService
             derived += await CountTableAsync(
                 "lexicon_fts",
                 "rowid IN (SELECT rowid FROM lexicon_entries WHERE Id = @id)",
+                cancellationToken,
+                ("@id", id)).ConfigureAwait(false);
+
+            derived += await CountTableAsync(
+                "annal_claims",
+                "SubjectStoreCode = 2 AND SubjectId = @id",
                 cancellationToken,
                 ("@id", id)).ConfigureAwait(false);
 
@@ -6356,6 +6372,16 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", memoryId)).ConfigureAwait(false);
 
+            // Before the memory row, because the claim is found through the row that names it. The
+            // rows-zero arm below rolls the whole transaction back, so a candidate that turns out to be
+            // younger than the cutoff keeps its claim along with its memory.
+            await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                connection,
+                transaction,
+                AnnalSubjectStore.Saga,
+                memoryId,
+                cancellationToken).ConfigureAwait(false);
+
             rows = await ExecuteAsync(
                 connection,
                 transaction,
@@ -6404,6 +6430,12 @@ internal sealed partial class DataRetentionService
         reconciled &= await CountTableAsync(
             "saga_memory_attachment_provenance",
             "MemoryId = @id",
+            cancellationToken,
+            ("@id", memoryId)).ConfigureAwait(false) == 0;
+
+        reconciled &= await CountTableAsync(
+            "annal_claims",
+            "SubjectStoreCode = 1 AND SubjectId = @id",
             cancellationToken,
             ("@id", memoryId)).ConfigureAwait(false) == 0;
 
@@ -6475,6 +6507,13 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", entryId)).ConfigureAwait(false);
 
+            await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                connection,
+                transaction,
+                AnnalSubjectStore.Lexicon,
+                entryId,
+                cancellationToken).ConfigureAwait(false);
+
             rows = await ExecuteAsync(
                 connection,
                 transaction,
@@ -6517,6 +6556,12 @@ internal sealed partial class DataRetentionService
         reconciled &= await CountTableAsync(
             "lexicon_fact_attachment_provenance",
             "EntryId = @id",
+            cancellationToken,
+            ("@id", entryId)).ConfigureAwait(false) == 0;
+
+        reconciled &= await CountTableAsync(
+            "annal_claims",
+            "SubjectStoreCode = 2 AND SubjectId = @id",
             cancellationToken,
             ("@id", entryId)).ConfigureAwait(false) == 0;
 

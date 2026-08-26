@@ -260,17 +260,42 @@ internal static class AnnalsClaimWriter
 
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
 
-        const string ClaimScope =
-            "SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = @storeCode AND SubjectId = @subjectId";
+        await DeleteInOrderAsync(
+            connection,
+            transaction,
+            AnnalsErasurePlan.ForSubjectQuery(subjectStore, "SELECT @subjectId"),
+            cancellationToken,
+            ("@subjectId", subjectId));
+
+    }
+
+    /// <summary>
+    /// Removes the claims over every subject row a query selects, for a caller that knows its subjects
+    /// by a predicate rather than by id.
+    /// </summary>
+    /// <param name="subjectIdQuery">
+    /// A code-owned <c>SELECT</c> of subject ids, never anything a caller supplied. Its parameters are
+    /// bound from <paramref name="parameters"/>.
+    /// </param>
+    internal static async Task DeleteClaimsForSubjectQueryAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        AnnalSubjectStore subjectStore,
+        string subjectIdQuery,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentException.ThrowIfNullOrEmpty(subjectIdQuery);
 
         await DeleteInOrderAsync(
             connection,
             transaction,
-            ClaimScope,
-            "SubjectStoreCode = @storeCode AND SubjectId = @subjectId",
+            AnnalsErasurePlan.ForSubjectQuery(subjectStore, subjectIdQuery),
             cancellationToken,
-            ("@storeCode", (int)subjectStore),
-            ("@subjectId", subjectId));
+            parameters);
 
     }
 
@@ -284,75 +309,41 @@ internal static class AnnalsClaimWriter
 
         ArgumentNullException.ThrowIfNull(connection);
 
-        const string ClaimScope = "SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = @storeCode";
-
         await DeleteInOrderAsync(
             connection,
             transaction,
-            ClaimScope,
-            "SubjectStoreCode = @storeCode",
-            cancellationToken,
-            ("@storeCode", (int)subjectStore));
+            AnnalsErasurePlan.ForStore(subjectStore),
+            cancellationToken);
 
     }
 
     /// <summary>
-    /// The four statements every erasure runs, in the one order that works.
+    /// Runs one erasure plan's steps in the order it states, which is the order foreign keys require.
     /// </summary>
     /// <remarks>
-    /// SQLite enforces an immediate foreign key as each row is deleted rather than at the end of the
-    /// statement, so a head must release its version before the version may go and a version must go
-    /// before its claim. Edges would cascade, and are deleted explicitly anyway: <c>SagaMemoryStore</c>
-    /// already deletes <c>saga_memory_attachment_provenance</c> explicitly although that table declares
-    /// <c>ON DELETE CASCADE</c>, and an erasure the operator asked for is the wrong place to depend on a
-    /// pragma being what it is expected to be.
-    ///
-    /// <para>The edge delete names <b>both</b> endpoint columns, because an edge dies when either end
-    /// does: a claim being erased may be the target of an edge asserted by a version that survives, and
-    /// leaving that edge would leave a dependency pointing at nothing.</para>
+    /// The order and the predicates belong to <see cref="AnnalsErasurePlan"/> rather than to this
+    /// method, because the memory-reset executor runs the same erasure and two statements of it would
+    /// eventually disagree about which rows an erasure owns.
     /// </remarks>
     private static async Task DeleteInOrderAsync(
         DbConnection connection,
         DbTransaction? transaction,
-        string claimScopeQuery,
-        string claimPredicate,
+        IReadOnlyList<AnnalsErasureStep> steps,
         CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
 
-        string versionScope = $"SELECT VersionId FROM annal_versions WHERE ClaimId IN ({claimScopeQuery})";
+        foreach (AnnalsErasureStep step in steps)
+        {
 
-        await ExecuteAsync(
-            connection,
-            transaction,
-            cancellationToken,
-            $"""
-            DELETE FROM annal_dependencies
-            WHERE DependentVersionId IN ({versionScope})
-               OR DependencyVersionId IN ({versionScope})
-            """,
-            parameters);
+            await ExecuteAsync(
+                connection,
+                transaction,
+                cancellationToken,
+                $"DELETE FROM {step.Table} WHERE {step.Predicate}",
+                parameters);
 
-        await ExecuteAsync(
-            connection,
-            transaction,
-            cancellationToken,
-            $"DELETE FROM annal_heads WHERE ClaimId IN ({claimScopeQuery})",
-            parameters);
-
-        await ExecuteAsync(
-            connection,
-            transaction,
-            cancellationToken,
-            $"DELETE FROM annal_versions WHERE ClaimId IN ({claimScopeQuery})",
-            parameters);
-
-        await ExecuteAsync(
-            connection,
-            transaction,
-            cancellationToken,
-            $"DELETE FROM annal_claims WHERE {claimPredicate}",
-            parameters);
+        }
 
     }
 
