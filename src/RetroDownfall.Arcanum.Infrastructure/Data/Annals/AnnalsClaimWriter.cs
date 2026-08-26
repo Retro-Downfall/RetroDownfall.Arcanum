@@ -205,43 +205,15 @@ internal static class AnnalsClaimWriter
             sourceSessionId,
             cancellationToken).ConfigureAwait(false);
 
-        long dependentSequence = await ReadSequenceAsync(connection, transaction, versionId, cancellationToken)
-            .ConfigureAwait(false);
-
-        await ExecuteAsync(
+        await AppendSupersedingTailAsync(
             connection,
             transaction,
-            cancellationToken,
-            """
-            INSERT INTO annal_dependencies (
-                DependentVersionId, DependentSequence, DependencyVersionId, DependencySequence,
-                RelationCode, Ordinal, CreatedAtUtc)
-            VALUES (@dependent, @dependentSequence, @dependency, @dependencySequence, @relationCode, 1, @createdAt)
-            """,
-            ("@dependent", versionId),
-            ("@dependentSequence", dependentSequence),
-            ("@dependency", head.CurrentVersionId),
-            ("@dependencySequence", head.CurrentSequence),
-            ("@relationCode", (int)AnnalDependencyRelation.Supersedes),
-            ("@createdAt", Format(recordedAt)));
-
-        await ExecuteAsync(
-            connection,
-            transaction,
-            cancellationToken,
-            """
-            UPDATE annal_heads
-            SET CurrentVersionId = @versionId,
-                CurrentRevision = @revision,
-                CurrentOperationCode = @operationCode,
-                UpdatedAtUtc = @updatedAt
-            WHERE ClaimId = @claimId
-            """,
-            ("@versionId", versionId),
-            ("@revision", revision),
-            ("@operationCode", (int)AnnalOperation.Correct),
-            ("@updatedAt", Format(recordedAt)),
-            ("@claimId", head.ClaimId));
+            head,
+            versionId,
+            revision,
+            AnnalOperation.Correct,
+            recordedAt,
+            cancellationToken).ConfigureAwait(false);
 
         return true;
 
@@ -324,43 +296,15 @@ internal static class AnnalsClaimWriter
             sourceSessionId,
             cancellationToken).ConfigureAwait(false);
 
-        long dependentSequence = await ReadSequenceAsync(connection, transaction, versionId, cancellationToken)
-            .ConfigureAwait(false);
-
-        await ExecuteAsync(
+        await AppendSupersedingTailAsync(
             connection,
             transaction,
-            cancellationToken,
-            """
-            INSERT INTO annal_dependencies (
-                DependentVersionId, DependentSequence, DependencyVersionId, DependencySequence,
-                RelationCode, Ordinal, CreatedAtUtc)
-            VALUES (@dependent, @dependentSequence, @dependency, @dependencySequence, @relationCode, 1, @createdAt)
-            """,
-            ("@dependent", versionId),
-            ("@dependentSequence", dependentSequence),
-            ("@dependency", head.CurrentVersionId),
-            ("@dependencySequence", head.CurrentSequence),
-            ("@relationCode", (int)AnnalDependencyRelation.Supersedes),
-            ("@createdAt", Format(recordedAt)));
-
-        await ExecuteAsync(
-            connection,
-            transaction,
-            cancellationToken,
-            """
-            UPDATE annal_heads
-            SET CurrentVersionId = @versionId,
-                CurrentRevision = @revision,
-                CurrentOperationCode = @operationCode,
-                UpdatedAtUtc = @updatedAt
-            WHERE ClaimId = @claimId
-            """,
-            ("@versionId", versionId),
-            ("@revision", revision),
-            ("@operationCode", (int)AnnalOperation.Retire),
-            ("@updatedAt", Format(recordedAt)),
-            ("@claimId", head.ClaimId));
+            head,
+            versionId,
+            revision,
+            AnnalOperation.Retire,
+            recordedAt,
+            cancellationToken).ConfigureAwait(false);
 
         return true;
 
@@ -516,6 +460,65 @@ internal static class AnnalsClaimWriter
             ("@sourceSessionId", sourceSessionId?.ToString()));
 
         return versionId;
+
+    }
+
+    /// <summary>
+    /// The tail shared by every write that replaces a claim's current version with a new one: an edge
+    /// recording what the new version supersedes, and the head move that makes it current.
+    /// </summary>
+    /// <remarks>
+    /// Not shared with <see cref="AppendAssertAsync"/>, which inserts a head rather than moving one --
+    /// folding that in would mean a branch here saying which of two different things this call is doing.
+    /// </remarks>
+    private static async Task AppendSupersedingTailAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        HeadRow head,
+        string versionId,
+        int revision,
+        AnnalOperation operation,
+        DateTimeOffset recordedAt,
+        CancellationToken cancellationToken)
+    {
+
+        long dependentSequence = await ReadSequenceAsync(connection, transaction, versionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        await ExecuteAsync(
+            connection,
+            transaction,
+            cancellationToken,
+            """
+            INSERT INTO annal_dependencies (
+                DependentVersionId, DependentSequence, DependencyVersionId, DependencySequence,
+                RelationCode, Ordinal, CreatedAtUtc)
+            VALUES (@dependent, @dependentSequence, @dependency, @dependencySequence, @relationCode, 1, @createdAt)
+            """,
+            ("@dependent", versionId),
+            ("@dependentSequence", dependentSequence),
+            ("@dependency", head.CurrentVersionId),
+            ("@dependencySequence", head.CurrentSequence),
+            ("@relationCode", (int)AnnalDependencyRelation.Supersedes),
+            ("@createdAt", Format(recordedAt)));
+
+        await ExecuteAsync(
+            connection,
+            transaction,
+            cancellationToken,
+            """
+            UPDATE annal_heads
+            SET CurrentVersionId = @versionId,
+                CurrentRevision = @revision,
+                CurrentOperationCode = @operationCode,
+                UpdatedAtUtc = @updatedAt
+            WHERE ClaimId = @claimId
+            """,
+            ("@versionId", versionId),
+            ("@revision", revision),
+            ("@operationCode", (int)operation),
+            ("@updatedAt", Format(recordedAt)),
+            ("@claimId", head.ClaimId));
 
     }
 
