@@ -8,13 +8,20 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </summary>
 /// <remarks>
 /// Two objects moved when Core reached version 2, so only those two are frozen here; every other Core
-/// object is taken from the shipped catalog because it is unchanged. That is also what keeps the
-/// reconstruction honest: the fingerprint this list produces is compared against the pin the shipped
-/// chain carries for version 1, so a reconstruction that drifted from the real version-1 tree fails
-/// rather than quietly certifying the wrong pin.
+/// object is taken from <see cref="CoreSchemaVersionTwoFixture"/> because it is unchanged between the
+/// two versions. That is also what keeps the reconstruction honest: the fingerprint this list produces
+/// is compared against the pin the shipped chain carries for version 1, so a reconstruction that
+/// drifted from the real version-1 tree fails rather than quietly certifying the wrong pin.
 ///
-/// <para>A later version step that edits a third Core object has to freeze that object's version-2 text
-/// here as well, or the reconstruction stops describing version 1 and the pin assertion says so.</para>
+/// <para>Each fixture peels back exactly one version, which is why this one starts from the version-2
+/// reconstruction rather than from the shipped catalog. A step that <i>adds</i> an object breaks a
+/// reconstruction just as surely as one that edits an object does — the added object would appear in a
+/// tree that predates it — and rebasing means only the newest fixture has to learn about the newest
+/// step.</para>
+///
+/// <para>A later version step that edits a third Core object has to freeze that object's text as of the
+/// version below here as well, or the reconstruction stops describing version 1 and the pin assertion
+/// says so.</para>
 /// </remarks>
 internal static class CoreSchemaVersionOneFixture
 {
@@ -65,7 +72,7 @@ internal static class CoreSchemaVersionOneFixture
     /// </remarks>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects.Select(
+        .. CoreSchemaVersionTwoFixture.Objects.Select(
             static definition => definition.Name switch
             {
 

@@ -234,8 +234,15 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     /// An upgrade that stops mid-sweep leaves the tier below head, so nothing may read the new column as
     /// if the classification were complete.
     /// </summary>
+    /// <remarks>
+    /// The recorded version moves once, at the end of the whole run, rather than once per step: the
+    /// installer writes metadata only from <c>FinalizeRunAsync</c>, which it reaches when a step arrives
+    /// at head. A chain with more than one step therefore reports the version it started at for as long
+    /// as any sweep is still draining, which is exactly the property this asserts — a half-evolved tier
+    /// must never advertise a version whose promised work has not been done.
+    /// </remarks>
     [Fact]
-    public async Task An_interrupted_upgrade_leaves_the_tier_below_head_until_the_sweep_drains()
+    public async Task An_interrupted_upgrade_leaves_the_tier_below_head_until_every_sweep_drains()
     {
 
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
@@ -250,7 +257,13 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         Assert.Equal(1, await harness.RecordedVersionAsync());
 
-        _ = await harness.RunOnePassAsync();
+        // One bounded pass is the interruption. It advances real work and still leaves the tier below
+        // head, because the run has not finished.
+        Assert.True((await harness.RunOnePassAsync()).Value.Advanced);
+
+        Assert.True(await harness.RecordedVersionAsync() < GrimoireSchemaVersionChains.CoreSchemaVersion);
+
+        await harness.DrainAsync();
 
         Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await harness.RecordedVersionAsync());
 
@@ -380,16 +393,24 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         internal Task<Result<GrimoireSchemaTransitionPassOutcome>> RunOnePassAsync() =>
             _coordinator.RunOnceAsync(CancellationToken.None);
 
-        /// <summary>Installs the shipped chain and drains whatever sweep it opened.</summary>
-        internal async Task UpgradeAsync()
+        /// <summary>Runs bounded passes until none advances, which is what a host does across restarts.</summary>
+        internal async Task DrainAsync()
         {
-
-            _ = await InstallShippedChainAsync();
 
             while ((await RunOnePassAsync()).Value.Advanced)
             {
 
             }
+
+        }
+
+        /// <summary>Installs the shipped chain and drains every sweep it opened.</summary>
+        internal async Task UpgradeAsync()
+        {
+
+            _ = await InstallShippedChainAsync();
+
+            await DrainAsync();
 
             Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await RecordedVersionAsync());
 

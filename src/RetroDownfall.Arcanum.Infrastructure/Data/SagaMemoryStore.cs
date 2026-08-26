@@ -4,12 +4,14 @@ using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -157,6 +159,33 @@ internal sealed class SagaMemoryStore(
                         transaction,
                         id,
                         provenance,
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                if (options.CurrentValue.Features.Annals)
+                {
+
+                    // Inside the memory's own transaction, and reusing the scope the classifier just
+                    // derived rather than deriving a second one. Two derivations of one authority
+                    // eventually disagree, and the disagreement would land on what a turn may recall.
+                    //
+                    // AgentExtracted is the only honest origin here: Saga has no operator write path and
+                    // no scribe tool, so every row is a headless extraction's inference from a finished
+                    // transcript rather than something anyone chose to state.
+                    _ = await AnnalsClaimWriter.AppendAssertAsync(
+                        connection,
+                        transaction,
+                        AnnalSubjectStore.Saga,
+                        id,
+                        AnnalOrigin.AgentExtracted,
+                        scopeKind,
+                        scopeCampaignId,
+                        ContentSensitivity.None,
+                        AnnalContentDigest.ForSagaMemory(content),
+                        createdAt,
+                        createdAt,
+                        sessionId,
                         cancellationToken).ConfigureAwait(false);
 
                 }
@@ -514,6 +543,16 @@ internal sealed class SagaMemoryStore(
 
                 }
 
+                // Deliberately ungated. A claim written while the Annals was enabled has to stay
+                // removable after it is disabled, or turning the feature off would strand records no
+                // surface can reach and no reset can clear.
+                await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    id,
+                    cancellationToken).ConfigureAwait(false);
+
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return true;
@@ -597,6 +636,14 @@ internal sealed class SagaMemoryStore(
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 }
+
+                // Saga's claims and no others. The Lexicon's stay exactly where they are, which is what
+                // makes a store-scoped reset mean what the operator asked for.
+                await AnnalsClaimWriter.DeleteClaimsForStoreAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 

@@ -89,6 +89,11 @@ public enum RetentionDataClass
     /// <summary>The Covenant family. Inventoried, never aged out.</summary>
     Covenant = 28,
 
+    /// <summary>
+    /// The Annals. Inventoried, never aged out on its own timer: a claim's lifecycle is its subject's.
+    /// </summary>
+    Annals = 29,
+
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<DataRetentionOperation>))]
@@ -367,6 +372,10 @@ public static class DataRetentionSettingsCatalog
             // Explicit, not a fall-through. The Covenant family is inventoried and never aged out, and
             // an arm that says so cannot be mistaken for a rule somebody forgot to wire.
             RetentionDataClass.Covenant => null,
+
+            // Explicit for the same reason. A claim's lifecycle is its subject's, and a rule that could
+            // age one out from under a live memory would leave that memory unexplained.
+            RetentionDataClass.Annals => null,
 
             _ => null,
 

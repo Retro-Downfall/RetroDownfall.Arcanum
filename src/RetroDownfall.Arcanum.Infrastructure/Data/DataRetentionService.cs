@@ -18,6 +18,7 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Daemons;
@@ -31,6 +32,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -273,6 +275,19 @@ internal sealed partial class DataRetentionService(
                 "lexicon_fact_attachment_provenance",
             ],
             "Lexicon facts, full-text records, and typed provenance remain independent from source attachment availability.",
+            retention,
+            cancellationToken).ConfigureAwait(false);
+
+        await AddCompositeDatabaseStatusAsync(
+            items,
+            RetentionDataClass.Annals,
+            [
+                "annal_claims",
+                "annal_versions",
+                "annal_heads",
+                "annal_dependencies",
+            ],
+            "Bitemporal claim identities, immutable versions, current pointers, and dependency edges over Saga and Lexicon rows. Removed with the memory each claim describes; never aged out on their own.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -2218,11 +2233,7 @@ internal sealed partial class DataRetentionService(
         if (campaignId is not { } campaign)
         {
 
-            return
-            [
-                .. UntargetedMemoryResetTables(scope)
-                    .Select(static table => new MemoryResetSelection(table, null, [])),
-            ];
+            return UntargetedMemoryResetTables(scope);
 
         }
 
@@ -2243,6 +2254,12 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Saga =>
             [
+                .. AnnalsResetSelections(
+                    AnnalSubjectStore.Saga,
+                    "SELECT \"Id\" FROM \"saga_memories\""
+                        + " WHERE \"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
+                    campaignAndKind),
+
                 new("saga_memory_embeddings_vec", OwnedMemories, campaignAndKind),
                 new("saga_memory_embeddings", OwnedMemories, campaignAndKind),
                 new("saga_memory_attachment_provenance", OwnedMemories, campaignAndKind),
@@ -2263,6 +2280,11 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Lexicon =>
             [
+                .. AnnalsResetSelections(
+                    AnnalSubjectStore.Lexicon,
+                    "SELECT Id FROM lexicon_entries WHERE ScopeCampaignId = @campaignId",
+                    campaignOnly),
+
                 new(
                     "lexicon_fact_attachment_provenance",
                     "EntryId IN (SELECT Id FROM lexicon_entries WHERE ScopeCampaignId = @campaignId)",
@@ -2278,47 +2300,81 @@ internal sealed partial class DataRetentionService(
 
     }
 
-    private static string[] UntargetedMemoryResetTables(MemoryResetScope scope) =>
+    /// <summary>
+    /// Every table a whole-store reset clears, in delete order.
+    /// </summary>
+    /// <remarks>
+    /// The Annals steps carry a predicate rather than clearing their tables outright, because the four
+    /// tables hold both stores' claims: resetting Saga must leave the Lexicon's claims exactly where they
+    /// were, and a bare <c>DELETE FROM annal_claims</c> would take both. Their order and their predicates
+    /// come from <see cref="AnnalsErasurePlan"/>, which the claim writer also reads, so a store reset and
+    /// a single-memory delete cannot disagree about which rows an erasure owns.
+    /// </remarks>
+    private static MemoryResetSelection[] UntargetedMemoryResetTables(MemoryResetScope scope) =>
         scope switch
         {
 
             MemoryResetScope.Entry =>
-                ["entry_embeddings_vec", "entry_embeddings"],
+                [Whole("entry_embeddings_vec"), Whole("entry_embeddings")],
 
             MemoryResetScope.Attachments =>
                 [
-                    "session_attachment_embeddings_vec",
-                    "session_attachment_embeddings",
-                    "session_attachment_chunks",
-                    "session_attachment_index_state",
+                    Whole("session_attachment_embeddings_vec"),
+                    Whole("session_attachment_embeddings"),
+                    Whole("session_attachment_chunks"),
+                    Whole("session_attachment_index_state"),
                 ],
 
             MemoryResetScope.Workspace =>
                 [
-                    "workspace_file_embeddings_vec",
-                    "workspace_file_embeddings",
-                    "workspace_file_chunks",
+                    Whole("workspace_file_embeddings_vec"),
+                    Whole("workspace_file_embeddings"),
+                    Whole("workspace_file_chunks"),
                 ],
 
             MemoryResetScope.Saga =>
                 [
-                    "saga_memory_embeddings_vec",
-                    "saga_memory_embeddings",
-                    "saga_memory_attachment_provenance",
-                    "saga_extraction_watermarks",
-                    "saga_memories",
+                    .. AnnalsResetSelections(AnnalSubjectStore.Saga),
+                    Whole("saga_memory_embeddings_vec"),
+                    Whole("saga_memory_embeddings"),
+                    Whole("saga_memory_attachment_provenance"),
+                    Whole("saga_extraction_watermarks"),
+                    Whole("saga_memories"),
                 ],
 
+            // lexicon_fts is deliberately absent, exactly as it is from the Campaign-targeted list and
+            // for a sharper version of the same reason. It is an external-content index whose rows the
+            // lexicon_entries_ad trigger retires as the entries go. Deleting from it directly empties the
+            // index first, and the trigger then issues an FTS5 delete for a row the index no longer
+            // holds, which SQLite reports as "database disk image is malformed" and which aborted the
+            // whole reset. A whole-store Lexicon reset could not complete at all while any entry existed.
             MemoryResetScope.Lexicon =>
                 [
-                    "lexicon_fact_attachment_provenance",
-                    "lexicon_fts",
-                    "lexicon_entries",
+                    .. AnnalsResetSelections(AnnalSubjectStore.Lexicon),
+                    Whole("lexicon_fact_attachment_provenance"),
+                    Whole("lexicon_entries"),
                 ],
 
             _ => throw new InvalidOperationException("Unsupported memory reset scope."),
 
         };
+
+    /// <summary>A table this reset clears entirely.</summary>
+    private static MemoryResetSelection Whole(string table) => new(table, null, []);
+
+    /// <summary>
+    /// The Annals steps one erasure runs, projected onto the reset executor's selection shape.
+    /// </summary>
+    private static MemoryResetSelection[] AnnalsResetSelections(
+        AnnalSubjectStore subjectStore,
+        string? subjectIdQuery = null,
+        (string Name, object Value)[]? parameters = null) =>
+        [
+            .. (subjectIdQuery is null
+                    ? AnnalsErasurePlan.ForStore(subjectStore)
+                    : AnnalsErasurePlan.ForSubjectQuery(subjectStore, subjectIdQuery))
+                .Select(step => new MemoryResetSelection(step.Table, step.Predicate, parameters ?? [])),
+        ];
 
     /// <summary>
     /// Plans a content-free Covenant memory-reset inventory.

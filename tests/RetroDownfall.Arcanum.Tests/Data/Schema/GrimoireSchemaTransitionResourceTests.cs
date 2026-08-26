@@ -93,15 +93,19 @@ public sealed class GrimoireSchemaTransitionResourceTests
 
     /// <summary>
     /// The shipped state, asserted positively rather than left unstated: exactly one tier has left
-    /// version 1, and every statement the loader found belongs to that tier's one step.
+    /// version 1, and every statement the loader found belongs to one of that tier's steps.
     /// </summary>
     /// <remarks>
     /// A statement file that landed in the wrong <c>V&lt;n&gt;</c> folder, or under the wrong tier, is
     /// silently absorbed into whichever step the folder names. It would install against a database it
     /// was never written for, so what the loader found is pinned here rather than counted.
+    ///
+    /// <para>The order is the install order, so this pins sequencing as well as membership: an index
+    /// declared before the table it constrains, or a trigger before the table it fires on, would reach
+    /// SQLite as a statement against an object that does not exist yet.</para>
     /// </remarks>
     [Fact]
-    public void The_shipped_catalog_declares_only_the_core_version_two_step()
+    public void The_shipped_catalog_declares_only_the_core_steps()
     {
 
         Assert.All(
@@ -111,7 +115,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
 
                 Assert.Equal(GrimoireSchemaTransactionTier.Core, statement.TransactionTier);
 
-                Assert.Equal(2, statement.ToVersion);
+                Assert.Contains(statement.ToVersion, (int[])[2, 3]);
 
             });
 
@@ -123,6 +127,26 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "lexicon_entries_scope",
                 "lexicon_entries_retire_name_index",
                 "lexicon_entries_scope_index",
+                "annal_claims",
+                "annal_claims_subject_index",
+                "annal_claims_store_candidate_index",
+                "annal_versions",
+                "annal_versions_version_index",
+                "annal_versions_sequence_candidate_index",
+                "annal_versions_claim_revision_index",
+                "annal_versions_head_candidate_index",
+                "annal_versions_claim_recorded_index",
+                "annal_versions_predecessor_index",
+                "annal_heads",
+                "annal_heads_current_version_index",
+                "annal_heads_store_index",
+                "annal_dependencies",
+                "annal_dependencies_dependent_ordinal_index",
+                "annal_dependencies_dependency_index",
+                "annal_claims_guard_update",
+                "annal_versions_guard_update",
+                "annal_dependencies_guard_update",
+                "annal_heads_validate_update",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
 

@@ -4,10 +4,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 2 and declares one step; both Covenant tiers are still at version 1 and declare
+/// Core is at version 3 and declares two steps; both Covenant tiers are still at version 1 and declare
 /// none. A tier that never left version 1 keeps the cheapest state there is - the loader, the planner's
 /// evolve arm, the installer's step arm, and the backfill driver all run in production and find nothing
-/// to do - and a tier that has left it pays for the step exactly once per installation.
+/// to do - and a tier that has left it pays for each step exactly once per installation.
 ///
 /// <para>Authoring a version step means three edits in one change: the statement files under the
 /// tier's <c>Transitions/V&lt;n&gt;/</c> folder, the tier's version constant here, and the pin for
@@ -21,8 +21,11 @@ internal static class GrimoireSchemaVersionChains
     /// <remarks>
     /// Version 2 gave <c>saga_memories</c> an explicit scope classification and <c>lexicon_entries</c> an
     /// optional Campaign scope, so cross-session recall follows the work rather than the installation.
+    ///
+    /// <para>Version 3 added the Annals: durable memory now records what it claimed, who asserted it,
+    /// when that was true, when Arcanum came to hold it, and which earlier claims it rests on.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 2;
+    internal const int CoreSchemaVersion = 3;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     internal const int CovenantCanonicalSchemaVersion = 1;
@@ -46,6 +49,13 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 2)] =
                 "8B61C1EB09EC018B7477D56A475E13BCD67ADFA47B45D64BC05CE2C9D5D36EFA",
 
+            // Read out of the Core head tree immediately before the Annals objects were added. Nothing
+            // can recompute it either. CoreSchemaVersionTwoFixture reconstructs that tree by removing
+            // the Annals objects from the shipped list and a test hashes it, so a wrong value here fails
+            // there rather than against every operator's version-2 installation.
+            [(GrimoireSchemaTransactionTier.Core, 3)] =
+                "CEFA40F472EB4815F13B257327F8FA78C00B6F671C78DCAB89E4A38B40646F2C",
+
         };
 
     /// <summary>The sweep each step depends on, keyed the same way.</summary>
@@ -57,6 +67,11 @@ internal static class GrimoireSchemaVersionChains
             // existing row is global the moment it exists - so the step depends on the Saga
             // classification alone.
             [(GrimoireSchemaTransactionTier.Core, 2)] = new SagaMemoryCampaignScopeBackfill(),
+
+            // Version 3's objects are all new, so the step's DDL needs no sweep to be correct. The sweep
+            // is what makes it useful: without it the Annals would hold nothing but claims written after
+            // the upgrade, and every memory an installation already had would be unexplained.
+            [(GrimoireSchemaTransactionTier.Core, 3)] = new MemoryAnnalsBackfill(),
 
         };
 

@@ -176,7 +176,9 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         Assert.Equal(28, (int)RetentionDataClass.Covenant);
 
-        Assert.Equal(29, Enum.GetValues<RetentionDataClass>().Length);
+        Assert.Equal(29, (int)RetentionDataClass.Annals);
+
+        Assert.Equal(30, Enum.GetValues<RetentionDataClass>().Length);
 
         Assert.Equal(0, (int)MemoryResetScope.Entry);
 
