@@ -17,7 +17,8 @@
 - C# house style: one blank line after each line of code (not around braces or control statements); file-scoped namespaces; positional records for DTOs; primary constructors for DI.
 - Core's published version-2 source-definition fingerprint, captured before any schema file was edited and **not recomputable afterwards**: `CEFA40F472EB4815F13B257327F8FA78C00B6F671C78DCAB89E4A38B40646F2C`
 - Transition statement text must be the head file's statement text **verbatim**, comments included. A fresh version-3 install and one evolved from version 2 must normalize to the same `sqlite_master` text.
-- Deletion order is always **heads, then versions, then claims**. `annal_dependencies` and the `PredecessorVersionId` self-reference cascade; the head-to-version and version-to-claim references deliberately do not.
+- Deletion order is always **dependencies, heads, versions, claims**. The edge and predecessor references declare `ON DELETE CASCADE` and the head-to-version and version-to-claim references deliberately do not, but every erasure path deletes edges explicitly anyway, matching the belt-and-braces convention `SagaMemoryStore` already follows for `saga_memory_attachment_provenance`. Relying on a pragma for a delete the operator asked for is the wrong place to be economical.
+- **Foreign keys are enforced on every path, verified rather than assumed.** `ArcanumDbContextOptionsConfigurator` installs `SqlitePragmaConnectionInterceptor`, which routes to `CovenantSqliteConnectionInitializer`; that initializer both sets `PRAGMA foreign_keys=ON` and reads it back, refusing the connection if it is not `1`. `GrimoireSchemaTestInstaller.OpenAsync` calls the same initializer, so a test proves the schema under exactly the pragma production runs. **Do not add a `PRAGMA foreign_keys` statement of your own to a test** — a test that establishes its own enforcement would be proving the schema under conditions production might not have.
 - Documentation under `docs/` names capabilities and never issues. `grep -nE "#[0-9]{2,4}\b" docs/*.md` must return hits only in `Arcanum.OATH.md`. Files under `docs/superpowers/` are exempt.
 - No artificial line wrapping in documentation: one logical block is one physical line.
 - Verification gates: `dotnet build RetroDownfall.Arcanum.slnx --no-incremental` must produce zero errors and zero warnings (incremental builds hide analyzer warnings). Clear `tests/**/TestResults` before a full test run or the run can hang.
@@ -518,10 +519,16 @@ public sealed class MemoryAnnalsEvolutionTests
 }
 ```
 
-- [ ] **Step 2: Run the pin test to verify it fails**
+- [ ] **Step 2: Run the pin test and understand why it is green**
 
 Run: `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --filter "FullyQualifiedName~MemoryAnnalsEvolutionTests"`
-Expected: FAIL — `SourceDefinitionFingerprintFor(2)` returns the head manifest's fingerprint for version 2 (Core is still at head version 2), which is the *current* tree including nothing new; once the schema files land in Step 3 this becomes a genuine mismatch. Confirm the test runs and reports a comparison failure rather than a setup error.
+Expected: **PASS, vacuously.** No `annal_*` object exists yet, so the fixture's filter removes nothing and its fingerprint is the head fingerprint; Core is still at head version 2, so `SourceDefinitionFingerprintFor(2)` returns that same head value. Two identical values compare equal for no good reason.
+
+This is not the red. **The red belongs between Step 3 and Step 9**: once the schema files land, the head fingerprint moves and the fixture's reconstruction no longer matches it, and once `CoreSchemaVersion` becomes 3 the lookup consults the pin instead. Re-run this test immediately after Step 3 and confirm it fails there — that failure is the one that proves the test can see a wrong pin at all. A test that was green at Step 2 and green again at Step 10 without ever going red in between has proved nothing.
+
+- [ ] **Step 2a: Update the shipped-version assertion**
+
+`tests/RetroDownfall.Arcanum.Tests/Data/Schema/GrimoireSchemaVersionChainTests.cs:41` asserts `Assert.Equal(2, GrimoireSchemaVersionChains.CoreSchemaVersion)`. It becomes `3` in Step 9, not before — leaving it until then means the suite tells you the moment the version moves, which is what that assertion is for.
 
 - [ ] **Step 3: Write the four table files**
 
@@ -923,7 +930,7 @@ The `AnnalsScratch` helper belongs in the same file, below the test class. It op
 - `SeedHeadAsync(string claimId, string versionId, int revision)` and `AdvanceHeadAsync(...)` (an `UPDATE annal_heads SET CurrentVersionId = ..., CurrentRevision = ..., UpdatedAtUtc = ... WHERE ClaimId = ...`).
 - `ExecuteAsync(string sql)`.
 
-Every insert must run with foreign keys enforced. Open the connection through `EvolutionScratchDatabase.OpenAsync` and execute `PRAGMA foreign_keys=ON;` immediately after opening, so a composite-key violation surfaces as a test failure rather than passing silently.
+Open the connection through `EvolutionScratchDatabase.OpenAsync` and **add no pragma of your own**. That opener already routes through `CovenantSqliteConnectionInitializer`, the same initializer `SqlitePragmaConnectionInterceptor` applies to every production `ArcanumDbContext` connection, and it both sets and verifies `PRAGMA foreign_keys=ON`. A test that established its own enforcement would be proving the schema under conditions production might not have — which is the failure mode where a green suite stands over a broken product.
 
 - [ ] **Step 6: Write the nineteen version-3 transition statements**
 
@@ -1012,9 +1019,17 @@ internal static Task DeleteClaimsForStoreAsync(
     CancellationToken cancellationToken);
 ```
 
-Both issue three statements in the fixed order — heads, versions, claims — because SQLite enforces an immediate foreign key as each row is deleted rather than at the end of the statement. Edges and predecessor chains fall away by cascade. The subject-scoped form:
+Both issue four statements in the fixed order — dependencies, heads, versions, claims — because SQLite enforces an immediate foreign key as each row is deleted rather than at the end of the statement. Edges would cascade, and are deleted explicitly anyway: `SagaMemoryStore` already deletes `saga_memory_attachment_provenance` explicitly although that table declares `ON DELETE CASCADE`, and an erasure the operator asked for is the wrong place to depend on a pragma being what it is expected to be. The subject-scoped form:
 
 ```sql
+DELETE FROM annal_dependencies
+WHERE DependentVersionId IN (
+        SELECT VersionId FROM annal_versions
+        WHERE ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = $store AND SubjectId = $subject))
+   OR DependencyVersionId IN (
+        SELECT VersionId FROM annal_versions
+        WHERE ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = $store AND SubjectId = $subject));
+
 DELETE FROM annal_heads
 WHERE ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = $store AND SubjectId = $subject);
 
@@ -1024,9 +1039,11 @@ WHERE ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = $sto
 DELETE FROM annal_claims WHERE SubjectStoreCode = $store AND SubjectId = $subject;
 ```
 
-The store-scoped form is the same three statements with the `SubjectId` predicate dropped and `annal_heads` filtered on its own `SubjectStoreCode` column.
+The edge delete names **both** endpoint columns, because an edge is deleted when either end goes: a claim being erased may be the target of an edge asserted by a version that survives, and leaving that edge would leave a dependency pointing at nothing.
 
-Timestamps are written with `ToString("o", CultureInfo.InvariantCulture)`, matching every other timestamp in the Grimoire and the lexicographic ordering the validity check depends on. `VersionId` and `ClaimId` are `Guid.NewGuid().ToString()`. `Sequence` is never supplied — SQLite allocates it, and the writer reads it back with `SELECT Sequence FROM annal_versions WHERE VersionId = $id` when it needs it for an edge.
+The store-scoped form is the same four statements with the `SubjectId` predicate dropped and `annal_heads` filtered on its own `SubjectStoreCode` column.
+
+Timestamps are written with `ToString("o", CultureInfo.InvariantCulture)`, matching every other timestamp in the Grimoire and the lexicographic ordering the validity check depends on. `VersionId` and `ClaimId` are `Guid.NewGuid().ToString()`. `sourceSessionId` is a `Guid?` and the column is `TEXT`, so it binds as `(object?)sourceSessionId?.ToString() ?? DBNull.Value` — binding the `Guid` itself would store a BLOB that no later read would match. `Sequence` is never supplied — SQLite allocates it, and the writer reads it back with `SELECT Sequence FROM annal_versions WHERE VersionId = $id` when it needs it for an edge.
 
 - [ ] **Step 8: Write the backfill**
 
@@ -1034,7 +1051,7 @@ Create `src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/MemoryAnnalsBackfil
 
 - `Name => "memory-annals-claims"`.
 - `MaxRowsPerBatch => 200`.
-- Each batch reads one bounded page of Saga memories with no claim, then, if room remains, one bounded page of Lexicon entries with no claim. **The whole read completes before the first write**, because the selecting query filters on the absence of rows in the table the write inserts into, and writing to a table an open cursor is still filtering against is the case SQLite leaves undefined.
+- Each batch reads one bounded page of Saga memories with no claim, then, if room remains, one bounded page of Lexicon entries with no claim. **Both pages are fully materialized into lists before the first `AppendAssertAsync` call** — not one page read, written, then the next. The selecting queries filter on the absence of rows in the table the write inserts into, and writing to a table an open cursor is still filtering against is the case SQLite leaves undefined; interleaving the Lexicon page's read with the Saga page's writes would reintroduce exactly that.
 
 Saga page:
 
@@ -1073,7 +1090,7 @@ Return `new GrimoireSchemaBackfillBatch(NextCursor: null, RowsProcessed: written
 
 In `src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaVersionChains.cs`:
 
-- Change `CoreSchemaVersion` to `3` and update its `<remarks>` to describe what version 3 gave the durable schema.
+- Change `CoreSchemaVersion` to `3` and update its `<remarks>` to describe what version 3 gave the durable schema. Update `GrimoireSchemaVersionChainTests.cs:41` to assert `3` in the same commit.
 - Add to `SourcePins`:
 
 ```csharp
@@ -1146,7 +1163,9 @@ Cases:
 - [ ] **Step 12: Run the full schema and evolution suites**
 
 Run: `dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --filter "FullyQualifiedName~Data.Schema"`
-Expected: PASS, including the pre-existing `SagaMemoryCampaignScopeEvolutionTests` and `GrimoireSchemaEvolutionInstallerTests`, which must be unaffected.
+Expected: PASS, including the pre-existing `SagaMemoryCampaignScopeEvolutionTests` and `GrimoireSchemaEvolutionInstallerTests`.
+
+`SagaMemoryCampaignScopeEvolutionTests` upgrades version 1 to head, and head is now 3, so its drain loops now run **two** sweeps over their seeded rows rather than one. Its assertions are symbolic — `GrimoireSchemaVersionChains.CoreSchemaVersion` rather than a literal — so it stays green, and it takes slightly longer. That change in behaviour is expected, not a regression. If any of its cases fails, the cause is the new sweep and not the old one: check that the Annals backfill reports `IsComplete` when it has nothing to do, or `UpgradeAsync`'s drain loop never terminates.
 
 - [ ] **Step 13: Build clean and commit**
 
