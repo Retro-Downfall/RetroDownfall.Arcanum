@@ -130,6 +130,37 @@ public static class CovenantDigests
         });
     }
 
+    /// <summary>
+    /// The request digest one curation change is authorized under.
+    /// </summary>
+    /// <remarks>
+    /// Domain-separated from <see cref="MutationRequest"/> so a token issued for one can never be
+    /// honoured by the other, and epoch-bound so a pin recorded against a key that was later retired
+    /// and reclaimed cannot authorize anything against the key that re-created the name.
+    /// </remarks>
+    public static CovenantDigest CurationRequest(CurationRequestDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint kind = Code(input.Kind, nameof(input.Kind));
+        uint scope = Code(input.Scope, nameof(input.Scope));
+        uint lane = Code(input.Lane, nameof(input.Lane));
+        RequireGuid(input.MutationId, nameof(input.MutationId));
+        ValidateScopeCampaign(input.Scope, input.CampaignId, nameof(input));
+        string key = RequireKey(input.NormalizedKey, nameof(input.NormalizedKey));
+
+        return Hash(CovenantDomainTag.CurationRequest, writer =>
+        {
+            writer.WriteUInt32(kind);
+            writer.WriteGuid(input.MutationId);
+            writer.WriteUInt32(scope);
+            WriteOptionalGuid(writer, input.CampaignId);
+            writer.WriteUtf8(key);
+            writer.WriteUInt32(lane);
+            writer.WriteUInt64(input.KeyEpoch);
+            writer.WriteUInt64(input.ExpectedRevision);
+        });
+    }
+
     public static CovenantDigest PreflightBody(PreflightBodyDigestInput input)
     {
         ArgumentNullException.ThrowIfNull(input);

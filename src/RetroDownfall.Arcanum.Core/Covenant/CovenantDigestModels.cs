@@ -10,6 +10,15 @@ public sealed record SectionDigestInput(CovenantPlacement Placement, ImmutableAr
 
 public sealed record MutationRequestDigestInput(CovenantMutationKind MutationKind, Guid MutationId, CovenantScope Scope, Guid? CampaignId, CovenantKey NormalizedKey, CovenantLane Lane, CovenantOperation Operation, ulong ExpectedRevision, bool Reactivation, CovenantOrigin Origin, CovenantDigest? AuthoredDigest, CovenantDigest? FragmentDigest, uint CompilerPolicy, CovenantDigest? BasePlanDigest, CovenantDigest? AdmissionDigest, ImmutableArray<CovenantDigest> ProvenanceDigests);
 
+/// <summary>The canonical fields one curation change is authorized under.</summary>
+/// <remarks>
+/// It carries no compiled artifact and no origin. Curation is operator-authored by construction --
+/// there is no agent path to it -- and what it changes is not the entry's text, so a preimage shaped
+/// like <see cref="MutationRequestDigestInput"/> would carry six fields no curation request can fill
+/// and would invite a token issued for one to be honoured by the other.
+/// </remarks>
+public sealed record CurationRequestDigestInput(CovenantCurationKind Kind, Guid MutationId, CovenantScope Scope, Guid? CampaignId, CovenantKey NormalizedKey, CovenantLane Lane, ulong KeyEpoch, ulong ExpectedRevision);
+
 public sealed record PreflightBodyDigestInput(CovenantDigest RequestDigest, ulong OperatorAuthorityEpoch, Guid DatasetGeneration, ulong ExpectedTargetRevision, ulong NormalizedKeyDependencyEpoch, ulong KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? CompiledArtifactDigest, CovenantDigest DependentHeadVectorDigest, CovenantDigest EffectDigest, long IssuedAt, long ExpiresAt);
 
 public sealed record AuthorizationDigestInput(CovenantDigest RequestDigest, Guid DatasetGeneration, ulong? OperatorAuthorityEpoch, ulong? NormalizedKeyDependencyEpoch, ulong? KeyReclamationEpoch, ulong? CampaignRegistryEpoch, CovenantDigest? PreflightBodyDigest, CovenantDigest? WardReceiptDigest, CovenantAuthorizationMode Authorization);

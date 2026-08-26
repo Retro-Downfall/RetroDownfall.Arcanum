@@ -40,7 +40,8 @@ public enum CovenantDomainTag : byte
     Receipt = 32,
     TurnAggregate = 33,
     CursorFilter = 34,
-    DependentHeadVector = 35
+    DependentHeadVector = 35,
+    CurationRequest = 36
 }
 
 public static class CovenantPolicyV1Manifest
@@ -81,7 +82,8 @@ public static class CovenantPolicyV1Manifest
         CovenantDomainTag.Receipt,
         CovenantDomainTag.TurnAggregate,
         CovenantDomainTag.CursorFilter,
-        CovenantDomainTag.DependentHeadVector
+        CovenantDomainTag.DependentHeadVector,
+        CovenantDomainTag.CurationRequest
     ]);
 
     public static IReadOnlyList<CovenantDomainTag> DomainTags => PolicyDomainTags;
@@ -124,6 +126,7 @@ public static class CovenantPolicyV1Manifest
             CovenantDomainTag.TurnAggregate => "Arcanum.Covenant.TurnAggregate.v1",
             CovenantDomainTag.CursorFilter => "Arcanum.Covenant.CursorFilter.v1",
             CovenantDomainTag.DependentHeadVector => "Arcanum.Covenant.DependentHeadVector.v1",
+            CovenantDomainTag.CurationRequest => "Arcanum.Covenant.CurationRequest.v1",
             _ => throw new ArgumentOutOfRangeException(nameof(domainTag))
         };
 
@@ -189,6 +192,7 @@ public static class CovenantPolicyV1Manifest
         || typeof(TEnum) == typeof(CovenantOperation)
         || typeof(TEnum) == typeof(CovenantOrigin)
         || typeof(TEnum) == typeof(CovenantMutationKind)
+        || typeof(TEnum) == typeof(CovenantCurationKind)
         || typeof(TEnum) == typeof(CovenantPlacement)
         || typeof(TEnum) == typeof(CovenantPlanDecision)
         || typeof(TEnum) == typeof(CovenantAdmissionDecision)
