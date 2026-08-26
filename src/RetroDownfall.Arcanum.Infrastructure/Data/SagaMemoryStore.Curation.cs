@@ -514,4 +514,282 @@ internal sealed partial class SagaMemoryStore
 
     }
 
+    public Task<SagaCurationOutcome> CorrectAsync(
+        string id,
+        byte[] expectedContentDigest,
+        string content,
+        float[] embedding,
+        DateTimeOffset correctedAt,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentException.ThrowIfNullOrEmpty(id);
+
+        ArgumentNullException.ThrowIfNull(expectedContentDigest);
+
+        ArgumentNullException.ThrowIfNull(content);
+
+        ArgumentNullException.ThrowIfNull(embedding);
+
+        int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
+            options.CurrentValue.Integrations.Embeddings.Dimensions);
+
+        if (embedding.Length != expectedDimensions)
+        {
+
+            throw new InvalidOperationException(
+                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting correct to avoid corrupting the vec0 index.""");
+
+        }
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                // Fresh transaction per attempt, for the same reason RetireAsync's and ReinstateAsync's
+                // are: a SqliteBusyRetry retry must start clean rather than reuse a transaction the
+                // `await using` below already rolled back and disposed.
+                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand readCmd = connection.CreateCommand();
+
+                readCmd.Transaction = transaction;
+
+                readCmd.CommandText =
+                    """
+                    SELECT Content, CreatedAt, SessionId, ScopeKindCode, CampaignId, RetiredAtUtc, PinnedAtUtc
+                    FROM saga_memories WHERE Id = @id
+                    """;
+
+                AddParameter(readCmd, "@id", id);
+
+                string currentContent;
+
+                DateTimeOffset createdAt;
+
+                Guid? sessionId;
+
+                SagaMemoryScopeKind scopeKind;
+
+                string? campaignId;
+
+                DateTimeOffset? pinnedAtUtc;
+
+                await using (DbDataReader reader = await readCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                        return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
+
+                    }
+
+                    currentContent = reader.GetString(0);
+
+                    createdAt = DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture);
+
+                    sessionId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
+
+                    scopeKind = (SagaMemoryScopeKind)reader.GetInt32(3);
+
+                    campaignId = reader.IsDBNull(4) ? null : reader.GetString(4);
+
+                    pinnedAtUtc = reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
+
+                    if (!reader.IsDBNull(5))
+                    {
+
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                        return new SagaCurationOutcome(SagaCurationOutcomeKind.AlreadyRetired, null);
+
+                    }
+
+                }
+
+                byte[] currentDigest = AnnalContentDigest.ForSagaMemory(currentContent);
+
+                if (!CryptographicOperations.FixedTimeEquals(currentDigest, expectedContentDigest))
+                {
+
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                    return new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null);
+
+                }
+
+                byte[] newDigest = AnnalContentDigest.ForSagaMemory(content);
+
+                if (CryptographicOperations.FixedTimeEquals(currentDigest, newDigest))
+                {
+
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                    return new SagaCurationOutcome(SagaCurationOutcomeKind.Unchanged, null);
+
+                }
+
+                await using (DbCommand contentCmd = connection.CreateCommand())
+                {
+
+                    contentCmd.Transaction = transaction;
+
+                    contentCmd.CommandText = """UPDATE saga_memories SET Content = @content WHERE Id = @id""";
+
+                    AddParameter(contentCmd, "@content", content);
+
+                    AddParameter(contentCmd, "@id", id);
+
+                    _ = await contentCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+
+                byte[] blob = EmbeddingBlobCodec.Encode(embedding);
+
+                await using (DbCommand embeddingCmd = connection.CreateCommand())
+                {
+
+                    embeddingCmd.Transaction = transaction;
+
+                    embeddingCmd.CommandText =
+                        """
+                        UPDATE "saga_memory_embeddings" SET "Embedding" = @embedding, "Dim" = @dim
+                        WHERE "MemoryId" = @memoryId
+                        """;
+
+                    AddParameter(embeddingCmd, "@embedding", blob);
+
+                    AddParameter(embeddingCmd, "@dim", embedding.Length);
+
+                    AddParameter(embeddingCmd, "@memoryId", id);
+
+                    _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+
+                if (availability.IsVecAvailable)
+                {
+
+                    await using DbCommand vecCmd = connection.CreateCommand();
+
+                    vecCmd.Transaction = transaction;
+
+                    vecCmd.CommandText =
+                        """
+                        INSERT OR REPLACE INTO "saga_memory_embeddings_vec" ("MemoryId", "Embedding")
+                        VALUES (@memoryId, @embedding)
+                        """;
+
+                    AddParameter(vecCmd, "@memoryId", id);
+
+                    AddParameter(vecCmd, "@embedding", blob);
+
+                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+
+                // The same ungated pair RetireAsync and ReinstateAsync write, and for the same reason:
+                // the record that the operator corrected this memory is evidence rather than retrieval.
+                // The assert reconstructs the honest assertion extraction would have written, at the
+                // memory's own CreatedAt, before the operator's correction is appended -- it no-ops when
+                // InsertAsync already opened the claim (Annals on) so only the correction below actually
+                // lands in that case. That is what makes the history read "extraction asserted this,
+                // then the operator corrected it" rather than crediting the operator with the original
+                // assertion.
+                _ = await AnnalsClaimWriter.AppendAssertAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    id,
+                    AnnalOrigin.AgentExtracted,
+                    scopeKind,
+                    campaignId,
+                    ContentSensitivity.None,
+                    currentDigest,
+                    createdAt,
+                    createdAt,
+                    sessionId,
+                    cancellationToken).ConfigureAwait(false);
+
+                _ = await AnnalsClaimWriter.AppendCorrectionAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    id,
+                    AnnalOrigin.OperatorStated,
+                    scopeKind,
+                    campaignId,
+                    ContentSensitivity.None,
+                    newDigest,
+                    correctedAt,
+                    correctedAt,
+                    sourceSessionId: null,
+                    cancellationToken).ConfigureAwait(false);
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, pinnedAtUtc));
+
+            },
+            cancellationToken);
+
+    }
+
+    public Task<SagaCurationOutcome> SetPinAsync(
+        string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken)
+    {
+
+        ArgumentException.ThrowIfNullOrEmpty(id);
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand pinCmd = connection.CreateCommand();
+
+                // RETURNING folds the write and the read this outcome needs -- whether the memory is
+                // retired -- into the one statement, rather than an UPDATE followed by a second SELECT
+                // that could observe a different row if something else wrote between them.
+                pinCmd.CommandText =
+                    """
+                    UPDATE saga_memories SET PinnedAtUtc = @value WHERE Id = @id
+                    RETURNING RetiredAtUtc
+                    """;
+
+                AddParameter(
+                    pinCmd,
+                    "@value",
+                    pinned ? changedAt.ToString("o", CultureInfo.InvariantCulture) : DBNull.Value);
+
+                AddParameter(pinCmd, "@id", id);
+
+                await using DbDataReader reader = await pinCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    return new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null);
+
+                }
+
+                DateTimeOffset? retiredAtUtc = reader.IsDBNull(0)
+                    ? null
+                    : DateTimeOffset.Parse(reader.GetString(0), CultureInfo.InvariantCulture);
+
+                return new SagaCurationOutcome(
+                    SagaCurationOutcomeKind.Applied,
+                    new SagaMemoryLifecycle(retiredAtUtc, pinned ? changedAt : null));
+
+            },
+            cancellationToken);
+
+    }
+
 }

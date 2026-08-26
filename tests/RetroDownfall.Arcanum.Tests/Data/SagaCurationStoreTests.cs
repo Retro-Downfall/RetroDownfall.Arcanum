@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -378,6 +379,352 @@ public sealed class SagaCurationStoreTests
 
         Assert.Null(await harness.Annals
             .GetClaimAsync(AnnalSubjectStore.Saga, "m-absent", CancellationToken.None).ConfigureAwait(false));
+
+    }
+
+    [SkippableFact]
+    public async Task Correction_replaces_the_content_and_the_vector_together()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(seed: 1), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] before = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
+        SagaCurationOutcome outcome = await harness.Store.CorrectAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            "the operator prefers spaces",
+            harness.Embedding(seed: 2),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, outcome.Kind);
+
+        SagaMemoryCurationRow row = (await harness.Store
+            .ReadCurationRowAsync("m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.Equal("the operator prefers spaces", row.Memory.Content);
+
+        // The vector moved with the text. A correction that changed one without the other would leave
+        // retrieval surfacing the sentence the operator just rejected.
+        Assert.NotEqual(before, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
+
+    }
+
+    [SkippableFact]
+    public async Task Correction_refuses_content_the_caller_did_not_read()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        SagaCurationOutcome outcome = await harness.Store.CorrectAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("something else entirely"),
+            "the operator prefers spaces",
+            harness.Embedding(),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.StaleContent, outcome.Kind);
+
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+
+    }
+
+    [SkippableFact]
+    public async Task Correcting_a_retired_memory_is_refused()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] digest = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
+
+        _ = await harness.Store.RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        SagaCurationOutcome outcome = await harness.Store.CorrectAsync(
+            "m-1", digest, "the operator prefers spaces", harness.Embedding(),
+            DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.AlreadyRetired, outcome.Kind);
+
+    }
+
+    [SkippableFact]
+    public async Task Correcting_to_the_text_already_stored_is_refused_rather_than_recorded()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        SagaCurationOutcome outcome = await harness.Store.CorrectAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            "the operator prefers tabs",
+            harness.Embedding(),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.Unchanged, outcome.Kind);
+
+    }
+
+    [SkippableFact]
+    public async Task Correction_records_the_operator_as_the_author_and_extraction_as_the_asserter()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.CorrectAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            "the operator prefers spaces",
+            harness.Embedding(),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        AnnalClaimHead head = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None)
+            .ConfigureAwait(false))!;
+
+        IReadOnlyList<AnnalClaimVersion> history = await harness.Annals
+            .GetVersionsAsync(head.ClaimId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(AnnalOrigin.AgentExtracted, history[0].Origin);
+
+        Assert.Equal(AnnalOperation.Correct, history[1].Operation);
+
+        Assert.Equal(AnnalOrigin.OperatorStated, history[1].Origin);
+
+    }
+
+    [SkippableFact]
+    public async Task Correction_leaves_the_memory_formation_time_and_its_sensitivity_label_alone()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        DateTimeOffset formed = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        Guid id = Guid.NewGuid();
+
+        await harness.Store.InsertAsync(
+            id.ToString(), "the operator prefers tabs", formed,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        await harness.LabelSensitiveAsync(id).ConfigureAwait(false);
+
+        _ = await harness.Store.CorrectAsync(
+            id.ToString(),
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            "the operator prefers spaces",
+            harness.Embedding(),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        SagaMemoryCurationRow row = (await harness.Store
+            .ReadCurationRowAsync(id.ToString(), CancellationToken.None).ConfigureAwait(false))!;
+
+        // The memory was formed then; the Annals records when it was corrected.
+        Assert.Equal(formed, row.Memory.CreatedAt);
+
+        // The label stays. Removing it would be the fail-open direction: the operator's own text is not
+        // Covenant-derived, but a label that over-reaches is safe and one that under-reaches is not.
+        //
+        // UPPER() on both sides because the ledger canonicalizes a Guid's text as uppercase
+        // (ArtifactSensitivityLedger.Format), while saga_memories.Id is free-form text carrying
+        // whatever case the caller inserted it with -- here, Guid.ToString()'s default lowercase. A
+        // raw-SQL predicate comparing the two literally has to fold case; production never compares
+        // them this way; it always resolves a label through the ledger's own accessors.
+        Assert.Equal(
+            1,
+            await harness.CountAsync("artifact_sensitivity", $"UPPER(ArtifactId) = UPPER('{id}')").ConfigureAwait(false));
+
+    }
+
+    /// <summary>
+    /// The same convergence <c>RetireAsync</c>'s and <c>ReinstateAsync</c>'s ungated-history tests pin:
+    /// the record that the operator corrected this memory is evidence rather than retrieval, so it has
+    /// to land whatever <c>Arcanum:Features:Annals</c> says. Without this, a <c>CorrectAsync</c> that
+    /// wrapped its Annals pair in the feature check would still pass every other test in this file,
+    /// because the sibling test below runs with the flag on, where <c>InsertAsync</c> has already
+    /// opened the claim and the flag's effect is invisible.
+    /// </summary>
+    [SkippableFact]
+    public async Task Correction_writes_annals_history_even_when_the_feature_is_off()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false)
+            .ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.CorrectAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            "the operator prefers spaces",
+            harness.Embedding(),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        AnnalClaimHead head = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None)
+            .ConfigureAwait(false))!;
+
+        Assert.Equal(AnnalOperation.Correct, head.CurrentOperation);
+
+        Assert.Equal(2, head.CurrentRevision);
+
+        IReadOnlyList<AnnalClaimVersion> history = await harness.Annals
+            .GetVersionsAsync(head.ClaimId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(2, history.Count);
+
+        Assert.Equal(AnnalOperation.Assert, history[0].Operation);
+
+        Assert.Equal(AnnalOrigin.AgentExtracted, history[0].Origin);
+
+        Assert.Equal(AnnalOperation.Correct, history[1].Operation);
+
+        Assert.Equal(AnnalOrigin.OperatorStated, history[1].Origin);
+
+    }
+
+    /// <summary>
+    /// A memory's attachment provenance names where it came from, independent of what its text says
+    /// now. A correction that dropped that row on the way through would leave a still-embedded memory
+    /// with no record it was ever attachment-derived -- silently, since nothing about correcting text
+    /// looks like it should touch provenance at all.
+    /// </summary>
+    [SkippableFact]
+    public async Task Correction_leaves_attachment_provenance_rows_untouched()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        AttachmentMemoryProvenance provenance = new(
+            sessionId,
+            attachmentId,
+            "architecture",
+            1,
+            "attachment-hash",
+            DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+            "SessionAttachmentRag",
+            AttachmentSourceAvailability.Available);
+
+        await harness.Store.InsertAsync(
+            "m-1",
+            "the operator prefers tabs",
+            DateTimeOffset.UtcNow,
+            sessionId,
+            tags: null,
+            source: "extraction",
+            harness.Embedding(),
+            provenance,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(1, await harness.CountAsync("saga_memory_attachment_provenance", "MemoryId = 'm-1'").ConfigureAwait(false));
+
+        _ = await harness.Store.CorrectAsync(
+            "m-1",
+            AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            "the operator prefers spaces",
+            harness.Embedding(),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(1, await harness.CountAsync("saga_memory_attachment_provenance", "MemoryId = 'm-1'").ConfigureAwait(false));
+
+    }
+
+    [SkippableFact]
+    public async Task A_pin_is_recorded_and_released_without_touching_the_memory()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(
+            SagaCurationOutcomeKind.Applied,
+            (await harness.Store.SetPinAsync("m-1", true, DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false)).Kind);
+
+        Assert.NotNull((await harness.Store
+            .ReadCurationRowAsync("m-1", CancellationToken.None).ConfigureAwait(false))!.Lifecycle.PinnedAtUtc);
+
+        Assert.Equal(
+            SagaCurationOutcomeKind.Applied,
+            (await harness.Store.SetPinAsync("m-1", false, DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false)).Kind);
+
+        Assert.Null((await harness.Store
+            .ReadCurationRowAsync("m-1", CancellationToken.None).ConfigureAwait(false))!.Lifecycle.PinnedAtUtc);
+
+    }
+
+    [SkippableFact]
+    public async Task A_pinned_memory_can_still_be_corrected_and_retired_by_the_operator()
+    {
+
+        // A pin an operator has to argue with is a pin they stop using. What it binds is the automatic
+        // path, because that is the one that acts without being asked.
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.SetPinAsync("m-1", true, DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.Equal(
+            SagaCurationOutcomeKind.Applied,
+            (await harness.Store.CorrectAsync(
+                "m-1",
+                AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+                "the operator prefers spaces",
+                harness.Embedding(),
+                DateTimeOffset.UtcNow,
+                CancellationToken.None).ConfigureAwait(false)).Kind);
+
+        Assert.Equal(
+            SagaCurationOutcomeKind.Applied,
+            (await harness.Store.RetireAsync(
+                "m-1",
+                AnnalContentDigest.ForSagaMemory("the operator prefers spaces"),
+                DateTimeOffset.UtcNow,
+                CancellationToken.None).ConfigureAwait(false)).Kind);
 
     }
 

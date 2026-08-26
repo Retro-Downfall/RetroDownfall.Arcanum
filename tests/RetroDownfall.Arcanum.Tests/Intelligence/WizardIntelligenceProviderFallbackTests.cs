@@ -1440,6 +1440,19 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 
+        public Task<SagaCurationOutcome> CorrectAsync(
+            string id,
+            byte[] expectedContentDigest,
+            string content,
+            float[] embedding,
+            DateTimeOffset correctedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaCurationOutcome> SetPinAsync(
+            string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 

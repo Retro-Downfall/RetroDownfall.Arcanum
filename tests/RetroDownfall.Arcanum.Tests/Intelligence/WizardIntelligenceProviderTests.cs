@@ -6518,6 +6518,74 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         }
 
+        public Task<SagaCurationOutcome> CorrectAsync(
+            string id,
+            byte[] expectedContentDigest,
+            string content,
+            float[] embedding,
+            DateTimeOffset correctedAt,
+            CancellationToken cancellationToken)
+        {
+
+            if (!Memories.TryGetValue(id, out SagaMemoryDto? memory))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null));
+
+            }
+
+            if (memory.RetiredAtUtc is not null)
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.AlreadyRetired, null));
+
+            }
+
+            byte[] currentDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(memory.Content));
+
+            if (!currentDigest.AsSpan().SequenceEqual(expectedContentDigest))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.StaleContent, null));
+
+            }
+
+            byte[] newDigest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content));
+
+            if (newDigest.AsSpan().SequenceEqual(currentDigest))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.Unchanged, null));
+
+            }
+
+            Memories[id] = memory with { Content = content };
+
+            return Task.FromResult(
+                new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, memory.PinnedAtUtc)));
+
+        }
+
+        public Task<SagaCurationOutcome> SetPinAsync(
+            string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken)
+        {
+
+            if (!Memories.TryGetValue(id, out SagaMemoryDto? memory))
+            {
+
+                return Task.FromResult(new SagaCurationOutcome(SagaCurationOutcomeKind.NotFound, null));
+
+            }
+
+            DateTimeOffset? pinnedAtUtc = pinned ? changedAt : null;
+
+            Memories[id] = memory with { PinnedAtUtc = pinnedAtUtc };
+
+            return Task.FromResult(
+                new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(memory.RetiredAtUtc, pinnedAtUtc)));
+
+        }
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
         {
 

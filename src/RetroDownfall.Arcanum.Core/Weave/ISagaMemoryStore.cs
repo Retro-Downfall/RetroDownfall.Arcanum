@@ -132,6 +132,43 @@ public interface ISagaMemoryStore
         DateTimeOffset reinstatedAt,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Replaces one memory's text in place: <c>saga_memories.Content</c>, its BLOB embedding in
+    /// <c>saga_memory_embeddings</c>, and (when available) its <c>saga_memory_embeddings_vec</c> mirror.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="expectedContentDigest"/> is the caller's proof that it read the content it is
+    /// correcting, exactly as <see cref="RetireAsync"/>'s does. Correcting a retired memory is refused —
+    /// reinstate it first — and correcting to the text already stored returns
+    /// <see cref="SagaCurationOutcomeKind.Unchanged"/> rather than recording a revision that changed
+    /// nothing. The memory's own <c>CreatedAt</c> and any sensitivity label it carries are left alone: a
+    /// correction is a new statement about the same memory, not a new memory.
+    /// </remarks>
+    Task<SagaCurationOutcome> CorrectAsync(
+        string id,
+        byte[] expectedContentDigest,
+        string content,
+        float[] embedding,
+        DateTimeOffset correctedAt,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Marks (or unmarks) one memory as durable, so a later retention pass will not prune it.
+    /// </summary>
+    /// <remarks>
+    /// Takes no content digest, deliberately: a pin is not a content mutation, and requiring proof of
+    /// what the text says would make pinning fail after an unrelated correction — friction with no
+    /// safety behind it. Pinning what is already pinned re-stamps <c>PinnedAtUtc</c> and still returns
+    /// <see cref="SagaCurationOutcomeKind.Applied"/>; there is no history table here for a no-op to
+    /// pollute. A pin binds only the automatic retention path — it never blocks an operator's own
+    /// correct, retire, or delete.
+    /// </remarks>
+    Task<SagaCurationOutcome> SetPinAsync(
+        string id,
+        bool pinned,
+        DateTimeOffset changedAt,
+        CancellationToken cancellationToken);
+
     /// <summary>Deletes every Saga memory, embedding, and extraction watermark.</summary>
     Task DeleteAllAsync(CancellationToken cancellationToken);
 

@@ -6,6 +6,10 @@ using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -143,6 +147,67 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         object? result = await command.ExecuteScalarAsync().ConfigureAwait(false);
 
         return Convert.ToInt32(result, CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>The raw <c>Embedding</c> BLOB stored for one memory, for before/after comparison.</summary>
+    public async Task<byte[]> EmbeddingBytesAsync(string id)
+    {
+
+        ArgumentException.ThrowIfNullOrEmpty(id);
+
+        await using DbCommand command = Connection.CreateCommand();
+
+        command.CommandText = """SELECT "Embedding" FROM "saga_memory_embeddings" WHERE "MemoryId" = @id""";
+
+        DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@id";
+
+        parameter.Value = id;
+
+        command.Parameters.Add(parameter);
+
+        object? result = await command.ExecuteScalarAsync().ConfigureAwait(false);
+
+        return (byte[])result!;
+
+    }
+
+    /// <summary>
+    /// Labels one Saga memory sensitive through <see cref="IArtifactSensitivityLedger"/> — the one
+    /// production writer of <c>artifact_sensitivity</c> — rather than by inserting the row directly.
+    /// A test that seeded the row it then asserted on would prove only that the row exists, not that
+    /// curation leaves a real label alone.
+    /// </summary>
+    public async Task LabelSensitiveAsync(Guid id)
+    {
+
+        SagaMemoryCurationRow row = (await Store.ReadCurationRowAsync(id.ToString(), CancellationToken.None)
+            .ConfigureAwait(false))!;
+
+        ArtifactSensitivityLedger ledger = new(new CovenantConnectionSource(_db));
+
+        DerivedArtifactWrite write = new(
+            SensitiveArtifactKind.Saga,
+            id,
+            sessionId: null,
+            campaignId: null,
+            turnId: null,
+            artifactRevision: 1,
+            DerivedArtifactContentDigest.ForText(row.Memory.Content),
+            ContentSensitivity.CovenantDerived,
+            GenerationProvenance.CreateExact([Guid.NewGuid()]));
+
+        Result<LabeledArtifactWriteReceipt> receipt = await ledger
+            .LabelAsync(write, CancellationToken.None).ConfigureAwait(false);
+
+        if (receipt.IsFailure)
+        {
+
+            throw new InvalidOperationException(receipt.Error.Message);
+
+        }
 
     }
 

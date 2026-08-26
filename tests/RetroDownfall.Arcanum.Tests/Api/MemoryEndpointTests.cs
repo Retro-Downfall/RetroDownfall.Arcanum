@@ -687,6 +687,19 @@ public sealed class MemoryEndpointTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<SagaCurationOutcome> CorrectAsync(
+            string id,
+            byte[] expectedContentDigest,
+            string content,
+            float[] embedding,
+            DateTimeOffset correctedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> SetPinAsync(
+            string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
