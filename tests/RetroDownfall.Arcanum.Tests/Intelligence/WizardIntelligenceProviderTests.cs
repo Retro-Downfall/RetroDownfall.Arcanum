@@ -6363,6 +6363,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Dictionary<string, SagaMemoryDto> Memories { get; } = new(StringComparer.Ordinal);
 
+        // Retirement removes the embedding and reinstatement restores it; ReadCurationRowAsync has to
+        // answer HasEmbedding from this rather than a hardcoded true, or a memory retired through this
+        // fake would read back as retired and still embedded -- a state the real store can never
+        // produce, and the opposite of what retirement is for.
+        private readonly HashSet<string> _embeddedIds = new(StringComparer.Ordinal);
+
         public Task InsertAsync(
             string id,
             string content,
@@ -6375,6 +6381,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
 
             Memories[id] = new SagaMemoryDto(id, content, createdAt, sessionId, tags, source);
+
+            _embeddedIds.Add(id);
 
             return Task.CompletedTask;
 
@@ -6413,7 +6421,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
             Task.FromResult(Memories.TryGetValue(id, out SagaMemoryDto? memory)
-                ? new SagaMemoryCurationRow(memory, new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc), HasEmbedding: true)
+                ? new SagaMemoryCurationRow(
+                    memory, new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc), _embeddedIds.Contains(id))
                 : null);
 
         public Task<SagaCurationOutcome> RetireAsync(
@@ -6444,6 +6453,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             }
 
             Memories[id] = memory with { RetiredAtUtc = retiredAt };
+
+            _embeddedIds.Remove(id);
 
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, memory.PinnedAtUtc)));
@@ -6483,17 +6494,28 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
             Memories[id] = memory with { RetiredAtUtc = null };
 
+            _embeddedIds.Add(id);
+
             return Task.FromResult(
                 new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, memory.PinnedAtUtc)));
 
         }
 
-        public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Memories.Remove(id));
+        public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
+        {
+
+            _embeddedIds.Remove(id);
+
+            return Task.FromResult(Memories.Remove(id));
+
+        }
 
         public Task DeleteAllAsync(CancellationToken cancellationToken)
         {
 
             Memories.Clear();
+
+            _embeddedIds.Clear();
 
             return Task.CompletedTask;
 

@@ -274,4 +274,108 @@ public sealed class SagaCurationStoreTests
 
     }
 
+    /// <summary>
+    /// The same convergence as the flag-off history test, with the Annals turned on: <c>InsertAsync</c>
+    /// has already opened the claim (revision one, Assert, AgentExtracted) before <c>RetireAsync</c> ever
+    /// runs, so its own <c>AppendAssertAsync</c> call no-ops against that existing head rather than
+    /// writing a second one. Both flag states therefore have to land on the same two-revision shape --
+    /// this pins that they provably do, rather than duplicating the flag-off assertions against a
+    /// different setup.
+    /// </summary>
+    [SkippableFact]
+    public async Task Retirement_and_reinstatement_write_the_same_annals_history_when_the_feature_is_on()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] digest = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
+
+        _ = await harness.Store.RetireAsync("m-1", digest, DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        AnnalClaimHead? afterRetire = await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.NotNull(afterRetire);
+
+        Assert.Equal(AnnalOperation.Retire, afterRetire.CurrentOperation);
+
+        Assert.Equal(2, afterRetire.CurrentRevision);
+
+        IReadOnlyList<AnnalClaimVersion> versionsAfterRetire = await harness.Annals
+            .GetVersionsAsync(afterRetire.ClaimId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(2, versionsAfterRetire.Count);
+
+        Assert.Equal(AnnalOperation.Assert, versionsAfterRetire[0].Operation);
+
+        Assert.Equal(AnnalOrigin.AgentExtracted, versionsAfterRetire[0].Origin);
+
+        Assert.Equal(AnnalOperation.Retire, versionsAfterRetire[1].Operation);
+
+        Assert.Equal(AnnalOrigin.OperatorStated, versionsAfterRetire[1].Origin);
+
+        _ = await harness.Store.ReinstateAsync(
+            "m-1", digest, harness.Embedding(), DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        AnnalClaimHead? afterReinstate = await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.NotNull(afterReinstate);
+
+        Assert.Equal(AnnalOperation.Correct, afterReinstate.CurrentOperation);
+
+        Assert.Equal(3, afterReinstate.CurrentRevision);
+
+    }
+
+    [SkippableFact]
+    public async Task Retiring_an_unknown_identity_is_refused_and_writes_nothing()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        SagaCurationOutcome outcome = await harness.Store.RetireAsync(
+            "m-absent",
+            AnnalContentDigest.ForSagaMemory("anything"),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.NotFound, outcome.Kind);
+
+        Assert.Equal(0, await harness.CountAsync("saga_retirement_suppressions", "1 = 1").ConfigureAwait(false));
+
+        Assert.Null(await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-absent", CancellationToken.None).ConfigureAwait(false));
+
+    }
+
+    [SkippableFact]
+    public async Task Reinstating_an_unknown_identity_is_refused_and_writes_nothing()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        SagaCurationOutcome outcome = await harness.Store.ReinstateAsync(
+            "m-absent",
+            AnnalContentDigest.ForSagaMemory("anything"),
+            harness.Embedding(),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(SagaCurationOutcomeKind.NotFound, outcome.Kind);
+
+        Assert.Equal(0, await harness.CountAsync("saga_retirement_suppressions", "1 = 1").ConfigureAwait(false));
+
+        Assert.Null(await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-absent", CancellationToken.None).ConfigureAwait(false));
+
+    }
+
 }

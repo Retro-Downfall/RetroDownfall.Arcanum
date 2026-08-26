@@ -98,7 +98,7 @@ internal sealed partial class SagaMemoryStore
 
                 readCmd.CommandText =
                     """
-                    SELECT Content, CreatedAt, SessionId, ScopeKindCode, CampaignId, RetiredAtUtc
+                    SELECT Content, CreatedAt, SessionId, ScopeKindCode, CampaignId, RetiredAtUtc, PinnedAtUtc
                     FROM saga_memories WHERE Id = @id
                     """;
 
@@ -113,6 +113,8 @@ internal sealed partial class SagaMemoryStore
                 SagaMemoryScopeKind scopeKind;
 
                 string? campaignId;
+
+                DateTimeOffset? pinnedAtUtc;
 
                 await using (DbDataReader reader = await readCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
@@ -135,6 +137,8 @@ internal sealed partial class SagaMemoryStore
                     scopeKind = (SagaMemoryScopeKind)reader.GetInt32(3);
 
                     campaignId = reader.IsDBNull(4) ? null : reader.GetString(4);
+
+                    pinnedAtUtc = reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
 
                     if (!reader.IsDBNull(5))
                     {
@@ -211,13 +215,20 @@ internal sealed partial class SagaMemoryStore
 
                     suppressionCmd.Transaction = transaction;
 
-                    // OR IGNORE: two memories with identical content in one scope hash to the same
-                    // digest, and the second retirement must not abort on the first's row.
+                    // ON CONFLICT(SuppressionDigest) DO NOTHING rather than INSERT OR IGNORE: two
+                    // memories with identical content in one scope hash to the same digest, and the
+                    // second retirement must not abort on the first's row -- but SQLite's IGNORE
+                    // conflict algorithm also silently swallows a CHECK or NOT NULL violation, and a
+                    // malformed suppression row here is the only thing standing between a retired
+                    // memory and the next extraction pass re-adding what the operator just removed.
+                    // Naming the conflict target ignores only the conflict this insert actually expects
+                    // and lets any other constraint abort the transaction the way it should.
                     suppressionCmd.CommandText =
                         """
-                        INSERT OR IGNORE INTO saga_retirement_suppressions (
+                        INSERT INTO saga_retirement_suppressions (
                             SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
                         VALUES (@digest, @scopeKindCode, @campaignId, @retiredAt)
+                        ON CONFLICT(SuppressionDigest) DO NOTHING
                         """;
 
                     AddParameter(suppressionCmd, "@digest", suppressionDigest);
@@ -273,7 +284,7 @@ internal sealed partial class SagaMemoryStore
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, null));
+                return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, pinnedAtUtc));
 
             },
             cancellationToken);
@@ -291,6 +302,8 @@ internal sealed partial class SagaMemoryStore
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(expectedContentDigest);
+
+        ArgumentNullException.ThrowIfNull(embedding);
 
         int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
             options.CurrentValue.Integrations.Embeddings.Dimensions);
@@ -320,7 +333,7 @@ internal sealed partial class SagaMemoryStore
 
                 readCmd.CommandText =
                     """
-                    SELECT Content, CreatedAt, SessionId, ScopeKindCode, CampaignId, RetiredAtUtc
+                    SELECT Content, CreatedAt, SessionId, ScopeKindCode, CampaignId, RetiredAtUtc, PinnedAtUtc
                     FROM saga_memories WHERE Id = @id
                     """;
 
@@ -335,6 +348,8 @@ internal sealed partial class SagaMemoryStore
                 SagaMemoryScopeKind scopeKind;
 
                 string? campaignId;
+
+                DateTimeOffset? pinnedAtUtc;
 
                 await using (DbDataReader reader = await readCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
@@ -357,6 +372,8 @@ internal sealed partial class SagaMemoryStore
                     scopeKind = (SagaMemoryScopeKind)reader.GetInt32(3);
 
                     campaignId = reader.IsDBNull(4) ? null : reader.GetString(4);
+
+                    pinnedAtUtc = reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
 
                     if (reader.IsDBNull(5))
                     {
@@ -442,6 +459,14 @@ internal sealed partial class SagaMemoryStore
                 // came from, only the content-and-scope it was computed over, and that is what the delete
                 // below has to reproduce. When no key exists yet, nothing was ever retired and there is no
                 // suppression to release.
+                //
+                // Because the digest binds content-and-scope rather than a memory identity, reinstating
+                // one of two co-retired memories that share identical content releases the one
+                // suppression covering both, so the still-retired twin's content becomes re-extractable
+                // too. That is deliberate, not a leak: the evidence a retirement records is
+                // "this content, in this scope, was rejected," not "this specific memory was rejected,"
+                // and once the operator has put that content back into that scope, extraction writing it
+                // again is no longer something they rejected.
                 byte[]? suppressionKey = await SagaSuppressionKeyStore
                     .ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
 
@@ -482,7 +507,7 @@ internal sealed partial class SagaMemoryStore
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, null));
+                return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, pinnedAtUtc));
 
             },
             cancellationToken);
