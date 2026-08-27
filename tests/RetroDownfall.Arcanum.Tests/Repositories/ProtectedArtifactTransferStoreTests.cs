@@ -58,6 +58,15 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         "assistant_entry_erasure_receipts",
         "artifact_sensitivity_guard_delete",
         "artifact_sensitivity_guard_update",
+
+        // What a summary written for an imported Session has to land in. Same reason as above: the
+        // store is the only production writer that gives "Sessions"."Id" a lowercase identity, so a
+        // Session it created is the only one a derived-artifact write can be exercised against
+        // without a test choosing the spelling the foreign key has to agree with.
+        "session_summary_artifacts",
+        "session_summary_artifacts_guard_delete",
+        "session_summary_artifacts_guard_update",
+        "session_summary_state",
     ];
 
     private readonly string _root =
@@ -650,6 +659,68 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(
             1,
             await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Sessions\";", CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A summary written for an imported Session lands on that Session's row.
+    /// </summary>
+    /// <remarks>
+    /// Lives here for the same reason the erasure case above does: this store is the only production
+    /// writer that gives <c>"Sessions"."Id"</c> a lowercase identity, and the derived-artifact store
+    /// spelled every one of its own identities uppercase — the artifact row and the pointer row that
+    /// both carry a foreign key into that column, and the <c>UPDATE "Sessions"</c> that projects the
+    /// content back onto the Session. The equivalent assertion over an object-relational Session
+    /// passes whether or not any of that is right.
+    /// </remarks>
+    [Fact]
+    public async Task A_summary_written_for_an_imported_session_reaches_the_session_row()
+    {
+
+        Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        ISessionSummaryArtifactStore store = new SessionDerivedArtifactStore(
+            new FixedCovenantConnectionSource(_destination.Connection),
+            CovenantSqliteConnectionInitializer.Instance);
+
+        Result<SessionDerivedArtifactWriteReceipt> receipt = await store.ReplaceAsync(
+            new SessionSummaryArtifactWrite(
+                imported.SessionId,
+                "the imported transcript, summarized",
+                null,
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([CovenantOperationGateFixture.DatasetGeneration])),
+            CancellationToken.None);
+
+        Assert.True(receipt.IsSuccess, receipt.IsFailure ? receipt.Error.Message : string.Empty);
+
+        // Read back through the identity the Session row holds, so the assertion is about the row the
+        // store was asked to write rather than about any row that happens to carry a summary.
+        await using SqliteCommand summary = _destination.Connection.CreateCommand();
+
+        summary.CommandText = "SELECT \"Summary\" FROM \"Sessions\" WHERE \"Id\" = $id;";
+
+        _ = summary.Parameters.AddWithValue("$id", imported.StoredSessionId);
+
+        Assert.Equal(
+            "the imported transcript, summarized",
+            await summary.ExecuteScalarAsync(CancellationToken.None) as string);
+
+        // The artifact and its pointer exist too, both keyed by an identity that resolved against the
+        // Session row rather than one the store spelled for itself.
+        Assert.Equal(
+            imported.StoredSessionId,
+            await _destination.ScalarStringAsync(
+                "SELECT SessionId FROM session_summary_artifacts;",
+                CancellationToken.None));
+
+        Assert.Equal(
+            imported.StoredSessionId,
+            await _destination.ScalarStringAsync(
+                "SELECT SessionId FROM session_summary_state;",
+                CancellationToken.None));
 
     }
 
