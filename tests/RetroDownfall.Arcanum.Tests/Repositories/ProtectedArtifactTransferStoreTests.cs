@@ -556,6 +556,103 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
+    /// <summary>
+    /// A Session this installation imported and then labelled can never leave it in plaintext.
+    /// </summary>
+    /// <remarks>
+    /// The guard this proves is the only member of its defect family that failed open. The taint scan
+    /// bound a lowercase identity against <c>artifact_sensitivity.SessionId</c>, which the label ledger
+    /// writes uppercase, so the count was zero for every labelled Session and the refusal never fired.
+    /// The suite's existing coverage could not see it: that case seeds the label row itself, in the
+    /// spelling the broken comparison already matched.
+    ///
+    /// <para>Nothing here seeds a label. A Session is imported, one of its artifacts is labelled
+    /// through the real ledger, and the onward transfer is a genuine request built from the graph the
+    /// store itself wrote — so without the refusal it would commit, which is exactly what the
+    /// companion case asserts.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_imported_session_carrying_a_covenant_label_can_never_be_transferred_onward()
+    {
+
+        Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            ImportedEntryLabel(imported),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : string.Empty);
+
+        await using CovenantSchemaScratchDatabase onward = await CreateOnwardDestinationAsync();
+
+        string onwardAttachments = Directory.CreateDirectory(Path.Combine(_root, "onward")).FullName;
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(
+            await BuildRequestAsync(Guid.NewGuid(), null, _destination, imported.SessionId),
+            _destination,
+            _destinationAttachments,
+            onward,
+            onwardAttachments);
+
+        Assert.True(completion.Result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, completion.Result.Error.Code);
+
+        Assert.Contains("Covenant-derived", completion.Result.Error.Message, StringComparison.Ordinal);
+
+        // Refused before the graph was read, so nothing of the labelled Session reached the plaintext
+        // destination at all.
+        Assert.Equal(
+            0,
+            await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Sessions\";", CancellationToken.None));
+
+        Assert.Equal(
+            0,
+            await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Entries\";", CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// The same onward request commits when nothing about the imported Session is labelled.
+    /// </summary>
+    /// <remarks>
+    /// The control for the refusal above. Without it, "the transfer failed" would be consistent with a
+    /// request the onward hop could never have satisfied for some unrelated reason, and the refusal
+    /// would be evidence of nothing.
+    /// </remarks>
+    [Fact]
+    public async Task An_unlabelled_imported_session_transfers_onward()
+    {
+
+        Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        await using CovenantSchemaScratchDatabase onward = await CreateOnwardDestinationAsync();
+
+        string onwardAttachments = Directory.CreateDirectory(Path.Combine(_root, "onward")).FullName;
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(
+            await BuildRequestAsync(Guid.NewGuid(), null, _destination, imported.SessionId),
+            _destination,
+            _destinationAttachments,
+            onward,
+            onwardAttachments);
+
+        Assert.True(
+            completion.Result.IsSuccess,
+            completion.Result.IsFailure ? completion.Result.Error.Message : string.Empty);
+
+        Assert.Equal(
+            1,
+            await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Sessions\";", CancellationToken.None));
+
+    }
+
     public async Task DisposeAsync()
     {
 
@@ -650,8 +747,43 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
+    /// <summary>A third database, to carry a Session onward out of the one this suite imports into.</summary>
+    private static async Task<CovenantSchemaScratchDatabase> CreateOnwardDestinationAsync()
+    {
+
+        CovenantSchemaScratchDatabase onward =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        try
+        {
+
+            await onward.InstallCoreObjectsAsync(DestinationObjects, CancellationToken.None);
+
+            return onward;
+
+        }
+        catch
+        {
+
+            await onward.DisposeAsync();
+
+            throw;
+
+        }
+
+    }
+
+    private Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>> CommitAsync(
+        ImportedSessionTransferRequest request,
+        ProtectedTransferScope? scope = null) =>
+        CommitAsync(request, _source, _sourceAttachments, _destination, _destinationAttachments, scope);
+
     private async Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>> CommitAsync(
         ImportedSessionTransferRequest request,
+        CovenantSchemaScratchDatabase source,
+        string sourceAttachments,
+        CovenantSchemaScratchDatabase destination,
+        string destinationAttachments,
         ProtectedTransferScope? scope = null)
     {
 
@@ -662,8 +794,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         await using ImportedSessionSourceLease sourceLease =
             ImportedSessionSourceLease.Adopt(
-                await _source.OpenAdditionalConnectionAsync(CancellationToken.None),
-                _sourceAttachments);
+                await source.OpenAdditionalConnectionAsync(CancellationToken.None),
+                sourceAttachments);
 
         await using CovenantProtectedTransferLease transferLease = new(
             new StubTransferRegistration(
@@ -677,33 +809,34 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             request,
             sourceLease,
             transferLease,
-            new ProtectedSessionImportDestination(_destination.Connection, _destinationAttachments),
+            new ProtectedSessionImportDestination(destination.Connection, destinationAttachments),
             CancellationToken.None);
 
     }
+
+    private Task<ImportedSessionTransferRequest> BuildRequestAsync(
+        Guid operationId,
+        BackupSessionCampaignMapping? mapping) =>
+        BuildRequestAsync(operationId, mapping, _source, _sourceSessionId);
 
     /// <summary>
     /// Builds the request exactly as the importer must: every digest and count derived from the source
     /// the store will read, never invented.
     /// </summary>
-    private async Task<ImportedSessionTransferRequest> BuildRequestAsync(
+    private static async Task<ImportedSessionTransferRequest> BuildRequestAsync(
         Guid operationId,
-        BackupSessionCampaignMapping? mapping)
+        BackupSessionCampaignMapping? mapping,
+        CovenantSchemaScratchDatabase source,
+        Guid sourceSessionId)
     {
 
         Guid destinationSessionId = Guid.NewGuid();
 
         CovenantDigest sourceEvidence = Digest(0x11);
 
-        ProtectedSessionTransferCounts counts = new(
-            1,
-            (ulong)await CountSourceAsync("Entries"),
-            (ulong)await CountSourceAsync("SessionAttachments"),
-            (ulong)await CountSourceAsync("SessionAttachments"),
-            (ulong)await CountSourceAsync("assistant_entry_finalizations"),
-            0);
+        ProtectedSessionTransferCounts counts = await CountSourceGraphAsync(source, sourceSessionId);
 
-        CovenantDigest manifest = await ComputeSourceManifestAsync();
+        CovenantDigest manifest = await ComputeSourceManifestAsync(source, sourceSessionId);
 
         CovenantDigest binding = ProtectedSessionTransferDigests.DestinationBinding(
             mapping is null ? CovenantScope.Global : CovenantScope.Campaign,
@@ -713,7 +846,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         CovenantDigest effect = ProtectedSessionTransferDigests.Effect(
             ProtectedSessionTransferKind.Import,
             operationId,
-            _sourceSessionId,
+            sourceSessionId,
             null,
             destinationSessionId,
             binding,
@@ -723,7 +856,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         return new ImportedSessionTransferRequest(
             operationId,
-            _sourceSessionId,
+            sourceSessionId,
             destinationSessionId,
             sourceEvidence,
             manifest,
@@ -735,20 +868,99 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     }
 
     /// <summary>
+    /// Counts the source graph the way the store counts it: owned by the Session under transfer, and
+    /// over the finalization outcome the store copies.
+    /// </summary>
+    /// <remarks>
+    /// Owner-scoped rather than whole-table, because an onward transfer reads a database this store
+    /// itself wrote, and the finalizations it wrote there carry the imported outcome the source reader
+    /// deliberately skips. A whole-table count would claim a finalization the graph does not contain.
+    /// </remarks>
+    private static async Task<ProtectedSessionTransferCounts> CountSourceGraphAsync(
+        CovenantSchemaScratchDatabase source,
+        Guid sourceSessionId)
+    {
+
+        long attachments = await OwnedCountAsync(
+            source,
+            "SELECT COUNT(*) FROM \"SessionAttachments\" WHERE \"SessionId\" = $id;",
+            sourceSessionId);
+
+        return new(
+            1,
+            (ulong)await OwnedCountAsync(
+                source,
+                "SELECT COUNT(*) FROM \"Entries\" WHERE \"SessionId\" = $id;",
+                sourceSessionId),
+            (ulong)attachments,
+            (ulong)attachments,
+            (ulong)await OwnedCountAsync(
+                source,
+                "SELECT COUNT(*) FROM assistant_entry_finalizations WHERE SessionId = $id AND OutcomeCode = 1;",
+                sourceSessionId),
+            0);
+
+    }
+
+    private static async Task<long> OwnedCountAsync(
+        CovenantSchemaScratchDatabase database,
+        string sql,
+        Guid sessionId)
+    {
+
+        await using SqliteCommand command = database.Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        // The identity as the row holds it, not a spelling this test chose: the graph under count may
+        // have been written by this store, which spells a Session lowercase, or seeded uppercase.
+        _ = command.Parameters.AddWithValue("$id", await StoredSessionIdAsync(database, sessionId));
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// The exact text <c>"Sessions"."Id"</c> holds for one Session in one database.
+    /// </summary>
+    private static async Task<string> StoredSessionIdAsync(
+        CovenantSchemaScratchDatabase database,
+        Guid sessionId)
+    {
+
+        await using SqliteCommand command = database.Connection.CreateCommand();
+
+        command.CommandText =
+            "SELECT \"Id\" FROM \"Sessions\" WHERE lower(replace(\"Id\", '-', '')) = $key;";
+
+        _ = command.Parameters.AddWithValue("$key", sessionId.ToString("N"));
+
+        return await command.ExecuteScalarAsync(CancellationToken.None) as string
+            ?? throw new InvalidOperationException($"No Session row carries the identity {sessionId}.");
+
+    }
+
+    /// <summary>
     /// Reproduces the manifest the store computes, from the same source rows and the same order.
     /// </summary>
-    private async Task<CovenantDigest> ComputeSourceManifestAsync()
+    private static async Task<CovenantDigest> ComputeSourceManifestAsync(
+        CovenantSchemaScratchDatabase source,
+        Guid sourceSessionId)
     {
+
+        string session = await StoredSessionIdAsync(source, sourceSessionId);
 
         List<byte[]> items = [];
 
-        await using (SqliteCommand entries = _source.Connection.CreateCommand())
+        await using (SqliteCommand entries = source.Connection.CreateCommand())
         {
 
             entries.CommandText =
                 "SELECT \"Id\", \"Sequence\" FROM \"Entries\" WHERE \"SessionId\" = $id ORDER BY \"Sequence\", \"Id\";";
 
-            _ = entries.Parameters.AddWithValue("$id", _sourceSessionId.ToString("D"));
+            _ = entries.Parameters.AddWithValue("$id", session);
 
             await using SqliteDataReader reader = await entries.ExecuteReaderAsync(CancellationToken.None);
 
@@ -762,7 +974,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         }
 
-        await using (SqliteCommand attachments = _source.Connection.CreateCommand())
+        await using (SqliteCommand attachments = source.Connection.CreateCommand())
         {
 
             attachments.CommandText = """
@@ -770,7 +982,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                 FROM "SessionAttachments" WHERE "SessionId" = $id ORDER BY "Id";
                 """;
 
-            _ = attachments.Parameters.AddWithValue("$id", _sourceSessionId.ToString("D"));
+            _ = attachments.Parameters.AddWithValue("$id", session);
 
             await using SqliteDataReader reader =
                 await attachments.ExecuteReaderAsync(CancellationToken.None);
@@ -786,7 +998,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         }
 
-        await using (SqliteCommand finalizations = _source.Connection.CreateCommand())
+        await using (SqliteCommand finalizations = source.Connection.CreateCommand())
         {
 
             finalizations.CommandText = """
@@ -794,7 +1006,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                 WHERE SessionId = $id AND OutcomeCode = 1 ORDER BY AssistantEntryId;
                 """;
 
-            _ = finalizations.Parameters.AddWithValue("$id", _sourceSessionId.ToString("D"));
+            _ = finalizations.Parameters.AddWithValue("$id", session);
 
             await using SqliteDataReader reader =
                 await finalizations.ExecuteReaderAsync(CancellationToken.None);
@@ -937,9 +1149,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
 
     }
-
-    private Task<long> CountSourceAsync(string table) =>
-        _source.ScalarLongAsync($"SELECT COUNT(*) FROM \"{table}\";", CancellationToken.None);
 
     private Task<long> CountDestinationAsync(string table) =>
         _destination.ScalarLongAsync($"SELECT COUNT(*) FROM \"{table}\";", CancellationToken.None);

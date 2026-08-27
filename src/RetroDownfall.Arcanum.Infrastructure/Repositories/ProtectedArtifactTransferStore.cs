@@ -1226,6 +1226,31 @@ internal sealed class ProtectedArtifactTransferStore(
 
     }
 
+    /// <summary>
+    /// Counts the source's own labels for one Session, in the spelling the label ledger writes them.
+    /// </summary>
+    /// <remarks>
+    /// <c>artifact_sensitivity.SessionId</c> is written by exactly one component and it spells an
+    /// identity uppercase, while the Session identities that arrive here are carried as
+    /// <see cref="Guid"/> and were spelled lowercase by whichever writer created the archived Session.
+    /// SQLite compares TEXT byte for byte, so an exact match counted zero for every labelled Session
+    /// and the refusal this feeds never fired — the one member of this defect family that returned a
+    /// clean verdict and authorized the export it exists to prevent. Both sides are normalised now.
+    ///
+    /// <para><b>The cost, specific to this site.</b> A normalised column cannot use
+    /// <c>idx_artifact_sensitivity_session</c>, so this becomes a full scan of the archive's label
+    /// table. That table holds one row per tainted artifact rather than one per Entry, the scan runs
+    /// once per Session transferred rather than once per turn, and it is a read of a snapshot this
+    /// process opened for exactly this purpose. A refusal that scans is worth more than an indexed
+    /// count that answers zero.</para>
+    ///
+    /// <para><b>An absent table counts as zero, deliberately.</b> A Grimoire predating the
+    /// information-flow ledger genuinely holds no labels, and refusing every such archive would break
+    /// a transfer that has always been allowed. This method cannot tell that installation apart from
+    /// one whose ledger was dropped after labelling something — both present as a missing table, and
+    /// nothing else in the snapshot distinguishes them — so the refusal is not the honest answer here.
+    /// The same ruling as <c>CovenantExportPolicy</c>'s absent-table arm, for the same reason.</para>
+    /// </remarks>
     private static async Task<long> CountTaintedAsync(
         SqliteConnection source,
         Guid sessionId,
@@ -1243,11 +1268,12 @@ internal sealed class ProtectedArtifactTransferStore(
 
         await using SqliteCommand command = source.CreateCommand();
 
-        command.CommandText = """
-            SELECT COUNT(*) FROM artifact_sensitivity WHERE SessionId = $session;
+        command.CommandText = $"""
+            SELECT COUNT(*) FROM artifact_sensitivity
+            WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")};
             """;
 
-        _ = command.Parameters.AddWithValue("$session", sessionId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
