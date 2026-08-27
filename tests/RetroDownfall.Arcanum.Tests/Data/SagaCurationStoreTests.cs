@@ -465,25 +465,61 @@ public sealed class SagaCurationStoreTests
 
     }
 
+    /// <summary>
+    /// Correcting to the text already stored reports <see cref="SagaCurationOutcomeKind.Unchanged"/> and
+    /// writes nothing at all -- proven here by reading the content, the embedding bytes, and the claim's
+    /// revision count back rather than trusting the outcome kind. The service layer (not this store)
+    /// is what decides whether <c>Unchanged</c> is a success or a failure; at this layer "nothing
+    /// needed doing" and "nothing was written" are the whole of the contract.
+    /// </summary>
     [SkippableFact]
-    public async Task Correcting_to_the_text_already_stored_is_refused_rather_than_recorded()
+    public async Task Correcting_to_the_text_already_stored_writes_nothing()
     {
 
-        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
-            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+            null, null, null, harness.Embedding(seed: 1), CancellationToken.None).ConfigureAwait(false);
 
+        byte[] embeddingBefore = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
+        AnnalClaimHead claimBefore = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(claimBefore);
+
+        int revisionsBefore = (await harness.Annals
+            .GetVersionsAsync(claimBefore.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
+
+        // seed: 7 is deliberately not seed: 1 -- a store that wrote this embedding anyway would move
+        // the bytes read back below, which is what makes that assertion able to fail.
         SagaCurationOutcome outcome = await harness.Store.CorrectAsync(
             "m-1",
             AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             "the operator prefers tabs",
-            harness.Embedding(),
+            harness.Embedding(seed: 7),
             DateTimeOffset.UtcNow,
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.Equal(SagaCurationOutcomeKind.Unchanged, outcome.Kind);
+
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
+
+        AnnalClaimHead claimAfter = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(claimAfter);
+
+        Assert.Equal(
+            revisionsBefore,
+            (await harness.Annals.GetVersionsAsync(claimAfter.ClaimId, CancellationToken.None)
+                .ConfigureAwait(false)).Count);
 
     }
 

@@ -108,10 +108,11 @@ The comparison happens inside the transaction rather than before it opens, becau
 | no memory with that id | not found |
 | the stored content's digest is not the one named | stale target — the operator is correcting content they did not read |
 | the memory is retired | refused; a retired memory is reinstated before it is corrected, which is a different sentence |
-| the corrected text is what is already stored | refused; a correction that changes nothing is a request that misread the state, not a no-op worth recording |
 | the embedding substrate is unavailable or misconfigured | refused before anything is written |
 
 The last one carries the weight. A correction that cannot re-embed would leave `Content` saying one thing and the vector saying another, so retrieval would keep surfacing the text the operator just rejected — which is precisely the outcome the acceptance criterion exists to prevent. Refusing is the only honest answer.
+
+**Revisited.** The corrected text being what is already stored is not refused. Refusing it bought the operator nothing — the power of this system is in its memory and its security, not in restrictions on a request that happens to turn out to be a no-op — so it now succeeds: the store writes nothing at all (no content update, no embedding replacement, no vec0 mirror write, no Annals claim revision), reports `Unchanged` so a caller can still tell "nothing needed doing" from "a correction was applied", and returns the memory's current projection exactly as a real correction would.
 
 ### 6.4 What a correction does not touch
 

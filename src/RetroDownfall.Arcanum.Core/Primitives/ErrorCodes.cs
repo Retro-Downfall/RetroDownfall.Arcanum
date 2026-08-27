@@ -695,9 +695,6 @@ public static class ErrorCodes
         /// <summary>The caller asked to reinstate a memory that is not retired.</summary>
         public const string NotRetired = "Saga.NotRetired";
 
-        /// <summary>The caller's correction would not have changed this memory's stored content.</summary>
-        public const string Unchanged = "Saga.Unchanged";
-
         /// <summary>
         /// The embedding substrate cannot produce a vector right now, so the write was refused rather
         /// than leaving this memory's text and its vector disagreeing about what it says.

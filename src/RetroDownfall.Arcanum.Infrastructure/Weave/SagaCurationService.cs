@@ -162,9 +162,9 @@ internal sealed class SagaCurationService(
     }
 
     /// <summary>
-    /// Maps a store outcome to its projection or its error, and — on <see cref="SagaCurationOutcomeKind.Applied"/> —
-    /// returns <see cref="ShowAsync"/>'s own composition rather than a second copy of it, so a caller
-    /// sees the state its own call produced.
+    /// Maps a store outcome to its projection or its error, and — on <see cref="SagaCurationOutcomeKind.Applied"/>
+    /// or <see cref="SagaCurationOutcomeKind.Unchanged"/> — returns <see cref="ShowAsync"/>'s own
+    /// composition rather than a second copy of it, so a caller sees the state its own call produced.
     /// </summary>
     private async Task<Result<SagaMemoryDetail>> FinishAsync(
         string id, SagaCurationOutcome outcome, CancellationToken cancellationToken)
@@ -242,7 +242,12 @@ internal sealed class SagaCurationService(
         kind switch
         {
 
-            SagaCurationOutcomeKind.Applied => null,
+            // A correction that restates the stored text is not a request that misread the state, and
+            // refusing it bought the operator nothing. The store already writes nothing for this case
+            // (SagaMemoryStore.CorrectAsync rolls its transaction back before any write), so treating it
+            // as a success alongside Applied costs nothing and the caller still learns nothing changed
+            // from SagaMemoryDetail's own projection.
+            SagaCurationOutcomeKind.Applied or SagaCurationOutcomeKind.Unchanged => null,
 
             SagaCurationOutcomeKind.NotFound => NotFoundError(),
 
@@ -257,10 +262,6 @@ internal sealed class SagaCurationService(
             SagaCurationOutcomeKind.NotRetired => new Error(
                 ErrorCodes.Saga.NotRetired,
                 "This memory is not retired, so it cannot be reinstated."),
-
-            SagaCurationOutcomeKind.Unchanged => new Error(
-                ErrorCodes.Saga.Unchanged,
-                "The requested correction would not change this memory's stored content."),
 
             _ => throw new InvalidOperationException($"Unhandled {nameof(SagaCurationOutcomeKind)}: {kind}."),
 

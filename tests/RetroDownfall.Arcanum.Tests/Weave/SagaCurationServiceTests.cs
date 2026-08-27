@@ -210,16 +210,36 @@ public sealed class SagaCurationServiceTests
 
     }
 
+    /// <summary>
+    /// A correction that restates the stored text bought the operator nothing by refusing: the power
+    /// of Saga's curation surface is in its memory and its security, not in restrictions that keep the
+    /// operator from a request that happens to be a no-op. It succeeds, carries the memory's own
+    /// projection, and — proven below by reading the content, the embedding bytes, and the claim's
+    /// revision count back rather than trusting the outcome — writes nothing at all.
+    /// </summary>
     [SkippableFact]
-    public async Task Correcting_to_the_stored_text_is_refused_as_unchanged()
+    public async Task Correcting_to_the_stored_text_succeeds_and_writes_nothing()
     {
 
-        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
+        byte[] embeddingBefore = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
+        AnnalClaimHead claimBefore = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(claimBefore);
+
+        int revisionsBefore = (await harness.Annals
+            .GetVersionsAsync(claimBefore.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
+
+        // FakeWeaveService.Available always hands back an all-zero vector, distinct from harness.Embedding()'s
+        // seeded random one above -- so a store write that used it would move the embedding bytes and this
+        // test would catch it, even though the service still pays for the (wasted) embed call to get here.
         SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
 
         Result<SagaMemoryDetail> result = await service.CorrectAsync(
@@ -228,9 +248,30 @@ public sealed class SagaCurationServiceTests
             "the operator prefers tabs",
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess);
 
-        Assert.Equal(ErrorCodes.Saga.Unchanged, result.Error.Code);
+        Assert.Equal("the operator prefers tabs", result.Value.Memory.Content);
+
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
+
+        AnnalClaimHead claimAfter = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.NotNull(claimAfter);
+
+        // The one that matters most: a service that reported success while the store (or the Annals
+        // writer beneath it) still appended a claim revision would satisfy every assertion above and
+        // reintroduce exactly the history-noise problem AnnalsClaimWriter.AppendCorrectionAsync's own
+        // no-append-on-restatement rule exists to prevent.
+        Assert.Equal(
+            revisionsBefore,
+            (await harness.Annals.GetVersionsAsync(claimAfter.ClaimId, CancellationToken.None)
+                .ConfigureAwait(false)).Count);
 
     }
 
