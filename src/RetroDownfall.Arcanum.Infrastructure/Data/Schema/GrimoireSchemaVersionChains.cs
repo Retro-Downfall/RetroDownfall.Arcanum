@@ -37,8 +37,9 @@ internal static class GrimoireSchemaVersionChains
     /// installation that predates it and records that it did. What it repairs is a reference whose
     /// canonical target already exists - the Campaign a Session names, the Entry an embedding belongs to
     /// - because an identity a row is known by cannot be moved in place: the tables that depend on a
-    /// Session identity refuse the write by trigger. It also installs the first write-time guard, on
-    /// <c>assistant_entry_finalizations</c>, whose identities need no repair before it can be true.</para>
+    /// Session identity refuse the write by trigger. It also installs the write-time guards that keep the
+    /// form once it is settled: one <c>BEFORE INSERT</c> per governed identity column, and one
+    /// <c>BEFORE UPDATE OF</c> that column wherever the table does not already refuse every update.</para>
     /// </remarks>
     internal const int CoreSchemaVersion = 5;
 
@@ -116,7 +117,7 @@ internal static class GrimoireSchemaVersionChains
             // the upgrade, and every memory an installation already had would be unexplained.
             [(GrimoireSchemaTransactionTier.Core, 3)] = new MemoryAnnalsBackfill(),
 
-            // Version 5's DDL is a guard trigger and needs no sweep to be correct. The sweep is the half
+            // Version 5's DDL is the guard triggers and needs no sweep to be correct. The sweep is the half
             // of the step that answers for the data: it counts the seventeen identity columns it declares
             // before it touches one, so an installation that already holds the canonical form says so in
             // its log rather than passing silently, and repairs a reference only where the identity it

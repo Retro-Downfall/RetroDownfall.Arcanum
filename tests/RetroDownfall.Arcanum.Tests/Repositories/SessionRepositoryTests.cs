@@ -68,13 +68,18 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     /// A Session the protected transfer store imported has a readable history.
     /// </summary>
     /// <remarks>
-    /// Every other case in this suite works with Sessions the object-relational writer created, whose
-    /// identities it spells uppercase — which is the spelling EF also binds when it parameterises an
-    /// interpolated query, so those cases agreed with the reads and could not have caught them.
-    /// The protected transfer store writes <c>"Sessions"."Id"</c> and <c>"Entries"."SessionId"</c>
-    /// lowercase, and it is the only production writer that does. Before this was normalised, every
-    /// read in <c>EntryTemporalQueries</c> returned nothing for such a Session: not an error, not an
-    /// empty-state, just a conversation that looked as though nothing had ever been said in it.
+    /// <b>The spelling this case was built around no longer exists, and the seed says so.</b> The
+    /// protected transfer store used to write <c>"Sessions"."Id"</c> and <c>"Entries"."SessionId"</c>
+    /// lowercase - it was the only production writer that did - and every read in
+    /// <c>EntryTemporalQueries</c> then returned nothing for such a Session: not an error, not an
+    /// empty-state, just a conversation that looked as though nothing had ever been said in it. That
+    /// writer now renders the canonical form, the version-5 sweep settled the stored data on it, and the
+    /// write-time guards refuse anything else - so the row below is seeded the way that store spells one
+    /// today, and a lowercase seed here would describe a database production can no longer produce.
+    ///
+    /// <para>What the case still holds is the half that was never about spelling: an imported Session is
+    /// seeded by raw SQL rather than by the object-relational writer, so it reaches the paging read with
+    /// no Entity Framework lookup in front of it, which is exactly how the transcript API arrives.</para>
     ///
     /// <para>Entered at <see cref="SessionRepository.GetEntriesAsync"/>, which is the paging read the
     /// transcript API calls and reaches the query with no Entity Framework lookup in front of it. The
@@ -97,14 +102,14 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await SeedImportedSessionAsync(sessionId, firstEntryId, secondEntryId);
 
-        // The precondition, pinned rather than assumed. Lowercase alone would pass vacuously on an
-        // all-digit identity, so the inequality against the writer's other spelling is what keeps this
-        // case exercising the mismatch.
+        // The precondition, pinned rather than assumed - and it is now the opposite one. It used to say
+        // the stored identity was lowercase, which was the mismatch this case existed to reproduce; the
+        // writer was converted, the sweep settled the data, and the guard refuses anything else, so what
+        // is worth pinning is that the row really does hold the canonical spelling the reads compare
+        // against.
         string stored = await StoredSessionIdAsync();
 
-        Assert.Equal(stored.ToLowerInvariant(), stored);
-
-        Assert.NotEqual(sessionId.ToString("D").ToUpperInvariant(), stored);
+        Assert.Equal(sessionId.ToString("D").ToUpperInvariant(), stored);
 
         SessionRepository repository =
             new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
@@ -149,20 +154,24 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await using DbCommand command = connection.CreateCommand();
 
+        // Uppercase, dashed, 36 characters: what the protected artifact transfer store renders today and
+        // the only spelling "Sessions"."Id" and "Entries" can now hold.
+        string session = sessionId.ToString("D").ToUpperInvariant();
+
         command.CommandText = $"""
             INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt",
                                     "TotalTokensUsed", "TotalCostUsd", "UnsummarizedEntryCount")
-            VALUES ('{sessionId:D}', NULL, 'Imported transcript', 'active',
+            VALUES ('{session}', NULL, 'Imported transcript', 'active',
                     '2026-01-01T00:00:00.0000000+00:00', '2026-01-01T00:00:00.0000000+00:00', 0, 0, 0);
 
             INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
                                    "Sequence", "IsPinned")
-            VALUES ('{firstEntryId:D}', '{sessionId:D}', 0, 'ask', '',
+            VALUES ('{firstEntryId.ToString("D").ToUpperInvariant()}', '{session}', 0, 'ask', '',
                     '2026-01-01T00:00:01.0000000+00:00', 1, 0);
 
             INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
                                    "Sequence", "IsPinned")
-            VALUES ('{secondEntryId:D}', '{sessionId:D}', 1, 'answer', 'test-model',
+            VALUES ('{secondEntryId.ToString("D").ToUpperInvariant()}', '{session}', 1, 'answer', 'test-model',
                     '2026-01-01T00:00:02.0000000+00:00', 2, 0);
             """;
 

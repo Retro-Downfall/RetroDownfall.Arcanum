@@ -1,5 +1,7 @@
 using System.Data;
 using System.Data.Common;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -65,11 +67,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await InsertEmbeddingAsync("close", [1f, 0f, 0f]);
+        await InsertEmbeddingAsync(Identity("close"), [1f, 0f, 0f]);
 
-        await InsertEmbeddingAsync("far", [0f, 1f, 0f]);
+        await InsertEmbeddingAsync(Identity("far"), [0f, 1f, 0f]);
 
-        await InsertEmbeddingAsync("closer", [0.9f, 0.1f, 0f]);
+        await InsertEmbeddingAsync(Identity("closer"), [0.9f, 0.1f, 0f]);
 
         DivinationService service = CreateService(vecAvailable: false);
 
@@ -91,9 +93,9 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         // "far" (orthogonal, similarity 0) is filtered out by the 0.5 threshold.
         Assert.Equal(2, hits.Length);
 
-        Assert.Equal("close", hits[0].Id);
+        Assert.Equal(Identity("close"), hits[0].Id);
 
-        Assert.Equal("closer", hits[1].Id);
+        Assert.Equal(Identity("closer"), hits[1].Id);
 
         Assert.True(hits[0].Similarity >= hits[1].Similarity);
 
@@ -105,7 +107,7 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await InsertEmbeddingAsync("orthogonal", [0f, 1f, 0f]);
+        await InsertEmbeddingAsync(Identity("orthogonal"), [0f, 1f, 0f]);
 
         DivinationService service = CreateService(vecAvailable: false);
 
@@ -132,11 +134,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await InsertEmbeddingAsync("a", [1f, 0f, 0f]);
+        await InsertEmbeddingAsync(Identity("a"), [1f, 0f, 0f]);
 
-        await InsertEmbeddingAsync("b", [0.99f, 0.01f, 0f]);
+        await InsertEmbeddingAsync(Identity("b"), [0.99f, 0.01f, 0f]);
 
-        await InsertEmbeddingAsync("c", [0.98f, 0.02f, 0f]);
+        await InsertEmbeddingAsync(Identity("c"), [0.98f, 0.02f, 0f]);
 
         DivinationService service = CreateService(vecAvailable: false);
 
@@ -155,9 +157,9 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         Assert.Equal(2, result.Value.Length);
 
-        Assert.Equal("a", result.Value[0].Id);
+        Assert.Equal(Identity("a"), result.Value[0].Id);
 
-        Assert.Equal("b", result.Value[1].Id);
+        Assert.Equal(Identity("b"), result.Value[1].Id);
 
     }
 
@@ -202,6 +204,8 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         Assert.Single(result.Value);
 
+        // Not an Entry identity: this case reads workspace_file_chunks, whose ChunkId is a composite
+        // key rather than a Guid and carries no identity guard.
         Assert.Equal("in-scope", result.Value[0].Id);
 
     }
@@ -231,7 +235,7 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         DivinationResult hit = Assert.Single(result.Value);
 
-        Assert.Equal("late-best-match", hit.Id);
+        Assert.Equal(Identity("late-best-match"), hit.Id);
 
     }
 
@@ -273,6 +277,22 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         return new DivinationService(_db!, availability, NullLogger<DivinationService>.Instance);
 
     }
+
+    /// <summary>
+    /// A canonical Entry identity for a readable label, so a case can still say "close" and "closer"
+    /// while the rows hold the only spelling the column accepts.
+    /// </summary>
+    /// <remarks>
+    /// These rows used to carry the labels themselves - "close", "early-00001" - which is not an identity
+    /// at all, let alone one this schema can hold: <c>entry_embeddings.EntryId</c> is copied from
+    /// <c>Entries."Id"</c> by the weaving service and is guarded at the write from version 5 onward. The
+    /// label is hashed rather than mapped through a table so a case can name one without registering it,
+    /// and the derivation is deterministic so two runs seed identical rows.
+    /// </remarks>
+    private static string Identity(string label) =>
+        new Guid(SHA256.HashData(Encoding.UTF8.GetBytes(label)).AsSpan(0, 16))
+            .ToString("D")
+            .ToUpperInvariant();
 
     private async Task InsertEmbeddingAsync(string entryId, float[] vector)
     {
@@ -344,11 +364,13 @@ public sealed class DivinationServiceTests : IAsyncLifetime
                 SELECT value + 1 FROM sequence WHERE value < 50000
             )
             INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
-            SELECT printf('early-%05d', value), @orthogonal, 3 FROM sequence;
+            SELECT printf('%08X-0000-4000-8000-000000000000', value), @orthogonal, 3 FROM sequence;
 
             INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
-            VALUES ('late-best-match', @matching, 3);
+            VALUES (@late, @matching, 3);
             """;
+
+        AddParam(cmd, "@late", Identity("late-best-match"));
 
         AddParam(cmd, "@orthogonal", EmbeddingBlobCodec.Encode([0f, 1f, 0f]));
 

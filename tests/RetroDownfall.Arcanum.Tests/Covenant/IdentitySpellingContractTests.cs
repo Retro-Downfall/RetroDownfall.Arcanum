@@ -262,7 +262,7 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
                     ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
                      "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                      "SourceKind", "SourceStatus", "EncryptionVersion")
-                VALUES ('{Guid.Parse("c8d9ea1f-2031-4b42-8c53-d64e75f86a97"):D}', '{session}', 'Bound',
+                VALUES ('{Guid.Parse("c8d9ea1f-2031-4b42-8c53-d64e75f86a97").ToString("D").ToUpperInvariant()}', '{session}', 'Bound',
                         'note', 'note.txt', 1, '{relative}', '{digest}', 'text/plain', {payload.Length},
                         'Text', '2026-01-01T00:00:00Z', 'WorkspaceFile', 'Refreshable', 0);
                 """;
@@ -397,13 +397,14 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
         // renders the same either way — see the design note on IdentitySpellingContractTests.
         Guid sessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
-        // Lowercase, and unlike sessionId above that is inert rather than deliberate: nothing in this
-        // case reads these two back, but a real archive would hold Entries.Id canonical uppercase
-        // (the object-relational writer's own form) — a future read added against this harness should
-        // not take this seed as evidence of what a genuine archive looks like.
-        string sourceEntryId = Guid.NewGuid().ToString();
+        // Canonical, which is what a real archive holds and what the version-5 guards now enforce. These
+        // two were lowercase, with a comment saying so was inert because nothing read them back; the
+        // guard reads every write, so an inert misrepresentation is no longer one. Entries."Id" is the
+        // object-relational writer's own uppercase form, and "SessionAttachments"."Id" is what an archive
+        // taken after the version-5 attachment move holds.
+        string sourceEntryId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
-        string sourceAttachmentId = Guid.NewGuid().ToString();
+        string sourceAttachmentId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
         string relative = sessionId.ToString("N") + "/note/v1/note.bin";
 

@@ -259,7 +259,7 @@ public sealed partial class DataRetentionServiceTests
             await CountNormalizedKeyAsync(
                 "SessionAttachments",
                 "Id",
-                attachment.AttachmentId.ToString()));
+                Canonical(attachment.AttachmentId)));
 
     }
 
@@ -538,7 +538,7 @@ public sealed partial class DataRetentionServiceTests
                     async () => await CountNormalizedKeyAsync(
                         "SessionAttachments",
                         "Id",
-                        attachment.AttachmentId.ToString()) > 0);
+                        Canonical(attachment.AttachmentId)) > 0);
 
             }
 

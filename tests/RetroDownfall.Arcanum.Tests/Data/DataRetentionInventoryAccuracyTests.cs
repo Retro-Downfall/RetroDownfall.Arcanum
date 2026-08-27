@@ -521,7 +521,7 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@entryId", entryId.ToString("N")),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
 
     }
@@ -619,7 +619,7 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", memoryId),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
 
     }
@@ -644,7 +644,7 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", entryId),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
 
     private async Task RecreateVectorTableAsync(

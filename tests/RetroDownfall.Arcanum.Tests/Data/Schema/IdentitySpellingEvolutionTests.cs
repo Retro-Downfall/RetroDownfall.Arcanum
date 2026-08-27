@@ -545,6 +545,13 @@ public sealed class IdentitySpellingEvolutionTests
     /// silence. That form is not hypothetical: two columns in this schema legitimately hold it, and the
     /// argument for excluding them from this step rests on the predicate being able to tell the
     /// difference.</para>
+    ///
+    /// <para><b>The tree installed here is version 4, not the head, and that is the point rather than a
+    /// convenience.</b> Version 5 installs a write-time guard on every column this sweep counts, and
+    /// those guards refuse exactly the two values below - so at head there is no way to put such a row
+    /// into the database at all, which is the guards working. A row like this can therefore only exist
+    /// on an installation that predates them, which is precisely the installation the count exists for.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task A_dash_free_or_short_identity_is_counted_although_it_is_already_uppercase()
@@ -554,7 +561,11 @@ public sealed class IdentitySpellingEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            CoreSchemaVersionFourFixture.ChainSet(),
+            1536,
+            CancellationToken.None);
 
         string dashFree = EntryIdentity.ToString("N").ToUpperInvariant();
 
@@ -571,6 +582,49 @@ public sealed class IdentitySpellingEvolutionTests
         await InsertEmbeddingAsync(connection, Canonical(SessionIdentity));
 
         Assert.Equal(2L, await CountAsync(connection, "entry_embeddings", "EntryId"));
+
+    }
+
+    /// <summary>
+    /// A row whose spelling is wrong in a way <c>upper()</c> cannot fix is reported and left alone,
+    /// rather than being rewritten into a second wrong spelling the step's own guard would then refuse.
+    /// </summary>
+    /// <remarks>
+    /// This is the interaction between the two halves of version 5, and it is the difference between an
+    /// installation that reports an anomaly and one that can never reach head again. The repair rewrites
+    /// a column as <c>upper(col)</c>; a dash-free value uppercased is still dash-free, and
+    /// <c>SessionAttachments_Id_guard_identity_update</c> refuses exactly that. Because the guards are
+    /// installed by the same step, before its sweep runs, a repair that selected on case alone would
+    /// abort this batch and every retry of it - permanently, on the strength of one hand-edited row.
+    ///
+    /// <para><c>SessionAttachments."Id"</c> is the column that can show it: it is the one identity the
+    /// step moves in place, and the move has no canonical-target <c>EXISTS</c> to decline on. A
+    /// reference column would decline for the wrong reason - its target could never be found - so the
+    /// shape clause would look load-bearing while proving nothing.</para>
+    ///
+    /// <para>The row is seeded on a version-4 installation because at head no writer and no hand edit
+    /// can produce it: the insert guard refuses it. Which is the same fact from the other side - after
+    /// this version such a row can only be inherited, never created.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_hand_edited_dash_free_identity_is_reported_rather_than_repaired_into_a_second_wrong_spelling()
+    {
+
+        await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
+
+        await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
+
+        await harness.SeedEntryAsync(EntryIdentity, SessionIdentity);
+
+        string dashFree = AttachmentIdentity.ToString("N");
+
+        await harness.SeedAttachmentWithIdentityAsync(dashFree, SessionIdentity, EntryIdentity);
+
+        await harness.UpgradeAsync();
+
+        Assert.Equal(dashFree, await harness.ScalarStringAsync("SELECT \"Id\" FROM \"SessionAttachments\""));
+
+        Assert.Equal(1L, await harness.NonCanonicalRowCountAsync());
 
     }
 
@@ -826,6 +880,13 @@ public sealed class IdentitySpellingEvolutionTests
         /// </summary>
         internal Task SeedCanonicalAttachmentAsync(Guid attachment, Guid session, Guid entry) =>
             InsertAttachmentAsync(Canonical(attachment), Canonical(session), Canonical(entry));
+
+        /// <summary>
+        /// An attachment whose identity is whatever the caller supplies, for the one case that needs a
+        /// spelling no writer has ever rendered and no head installation can accept.
+        /// </summary>
+        internal Task SeedAttachmentWithIdentityAsync(string attachmentId, Guid session, Guid entry) =>
+            InsertAttachmentAsync(attachmentId, Canonical(session), Canonical(entry));
 
         /// <summary>
         /// One consultation record, with its Session and source Entry canonical because that is what

@@ -184,10 +184,23 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// One bound attachment and the chunk the tapestry reads from it, each column in the spelling its own
+    /// writer renders.
+    /// </summary>
+    /// <remarks>
+    /// The two <c>SessionId</c> columns here deliberately disagree, and that is what production holds.
+    /// <c>SessionAttachments."SessionId"</c> is compared against <c>Sessions."Id"</c> by Covenant, backup
+    /// and retention components, so it was moved onto the canonical spelling and is guarded there.
+    /// <c>session_attachment_chunks.SessionId</c> was deliberately left in the minority form: the tapestry
+    /// reads it as its live scope-id set and those values become <c>tapestry_nodes.ScopeId</c>, so moving
+    /// it would orphan every attachment-scoped generation and rebuild the tree at provider cost. The
+    /// scope this case builds is therefore keyed by the chunk's spelling, exactly as the store keys it.
+    /// </remarks>
     private async Task SeedAttachmentChunkAsync(string sessionId, string chunkId, string content)
     {
 
-        string attachmentId = Guid.NewGuid().ToString();
+        string attachmentId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
         await ExecuteAsync(
             """
@@ -200,7 +213,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
                     '2026-01-01T00:00:00Z')
             """,
             ("@attachmentId", attachmentId),
-            ("@sessionId", sessionId));
+            ("@sessionId", sessionId.ToUpperInvariant()));
 
         await ExecuteAsync(
             """

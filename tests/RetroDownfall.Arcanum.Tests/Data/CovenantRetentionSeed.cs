@@ -30,7 +30,19 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 internal static class CovenantRetentionSeed
 {
 
-    internal const string SessionId = "9f3a1c44-0d21-4a6e-9c31-6f2b0d55e701";
+    /// <summary>
+    /// The Session the whole family hangs from, in the spelling every writer of <c>Sessions."Id"</c>
+    /// renders: uppercase, dashed, 36 characters.
+    /// </summary>
+    /// <remarks>
+    /// It was lowercase, which is a spelling no writer of that column has ever produced - the
+    /// object-relational writer, the protected artifact transfer store and the backup session importer
+    /// all render the canonical form, and the SQLite value binder uppercases a Guid unconditionally. The
+    /// version-5 identity guards refuse it outright, which is how the misrepresentation surfaced. The
+    /// remaining identities below are not of that family - a label, an artifact, a write operation and a
+    /// work item - and are left as they are.
+    /// </remarks>
+    internal const string SessionId = "9F3A1C44-0D21-4A6E-9C31-6F2B0D55E701";
 
     internal const string SummaryArtifactId = "9f3a1c44-0d21-4a6e-9c31-6f2b0d55e702";
 

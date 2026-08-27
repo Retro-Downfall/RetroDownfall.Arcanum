@@ -295,15 +295,15 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// second predicate that could drift from this one.</para>
     ///
     /// <para><b>The count and the repair do not ask the same question, and the gap is worth knowing
-    /// about.</b> Everything that moves a row - the reference repair and the identity page alike -
-    /// selects on case alone, because case is the only half of canonical an <c>upper()</c> can fix: a
-    /// dash-free or truncated value has no correct dashed form to be rewritten into. So a hand-edited
-    /// row holding a <c>ToString("N")</c> identity is uppercased at most once and then keeps being
-    /// reported outstanding by this count, forever, with the sweep still declaring itself complete
-    /// because nothing moved. That is the right behaviour - inventing dashes would be guessing at data -
-    /// but an operator reading a non-zero count that never falls needs to know it means "shape, not
-    /// case" rather than "the sweep is stuck". Inherited from the version-5 step this extends rather
-    /// than introduced with the attachment family.</para>
+    /// about.</b> Everything that moves a row - the reference repair and the identity page alike - fixes
+    /// case alone, because case is the only half of canonical an <c>upper()</c> can fix: a dash-free or
+    /// truncated value has no correct dashed form to be rewritten into. Such a row is therefore never
+    /// selected for repair at all - see <see cref="CanonicalShapeClause"/> - and keeps being reported
+    /// outstanding by this count, forever, with the sweep still declaring itself complete because
+    /// nothing moved. That is the right behaviour - inventing dashes would be guessing at data - but an
+    /// operator reading a non-zero count that never falls needs to know it means "shape, not case"
+    /// rather than "the sweep is stuck". Inherited from the version-5 step this extends rather than
+    /// introduced with the attachment family.</para>
     /// </remarks>
     internal static async Task<long> CountNonCanonicalAsync(
         SqliteConnection connection,
@@ -426,6 +426,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
                 SELECT rowid FROM "{family.Table}"
                 WHERE "{family.Column}" IS NOT NULL
                   AND "{family.Column}" <> upper("{family.Column}")
+                  AND {CanonicalShapeClause(family.Column)}
                 LIMIT $limit);
             """;
 
@@ -490,6 +491,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
                 SET "{dependent.Column}" = upper("{dependent.Column}")
                 WHERE "{dependent.Column}" IS NOT NULL
                   AND "{dependent.Column}" <> upper("{dependent.Column}")
+                  AND {CanonicalShapeClause(dependent.Column)}
                   AND EXISTS (
                       SELECT 1 FROM "{family.Table}"
                       WHERE "{family.Table}"."{family.Column}"
@@ -548,6 +550,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
                 SELECT rowid FROM "{reference.Table}"
                 WHERE "{reference.Column}" IS NOT NULL
                   AND "{reference.Column}" <> upper("{reference.Column}")
+                  AND {CanonicalShapeClause(reference.Column)}
                   AND EXISTS (
                       SELECT 1 FROM "{reference.TargetTable}"
                       WHERE "{reference.TargetTable}"."{reference.TargetColumn}"
@@ -574,6 +577,34 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         return moved;
 
     }
+
+    /// <summary>
+    /// The half of canonical an <c>upper()</c> cannot fix, written as the condition a row must already
+    /// satisfy before a repair is allowed to move it.
+    /// </summary>
+    /// <remarks>
+    /// Everything that moves a row here rewrites it as <c>upper(col)</c>, which corrects case and
+    /// nothing else. A dash-free or truncated value has no correct dashed form to be rewritten into, so
+    /// uppercasing one produces a second non-canonical spelling rather than the canonical one. Version 5
+    /// now also installs a write-time guard on every column this sweep touches, and that guard refuses
+    /// exactly the value such a rewrite would produce - so without this clause a single hand-edited row
+    /// would abort the batch, and every retry of it, leaving the tier permanently unable to reach head.
+    /// Selecting on the shape as well as the case makes <i>the sweep cannot trip its own guards</i> a
+    /// property of the SQL rather than an assumption about the data.
+    ///
+    /// <para>A row this clause declines is never repaired and never will be, and
+    /// <see cref="CountNonCanonicalAsync"/> goes on reporting it outstanding while the sweep declares
+    /// itself complete because nothing moved. That is the outcome the count's own remarks describe and
+    /// the right one: inventing dashes would be guessing at data an operator has to look at.</para>
+    /// </remarks>
+    private static string CanonicalShapeClause(string column) =>
+        $"""
+        length("{column}") = 36
+          AND substr("{column}", 9, 1) = '-'
+          AND substr("{column}", 14, 1) = '-'
+          AND substr("{column}", 19, 1) = '-'
+          AND substr("{column}", 24, 1) = '-'
+        """;
 
     private static async Task ExecuteAsync(
         SqliteConnection connection,

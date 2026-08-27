@@ -619,7 +619,7 @@ public sealed class BackupSessionImporterTests : IDisposable
         bool canonicalAttachmentVintage = false)
     {
 
-        string secret = await CreateDatabaseAsync(_sourceRoot);
+        string secret = await CreateDatabaseAsync(_sourceRoot, legacyVintage: true);
 
         string payload = Path.Combine(
             _sourceRoot,
@@ -689,7 +689,7 @@ public sealed class BackupSessionImporterTests : IDisposable
     private async Task<string> SeedObjectRelationalSourceAsync()
     {
 
-        string secret = await CreateDatabaseAsync(_sourceRoot);
+        string secret = await CreateDatabaseAsync(_sourceRoot, legacyVintage: true);
 
         string session = ArchivedSessionId.ToString("D").ToUpperInvariant();
 
@@ -811,9 +811,13 @@ public sealed class BackupSessionImporterTests : IDisposable
 
         await using SqliteCommand seed = connection.CreateCommand();
 
+        // The destination is a live installation at head, so this row is spelled the way the
+        // object-relational writer spells one - which is also the spelling the importer's collision check
+        // compares against, since it uppercases the archive's identity before it looks.
         seed.CommandText = $"""
             INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
-            VALUES ('{SessionId}', NULL, 'The Session already living here', 'active',
+            VALUES ('{SessionId.ToString("D").ToUpperInvariant()}', NULL,
+                    'The Session already living here', 'active',
                     '2026-02-02T00:00:00Z', '2026-02-02T00:00:00Z');
             """;
 
@@ -865,7 +869,21 @@ public sealed class BackupSessionImporterTests : IDisposable
 
     }
 
-    private static async Task<string> CreateDatabaseAsync(string installationRoot)
+    /// <summary>
+    /// A Grimoire installation on disk, at the head schema or at the one an older archive was taken on.
+    /// </summary>
+    /// <remarks>
+    /// <b>An archive seeded in a pre-version-5 spelling has to be created on the pre-version-5 schema,
+    /// and that is a statement about what an archive is rather than a workaround.</b> Version 5 installs
+    /// a write-time guard on every governed identity column, so on the head tree the minority spelling
+    /// cannot be written at all - which is the guard working. A real archive of that vintage carries the
+    /// version-4 tree and no such guard, so reconstructing that tree is what makes the fixture a faithful
+    /// old archive rather than a new one with the rules suspended. The destination installation is always
+    /// created at head, because that is what the importer writes into.
+    /// </remarks>
+    private static async Task<string> CreateDatabaseAsync(
+        string installationRoot,
+        bool legacyVintage = false)
     {
 
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -897,10 +915,16 @@ public sealed class BackupSessionImporterTests : IDisposable
             }.ToString(),
             CancellationToken.None);
 
-        _ = await GrimoireSchemaTestInstaller.InstallAsync(
-            connection,
-            1536,
-            CancellationToken.None);
+        _ = legacyVintage
+            ? await GrimoireSchemaTestInstaller.InstallAsync(
+                connection,
+                CoreSchemaVersionFourFixture.ChainSet(),
+                1536,
+                CancellationToken.None)
+            : await GrimoireSchemaTestInstaller.InstallAsync(
+                connection,
+                1536,
+                CancellationToken.None);
 
         return secret;
 

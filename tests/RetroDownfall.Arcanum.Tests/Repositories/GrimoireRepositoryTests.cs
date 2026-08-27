@@ -1309,7 +1309,9 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         entryIdParameter.ParameterName = "@entryId";
 
-        entryIdParameter.Value = entryId.ToString();
+        // The weaving service copies whatever spelling Entries."Id" holds, which the value binder
+        // renders uppercase; a bare ToString() seeded an embedding its own Entry's join would miss.
+        entryIdParameter.Value = entryId.ToString("D").ToUpperInvariant();
 
         command.Parameters.Add(entryIdParameter);
 
@@ -1338,7 +1340,9 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         parameter.ParameterName = "@entryId";
 
-        parameter.Value = entryId.ToString();
+        // The read has to bind the spelling the column holds, which is the canonical one the
+        // weaving service copies out of Entries."Id" and the guard now enforces.
+        parameter.Value = entryId.ToString("D").ToUpperInvariant();
 
         command.Parameters.Add(parameter);
 

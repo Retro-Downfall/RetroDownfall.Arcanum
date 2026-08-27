@@ -214,27 +214,27 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync(
             "Sessions",
             "Id",
-            sessionId.ToString()));
+            Canonical(sessionId)));
 
         Assert.Equal(0, await CountAsync(
             "Entries",
             "Id",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(0, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(0, await CountAsync(
             "SessionAttachments",
             "Id",
-            attachment.AttachmentId.ToString()));
+            Canonical(attachment.AttachmentId)));
 
         Assert.Equal(0, await CountAsync(
             "session_attachment_chunks",
             "AttachmentId",
-            attachment.AttachmentId.ToString()));
+            Canonical(attachment.AttachmentId)));
 
         Assert.Equal(0, await CountAsync(
             "session_attachment_embeddings",
@@ -244,7 +244,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync(
             "session_attachment_index_state",
             "AttachmentId",
-            attachment.AttachmentId.ToString()));
+            Canonical(attachment.AttachmentId)));
 
         Assert.False(File.Exists(attachment.AbsolutePath));
 
@@ -475,7 +475,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(1, await CountAsync(
                 "SessionAttachments",
                 "Id",
-                attachment.AttachmentId.ToString()));
+                Canonical(attachment.AttachmentId)));
 
         }
         finally
@@ -666,7 +666,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Contains(
-            "entry-embedding:" + entryId.ToString(),
+            "entry-embedding:" + Canonical(entryId),
             plan.CandidateIds);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
@@ -682,7 +682,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(1, await CountAllAsync("SessionContextPins"));
 
@@ -960,7 +960,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Contains(
-            "entry-embedding:" + entryId.ToString(),
+            "entry-embedding:" + Canonical(entryId),
             plan.CandidateIds);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
@@ -976,7 +976,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
     }
 
@@ -1037,7 +1037,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(1, await CountAsync(
             "LongRunningOperations",
@@ -2053,7 +2053,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             """,
             ("@entryId", entryId.ToString("N")),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachment.AttachmentId.ToString()),
+            ("@attachmentId", Canonical(attachment.AttachmentId)),
             ("@at", OldTimestamp));
 
         await ExecuteAsync(
@@ -3985,7 +3985,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             INSERT INTO entry_embeddings (EntryId, Embedding, Dim)
             VALUES (@entryId, @embedding, 1)
             """,
-            ("@entryId", entryId.ToString()),
+            ("@entryId", Canonical(entryId)),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
 
     /// <summary>
@@ -4118,6 +4118,18 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The spelling every writer of these identity columns renders: uppercase, dashed, 36 characters.
+    /// </summary>
+    /// <remarks>
+    /// The Session and the Entry are written by the object-relational writer, and the attachment family
+    /// by the attachment store and its index repository - all of which render the canonical form, and the
+    /// SQLite value binder uppercases a raw Guid unconditionally. A bare <c>ToString()</c> here seeded a
+    /// pairing no installation holds: an embedding that its own Entry's join would miss, and an
+    /// attachment whose Session no session-scoped sweep would find.
+    /// </remarks>
+    private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
+
     private async Task<SeededAttachment> SeedAttachmentAsync(
         Guid sessionId,
         Guid entryId)
@@ -4151,9 +4163,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 (@id, @sessionId, @entryId, NULL, 'Bound', 'evidence', 'evidence.txt', 1,
                  @relativePath, 'ATTACHMENT-HASH', 'text/plain', @byteLength, 'Text', @createdAt)
             """,
-            ("@id", attachmentId.ToString()),
-            ("@sessionId", sessionId.ToString()),
-            ("@entryId", entryId.ToString()),
+            ("@id", Canonical(attachmentId)),
+            ("@sessionId", Canonical(sessionId)),
+            ("@entryId", Canonical(entryId)),
             ("@relativePath", relativePath),
             ("@byteLength", bytes.Length),
             ("@createdAt", "2000-01-01T00:00:00.0000000+00:00"));
@@ -4169,8 +4181,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  'ATTACHMENT-HASH', 0, 0, 8, 1, 1, 'evidence', 1, @at, @at, 'Latest')
             """,
             ("@chunkId", chunkId),
+            // Not Canonical, and that is the one deliberate exception in this seed:
+            // session_attachment_chunks.SessionId is ruled to stay in the minority spelling, because the
+            // tapestry reads it as its live scope-id set and moving it would orphan every
+            // attachment-scoped generation. Its AttachmentId does move, under a foreign key to the
+            // parent this seed just wrote.
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
         await ExecuteAsync(
@@ -4188,7 +4205,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             VALUES
                 (@attachmentId, 'Indexed', 'ATTACHMENT-HASH', 1, @at)
             """,
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
         return new SeededAttachment(
@@ -4229,7 +4246,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  @at, 'WorkspaceFile')
             """,
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
         await ExecuteAsync(
@@ -4252,7 +4269,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  'evidence', 1, 'ATTACHMENT-HASH', @at, 'WorkspaceFile')
             """,
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
     }

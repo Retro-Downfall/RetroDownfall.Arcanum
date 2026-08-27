@@ -382,7 +382,7 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
                 ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
             VALUES ($id, $name, $name, $path, 0, '{}', $now, $now);
             """,
-            ("$id", campaignId.ToString()),
+            ("$id", Canonical(campaignId)),
             ("$name", campaignId.ToString("N")),
             ("$path", $"/campaigns/{campaignId:N}"),
             ("$now", Timestamp));
@@ -405,8 +405,8 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
             VALUES ($id, $campaignId, 'active', $now, $now);
             """,
-            ("$id", sessionId.ToString()),
-            ("$campaignId", campaignId?.ToString()),
+            ("$id", Canonical(sessionId)),
+            ("$campaignId", campaignId is { } bound ? Canonical(bound) : null),
             ("$now", Timestamp));
 
         // The same false-by-default scope production borrows. Nothing may state a Session's authority
@@ -419,14 +419,31 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
             VALUES ($id, $kind, $campaignId, $now);
             """,
-            ("$id", sessionId.ToString()),
+        // Canonical, because the foreign key leaves no choice: session_campaign_bindings.SessionId is
+        // declared REFERENCES "Sessions"("Id") and foreign keys are both set and verified on every
+        // connection, so this column holds whatever the parent holds - and the parent is uppercase.
+        // CoreGrimoireSchemaDataInitializer.BackfillSessionBindingsAsync writes it by copying
+        // session."Id" verbatim, which is the only writer that can succeed today. See the task report:
+        // GrimoireRepository.InsertBindingAsync and the three readers of this column all render the
+        // minority form, which is a live defect this seed now describes rather than hides.
+            ("$id", Canonical(sessionId)),
             ("$kind", bindingKindCode),
-            ("$campaignId", bindingKindCode == 2 ? campaignId?.ToString() : null),
+            ("$campaignId", bindingKindCode == 2 && campaignId is { } scoped ? Canonical(scoped) : null),
             ("$now", Timestamp));
 
         return sessionId;
 
     }
+
+    /// <summary>
+    /// The spelling every writer of these columns renders: uppercase, dashed, 36 characters.
+    /// </summary>
+    /// <remarks>
+    /// The Campaign and the Session are written by the object-relational writer in production, which the
+    /// SQLite value binder uppercases unconditionally, and <c>session_campaign_bindings</c> names both
+    /// under a foreign key. A bare <c>ToString()</c> seeded the one spelling no writer produces.
+    /// </remarks>
+    private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
 
     private DbConnection Connection => _db!.Database.GetDbConnection();
 

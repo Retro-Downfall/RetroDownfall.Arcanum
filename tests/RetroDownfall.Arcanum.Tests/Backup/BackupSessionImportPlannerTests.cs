@@ -364,7 +364,17 @@ public sealed class BackupSessionImportPlannerTests : IDisposable
             CancellationToken.None))
         {
 
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+            // The archive is created on the version-4 tree, not the head, because the attachment row
+            // below carries the spelling the attachment family held before the version-5 step moved it.
+            // Version 5 installs a write-time guard on every governed identity column, so on the head
+            // tree that row cannot be written at all - which is the guard working. A real archive of this
+            // vintage carries the version-4 tree and no such guard, so reconstructing it is what makes
+            // this a faithful old archive rather than a new one with the rules suspended.
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(
+                connection,
+                CoreSchemaVersionFourFixture.ChainSet(),
+                1536,
+                CancellationToken.None);
 
             const string emptyJson = "{}";
 

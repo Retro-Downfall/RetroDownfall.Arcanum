@@ -345,13 +345,20 @@ internal static class BackupSessionImporter
 
                 string original = sessionId.ToString();
 
-                // Canonicalised at this boundary, not at original's own definition: original also
-                // binds the reads against the source and the destination below, and those comparisons
-                // are not this task's to change. Only the value this loop can actually write is
-                // touched here.
+                // Canonicalised at this boundary, not at original's own definition: original still binds
+                // the reads against the SOURCE archive, whose vintage this installation does not control
+                // and whose spelling it must therefore tolerate.
                 string effective = original.ToUpperInvariant();
 
-                if (await RowExistsAsync(destination, "Sessions", original, cancellationToken, transaction)
+                // The destination is not a foreign archive - it is this installation, whose
+                // "Sessions"."Id" the object-relational writer has always spelled canonically and whose
+                // identity guard now refuses anything else. Binding the minority rendering here found no
+                // row for any identity carrying a hex letter, so a colliding Session was never detected,
+                // no remap happened, and CopySessionAsync below then inserted a duplicate primary key -
+                // aborting the whole import with "the destination is unchanged" rather than importing
+                // the Session under a fresh identity. Reading our own column exactly is what the guard
+                // above it makes safe.
+                if (await RowExistsAsync(destination, "Sessions", effective, cancellationToken, transaction)
                         .ConfigureAwait(false))
                 {
 

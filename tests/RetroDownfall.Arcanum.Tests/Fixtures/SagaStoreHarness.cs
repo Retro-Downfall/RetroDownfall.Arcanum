@@ -230,7 +230,7 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
             VALUES ($id, $name, $name, $path, 0, '{}', $now, $now);
             """,
-            ("$id", campaignId.ToString()),
+            ("$id", Canonical(campaignId)),
             ("$name", campaignId.ToString("N")),
             ("$path", $"/campaigns/{campaignId:N}"),
             ("$now", now)).ConfigureAwait(false);
@@ -240,8 +240,8 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
             VALUES ($id, $campaignId, 'active', $now, $now);
             """,
-            ("$id", sessionId.ToString()),
-            ("$campaignId", campaignId.ToString()),
+            ("$id", Canonical(sessionId)),
+            ("$campaignId", Canonical(campaignId)),
             ("$now", now)).ConfigureAwait(false);
 
         // The same false-by-default scope authority production borrows: nothing may state a Session's
@@ -254,8 +254,15 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
             VALUES ($id, 2, $campaignId, $now);
             """,
-            ("$id", sessionId.ToString()),
-            ("$campaignId", campaignId.ToString()),
+        // Canonical, because the foreign key leaves no choice: session_campaign_bindings.SessionId is
+        // declared REFERENCES "Sessions"("Id") and foreign keys are both set and verified on every
+        // connection, so this column holds whatever the parent holds - and the parent is uppercase.
+        // CoreGrimoireSchemaDataInitializer.BackfillSessionBindingsAsync writes it by copying
+        // session."Id" verbatim, which is the only writer that can succeed today. See the task report:
+        // GrimoireRepository.InsertBindingAsync and the three readers of this column all render the
+        // minority form, which is a live defect this seed now describes rather than hides.
+            ("$id", Canonical(sessionId)),
+            ("$campaignId", Canonical(campaignId)),
             ("$now", now)).ConfigureAwait(false);
 
         return sessionId;
@@ -284,12 +291,22 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
             VALUES ($id, NULL, 'active', $now, $now);
             """,
-            ("$id", sessionId.ToString()),
+            ("$id", Canonical(sessionId)),
             ("$now", now)).ConfigureAwait(false);
 
         return sessionId;
 
     }
+
+    /// <summary>
+    /// The spelling every writer of these columns renders: uppercase, dashed, 36 characters.
+    /// </summary>
+    /// <remarks>
+    /// The Campaign and the Session below are written by the object-relational writer in production, and
+    /// the SQLite value binder uppercases a Guid unconditionally. A bare <c>ToString()</c> here seeded
+    /// the one spelling no writer produces, which the version-5 identity guards now refuse outright.
+    /// </remarks>
+    private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
 
     private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
     {

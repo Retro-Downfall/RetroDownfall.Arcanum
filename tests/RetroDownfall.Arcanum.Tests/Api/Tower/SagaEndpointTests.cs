@@ -480,6 +480,17 @@ public sealed class SagaEndpointTests
     /// The binding goes through the same false-by-default write scope production borrows: nothing may
     /// state what a Session is bound to without it, this suite included.
     /// </remarks>
+    /// <summary>
+    /// The spelling every writer of these columns renders: uppercase, dashed, 36 characters.
+    /// </summary>
+    /// <remarks>
+    /// The Campaign and the Session are written by the object-relational writer, which the value binder
+    /// uppercases unconditionally, and <c>session_campaign_bindings</c> names both under a foreign key to
+    /// <c>"Sessions"("Id")</c> - so that table holds whatever the parent holds and has no spelling of its
+    /// own to choose.
+    /// </remarks>
+    private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
+
     private static async Task<Guid> SeedCampaignSessionAsync(
         ArcanumWebApplicationFactory factory,
         Guid campaignId)
@@ -510,7 +521,7 @@ public sealed class SagaEndpointTests
                 ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
             VALUES ($id, $name, $name, $path, 0, '{}', $now, $now);
             """,
-            ("$id", campaignId.ToString()),
+            ("$id", Canonical(campaignId)),
             ("$name", campaignId.ToString("N")),
             ("$path", $"/campaigns/{campaignId:N}"),
             ("$now", now));
@@ -521,8 +532,8 @@ public sealed class SagaEndpointTests
             INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
             VALUES ($id, $campaignId, 'active', $now, $now);
             """,
-            ("$id", sessionId.ToString()),
-            ("$campaignId", campaignId.ToString()),
+            ("$id", Canonical(sessionId)),
+            ("$campaignId", Canonical(campaignId)),
             ("$now", now));
 
         using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance
@@ -534,8 +545,8 @@ public sealed class SagaEndpointTests
             INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
             VALUES ($id, 2, $campaignId, $now);
             """,
-            ("$id", sessionId.ToString()),
-            ("$campaignId", campaignId.ToString()),
+            ("$id", Canonical(sessionId)),
+            ("$campaignId", Canonical(campaignId)),
             ("$now", now));
 
         return sessionId;
