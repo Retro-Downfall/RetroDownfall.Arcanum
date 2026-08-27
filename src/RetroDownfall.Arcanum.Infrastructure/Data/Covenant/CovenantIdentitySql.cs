@@ -3,8 +3,8 @@ using Microsoft.Data.Sqlite;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
-/// The one shape every Covenant statement compares a stored identity in, and the binding that goes
-/// with it.
+/// The one shape every statement in this namespace compares a stored identity in, and the binding
+/// that goes with it.
 /// </summary>
 /// <remarks>
 /// The tables Covenant reads and deletes from do not agree on how an identity is spelled. Saga writes
@@ -25,6 +25,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <para>Named for the comparison rather than for the purge that first needed it, because a delete is
 /// no longer the only statement that has to find a row whose spelling it did not choose: the
 /// plaintext-export taint guard counts through this shape too.</para>
+///
+/// <para>Scoped to Covenant deliberately, rather than claimed as the installation's one spelling of
+/// the predicate. The retention service writes the same comparison by hand in roughly thirty places,
+/// including over tables Covenant owns; it is the precedent this shape follows rather than a caller
+/// of it, and saying otherwise here would be a claim a reader could disprove with one grep.</para>
 /// </remarks>
 internal static class CovenantIdentitySql
 {
@@ -87,8 +92,13 @@ internal static class CovenantIdentitySql
 
         command.Transaction = transaction;
 
+        // ORDER BY, because this is the single point of truth for a foreign key and an arbitrary
+        // answer there is worse than a wrong one. "Sessions"."Id" is a BINARY-collated TEXT primary
+        // key, so two rows whose identities differ only in case are representable — this build writes
+        // no such pair, but a database that already holds one must resolve the same spelling on every
+        // call rather than whichever row the query plan reached first.
         command.CommandText = $"""
-            SELECT "Id" FROM "Sessions" WHERE {Keyed("\"Id\"", "$sessionKey")} LIMIT 1;
+            SELECT "Id" FROM "Sessions" WHERE {Keyed("\"Id\"", "$sessionKey")} ORDER BY "Id" LIMIT 1;
             """;
 
         _ = command.Parameters.AddWithValue("$sessionKey", Key(sessionId));
