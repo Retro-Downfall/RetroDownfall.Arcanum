@@ -316,6 +316,68 @@ public sealed class SagaCurationServiceTests
     }
 
     [SkippableFact]
+    public async Task Correction_is_refused_when_the_substrate_is_available_but_embedding_fails()
+    {
+
+        // Available and failing are distinct: IsAvailable being true only means EmbedOrRefuseAsync
+        // reaches the provider call, not that the call succeeds. A service that dereferenced a failed
+        // embed result unconditionally would only be caught by exercising this branch specifically.
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals);
+
+        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+            "m-1",
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
+            "the operator prefers spaces",
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.EmbeddingUnavailable, result.Error.Code);
+
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+
+    }
+
+    [SkippableFact]
+    public async Task Reinstatement_is_refused_when_the_substrate_is_available_but_embedding_fails()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.RetireAsync(
+            "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+
+        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals);
+
+        Result<SagaMemoryDetail> result = await service.ReinstateAsync(
+            "m-1",
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.EmbeddingUnavailable, result.Error.Code);
+
+        Assert.NotNull((await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+            .ConfigureAwait(false))!.Lifecycle.RetiredAtUtc);
+
+    }
+
+    [SkippableFact]
     public async Task Retiring_when_the_embedding_substrate_is_unavailable_still_succeeds()
     {
 
@@ -363,6 +425,54 @@ public sealed class SagaCurationServiceTests
 
     }
 
+    /// <summary>
+    /// <see cref="SagaCurationService.ClassifyEligibility"/> directly, against hand-built rows.
+    /// Hand-building a classifier's input is normally a smell in this suite -- a test that constructs
+    /// its own input can pass while no production caller ever produces that shape. It is safe here
+    /// because <c>ClassifyEligibility</c>'s production reachability is already proven above, through
+    /// <c>ShowAsync</c>: <see cref="A_retired_memory_reports_retired_rather_than_a_missing_embedding"/>
+    /// and <see cref="A_memory_whose_ownership_never_resolved_reports_that_rather_than_eligible"/> both
+    /// drive this same method from a real store-backed row. What those two tests cannot do is force
+    /// apart the rungs that never co-occur in a store-produced row -- every inserted memory carries an
+    /// embedding, so <c>HasEmbedding</c> is true everywhere those tests reach. This theory pins the
+    /// ordering itself, including the two combinations that would silently swap under a reordered
+    /// ladder: retired-and-unembedded, and unresolved-and-unembedded.
+    /// </summary>
+    [Theory]
+    [InlineData(SagaMemoryScopeKind.Global, true, false, SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaMemoryScopeKind.Unclassified, true, true, SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaMemoryScopeKind.Unclassified, false, false, SagaRetrievalEligibility.OwnershipUnresolved)]
+    [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, false, SagaRetrievalEligibility.OwnershipUnresolved)]
+    [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, true, SagaRetrievalEligibility.OwnershipUnresolved)]
+    [InlineData(SagaMemoryScopeKind.Global, false, false, SagaRetrievalEligibility.EmbeddingMissing)]
+    [InlineData(SagaMemoryScopeKind.Campaign, false, false, SagaRetrievalEligibility.EmbeddingMissing)]
+    [InlineData(SagaMemoryScopeKind.Global, false, true, SagaRetrievalEligibility.Eligible)]
+    [InlineData(SagaMemoryScopeKind.Campaign, false, true, SagaRetrievalEligibility.Eligible)]
+    public void ClassifyEligibility_orders_retired_then_ownership_then_embedding_then_eligible(
+        SagaMemoryScopeKind scopeKind, bool retired, bool hasEmbedding, SagaRetrievalEligibility expected)
+    {
+
+        SagaMemoryCurationRow row = BuildRow(scopeKind, retired, hasEmbedding);
+
+        Assert.Equal(expected, SagaCurationService.ClassifyEligibility(row));
+
+    }
+
+    private static SagaMemoryCurationRow BuildRow(SagaMemoryScopeKind scopeKind, bool retired, bool hasEmbedding)
+    {
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        SagaMemoryDto memory = new(
+            "m-1", "the operator prefers tabs", now, null, null, null,
+            ScopeKind: scopeKind);
+
+        SagaMemoryLifecycle lifecycle = new(retired ? now : null, PinnedAtUtc: null);
+
+        return new SagaMemoryCurationRow(memory, lifecycle, hasEmbedding);
+
+    }
+
     /// <summary>Hand-written, no Moq — matching every other double in this suite.</summary>
     private sealed class FakeWeaveService : IWeaveService
     {
@@ -392,6 +502,17 @@ public sealed class SagaCurationServiceTests
                 false,
                 Result<Embedding<float>>.Failure(new Error(
                     ErrorCodes.Embeddings.FeatureDisabled, "The embedding substrate is unavailable.")));
+
+        /// <summary>
+        /// Available (<see cref="IsAvailable"/> is <c>true</c>) but the embed call itself fails — the
+        /// second of the two distinct failure paths <c>EmbedOrRefuseAsync</c> handles, and the one
+        /// <see cref="Unavailable"/> can never reach because it short-circuits on the first check.
+        /// </summary>
+        public static FakeWeaveService AvailableButEmbedFails { get; } =
+            new(
+                true,
+                Result<Embedding<float>>.Failure(new Error(
+                    ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding provider failure.")));
 
         public bool IsAvailable { get; }
 

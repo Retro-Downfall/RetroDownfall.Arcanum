@@ -206,7 +206,7 @@ internal sealed class SagaCurationService(
     /// <see cref="SagaRetrievalEligibility.EmbeddingMissing"/> would describe the wrong problem to an
     /// operator trying to understand why a memory is not being recalled.
     /// </summary>
-    private static SagaRetrievalEligibility ClassifyEligibility(SagaMemoryCurationRow row)
+    internal static SagaRetrievalEligibility ClassifyEligibility(SagaMemoryCurationRow row)
     {
 
         if (row.Lifecycle.RetiredAtUtc is not null)
