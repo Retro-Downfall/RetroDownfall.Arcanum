@@ -228,6 +228,16 @@ internal static class BackupRestoreProtectedStatePurger
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
 
+            if (projection.ExistsConditionally
+                && !await BackupRestoreDatabaseWorker
+                    .TableExistsAsync(staged, projection.Table, cancellationToken, transaction)
+                    .ConfigureAwait(false))
+            {
+
+                continue;
+
+            }
+
             _ = await ExecuteAsync(
                 staged,
                 transaction,

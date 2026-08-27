@@ -62,8 +62,15 @@ internal static class CovenantArtifactPurgeSql
 /// <remarks>
 /// Both halves are fixed internal literals, never input. That is what makes it safe to interpolate
 /// them into the statement text SQLite gives no parameter form for.
+///
+/// <para><c>ExistsConditionally</c> marks a table no schema file installs — the sqlite-vec mirrors,
+/// which are present only where that accelerator built them. Such a target names its table unquoted
+/// so a consumer can probe <c>sqlite_master</c> for it before deleting.</para>
 /// </remarks>
-internal sealed record CovenantArtifactPurgeTarget(string Table, string KeyColumn)
+internal sealed record CovenantArtifactPurgeTarget(
+    string Table,
+    string KeyColumn,
+    bool ExistsConditionally = false)
 {
 
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
@@ -99,7 +106,10 @@ internal static class CovenantArtifactPurgePlans
     {
         [SensitiveArtifactKind.AssistantEntry] = new(
             SensitiveArtifactKind.AssistantEntry,
-            [new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId")],
+            [
+                new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
+                VectorMirror("entry_embeddings_vec", "EntryId"),
+            ],
             new CovenantArtifactPurgeTarget("\"Entries\"", "\"Id\""),
             CurrentPointerTable: null,
             RedactionSql: null),
@@ -128,6 +138,7 @@ internal static class CovenantArtifactPurgePlans
             SensitiveArtifactKind.Saga,
             [
                 new CovenantArtifactPurgeTarget("saga_memory_embeddings", "MemoryId"),
+                VectorMirror("saga_memory_embeddings_vec", "MemoryId"),
                 new CovenantArtifactPurgeTarget("saga_memory_attachment_provenance", "MemoryId"),
             ],
             new CovenantArtifactPurgeTarget("saga_memories", "Id"),
@@ -143,7 +154,7 @@ internal static class CovenantArtifactPurgePlans
 
         [SensitiveArtifactKind.Embedding] = new(
             SensitiveArtifactKind.Embedding,
-            [],
+            [VectorMirror("entry_embeddings_vec", "EntryId")],
             new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
             CurrentPointerTable: null,
             RedactionSql: null),
@@ -160,6 +171,20 @@ internal static class CovenantArtifactPurgePlans
                 + CovenantArtifactPurgeSql.Keyed("\"Id\"", "$artifactKey")
                 + ";"),
     };
+
+    /// <summary>
+    /// One embedding mirror the sqlite-vec accelerator owns, holding the same content as its BLOB
+    /// counterpart.
+    /// </summary>
+    /// <remarks>
+    /// Inside the erasure boundary because the mirror stores the embedding itself, not a pointer to
+    /// it: leaving it behind would keep Covenant-derived content reachable through the vector search
+    /// path after a purge reported success. No schema file installs these tables — the accelerator
+    /// creates them where it is present — so every consumer probes for the table before it deletes,
+    /// which is the same guard the retention pruner uses on the same two tables.
+    /// </remarks>
+    private static CovenantArtifactPurgeTarget VectorMirror(string table, string keyColumn) =>
+        new(table, keyColumn, ExistsConditionally: true);
 
     /// <summary>
     /// The plan for a kind, or the label-only plan for a kind whose storage this build does not ship.
@@ -394,6 +419,15 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
+
+            if (projection.ExistsConditionally
+                && !await TableExistsAsync(connection, transaction, projection.Table, cancellationToken)
+                    .ConfigureAwait(false))
+            {
+
+                continue;
+
+            }
 
             await ExecuteAsync(
                 connection,
@@ -676,7 +710,40 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
     }
 
+    /// <summary>
+    /// Whether a conditionally installed table is present in this database.
+    /// </summary>
+    /// <remarks>
+    /// Read inside the erasure transaction, and against <c>sqlite_master</c> rather than against a
+    /// process-wide accelerator flag. Whether the vector mirrors hold rows is a property of the
+    /// database in front of this kernel, not of whether the current process loaded an accelerator: a
+    /// build with the accelerator off would skip a mirror an earlier build filled, and content a
+    /// purge skipped is content a purge left behind. It is the same guard the retention pruner uses
+    /// over the same two tables, and it matches a vec0 virtual table, which <c>sqlite_master</c>
+    /// records as an ordinary <c>table</c>.
+    /// </remarks>
+    private static async Task<bool> TableExistsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        CancellationToken cancellationToken)
+    {
 
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT 1 FROM sqlite_master WHERE name = $table AND type IN ('table', 'view') LIMIT 1;
+            """;
+
+        _ = command.Parameters.AddWithValue("$table", table);
+
+        object? found = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return found is not null && found != DBNull.Value;
+
+    }
 
     private static Result<CovenantArtifactErasureProgress> Stalled(CovenantErasureBlocker blocker) =>
         Result<CovenantArtifactErasureProgress>.Success(
