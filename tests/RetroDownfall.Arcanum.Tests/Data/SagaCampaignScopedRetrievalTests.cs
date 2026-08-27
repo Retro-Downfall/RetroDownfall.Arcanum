@@ -419,13 +419,16 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
             VALUES ($id, $kind, $campaignId, $now);
             """,
-        // Canonical, because the foreign key leaves no choice: session_campaign_bindings.SessionId is
-        // declared REFERENCES "Sessions"("Id") and foreign keys are both set and verified on every
-        // connection, so this column holds whatever the parent holds - and the parent is uppercase.
-        // CoreGrimoireSchemaDataInitializer.BackfillSessionBindingsAsync writes it by copying
-        // session."Id" verbatim, which is the only writer that can succeed today. See the task report:
-        // GrimoireRepository.InsertBindingAsync and the three readers of this column all render the
-        // minority form, which is a live defect this seed now describes rather than hides.
+            // Canonical, because the foreign key leaves no choice: session_campaign_bindings.SessionId
+            // is declared REFERENCES "Sessions"("Id") and foreign keys are both set and verified on
+            // every connection, so this column holds whatever the parent holds - and the parent is
+            // written by the object-relational writer, which renders it uppercase.
+            //
+            // This seed once carried the opposite claim, that only the schema initializer could write
+            // this column and that the repository writer and its readers all rendered the minority
+            // form. That was true when it was written and is not any more: both were converted in the
+            // same change that added the guard below, so GrimoireRepository.InsertBindingAsync now
+            // writes exactly what this line does.
             ("$id", Canonical(sessionId)),
             ("$kind", bindingKindCode),
             // NOT canonical, and the asymmetry with the SessionId above is the point.

@@ -59,6 +59,12 @@ public sealed class IdentitySpellingGuardTests
     /// <summary>A second identity, used wherever a case has to write a row beside the seeded one.</summary>
     private const string Second = "E0000000-0000-4000-8000-0000000000F1";
 
+    /// <summary>
+    /// A third identity, canonical, used only to attempt a rewrite the schema is expected to refuse for
+    /// a reason that has nothing to do with spelling.
+    /// </summary>
+    private const string Rewrite = "E0000000-0000-4000-8000-0000000000F2";
+
     /// <summary>A second Session, so a case can write a row that references one the seed did not use.</summary>
     private const string SecondSession = "B0000000-0000-4000-8000-0000000000E2";
 
@@ -224,6 +230,13 @@ public sealed class IdentitySpellingGuardTests
 
         await harness.InsertAsync(table, column, SecondFor(table, column));
 
+        // The row is counted before its spelling is judged. A non-canonical count of zero is also what
+        // an empty table reports, so on its own it would have accepted a guard that silently swallowed
+        // the write - which is the same shape of vacuous pass this family keeps producing.
+        Assert.Equal(
+            1L,
+            await harness.RowCountAsync(table, column, SecondFor(table, column)));
+
         Assert.Equal(0L, await harness.NonCanonicalCountAsync(table, column));
 
     }
@@ -259,6 +272,61 @@ public sealed class IdentitySpellingGuardTests
             () => harness.UpdateAsync(table, column, DashFree(SecondFor(table, column))));
 
         Assert.Contains(Message(table, column), failure.Message, StringComparison.Ordinal);
+
+    }
+
+    public static TheoryData<string, string> ColumnsWhoseUpdateIsAlreadyRefused
+    {
+
+        get
+        {
+
+            TheoryData<string, string> data = [];
+
+            foreach ((string table, string column) in ColumnsWithNoUpdateGuard)
+            {
+
+                data.Add(table, column);
+
+            }
+
+            return data;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Every column this family deliberately leaves without an update guard is a column the schema
+    /// already refuses to let an update reach.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the pin the omission rests on, and without it the omission is only an assertion.</b>
+    /// <see cref="Every_governed_identity_column_carries_the_guards_its_table_can_hold"/> checks that the
+    /// trigger is absent, which is the inverse claim: it would stay green if a table quietly lost the
+    /// refusal that made the absence safe, leaving the column with no update-time protection at all from
+    /// either direction. This case drives the write instead and asserts the schema still turns it back.
+    ///
+    /// <para>The value written is canonical, so an identity guard would not have fired on it even if one
+    /// existed - what turns the write back is the table's own rule. The message is asserted <i>not</i> to
+    /// be this family's, which is the whole point: these three columns are protected by something else,
+    /// and an identity guard on them would be unreachable code in the schema.</para>
+    /// </remarks>
+    [Theory]
+    [MemberData(nameof(ColumnsWhoseUpdateIsAlreadyRefused))]
+    public async Task A_column_with_no_update_guard_is_one_the_schema_already_refuses_to_update(
+        string table,
+        string column)
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync(table);
+
+        await harness.InsertAsync(table, column, SecondFor(table, column));
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.UpdateAsync(table, column, Canonical(Rewrite)));
+
+        Assert.DoesNotContain(Message(table, column), failure.Message, StringComparison.Ordinal);
 
     }
 
@@ -506,6 +574,22 @@ public sealed class IdentitySpellingGuardTests
 
         }
 
+        /// <summary>How many rows hold exactly this value in this column.</summary>
+        internal async Task<long> RowCountAsync(string table, string column, string value)
+        {
+
+            await using SqliteCommand command = _connection.CreateCommand();
+
+            command.CommandText = $"""SELECT COUNT(*) FROM "{table}" WHERE "{column}" = $value;""";
+
+            _ = command.Parameters.AddWithValue("$value", value);
+
+            return Convert.ToInt64(
+                await command.ExecuteScalarAsync(CancellationToken.None),
+                System.Globalization.CultureInfo.InvariantCulture);
+
+        }
+
         /// <summary>Asks the sweep's own question of one column, so no case carries a second copy of it.</summary>
         internal Task<long> NonCanonicalCountAsync(string table, string column) =>
             IdentitySpellingBackfill.CountNonCanonicalAsync(
@@ -710,9 +794,12 @@ public sealed class IdentitySpellingGuardTests
         /// <c>BEFORE UPDATE OF &lt;column&gt;</c> guard exists to judge.
         /// </summary>
         /// <remarks>
-        /// No <c>WHERE</c> clause, deliberately: the seed puts exactly one row in each guarded table, so
-        /// the statement names the column and nothing else - which is also the shape that makes
-        /// <c>UPDATE OF</c> fire.
+        /// No <c>WHERE</c> clause, deliberately: the statement names the column and nothing else, which
+        /// is the shape that makes <c>UPDATE OF</c> fire at all. It rewrites every row of the table, and
+        /// for three of them - <c>"Sessions"</c>, <c>"SessionAttachments"</c> and <c>saga_memories</c> -
+        /// the seed holds two rather than one, because a foreign-key child needs a second parent to name.
+        /// That is harmless here and worth stating rather than implying: what the case asserts is that
+        /// the write is refused, and one refused row is enough to refuse the statement.
         /// </remarks>
         internal Task UpdateAsync(string table, string column, string value) =>
             ExecuteAsync(
