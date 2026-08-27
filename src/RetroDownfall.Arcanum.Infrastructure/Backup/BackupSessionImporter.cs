@@ -345,13 +345,17 @@ internal static class BackupSessionImporter
 
                 string original = sessionId.ToString();
 
-                string effective = original;
+                // Canonicalised at this boundary, not at original's own definition: original also
+                // binds the reads against the source and the destination below, and those comparisons
+                // are not this task's to change. Only the value this loop can actually write is
+                // touched here.
+                string effective = original.ToUpperInvariant();
 
                 if (await RowExistsAsync(destination, "Sessions", original, cancellationToken, transaction)
                         .ConfigureAwait(false))
                 {
 
-                    effective = Guid.NewGuid().ToString();
+                    effective = Guid.NewGuid().ToString().ToUpperInvariant();
 
                     remapped++;
 
@@ -619,7 +623,7 @@ internal static class BackupSessionImporter
                         $toolCallId, $toolName, $toolArguments, $pinned);
                 """;
 
-            _ = write.Parameters.AddWithValue("$id", Guid.NewGuid().ToString());
+            _ = write.Parameters.AddWithValue("$id", Guid.NewGuid().ToString().ToUpperInvariant());
 
             _ = write.Parameters.AddWithValue("$sessionId", effectiveSessionId);
 
@@ -718,7 +722,7 @@ internal static class BackupSessionImporter
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            string attachmentId = Guid.NewGuid().ToString();
+            string attachmentId = Guid.NewGuid().ToString().ToUpperInvariant();
 
             string relative = row.Values[6] as string ?? string.Empty;
 
@@ -755,7 +759,12 @@ internal static class BackupSessionImporter
                     if (claimed.Contains(destinationFile) || File.Exists(destinationFile))
                     {
 
-                        effectiveRelative = DisambiguateLeaf(effectiveRelative, attachmentId[..8]);
+                        // Lowercased here rather than left to attachmentId's own now-canonical
+                        // spelling: this discriminator lands in a file name, not a stored identity,
+                        // and is out of this task's scope to change.
+                        effectiveRelative = DisambiguateLeaf(
+                            effectiveRelative,
+                            attachmentId[..8].ToLowerInvariant());
 
                         destinationFile = ResolveContained(
                             destinationAttachmentsRoot,

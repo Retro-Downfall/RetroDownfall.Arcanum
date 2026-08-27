@@ -288,9 +288,10 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(2, await CountDestinationAsync("Entries"));
         Assert.Equal(1, await CountDestinationAsync("SessionAttachments"));
 
-        // The explicit mapping, not a guess and not a dropped binding.
+        // The explicit mapping, not a guess and not a dropped binding. Canonical uppercase, which is
+        // the spelling pinned rather than assumed: the store renders every identity it writes that way.
         Assert.Equal(
-            destinationCampaign.ToString("D"),
+            destinationCampaign.ToString("D").ToUpperInvariant(),
             await _destination.ScalarStringAsync(
                 "SELECT \"CampaignId\" FROM \"Sessions\";",
                 CancellationToken.None));
@@ -448,11 +449,13 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// </summary>
     /// <remarks>
     /// Lives here rather than beside the other erasure suites because the precondition is this store's
-    /// own destination write: it spells a new Entry identity lowercase, while the object-relational
-    /// writer that fills the same column everywhere else spells it uppercase. The equivalent assertion
-    /// over an object-relational Entry passes whether or not the purge compares identity correctly,
-    /// because that spelling is the one the label ledger also uses — so it would be evidence of
-    /// nothing. Nothing here seeds an Entry, an identity, or a label row: the store writes the graph,
+    /// own destination write. It once spelled a new Entry identity lowercase while the
+    /// object-relational writer that fills the same column everywhere else spelled it uppercase, which
+    /// made the equivalent assertion over an object-relational Entry evidence of nothing — it would
+    /// pass whether or not the purge compared identity correctly, because that spelling was also the
+    /// one the label ledger used. Both writers now render the same canonical spelling, so this case has
+    /// lost that distinguishing power; it is kept as the regression test for the entry this store
+    /// creates. Nothing here seeds an Entry, an identity, or a label row: the store writes the graph,
     /// the ledger writes the label, and the kernel is entered at its outermost method.
     /// </remarks>
     [Fact]
@@ -834,7 +837,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         Assert.NotNull(sessionId);
 
-        Assert.Equal(sessionId.ToLowerInvariant(), sessionId);
+        Assert.Equal(sessionId.ToUpperInvariant(), sessionId);
 
         string? entryId = await _destination.ScalarStringAsync(
             "SELECT \"Id\" FROM \"Entries\" WHERE \"Role\" = 1;",
@@ -842,7 +845,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         Assert.NotNull(entryId);
 
-        Assert.Equal(entryId.ToLowerInvariant(), entryId);
+        Assert.Equal(entryId.ToUpperInvariant(), entryId);
 
         return new ImportedArtifact(
             sessionId,

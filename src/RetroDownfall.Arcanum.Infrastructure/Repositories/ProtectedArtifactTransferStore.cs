@@ -821,7 +821,7 @@ internal sealed class ProtectedArtifactTransferStore(
         CancellationToken cancellationToken)
     {
 
-        string destinationSessionId = request.DestinationSessionId.ToString("D");
+        string destinationSessionId = request.DestinationSessionId.ToString("D").ToUpperInvariant();
 
         await using (SqliteCommand write = destination.Connection.CreateCommand())
         {
@@ -841,7 +841,7 @@ internal sealed class ProtectedArtifactTransferStore(
             _ = write.Parameters.AddWithValue(
                 "$campaign",
                 request.CampaignMapping is { } mapping
-                    ? mapping.DestinationCampaignId.ToString("D")
+                    ? mapping.DestinationCampaignId.ToString("D").ToUpperInvariant()
                     : DBNull.Value);
 
             _ = write.Parameters.AddWithValue("$title", graph.Session.Title);
@@ -871,7 +871,7 @@ internal sealed class ProtectedArtifactTransferStore(
         foreach (EntryRow entry in graph.Entries)
         {
 
-            string entryId = Guid.NewGuid().ToString("D");
+            string entryId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
             entryIds[entry.Id] = entryId;
 
@@ -941,7 +941,7 @@ internal sealed class ProtectedArtifactTransferStore(
                         $encryptionVersion, $encryptionKeyId);
                 """;
 
-            _ = write.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D"));
+            _ = write.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D").ToUpperInvariant());
 
             _ = write.Parameters.AddWithValue("$sessionId", destinationSessionId);
 

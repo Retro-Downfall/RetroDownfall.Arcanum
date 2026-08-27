@@ -758,7 +758,9 @@ public sealed class BackupSessionImporterTests : IDisposable
             SELECT "RelativePath" FROM "SessionAttachments" WHERE "SessionId" = $id;
             """;
 
-        _ = read.Parameters.AddWithValue("$id", sessionId.ToString());
+        // Uppercase to match what the importer now writes: this reads back a row the merge just
+        // committed in this test, not an archive whose spelling this suite does not control.
+        _ = read.Parameters.AddWithValue("$id", sessionId.ToString().ToUpperInvariant());
 
         return (string)(await read.ExecuteScalarAsync())!;
 
