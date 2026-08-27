@@ -259,6 +259,13 @@ public sealed class SagaCurationServiceTests
 
         Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
 
+        // The vec0 mirror is not asserted here: WeaveIndexAvailability.IsVecAvailable is permanently
+        // false on this hermetic build (SQLite is compiled with SQLITE_OMIT_LOAD_EXTENSION, per that
+        // type's own doc comment), so SagaStoreHarness never exercises CorrectAsync's
+        // "if (availability.IsVecAvailable)" branch and no test built on this harness -- including the
+        // pre-existing Correction_replaces_the_content_and_the_vector_together -- writes to
+        // saga_memory_embeddings_vec at all. There is no build reachable from this harness where the
+        // omission could be filled in.
         AnnalClaimHead claimAfter = (await harness.Annals
             .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
 
@@ -268,6 +275,63 @@ public sealed class SagaCurationServiceTests
         // writer beneath it) still appended a claim revision would satisfy every assertion above and
         // reintroduce exactly the history-noise problem AnnalsClaimWriter.AppendCorrectionAsync's own
         // no-append-on-restatement rule exists to prevent.
+        Assert.Equal(
+            revisionsBefore,
+            (await harness.Annals.GetVersionsAsync(claimAfter.ClaimId, CancellationToken.None)
+                .ConfigureAwait(false)).Count);
+
+    }
+
+    /// <summary>
+    /// The intersection the declined advisory pre-check would have narrowed (see
+    /// SagaCurationService.CorrectAsync's remarks): even when the correction text is identical to what
+    /// is already stored, a degraded embedding substrate still refuses before the store is ever reached.
+    /// EmbedOrRefuseAsync runs unconditionally ahead of every call to store.CorrectAsync, for every
+    /// correction including one that turns out to be a no-op. A pre-check that skipped the embed call
+    /// whenever the content already matched would flip this exact case from a refusal to a success --
+    /// this test fails the moment that happens, because the assertion below stops being true.
+    /// </summary>
+    [SkippableFact]
+    public async Task Correcting_to_the_stored_text_is_still_refused_when_the_substrate_cannot_embed()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        byte[] embeddingBefore = await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false);
+
+        AnnalClaimHead claimBefore = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
+        int revisionsBefore = (await harness.Annals
+            .GetVersionsAsync(claimBefore.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
+
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
+
+        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+            "m-1",
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
+            "the operator prefers tabs",
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.EmbeddingUnavailable, result.Error.Code);
+
+        // The store was never reached: its own state is exactly what it was before the call.
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
+
+        AnnalClaimHead claimAfter = (await harness.Annals
+            .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
+
         Assert.Equal(
             revisionsBefore,
             (await harness.Annals.GetVersionsAsync(claimAfter.ClaimId, CancellationToken.None)

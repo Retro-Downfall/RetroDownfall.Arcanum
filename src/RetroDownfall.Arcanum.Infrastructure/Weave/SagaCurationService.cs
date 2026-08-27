@@ -42,6 +42,15 @@ internal sealed class SagaCurationService(
 
     }
 
+    /// <remarks>
+    /// No advisory pre-check skips the embed call when <paramref name="content"/> already matches what
+    /// is stored: <see cref="EmbedOrRefuseAsync"/> always runs first, unconditionally, for every
+    /// correction including one that will turn out to be a no-op. A pre-check that read the row and
+    /// skipped embedding whenever the text already matched would make a no-op correction succeed even
+    /// while the embedding substrate is degraded -- narrowing the other refusal the operator reviewed
+    /// and kept alongside this one. Paying for one wasted embed call on a no-op request is the accepted
+    /// cost of keeping that refusal exactly as strict as it was before.
+    /// </remarks>
     public async Task<Result<SagaMemoryDetail>> CorrectAsync(
         string id, string expectedContentHash, string content, CancellationToken cancellationToken)
     {

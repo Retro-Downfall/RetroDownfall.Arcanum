@@ -511,6 +511,13 @@ public sealed class SagaCurationStoreTests
 
         Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
 
+        // The vec0 mirror is not asserted here: WeaveIndexAvailability.IsVecAvailable is permanently
+        // false on this hermetic build (SQLite is compiled with SQLITE_OMIT_LOAD_EXTENSION, per that
+        // type's own doc comment), so SagaStoreHarness never exercises CorrectAsync's
+        // "if (availability.IsVecAvailable)" branch and no test built on this harness -- including the
+        // pre-existing Correction_replaces_the_content_and_the_vector_together -- writes to
+        // saga_memory_embeddings_vec at all. There is no build reachable from this harness where the
+        // omission could be filled in.
         AnnalClaimHead claimAfter = (await harness.Annals
             .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
 
