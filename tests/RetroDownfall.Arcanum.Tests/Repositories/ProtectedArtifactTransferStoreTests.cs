@@ -107,6 +107,44 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
+    /// <summary>
+    /// An archive written the ordinary way is found, over the spelling that writer stores.
+    /// </summary>
+    /// <remarks>
+    /// The four reads that assemble the source graph bound a lowercase identity against columns the
+    /// object-relational writer fills uppercase, so a selective protected import of a genuine backup
+    /// found no Session and refused. Every other import case here is now also evidence of this,
+    /// because the fixture seeds the spelling that writer produces — but only this one says so, and
+    /// only this one fails with a message naming the cause when the fixture drifts back.
+    /// </remarks>
+    [Fact]
+    public async Task An_archive_written_by_the_object_relational_writer_is_found_and_imported()
+    {
+
+        // The precondition, pinned rather than assumed. Without it a fixture that drifted back to the
+        // lowercase spelling would leave this case passing while proving nothing.
+        string stored = await StoredSessionIdAsync(_source, _sourceSessionId);
+
+        Assert.Equal(stored.ToUpperInvariant(), stored);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
+            await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null));
+
+        Assert.True(
+            completion.Result.IsSuccess,
+            completion.Result.IsFailure ? completion.Result.Error.Message : string.Empty);
+
+        // The whole graph came across, so the reads matched rows rather than merely not throwing.
+        Assert.Equal(1, await CountDestinationAsync("Sessions"));
+
+        Assert.Equal(2, await CountDestinationAsync("Entries"));
+
+        Assert.Equal(1, await CountDestinationAsync("SessionAttachments"));
+
+        Assert.Equal(1, await CountDestinationAsync("assistant_entry_finalizations"));
+
+    }
+
     [Fact]
     public async Task A_substituted_effect_digest_is_refused_before_any_destination_write()
     {
@@ -1087,10 +1125,21 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
+    /// <summary>
+    /// Seeds the archive the way an ordinary Grimoire is written.
+    /// </summary>
+    /// <remarks>
+    /// Uppercase, because that is what the object-relational writer stores: <c>Session.Id</c> is a
+    /// <see cref="Guid"/> property mapped to TEXT, and the SQLite provider renders one as uppercase
+    /// dashed text. This fixture used to seed the lowercase form, which is the spelling the store's
+    /// own source reads bound — so every import case here agreed with those reads by accident and the
+    /// suite could not have caught them being wrong about a real archive. The onward-transfer cases
+    /// cover the other spelling, because their source is a Session this store itself wrote.
+    /// </remarks>
     private async Task SeedSourceSessionAsync()
     {
 
-        string session = _sourceSessionId.ToString("D");
+        string session = _sourceSessionId.ToString("D").ToUpperInvariant();
 
         string now = DateTimeOffset.UnixEpoch.UtcDateTime.ToString(
             "yyyy-MM-ddTHH:mm:ss.fffffffZ",
@@ -1105,7 +1154,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
              """,
             CancellationToken.None);
 
-        string assistantEntryId = Guid.Parse("aaaaaaaa-1111-4222-8333-444444444444").ToString("D");
+        string assistantEntryId =
+            Guid.Parse("aaaaaaaa-1111-4222-8333-444444444444").ToString("D").ToUpperInvariant();
 
         await _source.ExecuteAsync(
             $"""
@@ -1195,7 +1245,12 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         _ = command.Parameters.AddWithValue("$bloom", NonZeroBloom());
 
-        _ = command.Parameters.AddWithValue("$session", _sourceSessionId.ToString("D"));
+        // The label ledger is the only writer of this column and it uppercases. Seeding the Session's
+        // other spelling here would make the taint scan agree by accident, which is exactly how the
+        // guard this feeds stayed broken through a green suite.
+        _ = command.Parameters.AddWithValue(
+            "$session",
+            _sourceSessionId.ToString("D").ToUpperInvariant());
 
         _ = command.Parameters.AddWithValue("$content", Digest(0x44).Bytes);
 
