@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
@@ -47,5 +49,54 @@ internal static class CovenantIdentitySql
     /// </remarks>
     internal static string Key(string value) =>
         value.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
+
+    /// <summary>
+    /// The exact text <c>"Sessions"."Id"</c> holds for one Session, or <see langword="null"/> when no
+    /// Session row carries that identity in any spelling.
+    /// </summary>
+    /// <remarks>
+    /// For a child row that has to satisfy a foreign key rather than a predicate. Every projection
+    /// Covenant hangs off a Session — <c>session_sensitivity_state</c>,
+    /// <c>session_summary_artifacts</c>, <c>session_summary_state</c>, and their title equivalents —
+    /// declares <c>REFERENCES "Sessions" ("Id")</c>, and SQLite resolves a reference by byte equality
+    /// against the parent column under its own collation. There is no predicate to normalise there, so
+    /// <see cref="Keyed"/> cannot help: a child written in the ledger's uppercase spelling is rejected
+    /// outright for a Session the protected transfer store or the backup importer created, because
+    /// those two write <c>ToString("D")</c> while the object-relational writer writes it uppercased.
+    /// Normalising the comparison is not available to a foreign key; agreeing with the parent is.
+    ///
+    /// <para>Null rather than a manufactured spelling when nothing resolves, so a caller writing a
+    /// projection for a Session that does not exist fails its foreign key exactly as it does today
+    /// instead of having its identity quietly rewritten into some other shape.</para>
+    ///
+    /// <para><b>The cost.</b> One normalised scan of <c>"Sessions"</c> per artifact write, because the
+    /// primary-key index cannot serve a normalised column. <c>"Sessions"</c> holds one row per
+    /// conversation rather than one per message, and every caller is already inside a write
+    /// transaction that is about to insert several rows, so this is not what dominates. Deliberately
+    /// not cached: the spelling is a property of a row another writer owns, and a cached answer would
+    /// outlive a Session that was deleted and recreated.</para>
+    /// </remarks>
+    internal static async Task<string?> ResolveStoredSessionIdAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = $"""
+            SELECT "Id" FROM "Sessions" WHERE {Keyed("\"Id\"", "$sessionKey")} LIMIT 1;
+            """;
+
+        _ = command.Parameters.AddWithValue("$sessionKey", Key(sessionId));
+
+        object? stored = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return stored as string;
+
+    }
 
 }

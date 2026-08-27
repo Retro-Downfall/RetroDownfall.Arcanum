@@ -436,11 +436,10 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                 SensitiveArtifactKind.AssistantEntry,
                 entryId,
 
-                // Deliberately no Session. The ledger's Session projection is keyed by an uppercase
-                // spelling and carries a foreign key into "Sessions"."Id", which this store fills with
-                // a lowercase one, so naming the destination Session here fails the label insert on a
-                // constraint rather than exercising the erasure. The property under test is which
-                // "Entries" row the purge matches, and that comparison never reads the Session.
+                // Deliberately no Session. The property under test is which "Entries" row the purge
+                // matches, and that comparison never reads the Session, so naming one would only add a
+                // second reason this case could fail. The Session projection an imported artifact's
+                // label does reach is proven by its own case below.
                 sessionId: null,
                 campaignId: null,
                 turnId: null,
@@ -506,6 +505,57 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
+    /// <summary>
+    /// Labelling an artifact of an imported Session reaches that Session's taint projection.
+    /// </summary>
+    /// <remarks>
+    /// <c>session_sensitivity_state.SessionId</c> declares <c>REFERENCES "Sessions" ("Id")</c>, and
+    /// SQLite resolves a foreign key by byte equality rather than through a predicate. The ledger
+    /// spelled that identity uppercase while this store spells a Session it created lowercase, so
+    /// every attempt to label any artifact of an imported Session failed on the constraint and the
+    /// Session was never recorded as tainted at all. Nothing here seeds a Session or a projection row:
+    /// the store writes the Session, the ledger writes the label, and the assertion reads the
+    /// projection back through the ledger's own production reader — the one the dispatch gate consults
+    /// on every session-backed turn.
+    /// </remarks>
+    [Fact]
+    public async Task A_label_on_an_imported_sessions_artifact_reaches_that_sessions_projection()
+    {
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        Assert.True((await CommitAsync(request)).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            ImportedEntryLabel(imported),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : string.Empty);
+
+        // The projection row exists and agrees with the Session row it references, byte for byte.
+        // Asserting the text rather than only the count is what distinguishes "the foreign key
+        // resolved" from "the constraint happened not to be enforced".
+        Assert.Equal(
+            imported.StoredSessionId,
+            await _destination.ScalarStringAsync(
+                "SELECT SessionId FROM session_sensitivity_state;",
+                CancellationToken.None));
+
+        Result<SessionSensitivityProjection> projection =
+            await ledger.ReadSessionProjectionAsync(imported.SessionId, CancellationToken.None);
+
+        Assert.True(projection.IsSuccess, projection.IsFailure ? projection.Error.Message : string.Empty);
+
+        Assert.True(projection.Value.IsTainted);
+
+        Assert.Equal(1, projection.Value.TaintedArtifactCount);
+
+    }
+
     public async Task DisposeAsync()
     {
 
@@ -546,6 +596,59 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// refused as a provenance nothing could have produced.
     /// </summary>
     private static byte[] NonZeroBloom() => [.. Enumerable.Repeat((byte)0x0F, 32)];
+
+    /// <summary>The label an imported assistant Entry carries, naming the Session it belongs to.</summary>
+    /// <remarks>
+    /// Naming the Session is the point. It is what makes the label reach
+    /// <c>session_sensitivity_state</c> and what makes the plaintext-export taint scan able to find it,
+    /// and both of those cross the identity spelling this store chose for the destination Session.
+    /// </remarks>
+    private static DerivedArtifactWrite ImportedEntryLabel(ImportedArtifact imported) =>
+        new(
+            SensitiveArtifactKind.AssistantEntry,
+            imported.EntryId,
+            imported.SessionId,
+            campaignId: null,
+            turnId: null,
+            artifactRevision: 1,
+            DerivedArtifactContentDigest.ForText("answer"),
+            ContentSensitivity.CovenantDerived,
+            GenerationProvenance.CreateExact([CovenantOperationGateFixture.DatasetGeneration]));
+
+    /// <summary>
+    /// The imported Session and assistant Entry, read out of the rows the store wrote.
+    /// </summary>
+    /// <remarks>
+    /// Read back rather than remembered, and the lowercase spelling is pinned rather than assumed. If
+    /// this store ever switched to the uppercase spelling the label ledger uses, every case built on
+    /// this would keep passing while proving nothing, because that spelling is the one the defects
+    /// under test already matched.
+    /// </remarks>
+    private async Task<ImportedArtifact> ReadImportedArtifactAsync()
+    {
+
+        string? sessionId = await _destination.ScalarStringAsync(
+            "SELECT \"Id\" FROM \"Sessions\";",
+            CancellationToken.None);
+
+        Assert.NotNull(sessionId);
+
+        Assert.Equal(sessionId.ToLowerInvariant(), sessionId);
+
+        string? entryId = await _destination.ScalarStringAsync(
+            "SELECT \"Id\" FROM \"Entries\" WHERE \"Role\" = 1;",
+            CancellationToken.None);
+
+        Assert.NotNull(entryId);
+
+        Assert.Equal(entryId.ToLowerInvariant(), entryId);
+
+        return new ImportedArtifact(
+            sessionId,
+            Guid.Parse(sessionId, CultureInfo.InvariantCulture),
+            Guid.Parse(entryId, CultureInfo.InvariantCulture));
+
+    }
 
     private async Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>> CommitAsync(
         ImportedSessionTransferRequest request,
@@ -845,6 +948,16 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         _destination.ScalarLongAsync(
             "SELECT PhaseCode FROM protected_session_transfer_intents;",
             CancellationToken.None);
+
+    /// <summary>
+    /// One imported Session and one of its imported Entries, as the destination rows spell them.
+    /// </summary>
+    /// <remarks>
+    /// Carries the Session's stored text alongside the parsed identity because the two are the whole
+    /// point: a foreign key into <c>"Sessions"."Id"</c> has to agree with the text, while every caller
+    /// hands the store a <see cref="Guid"/>.
+    /// </remarks>
+    private sealed record ImportedArtifact(string StoredSessionId, Guid SessionId, Guid EntryId);
 
     /// <summary>
     /// The compound lease a caller already acquired. Only its snapshot matters here: the store must

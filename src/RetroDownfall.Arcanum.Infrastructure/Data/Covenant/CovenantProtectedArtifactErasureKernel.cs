@@ -519,6 +519,14 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     /// <c>CovenantDerived</c> whenever anything is still counted. It is never lowered to <c>None</c>
     /// by this path even when the count reaches zero, because taint that has been purged still bars a
     /// cached replay.
+    ///
+    /// <para>The two identity comparisons are deliberately different shapes.
+    /// <c>artifact_sensitivity.SessionId</c> carries no foreign key and has exactly one writer, so the
+    /// count it drives stays an exact indexed match. <c>session_sensitivity_state.SessionId</c> agrees
+    /// with <c>"Sessions"."Id"</c> so its foreign key can resolve, which means it holds whichever
+    /// spelling created the Session — so the row this statement updates has to be found by the
+    /// normalised comparison. That forfeits this table's primary-key index, on a background erasure
+    /// path, over one row per tainted Session.</para>
     /// </remarks>
     private async Task RepairSessionSensitivityAsync(
         SqliteConnection connection,
@@ -531,17 +539,19 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         command.Transaction = transaction;
 
-        command.CommandText = """
+        command.CommandText = $"""
             UPDATE session_sensitivity_state
             SET TaintedArtifactCount = (
                     SELECT COUNT(*) FROM artifact_sensitivity WHERE SessionId = $sessionId
                 ),
                 Revision = Revision + 1,
                 UpdatedAtUtc = $now
-            WHERE SessionId = $sessionId;
+            WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")};
             """;
 
         _ = command.Parameters.AddWithValue("$sessionId", Format(sessionId));
+
+        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         _ = command.Parameters.AddWithValue("$now", Iso(_time.GetUtcNow()));
 

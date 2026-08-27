@@ -315,15 +315,19 @@ internal static class BackupRestoreProtectedStatePurger
 
             command.Transaction = transaction;
 
-            command.CommandText = """
+            // The identity came out of artifact_sensitivity, which the label ledger spells uppercase,
+            // while session_sensitivity_state agrees with "Sessions"."Id" so its foreign key can
+            // resolve — lowercase for a Session an import created. The two rows describe the same
+            // Session in two spellings, so the fold has to compare them normalised.
+            command.CommandText = $"""
                 UPDATE session_sensitivity_state
                 SET TaintedArtifactCount = 0,
                     Revision = Revision + 1,
                     UpdatedAtUtc = $now
-                WHERE SessionId = $session;
+                WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")};
                 """;
 
-            _ = command.Parameters.AddWithValue("$session", sessionId);
+            _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
             _ = command.Parameters.AddWithValue("$now", Timestamp(timeProvider));
 
