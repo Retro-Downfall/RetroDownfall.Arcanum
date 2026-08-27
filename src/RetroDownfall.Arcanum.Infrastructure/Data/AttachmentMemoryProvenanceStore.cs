@@ -60,7 +60,7 @@ internal sealed class AttachmentMemoryProvenanceStore(
                         "@sessionId",
                         source.SessionId.ToString().ToUpperInvariant());
 
-                    AddParameter(command, "@attachmentId", source.AttachmentId.ToString());
+                    AddParameter(command, "@attachmentId", source.AttachmentId.ToString().ToUpperInvariant());
 
                     AddParameter(command, "@logicalKey", source.LogicalKey);
 

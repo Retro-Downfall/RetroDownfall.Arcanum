@@ -247,7 +247,7 @@ internal sealed class SessionAttachmentIndexRepository(
 
             AddParameter(historical, "@logicalKey", attachment.LogicalKey);
 
-            AddParameter(historical, "@attachmentId", attachment.Id.ToString());
+            AddParameter(historical, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             _ = await historical.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -357,7 +357,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 WHERE AttachmentId = @attachmentId
                 """;
 
-            AddParameter(current, "@attachmentId", attachment.Id.ToString());
+            AddParameter(current, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             await using DbDataReader reader = await current
                 .ExecuteReaderAsync(cancellationToken)
@@ -439,7 +439,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 "@updatedAt",
                 DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
 
-            AddParameter(checkpoint, "@attachmentId", attachment.Id.ToString());
+            AddParameter(checkpoint, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             _ = await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -509,7 +509,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 WHERE AttachmentId = @attachmentId
                 """;
 
-            AddParameter(checkpoint, "@attachmentId", attachment.Id.ToString());
+            AddParameter(checkpoint, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             await using DbDataReader reader = await checkpoint
                 .ExecuteReaderAsync(cancellationToken)
@@ -605,7 +605,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 "@updatedAt",
                 DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
 
-            AddParameter(advance, "@attachmentId", attachment.Id.ToString());
+            AddParameter(advance, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             AddParameter(advance, "@generationId", generationId);
 
@@ -661,7 +661,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 WHERE AttachmentId = @attachmentId
                 """;
 
-            AddParameter(checkpoint, "@attachmentId", attachment.Id.ToString());
+            AddParameter(checkpoint, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             await using DbDataReader reader = await checkpoint
                 .ExecuteReaderAsync(cancellationToken)
@@ -748,7 +748,7 @@ internal sealed class SessionAttachmentIndexRepository(
 
             AddParameter(publish, "@indexedAt", indexedAt.ToString("O", CultureInfo.InvariantCulture));
 
-            AddParameter(publish, "@attachmentId", attachment.Id.ToString());
+            AddParameter(publish, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             AddParameter(publish, "@generationId", generationId);
 
@@ -795,7 +795,7 @@ internal sealed class SessionAttachmentIndexRepository(
 
             AddParameter(finalize, "@generationId", generationId);
 
-            AddParameter(finalize, "@attachmentId", attachment.Id.ToString());
+            AddParameter(finalize, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             if (await finalize.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
@@ -830,7 +830,7 @@ internal sealed class SessionAttachmentIndexRepository(
             WHERE AttachmentId = @attachmentId
             """;
 
-        AddParameter(command, "@attachmentId", attachmentId.ToString());
+        AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -861,9 +861,17 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using DbCommand command = connection.CreateCommand();
 
+        // Rendered here rather than left to BuildInCommand's Guid branch. That branch is a funnel every
+        // list-valued predicate in this file shares, and uppercasing inside it would convert whatever a
+        // later caller happens to pass - including the chunk columns that hold a Session identity in the
+        // minority form on purpose. The conversion belongs to the column, so it is made where the column
+        // is known.
+        string[] canonicalAttachmentIds =
+            [.. attachmentIds.Select(static id => id.ToString().ToUpperInvariant())];
+
         command.CommandText = BuildInCommand(
             "SELECT AttachmentId, Status FROM session_attachment_index_state WHERE AttachmentId IN (",
-            attachmentIds,
+            canonicalAttachmentIds,
             command,
             ")");
 
@@ -904,7 +912,7 @@ internal sealed class SessionAttachmentIndexRepository(
             ORDER BY ChunkIndex
             """;
 
-        AddParameter(command, "@attachmentId", attachmentId.ToString());
+        AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         return await ReadChunksAsync(command, cancellationToken).ConfigureAwait(false);
 
@@ -1008,16 +1016,23 @@ internal sealed class SessionAttachmentIndexRepository(
 
         command.Transaction = transaction;
 
+        // Two parameters for one Session, because the two columns hold it in different spellings on
+        // purpose. A chunk's own SessionId is the tapestry's live scope-id set and stays as the indexer
+        // wrote it; SessionAttachments.SessionId is canonical. One parameter served both until this
+        // split, and because the two predicates are joined by OR the failure would have been a silent
+        // under-delete leaving orphaned chunks behind, not a loud one.
         command.CommandText =
             """
             DELETE FROM session_attachment_chunks
-            WHERE SessionId = @sessionId
+            WHERE SessionId = @chunkSessionId
                OR AttachmentId IN (
-                   SELECT Id FROM SessionAttachments WHERE SessionId = @sessionId
+                   SELECT Id FROM SessionAttachments WHERE SessionId = @attachmentSessionId
                )
             """;
 
-        AddParameter(command, "@sessionId", sessionId.ToString());
+        AddParameter(command, "@chunkSessionId", sessionId.ToString());
+
+        AddParameter(command, "@attachmentSessionId", sessionId.ToString().ToUpperInvariant());
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1039,7 +1054,7 @@ internal sealed class SessionAttachmentIndexRepository(
 
             select.CommandText = "SELECT ChunkId FROM session_attachment_chunks WHERE AttachmentId = @attachmentId";
 
-            AddParameter(select, "@attachmentId", attachmentId.ToString());
+            AddParameter(select, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
             await using DbDataReader reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1060,7 +1075,7 @@ internal sealed class SessionAttachmentIndexRepository(
 
         delete.CommandText = "DELETE FROM session_attachment_chunks WHERE AttachmentId = @attachmentId";
 
-        AddParameter(delete, "@attachmentId", attachmentId.ToString());
+        AddParameter(delete, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1080,7 +1095,7 @@ internal sealed class SessionAttachmentIndexRepository(
         command.CommandText =
             "SELECT PublishedGenerationId FROM session_attachment_index_state WHERE AttachmentId = @attachmentId";
 
-        AddParameter(command, "@attachmentId", attachmentId.ToString());
+        AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1111,7 +1126,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 "SELECT ChunkId FROM session_attachment_chunks WHERE AttachmentId = @attachmentId"
                 + generationPredicate;
 
-            AddParameter(select, "@attachmentId", attachmentId.ToString());
+            AddParameter(select, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
             if (preservedGenerationId is not null)
             {
@@ -1144,7 +1159,7 @@ internal sealed class SessionAttachmentIndexRepository(
             "DELETE FROM session_attachment_chunks WHERE AttachmentId = @attachmentId"
             + generationPredicate;
 
-        AddParameter(delete, "@attachmentId", attachmentId.ToString());
+        AddParameter(delete, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         if (preservedGenerationId is not null)
         {
@@ -1179,7 +1194,7 @@ internal sealed class SessionAttachmentIndexRepository(
             WHERE AttachmentId = @attachmentId
             """;
 
-        AddParameter(command, "@attachmentId", attachmentId.ToString());
+        AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1262,7 +1277,7 @@ internal sealed class SessionAttachmentIndexRepository(
 
         AddParameter(command, "@sessionId", attachment.SessionId!.Value.ToString());
 
-        AddParameter(command, "@attachmentId", attachment.Id.ToString());
+        AddParameter(command, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
         AddParameter(command, "@logicalKey", attachment.LogicalKey);
 
@@ -1423,7 +1438,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 UpdatedAt = excluded.UpdatedAt
             """;
 
-        AddParameter(command, "@attachmentId", attachmentId.ToString());
+        AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         AddParameter(command, "@status", status.ToString());
 
@@ -1462,7 +1477,7 @@ internal sealed class SessionAttachmentIndexRepository(
         command.CommandText =
             "SELECT COALESCE(MAX(Version), 0) FROM SessionAttachments WHERE SessionId = @sessionId AND LogicalKey = @logicalKey AND State = 'Bound'";
 
-        AddParameter(command, "@sessionId", sessionId.ToString());
+        AddParameter(command, "@sessionId", sessionId.ToString().ToUpperInvariant());
 
         AddParameter(command, "@logicalKey", logicalKey);
 
@@ -1483,17 +1498,21 @@ internal sealed class SessionAttachmentIndexRepository(
 
         command.Transaction = transaction;
 
+        // Split for the same reason the delete above it is, and it has to agree with that delete row for
+        // row: this is what collects the vector rows the delete is about to orphan.
         command.CommandText =
             """
             SELECT ChunkId
             FROM session_attachment_chunks
-            WHERE SessionId = @sessionId
+            WHERE SessionId = @chunkSessionId
                OR AttachmentId IN (
-                   SELECT Id FROM SessionAttachments WHERE SessionId = @sessionId
+                   SELECT Id FROM SessionAttachments WHERE SessionId = @attachmentSessionId
                )
             """;
 
-        AddParameter(command, "@sessionId", sessionId.ToString());
+        AddParameter(command, "@chunkSessionId", sessionId.ToString());
+
+        AddParameter(command, "@attachmentSessionId", sessionId.ToString().ToUpperInvariant());
 
         List<string> ids = [];
 
@@ -1605,6 +1624,10 @@ internal sealed class SessionAttachmentIndexRepository(
 
             object value = (object?)values[i] ?? throw new InvalidOperationException();
 
+            // Deliberately not canonicalised. This funnel serves every list-valued predicate in this
+            // file, and the columns they compare do not agree on one spelling: an attachment identity is
+            // canonical while a chunk's SessionId is not. A caller that binds an identity therefore
+            // renders it before it gets here, where the column it is comparing against is known.
             AddParameter(command, name, value is Guid guid ? guid.ToString() : value);
 
         }

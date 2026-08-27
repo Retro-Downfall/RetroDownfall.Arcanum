@@ -40,7 +40,7 @@ internal sealed partial class SessionAttachmentStore
             WHERE "SessionId" = @sessionId
             """;
 
-        AddParameter(cmd, "@sessionId", sessionId.ToString());
+        AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
 
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -133,9 +133,9 @@ internal sealed partial class SessionAttachmentStore
                   AND "EntryId" = @entryId
                 """;
 
-            AddParameter(cmd, "@sessionId", sessionId.ToString());
+            AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
 
-            AddParameter(cmd, "@entryId", entryId.ToString());
+            AddParameter(cmd, "@entryId", entryId.ToString().ToUpperInvariant());
 
             _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -251,13 +251,18 @@ internal sealed partial class SessionAttachmentStore
                     WHERE attachment."SessionId" = @sessionId
                       AND attachment."State" = @state
                       {{cursorClause}}
+                      -- Exact, not COLLATE NOCASE. Both sides of both comparisons now hold the one
+                      -- canonical spelling - Entries' two columns have always held it, and this table's
+                      -- EntryId does from the schema step that moved this family - so the case-insensitive
+                      -- collation this predicate used to carry bought nothing and cost the index behind
+                      -- Entries' primary key, once per attachment row, on a fork that pages them.
                       AND (
                           @includeAllBound = 1
                           OR EXISTS (
                               SELECT 1
                               FROM "Entries" AS sourceEntry
-                              WHERE sourceEntry."Id" = attachment."EntryId" COLLATE NOCASE
-                                AND sourceEntry."SessionId" = @sessionId COLLATE NOCASE
+                              WHERE sourceEntry."Id" = attachment."EntryId"
+                                AND sourceEntry."SessionId" = @sessionId
                                 AND sourceEntry."Sequence" <= @maximumSourceEntrySequence
                           )
                       )
@@ -265,7 +270,7 @@ internal sealed partial class SessionAttachmentStore
                     LIMIT @pageSize
                     """;
 
-                AddParameter(cmd, "@sessionId", sourceSessionId.ToString());
+                AddParameter(cmd, "@sessionId", sourceSessionId.ToString().ToUpperInvariant());
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -278,7 +283,7 @@ internal sealed partial class SessionAttachmentStore
                 if (afterAttachmentId is Guid cursor)
                 {
 
-                    AddParameter(cmd, "@afterAttachmentId", cursor.ToString());
+                    AddParameter(cmd, "@afterAttachmentId", cursor.ToString().ToUpperInvariant());
 
                 }
 
@@ -748,7 +753,7 @@ internal sealed partial class SessionAttachmentStore
                         WHERE "SessionId" = @sessionId
                         """;
 
-                    AddParameter(cmd, "@sessionId", sessionId.ToString());
+                    AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
 
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -934,7 +939,7 @@ internal sealed partial class SessionAttachmentStore
                       AND "RelativePath" = @relativePath
                     """;
 
-                AddParameter(cmd, "@id", row.Id.ToString());
+                AddParameter(cmd, "@id", row.Id.ToString().ToUpperInvariant());
 
                 AddParameter(cmd, "@state", row.State.ToString());
 

@@ -22,6 +22,12 @@ using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -90,6 +96,94 @@ public sealed class MemoryEndpointTests
         Assert.Contains("Workspace Index", names);
 
         Assert.All(envelope.Data.Stores, static store => Assert.False(string.IsNullOrWhiteSpace(store.Retention)));
+
+    }
+
+    /// <summary>
+    /// A Session's bound-attachment count reports the attachment the store actually wrote.
+    /// </summary>
+    /// <remarks>
+    /// This endpoint binds one Session identity across six predicates, and the columns behind them do
+    /// not agree on one spelling: <c>SessionAttachments.SessionId</c> holds the canonical form while
+    /// <c>session_attachment_chunks.SessionId</c>, <c>saga_memories.SessionId</c> and
+    /// <c>tapestry_generations.ScopeId</c> deliberately hold the minority one. A single parameter served
+    /// both groups, so once the attachment family moved this count compared a lowercase value against a
+    /// canonical column and reported zero - a store an operator can see filling up, reported empty, with
+    /// no error anywhere.
+    ///
+    /// <para>The attachment is written through <c>SessionAttachmentStore.PersistNewAsync</c> rather than
+    /// seeded, because a seeded row can only ever agree with whatever the seed chose and that is how
+    /// this defect family has stayed alive. The assertion is on the number, since the label is present
+    /// either way.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_session_status_counts_the_attachment_its_store_actually_wrote()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId;
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            Session session = new()
+            {
+
+                Id = Guid.NewGuid(),
+
+                Status = "active",
+
+                CreatedAt = DateTimeOffset.UtcNow,
+
+                UpdatedAt = DateTimeOffset.UtcNow,
+
+            };
+
+            db.Sessions.Add(session);
+
+            _ = await db.SaveChangesAsync();
+
+            sessionId = session.Id;
+
+            ISessionAttachmentStore attachments =
+                scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
+
+            _ = await attachments.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                "counted",
+                "counted.txt",
+                System.Text.Encoding.UTF8.GetBytes("counted content"),
+                "text/plain",
+                SessionAttachmentKind.Text);
+
+        }
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync(
+            "/api/memory/status/" + sessionId.ToString("D"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemoryStatusDto>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.NotNull(envelope?.Data);
+
+        MemoryStoreStatusDto attachmentStore = Assert.Single(
+            envelope.Data.Stores,
+            static store => string.Equals(store.Name, "Attachments", StringComparison.Ordinal));
+
+        Assert.Equal(1, attachmentStore.Count);
 
     }
 

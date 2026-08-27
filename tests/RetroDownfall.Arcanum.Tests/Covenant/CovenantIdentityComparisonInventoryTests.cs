@@ -53,13 +53,18 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// nothing.</description></item>
 /// </list>
 ///
-/// <para><b>One stored spelling is not the same as a safe comparison.</b> Two of the covered columns
-/// hold a single spelling today — <c>"Campaigns"."Id"</c> because one writer owns it, and
-/// <c>"SessionAttachments"."SessionId"</c> because its three writers happen to render alike — and
-/// they are covered for opposite halves of the same reason. A lowercase comparison against the first
-/// matches nothing at all; a lowercase comparison against the second matches everything, until one of
-/// those three renderings changes. Neither fact is visible from the statement doing the comparing,
-/// which is the whole point.</para>
+/// <para><b>One stored spelling is not the same as a safe comparison, and this paragraph has now been
+/// proved by events.</b> It used to say that two covered columns held a single spelling today —
+/// <c>"Campaigns"."Id"</c> because one writer owns it, and <c>"SessionAttachments"."SessionId"</c>
+/// because its three writers happened to render alike — and that a lowercase comparison against the
+/// second "matches everything, until one of those three renderings changes". <b>Those renderings
+/// changed.</b> The version-5 attachment backfill moved that column to the canonical form and converted
+/// its writers, and the two readers relying on the coincidence became silent defects on the same day:
+/// a session-scoped archive that omitted every attachment blob while reporting success, and an import
+/// that copied no attachment from any archive taken after the upgrade. Both are fixed, by opposite
+/// means — the archive reader compares exactly because it reads this installation's own database, the
+/// importer normalises because it reads a foreign one whose vintage it cannot control. Neither fact was
+/// visible from the statement doing the comparing, which was and is the whole point.</para>
 ///
 /// <para><b>What this cannot see, stated precisely, because a rule whose own limits are wrong is the
 /// failure mode it exists to prevent.</b> Four blind spots, and the first has live instances:</para>
@@ -103,26 +108,27 @@ public sealed class CovenantIdentityComparisonInventoryTests
     /// justification written for a different site.
     ///
     /// <para>An entry leaves this list by being fixed, and the test fails if a fixed site is left
-    /// registered — so the register cannot outlive what it names. Two entries left it that way when
-    /// the reads they described were normalised.</para>
+    /// registered — so the register cannot outlive what it names. Two entries left it that way when the
+    /// reads they described were normalised, and a third left when the attachment importer's read was,
+    /// which is also when this register caught a claim in its own prose going stale.</para>
     /// </remarks>
     private static readonly string[] Registered =
     [
-        // Matching, on a coincidence. A scoped backup of one Session reads its attachment rows with
-        // the lowercase rendering, and all three writers of that column render lowercase, so it finds
-        // them. Nothing structural holds that: the attachment store, the transfer store and the merge
-        // path reached the same spelling through three separate ToString() calls, and this reader can
-        // see none of them. Listed rather than fixed because a fix changes no behaviour today.
+        // Matching, and now by construction rather than by coincidence. This entry used to read
+        // "matching on a coincidence ... listed rather than fixed because a fix changes no behaviour
+        // today", and the coincidence it named was real: every writer of that column rendered lowercase
+        // and this reader happened to agree. The version-5 attachment backfill moved the column to the
+        // canonical form and converted its writers, and the coincidence became a silent defect - a
+        // session-scoped archive omitted every attachment blob while reporting no failure and no
+        // missing path. The reader is now bound canonically, so it agrees with the column deliberately.
+        // It stays registered because the comparison is still exact rather than normalised, and it
+        // should be: this reads the installation's own database, where exact is the correct shape.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupInventoryPlanner.cs | SessionAttachments.SessionId",
 
         // Not matching. The unprotected merge path copies the archived Entry graph with the lowercase
         // rendering against a column the object-relational writer fills uppercase, so it copies no
         // entries for a Session it did manage to find.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | Entries.SessionId",
-
-        // Matching, on the same coincidence as BackupInventoryPlanner above: this path's attachment
-        // read agrees with all three writers of that column by accident rather than by construction.
-        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | SessionAttachments.SessionId",
 
         // Not matching, and the one that decides the whole operation. The merge path probes
         // "Sessions"."Id" with the lowercase rendering, so it reports "The archive does not contain

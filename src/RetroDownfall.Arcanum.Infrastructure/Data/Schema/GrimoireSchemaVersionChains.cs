@@ -117,12 +117,12 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 3)] = new MemoryAnnalsBackfill(),
 
             // Version 5's DDL is a guard trigger and needs no sweep to be correct. The sweep is the half
-            // of the step that answers for the data: it counts the nine identity columns it declares
+            // of the step that answers for the data: it counts the seventeen identity columns it declares
             // before it touches one, so an installation that already holds the canonical form says so in
             // its log rather than passing silently, and repairs a reference only where the identity it
-            // names already exists. It is not finished - the SessionAttachments family lands against this
-            // same version in a later change - so version 5 must not reach an installation until it does,
-            // because a journal that records this sweep complete never runs it again.
+            // names already exists. The attachment family is the one genuine rewrite in it, and the whole
+            // family moves inside one transaction because three of its members join to the parent with no
+            // foreign key and nothing but the sweep's own declaration pairs them.
             [(GrimoireSchemaTransactionTier.Core, 5)] = new IdentitySpellingBackfill(),
 
         };

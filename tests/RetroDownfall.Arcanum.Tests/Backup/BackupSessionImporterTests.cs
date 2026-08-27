@@ -35,7 +35,16 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 public sealed class BackupSessionImporterTests : IDisposable
 {
 
-    private static readonly Guid SessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    /// <summary>
+    /// The archived Session, and it carries hex letters on purpose.
+    /// </summary>
+    /// <remarks>
+    /// This used to be all ones. An all-digit identity renders identically in upper and lower case, so
+    /// a fixture built on one cannot tell a spelling fix from a spelling regression - which is exactly
+    /// how the vintage case below was written and passed while proving nothing. The letters are what
+    /// give <see cref="SeedSourceAsync"/>'s two vintages different bytes.
+    /// </remarks>
+    private static readonly Guid SessionId = Guid.Parse("1a1b1c1d-1e1f-4a2b-8c3d-4e5f6a7b8c9d");
 
     private static readonly Guid CampaignId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
@@ -114,6 +123,16 @@ public sealed class BackupSessionImporterTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The pre-upgrade vintage: an archive whose attachment rows still hold the minority spelling.
+    /// </summary>
+    /// <remarks>
+    /// Half of a pair with
+    /// <see cref="An_archive_taken_after_the_attachment_backfill_still_imports_its_attachments"/>. Both
+    /// have to pass, because the importer is handed archives of both vintages and cannot tell them
+    /// apart; a read bound exactly to either spelling passes one of these two and silently copies no
+    /// attachment for the other, reporting Completed either way.
+    /// </remarks>
     [Fact]
     public async Task A_completed_import_keeps_its_attachment_payloads()
     {
@@ -150,6 +169,59 @@ public sealed class BackupSessionImporterTests : IDisposable
                     "note.bin")));
 
         Assert.Equal(1, await CountSessionsAsync(destinationSecret));
+
+    }
+
+    /// <summary>
+    /// The post-upgrade vintage: an archive whose attachment rows hold the canonical spelling.
+    /// </summary>
+    /// <remarks>
+    /// Any installation that has run the version-5 attachment backfill produces this archive, so it is
+    /// the shape every archive taken from here on will have. The importer read it with an exact
+    /// comparison against the minority spelling, matched no row, copied no attachment, threw nothing,
+    /// and reported <c>Completed</c> with <c>Attachments == 0</c> - the same silent shape as the
+    /// session-scoped inventory defect, on the import path. Reachable in production whenever the
+    /// Covenant flag is off, because selective-import resolution returns null and the restore service
+    /// takes this plain branch.
+    ///
+    /// <para>Its sibling above seeds the other vintage. Neither case alone is sufficient: a fix that
+    /// binds the canonical spelling exactly passes this one and breaks that one, which is why the read
+    /// is normalised rather than re-pointed.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_archive_taken_after_the_attachment_backfill_still_imports_its_attachments()
+    {
+
+        string sourceSecret = await SeedSourceAsync(canonicalAttachmentVintage: true);
+
+        string destinationSecret = await SeedDestinationAsync();
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportAsync(
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            [SessionId],
+            Path.Combine(_sourceRoot, "attachments"),
+            Path.Combine(_destinationRoot, "attachments"),
+            destinationSecret,
+            sourceSecret,
+            CancellationToken.None);
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(1, result.Sessions);
+
+        Assert.Equal(1, result.Attachments);
+
+        Assert.Equal(
+            "attachment bytes",
+            await File.ReadAllTextAsync(
+                Path.Combine(
+                    _destinationRoot,
+                    "attachments",
+                    SessionId.ToString("N"),
+                    "note",
+                    "v1",
+                    "note.bin")));
 
     }
 
@@ -525,7 +597,26 @@ public sealed class BackupSessionImporterTests : IDisposable
     // is how a permanent no-op survived here in the first place.
     private static string SourceRelativePath => SessionId.ToString("N") + "/note/v1/note.bin";
 
-    private async Task<string> SeedSourceAsync(bool campaignBound = false)
+    /// <summary>
+    /// An archive of a foreign installation, at whichever vintage the caller asks for.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="canonicalAttachmentVintage"/> is the whole point of the parameter. An archive
+    /// taken before the version-5 attachment backfill holds <c>"SessionAttachments"."SessionId"</c> in
+    /// the minority spelling; one taken after holds the canonical form. The importer has to read both,
+    /// and it cannot tell which it has been handed, so both are seeded and both are asserted.
+    ///
+    /// <para><b>What this archive is not.</b> <c>"Sessions"."Id"</c> stays in the minority spelling in
+    /// both vintages, and that is a fixture compromise rather than a real installation's shape: the
+    /// object-relational writer has always stored it uppercase. The unprotected merge path binds an
+    /// unnormalised identity against that column and would find no Session at all, which is a separate,
+    /// pre-existing gap that <see cref="SeedObjectRelationalSourceAsync"/> exists to hold. Seeding it
+    /// realistically here would make these cases fail on that gap before they could say anything about
+    /// the attachment vintage they are about.</para>
+    /// </remarks>
+    private async Task<string> SeedSourceAsync(
+        bool campaignBound = false,
+        bool canonicalAttachmentVintage = false)
     {
 
         string secret = await CreateDatabaseAsync(_sourceRoot);
@@ -549,6 +640,10 @@ public sealed class BackupSessionImporterTests : IDisposable
 
         string campaignId = campaignBound ? $"'{CampaignId}'" : "NULL";
 
+        string attachmentSessionId = canonicalAttachmentVintage
+            ? SessionId.ToString("D").ToUpperInvariant()
+            : SessionId.ToString("D");
+
         seed.CommandText = $"""
             INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
             VALUES ('{SessionId}', {campaignId}, 'Archived session', 'active',
@@ -558,7 +653,7 @@ public sealed class BackupSessionImporterTests : IDisposable
                 ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
                  "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                  "SourceKind", "SourceStatus", "EncryptionVersion")
-            VALUES ('55555555-5555-5555-5555-555555555555', '{SessionId}', 'Bound', 'note',
+            VALUES ('55555555-5555-5555-5555-555555555555', '{attachmentSessionId}', 'Bound', 'note',
                     'note.txt', 1, '{SourceRelativePath}', 'abc', 'text/plain', 16, 'Text',
                     '2026-01-01T00:00:00Z', 'WorkspaceFile', 'Refreshable', 0);
             """;
@@ -575,10 +670,14 @@ public sealed class BackupSessionImporterTests : IDisposable
     /// <remarks>
     /// <c>"Sessions"."Id"</c> and <c>"Entries"."SessionId"</c> come from a <see cref="Guid"/> property
     /// mapped to TEXT, and the object-relational writer stores one as uppercase dashed text.
-    /// <c>"SessionAttachments"."SessionId"</c> is seeded lowercase in the same archive, because that
-    /// is what all three of its writers render — this is a real installation's mixture rather than one
-    /// spelling applied everywhere, and inventing a spelling nowhere writes would be the same mistake
-    /// as seeding the one a broken read expects. Kept apart from <see cref="SeedSourceAsync"/> rather
+    /// <c>"SessionAttachments"."SessionId"</c> is seeded lowercase in the same archive. <b>That claim
+    /// used to read "because that is what all three of its writers render", and it stopped being true
+    /// when the attachment family was canonicalised and its writers converted in the version-5 schema
+    /// step.</b> The seed is kept lowercase anyway, and now means something narrower: it is the vintage
+    /// an archive taken <i>before</i> that upgrade holds. An archive taken after holds the canonical
+    /// form, which is why <see cref="SeedSourceAsync"/> now seeds both and the importer's read of that
+    /// column is normalised rather than exact. Inventing a spelling nowhere writes would still be the
+    /// same mistake as seeding the one a broken read expects. Kept apart from <see cref="SeedSourceAsync"/> rather
     /// than folded into it: the unprotected merge path binds the lowercase rendering against
     /// <c>"Sessions"."Id"</c> and would refuse this archive outright, so seeding it there would replace
     /// a suite that passes over a known gap with a suite that fails over one.

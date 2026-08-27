@@ -906,7 +906,7 @@ internal static class MemoryEndpoints
             connection,
             sessionId is null
                 ? "SELECT COUNT(*) FROM (SELECT SessionId, LogicalKey FROM SessionAttachments WHERE State = 'Bound' GROUP BY SessionId, LogicalKey)"
-                : "SELECT COUNT(DISTINCT LogicalKey) FROM SessionAttachments WHERE SessionId = @sessionId AND State = 'Bound'",
+                : "SELECT COUNT(DISTINCT LogicalKey) FROM SessionAttachments WHERE SessionId = @canonicalSessionId AND State = 'Bound'",
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
@@ -1478,6 +1478,30 @@ internal static class MemoryEndpoints
 
     }
 
+    /// <summary>
+    /// Binds one Session identity under two names, because the columns these queries compare it against
+    /// do not agree on one spelling.
+    /// </summary>
+    /// <remarks>
+    /// <c>@canonicalSessionId</c> is for a column that holds the uppercase dashed form the
+    /// object-relational writer renders. <c>@sessionId</c> is for the three that deliberately hold the
+    /// lowercase one: <c>session_attachment_chunks.SessionId</c>, which the tapestry reads as its live
+    /// scope-id set, <c>saga_memories.SessionId</c>, and <c>tapestry_generations.ScopeId</c>, which is
+    /// filled from the first. One parameter served both groups until the attachment family moved, and
+    /// the bound-attachment count then compared a lowercase value against a canonical column and
+    /// reported zero.
+    ///
+    /// <para><b>Two of the predicates below still bind the minority name against a canonical column, and
+    /// that is a defect this split does not fix.</b> <c>Entries.SessionId</c> and <c>Sessions.Id</c>
+    /// have held the canonical form since long before this work, so the entry, pinned-entry and
+    /// campaign-summary counts have reported zero for a session filter for as long as they have existed.
+    /// Correcting them changes numbers an operator reads, on a family this change is not about, so they
+    /// are left exactly as they are and handed to the pass that reverts the normalised comparisons. The
+    /// parameter they need now exists, so each is a one-name change when that pass reaches them.</para>
+    ///
+    /// <para>Both names are always added. A named parameter a statement never mentions is simply not
+    /// bound, so a query that wants only one of them is unaffected by the other's presence.</para>
+    /// </remarks>
     private static void AddSessionParameter(
         DbCommand command,
         Guid? sessionId)
@@ -1487,6 +1511,11 @@ internal static class MemoryEndpoints
         {
 
             AddParameter(command, "@sessionId", sessionId.Value.ToString("D"));
+
+            AddParameter(
+                command,
+                "@canonicalSessionId",
+                sessionId.Value.ToString("D").ToUpperInvariant());
 
         }
 

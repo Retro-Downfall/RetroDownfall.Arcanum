@@ -50,14 +50,15 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// case here depends on a read normalising anything, and neither drive method below is changed by the
 /// reader-side reversions a later task in this series makes.</para>
 ///
-/// <para><b>Why <c>SessionAttachmentStore</c> is not a third case here.</b> Every existing
-/// <c>SessionAttachments</c> row is the minority form, so converting that store's writer ahead of a
-/// data migration would make new rows disagree with old rows and with the
-/// <c>session_attachment_chunks</c>/<c>session_attachment_index_state</c> foreign-key children that
-/// key off <c>SessionAttachments.Id</c> unconditionally in whatever spelling they were given — see
-/// <c>task-1-report.md</c>. That conversion, this suite's third case, and the
-/// <c>SessionAttachmentIndexRepository</c> sites that would need to move with it all belong to the
-/// task that also carries the data migration, so the foreign key never sees a mismatch.</para>
+/// <para><b>Why <c>SessionAttachmentStore</c> is covered by a sibling suite rather than a third case
+/// here.</b> That store's conversion could not be made until the data migration that moves the rows it
+/// had already written landed beside it, because every existing <c>SessionAttachments</c> row held the
+/// minority form and its two foreign-key children key off <c>SessionAttachments.Id</c> in whatever
+/// spelling they were given. Both have now landed, and the contract they establish is asserted by
+/// <see cref="RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentIdentitySpellingTests"/> — a separate
+/// suite because it needs the object-relational context the attachment store, the index repository, the
+/// Saga store and the Lexicon service share, where this one needs a KDF-sidecar Grimoire to import
+/// into.</para>
 /// </remarks>
 public sealed class IdentitySpellingContractTests
 {

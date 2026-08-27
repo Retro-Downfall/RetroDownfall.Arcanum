@@ -29,7 +29,7 @@
 
 ## The columns being converted
 
-**Version 5 is authored across two tasks and must not be released between them.** Task 2 lands the step, its verifier and the two reference repairs; Task 2b lands the `SessionAttachments` family against the same version. A journal that records the `(Core, 5)` sweep complete is never re-run, so an installation upgraded in between keeps the minority spelling in those columns permanently.
+**Version 5 was authored across two tasks and both have landed.** Task 2 landed the step, its verifier and the two reference repairs; Task 2b landed the `SessionAttachments` family against the same version, together with the six writers that fill it. The release condition that governed the interval — a journal recording the `(Core, 5)` sweep complete is never re-run, so an installation upgraded between the two would have kept the minority spelling permanently — is discharged, and version 5 is now a complete step.
 
 **Split under measurement.** This was one table of columns to repair. Implementation established that half of them cannot be repaired at all, so it is now two tables and the reasoning is in the spec's §6.2. The correction is marked rather than applied silently, because writing a guard on a column whose data cannot be moved is a different decision from writing one on a column whose data can.
 
@@ -39,7 +39,11 @@
 |---|---|---|
 | `Sessions` | `CampaignId` | `Campaigns.Id`; no foreign key, and two live comparisons bind canonical |
 | `entry_embeddings` | `EntryId` | `Entries.Id`; no foreign key, and the weaving service's left join silently re-embeds the corpus without it |
-| `SessionAttachments` | `Id`, `SessionId`, `EntryId` | consistent today at the minority form; moves in Task 2b with its own foreign-key children and the three unenforced `AttachmentId` columns that join to it |
+| `SessionAttachments` | `Id`, `SessionId`, `EntryId` | `Id` is an identity that moves in place, because no table depending on it carries a trigger; `SessionId` and `EntryId` are ordinary references to `Sessions.Id` and `Entries.Id` |
+| `session_attachment_chunks`, `session_attachment_index_state` | `AttachmentId` | `SessionAttachments.Id`, by foreign key, so leaving either behind aborts the migration at `COMMIT` |
+| `attachment_memory_consultations`, `saga_memory_attachment_provenance`, `lexicon_fact_attachment_provenance` | `AttachmentId` | `SessionAttachments.Id`, with no foreign key at all: each decides whether an attachment-derived consultation, memory or fact can still report its source, so missing one converts a working join into one that silently returns nothing |
+
+`session_attachment_chunks.SessionId` and `RetrievalScope` are the two attachment columns that deliberately stay in the minority form. The tapestry reads `SELECT DISTINCT "SessionId" FROM session_attachment_chunks` as its live scope-id set and those values become `tapestry_nodes.ScopeId`, so moving them would orphan every attachment-scoped generation and rebuild the tree at provider cost — and nothing compares either across a component boundary, which is what this change exists to end.
 
 **Verified only: an identity a row is known by, which no statement can move.**
 

@@ -1334,7 +1334,7 @@ internal sealed class LexiconService(
 
         AddParameter(command, "@sessionId", provenance.SessionId.ToString());
 
-        AddParameter(command, "@attachmentId", provenance.AttachmentId.ToString());
+        AddParameter(command, "@attachmentId", provenance.AttachmentId.ToString().ToUpperInvariant());
 
         AddParameter(command, "@logicalKey", provenance.LogicalKey);
 

@@ -680,16 +680,28 @@ internal static class BackupSessionImporter
         await using (SqliteCommand read = source.CreateCommand())
         {
 
-            read.CommandText = """
+            // Normalised, and permanently so - this is the one comparison in this family that must not
+            // be exact. An archive is a snapshot of a foreign installation at a vintage this build does
+            // not control: one taken before the version-5 attachment backfill holds "SessionId" in the
+            // minority spelling, one taken after holds the canonical form, and the importer has to read
+            // both. Binding either spelling exactly fixes one vintage by silently breaking the other,
+            // and the failure has no sound: this read simply returns no rows, so the import copies no
+            // attachment, throws nothing, and reports Completed.
+            //
+            // The rule this is an instance of: normalise when reading foreign data whose vintage you do
+            // not control; compare exactly when reading your own. Every other comparison this change
+            // touched is the second case. The index this forfeits costs nothing on a path that is
+            // already copying files off disk.
+            read.CommandText = $"""
                 SELECT "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName", "Version",
                        "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                        "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath",
                        "SourceCanonicalPath", "SourceContentSha256", "SourceFileIdentity",
                        "SourceLastWriteAt", "SourceByteLength", "EncryptionVersion", "EncryptionKeyId"
-                FROM "SessionAttachments" WHERE "SessionId" = $id;
+                FROM "SessionAttachments" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")};
                 """;
 
-            _ = read.Parameters.AddWithValue("$id", originalSessionId);
+            _ = read.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(originalSessionId));
 
             await using SqliteDataReader reader = await read
                 .ExecuteReaderAsync(cancellationToken)
