@@ -27,9 +27,9 @@ public sealed class GrimoireSchemaVersionChainTests
     }
 
     /// <summary>
-    /// Core left version 1 for Campaign-scoped recall, again for the Annals, and again for the Saga
-    /// curation substrate; Covenant canonical left it for the curation substrate; the Covenant
-    /// accelerator has not moved.
+    /// Core left version 1 for Campaign-scoped recall, again for the Annals, again for the Saga
+    /// curation substrate, and again to settle every stored identity on one spelling; Covenant canonical
+    /// left it for the curation substrate; the Covenant accelerator has not moved.
     /// </summary>
     /// <remarks>
     /// Pinned per tier rather than inferred, because a tier's head version is what decides whether an
@@ -40,7 +40,7 @@ public sealed class GrimoireSchemaVersionChainTests
     public void The_shipped_head_versions_are_the_ones_this_binary_declares()
     {
 
-        Assert.Equal(4, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        Assert.Equal(5, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(2, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 

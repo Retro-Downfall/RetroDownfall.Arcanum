@@ -8,10 +8,16 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </summary>
 /// <remarks>
 /// Version 4 both <i>adds</i> two objects and <i>edits</i> one, so the reconstruction has to do both:
-/// the two suppression tables are removed from the shipped list, and <c>saga_memories.sql</c>'s frozen
-/// version-3 text is substituted for the shipped one. That is also what keeps it honest: the fingerprint
-/// this list produces is compared against the pin the shipped chain carries for version 4, so a
-/// reconstruction that drifted fails rather than quietly certifying the wrong pin.
+/// the two suppression tables are removed, and <c>saga_memories.sql</c>'s frozen version-3 text is
+/// substituted for the shipped one. That is also what keeps it honest: the fingerprint this list
+/// produces is compared against the pin the shipped chain carries for version 4, so a reconstruction
+/// that drifted fails rather than quietly certifying the wrong pin.
+///
+/// <para>It peels back from <see cref="CoreSchemaVersionFourFixture"/> rather than from the shipped
+/// catalog, because each fixture removes exactly one version's worth of change and rebases on the one
+/// above it. Reading the shipped catalog directly would silently absorb every object a later version
+/// adds, and the first symptom would be the version-4 pin assertion failing for a reason that has
+/// nothing to do with version 4.</para>
 ///
 /// <para>A later version step that <i>edits</i> a third Core object has to freeze that object's
 /// version-3 text here as well, or the reconstruction stops describing version 3 and the pin assertion
@@ -70,7 +76,7 @@ internal static class CoreSchemaVersionThreeFixture
         """;
 
     /// <summary>
-    /// Every Core object as version 3 declared it.
+    /// Every Core object as version 3 declared it, peeled back one version from the version-4 tree.
     /// </summary>
     /// <remarks>
     /// Line endings are normalized because the frozen text above is a C# literal and the catalog's text
@@ -79,7 +85,7 @@ internal static class CoreSchemaVersionThreeFixture
     /// </remarks>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionFourFixture.Objects
             .Where(static definition => !VersionFourObjectNames.Contains(definition.Name, StringComparer.Ordinal))
             .Select(static definition => definition.Name switch
             {

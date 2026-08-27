@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 4 and declares three steps, Covenant canonical is at version 2 and declares one,
+/// Core is at version 5 and declares four steps, Covenant canonical is at version 2 and declares one,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -30,8 +30,17 @@ internal static class GrimoireSchemaVersionChains
     /// <c>PinnedAtUtc</c>, and added <c>saga_retirement_suppressions</c> and <c>saga_suppression_key</c>:
     /// the storage an operator's curation verbs need to retire or pin a memory, and to keep a retired
     /// memory from being re-extracted. No verb writes to any of it yet.</para>
+    ///
+    /// <para>Version 5 settles every stored identity on one spelling, so a comparison can be an exact
+    /// indexed equality again. It is a verifier before it is a repair: both writers that ever rendered
+    /// the minority spelling were unreachable for their entire existence, so the sweep counts zero on an
+    /// installation that predates it and records that it did. What it repairs is a reference whose
+    /// canonical target already exists - the Campaign a Session names, the Entry an embedding belongs to
+    /// - because an identity a row is known by cannot be moved in place: the tables that depend on a
+    /// Session identity refuse the write by trigger. It also installs the first write-time guard, on
+    /// <c>assistant_entry_finalizations</c>, whose identities need no repair before it can be true.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 4;
+    internal const int CoreSchemaVersion = 5;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -75,6 +84,13 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 4)] =
                 "2CC5BB384111470F86668C4928B54306C7B8F7DCFDBBB152DF9F7C0CF162CC2F",
 
+            // Read out of the Core head tree immediately before the first identity guard trigger was
+            // added. Nothing can recompute it either. CoreSchemaVersionFourFixture reconstructs that
+            // tree by removing that object from the shipped list and a test hashes it, so a wrong value
+            // here fails there rather than against every operator's version-4 installation.
+            [(GrimoireSchemaTransactionTier.Core, 5)] =
+                "35B3B5AD90B8BE3571516C88CB0FDF4F8E61712F86F8D1134D07D92B3F980AC1",
+
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture
             // reconstructs that tree by removing those objects from the shipped list and a test hashes
@@ -99,6 +115,15 @@ internal static class GrimoireSchemaVersionChains
             // is what makes it useful: without it the Annals would hold nothing but claims written after
             // the upgrade, and every memory an installation already had would be unexplained.
             [(GrimoireSchemaTransactionTier.Core, 3)] = new MemoryAnnalsBackfill(),
+
+            // Version 5's DDL is a guard trigger and needs no sweep to be correct. The sweep is the half
+            // of the step that answers for the data: it counts the nine identity columns it declares
+            // before it touches one, so an installation that already holds the canonical form says so in
+            // its log rather than passing silently, and repairs a reference only where the identity it
+            // names already exists. It is not finished - the SessionAttachments family lands against this
+            // same version in a later change - so version 5 must not reach an installation until it does,
+            // because a journal that records this sweep complete never runs it again.
+            [(GrimoireSchemaTransactionTier.Core, 5)] = new IdentitySpellingBackfill(),
 
         };
 

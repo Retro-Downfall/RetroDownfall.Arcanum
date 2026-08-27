@@ -102,9 +102,13 @@ public sealed class SagaCurationEvolutionTests
             VALUES ('m-1', 'a memory written before curation existed', '2026-01-01T00:00:00.0000000+00:00', 1)
             """);
 
+        // Evolved to version 4 rather than to head, because this case is about what version 4 does to a
+        // version-3 row. A later version carries a sweep, so an upgrade to head stops at
+        // TransitionIncomplete until the shipped driver drains it, and asserting Healthy here would be
+        // asserting something about that later step rather than about the lifecycle columns.
         GrimoireSchemaInstallResult evolved = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CoreSchemaVersionFourFixture.ChainSet(),
             1536,
             CancellationToken.None);
 

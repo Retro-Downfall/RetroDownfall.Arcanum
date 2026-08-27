@@ -120,6 +120,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.Core, 2),
                         (GrimoireSchemaTransactionTier.Core, 3),
                         (GrimoireSchemaTransactionTier.Core, 4),
+                        (GrimoireSchemaTransactionTier.Core, 5),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 2),
                     ]);
 
@@ -158,6 +159,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "saga_retirement_suppressions",
                 "saga_retirement_suppressions_campaign_index",
                 "saga_suppression_key",
+                "assistant_entry_finalizations_guard_identity",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",

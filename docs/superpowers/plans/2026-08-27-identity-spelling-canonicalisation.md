@@ -29,16 +29,31 @@
 
 ## The columns being converted
 
-| Table | Columns | Why it moves |
-|---|---|---|
-| `Sessions` | `Id`, `CampaignId` | two writers; `CampaignId` also has two live comparisons binding canonical |
-| `Entries` | `Id`, `SessionId` | two writers |
-| `entry_embeddings` | `EntryId` | propagates from `Entries.Id`; no foreign key |
-| `SessionAttachments` | `Id`, `SessionId`, `EntryId` | consistent today at the minority form; converted so its comparisons can be exact |
-| `assistant_entry_finalizations` | `AssistantEntryId`, `SessionId` | two writers |
-| `session_sensitivity_state` | `SessionId` | propagates from `Sessions.Id` |
+**Version 5 is authored across two tasks and must not be released between them.** Task 2 lands the step, its verifier and the two reference repairs; Task 2b lands the `SessionAttachments` family against the same version. A journal that records the `(Core, 5)` sweep complete is never re-run, so an installation upgraded in between keeps the minority spelling in those columns permanently.
 
-`Campaigns.Id` and `artifact_sensitivity.SessionId` are single-writer and already canonical: guard them, but they need no repair.
+**Split under measurement.** This was one table of columns to repair. Implementation established that half of them cannot be repaired at all, so it is now two tables and the reasoning is in the spec's §6.2. The correction is marked rather than applied silently, because writing a guard on a column whose data cannot be moved is a different decision from writing one on a column whose data can.
+
+**Repaired: a reference, and only where its canonical target already exists.**
+
+| Table | Columns | Target it has to agree with |
+|---|---|---|
+| `Sessions` | `CampaignId` | `Campaigns.Id`; no foreign key, and two live comparisons bind canonical |
+| `entry_embeddings` | `EntryId` | `Entries.Id`; no foreign key, and the weaving service's left join silently re-embeds the corpus without it |
+| `SessionAttachments` | `Id`, `SessionId`, `EntryId` | consistent today at the minority form; moves in Task 2b with its own foreign-key children and the three unenforced `AttachmentId` columns that join to it |
+
+**Verified only: an identity a row is known by, which no statement can move.**
+
+| Table | Columns | Why it cannot move |
+|---|---|---|
+| `Sessions` | `Id` | eight of its fourteen foreign-key children refuse the write by trigger, four unconditionally, and `session_turn_quota_state` holds a row for every Session ever created |
+| `Entries` | `Id` | four tables reference it without a foreign key and refuse the write: `assistant_entry_finalizations` and `assistant_entry_erasure_receipts` abort every update whatever it changes, while `assistant_finalization_capacity_reservations` and `session_turn_claims` abort specifically on a changed Entry identity — so moving it would need all four to accept a change all four exist to refuse |
+| `Entries` | `SessionId` | bound by foreign key to a `Sessions.Id` that cannot move, so moving it alone would break the key |
+| `assistant_entry_finalizations` | `AssistantEntryId`, `SessionId` | the table's own guard refuses every update, whatever it changes |
+| `session_sensitivity_state` | `SessionId` | bound by foreign key to a `Sessions.Id` that cannot move |
+
+Verification is sufficient for all of them: no code path could ever have written a non-canonical Session or Entry identity, and a hand edit reaches the operator through the count rather than through an upgrade that can never complete.
+
+`Campaigns.Id` and `artifact_sensitivity.SessionId` are single-writer and already canonical in production: guard them, but they need no repair. Both are seeded in forms production never writes by a number of existing fixtures — see Task 3.
 
 ---
 
@@ -212,7 +227,11 @@ Expected: FAIL — the writes succeed.
 
 - [ ] **Step 4: Write the triggers**
 
-A `BEFORE INSERT` and a `BEFORE UPDATE` per guarded column, refusing `NEW."<col>" <> upper(NEW."<col>")`. Guard `Campaigns.Id` and `artifact_sensitivity.SessionId` too: they need no repair but they are identity columns and the guard is what stops the next writer diverging.
+A `BEFORE INSERT` and a `BEFORE UPDATE` per guarded column, refusing a value that is not uppercase **and** dashed **and** 36 characters — case alone passes a dash-free rendering silently, because a 32-character hex string is already its own uppercase image. Guard `Campaigns.Id` and `artifact_sensitivity.SessionId` too: they need no repair but they are identity columns and the guard is what stops the next writer diverging.
+
+**One trigger is already shipped.** `assistant_entry_finalizations_guard_identity` moved forward into the version-5 step, because that step needs a schema object and this is the one identity guard with no ordering relationship to the data beside it: both of the table's writers hand the provider a raw `Guid`, which the value binder renders uppercase unconditionally, and the table's own guard refuses every update so no sweep could move those columns anyway. It guards both of that table's identity columns in one `BEFORE INSERT` rather than one trigger per column; settle which shape the remaining guards take before multiplying it.
+
+**Budget for the fixture sweep, which is measured rather than estimated.** Guarding `Campaigns.Id` reds 45 tests across the Covenant, Saga, retention, backup and endpoint suites; guarding `artifact_sensitivity.SessionId` reds 12, all in one suite from one constant. Every one is a fixture seeding a spelling production never writes, so each is a correction rather than a relaxation — but correcting the seed is not always the end of it. Correcting `CovenantRetentionSeed`'s Session constant clears eleven of the twelve and leaves `CovenantRetentionTests`' `AffectedSessions` arm failing on behaviour, because that arm only ever passed while the seed's spelling made `CovenantProtectedArtifactErasureKernel.RepairSessionSensitivityAsync`'s exact-match count return nothing. It measures real behaviour for the first time once the seed is right, and deciding what it should then assert belongs to that suite. This is the sixth distinct shape this defect family has taken: a test green over a production query that matched no row at all.
 
 Add each as both a head-tree object and a version-5 transition statement, character for character.
 
