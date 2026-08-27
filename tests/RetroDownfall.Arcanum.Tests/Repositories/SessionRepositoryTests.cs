@@ -64,6 +64,134 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A Session the protected transfer store imported has a readable history.
+    /// </summary>
+    /// <remarks>
+    /// Every other case in this suite works with Sessions the object-relational writer created, whose
+    /// identities it spells uppercase — which is the spelling EF also binds when it parameterises an
+    /// interpolated query, so those cases agreed with the reads and could not have caught them.
+    /// The protected transfer store writes <c>"Sessions"."Id"</c> and <c>"Entries"."SessionId"</c>
+    /// lowercase, and it is the only production writer that does. Before this was normalised, every
+    /// read in <c>EntryTemporalQueries</c> returned nothing for such a Session: not an error, not an
+    /// empty-state, just a conversation that looked as though nothing had ever been said in it.
+    ///
+    /// <para>Entered at <see cref="SessionRepository.GetEntriesAsync"/>, which is the paging read the
+    /// transcript API calls and reaches the query with no Entity Framework lookup in front of it. The
+    /// cursor arm is exercised too, because it runs a second and a third comparison —
+    /// <c>SequenceOf</c> resolves the cursor by <c>"Entries"."Id"</c> and then
+    /// <c>LoadBeforeSequence</c> pages by <c>"SessionId"</c> — and a cursor that failed to resolve
+    /// would silently fall through to the keyset arm and still return rows.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_imported_Session_pages_its_entries_over_the_spelling_its_writer_stored()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.Parse("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d");
+
+        Guid firstEntryId = Guid.Parse("b7c8d9ea-1f20-4a31-8b42-c53d64e75f86");
+
+        Guid secondEntryId = Guid.Parse("c8d9ea1f-2031-4b42-8c53-d64e75f86a97");
+
+        await SeedImportedSessionAsync(sessionId, firstEntryId, secondEntryId);
+
+        // The precondition, pinned rather than assumed. Lowercase alone would pass vacuously on an
+        // all-digit identity, so the inequality against the writer's other spelling is what keeps this
+        // case exercising the mismatch.
+        string stored = await StoredSessionIdAsync();
+
+        Assert.Equal(stored.ToLowerInvariant(), stored);
+
+        Assert.NotEqual(sessionId.ToString("D").ToUpperInvariant(), stored);
+
+        SessionRepository repository =
+            new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+
+        List<Entry> page = await repository.GetEntriesAsync(
+            sessionId,
+            ct: CancellationToken.None);
+
+        Assert.Equal(2, page.Count);
+
+        List<Entry> beforeCursor = await repository.GetEntriesAsync(
+            sessionId,
+            beforeCreatedAt: new DateTimeOffset(2026, 1, 1, 0, 0, 2, TimeSpan.Zero),
+            beforeId: secondEntryId,
+            ct: CancellationToken.None);
+
+        Entry only = Assert.Single(beforeCursor);
+
+        Assert.Equal(firstEntryId, only.Id);
+
+    }
+
+    /// <summary>
+    /// Seeds a Session graph spelled the way the protected transfer store writes one.
+    /// </summary>
+    /// <remarks>
+    /// Raw SQL rather than Entity Framework, because Entity Framework is precisely the writer whose
+    /// spelling is not under test here. Its type mapping renders a <see cref="Guid"/> as uppercase
+    /// dashed text, so saving through it would reproduce the one spelling these reads already matched.
+    /// </remarks>
+    private async Task SeedImportedSessionAsync(Guid sessionId, Guid firstEntryId, Guid secondEntryId)
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(CancellationToken.None);
+
+        }
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = $"""
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt",
+                                    "TotalTokensUsed", "TotalCostUsd", "UnsummarizedEntryCount")
+            VALUES ('{sessionId:D}', NULL, 'Imported transcript', 'active',
+                    '2026-01-01T00:00:00.0000000+00:00', '2026-01-01T00:00:00.0000000+00:00', 0, 0, 0);
+
+            INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                   "Sequence", "IsPinned")
+            VALUES ('{firstEntryId:D}', '{sessionId:D}', 0, 'ask', '',
+                    '2026-01-01T00:00:01.0000000+00:00', 1, 0);
+
+            INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                   "Sequence", "IsPinned")
+            VALUES ('{secondEntryId:D}', '{sessionId:D}', 1, 'answer', 'test-model',
+                    '2026-01-01T00:00:02.0000000+00:00', 2, 0);
+            """;
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private async Task<string> StoredSessionIdAsync()
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(CancellationToken.None);
+
+        }
+
+        await using DbCommand read = connection.CreateCommand();
+
+        read.CommandText = """
+            SELECT "Id" FROM "Sessions" WHERE "Title" = 'Imported transcript';
+            """;
+
+        return (string)(await read.ExecuteScalarAsync(CancellationToken.None))!;
+
+    }
+
     [SkippableFact]
     public async Task CreateAsync_persists_and_returns_active_session()
     {

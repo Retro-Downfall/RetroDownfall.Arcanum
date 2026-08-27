@@ -73,6 +73,49 @@ public sealed class ProtectedAssistantArtifactReaderTests
 
     }
 
+    /// <summary>
+    /// An artifact belonging to an imported Session reads back, in the spelling that import wrote.
+    /// </summary>
+    /// <remarks>
+    /// Every other case here seeds the object-relational writer's uppercase spelling, which is the one
+    /// this reader used to bind explicitly — so the suite agreed with the binding and could not have
+    /// caught it being wrong about the other writer. The protected transfer store writes
+    /// <c>"Entries"."Id"</c> lowercase, and it is the only production writer that does, so a protected
+    /// read of an imported artifact reported "no assistant artifact with that identity" for a row that
+    /// was plainly there.
+    ///
+    /// <para>Asserted on the content rather than on success alone: a read that resolved the row but
+    /// returned someone else's bytes would satisfy a bare success check.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_artifact_written_by_the_transfer_store_reads_back_over_its_own_spelling()
+    {
+
+        await using ReaderFixture fixture =
+            await ReaderFixture.CreateAsync(asObjectRelationalWriter: false);
+
+        Guid entryId = await fixture.SeedEntryAsync("the imported answer");
+
+        // The precondition, pinned rather than assumed. Without it a fixture that drifted back to the
+        // uppercase spelling would leave this case passing while proving nothing.
+        string stored = await fixture.StoredEntryIdAsync(entryId);
+
+        Assert.Equal(stored.ToLowerInvariant(), stored);
+
+        Assert.NotEqual(entryId.ToString("D").ToUpperInvariant(), stored);
+
+        Result<ProtectedAssistantArtifact> read = await fixture.Reader.ReadAsync(
+            Session,
+            entryId,
+            fixture.Lease,
+            CancellationToken.None);
+
+        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : string.Empty);
+
+        Assert.Equal("the imported answer", read.Value.Content);
+
+    }
+
     [Fact]
     public async Task A_label_that_describes_different_bytes_fails_the_read_closed()
     {
@@ -172,10 +215,14 @@ public sealed class ProtectedAssistantArtifactReaderTests
 
         private readonly ArtifactSensitivityLedger _ledger;
 
-        private ReaderFixture(CovenantSchemaScratchDatabase database)
+        private readonly bool _asObjectRelationalWriter;
+
+        private ReaderFixture(CovenantSchemaScratchDatabase database, bool asObjectRelationalWriter)
         {
 
             _database = database;
+
+            _asObjectRelationalWriter = asObjectRelationalWriter;
 
             FixedCovenantConnectionSource connections = new(database.Connection);
 
@@ -191,7 +238,22 @@ public sealed class ProtectedAssistantArtifactReaderTests
 
         internal CountingLease Lease { get; }
 
-        internal static async Task<ReaderFixture> CreateAsync()
+        /// <summary>
+        /// How this fixture spells the identities it stores.
+        /// </summary>
+        /// <remarks>
+        /// Uppercase is the object-relational writer's spelling and is what an installation writes for
+        /// a Session it created itself. Lowercase is what the protected transfer store writes, and it
+        /// is not a spelling this suite invented: <c>ProtectedArtifactTransferStoreTests</c> reads the
+        /// imported rows back and pins it. Both are real, which is the entire point — a fixture that
+        /// offered only one would agree with whichever spelling the reader happened to bind.
+        /// </remarks>
+        internal static string Stored(Guid value, bool asObjectRelationalWriter) =>
+            asObjectRelationalWriter
+                ? value.ToString("D").ToUpperInvariant()
+                : value.ToString("D");
+
+        internal static async Task<ReaderFixture> CreateAsync(bool asObjectRelationalWriter = true)
         {
 
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase
@@ -211,13 +273,15 @@ public sealed class ProtectedAssistantArtifactReaderTests
                     VALUES ($sessionId, 'protected', $now, $now);
                     """;
 
-                _ = seed.Parameters.AddWithValue("$sessionId", Session.ToString().ToUpperInvariant());
+                _ = seed.Parameters.AddWithValue(
+                    "$sessionId",
+                    Stored(Session, asObjectRelationalWriter));
 
                 _ = seed.Parameters.AddWithValue("$now", "2026-08-16T00:00:00.0000000+00:00");
 
                 _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
 
-                return new ReaderFixture(database);
+                return new ReaderFixture(database, asObjectRelationalWriter);
 
             }
             catch
@@ -244,9 +308,11 @@ public sealed class ProtectedAssistantArtifactReaderTests
                 VALUES ($id, $sessionId, 'assistant', $content, 'test-model', $now, 1);
                 """;
 
-            _ = command.Parameters.AddWithValue("$id", entryId.ToString().ToUpperInvariant());
+            _ = command.Parameters.AddWithValue("$id", Stored(entryId, _asObjectRelationalWriter));
 
-            _ = command.Parameters.AddWithValue("$sessionId", Session.ToString().ToUpperInvariant());
+            _ = command.Parameters.AddWithValue(
+                "$sessionId",
+                Stored(Session, _asObjectRelationalWriter));
 
             _ = command.Parameters.AddWithValue("$content", content);
 
@@ -255,6 +321,26 @@ public sealed class ProtectedAssistantArtifactReaderTests
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
 
             return entryId;
+
+        }
+
+        /// <summary>The exact text <c>"Entries"."Id"</c> holds, read back out of the row.</summary>
+        internal async Task<string> StoredEntryIdAsync(Guid entryId)
+        {
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                SELECT "Id" FROM "Entries" WHERE "Content" IS NOT NULL AND "Sequence" = 1;
+                """;
+
+            object? stored = await command.ExecuteScalarAsync(CancellationToken.None);
+
+            Assert.NotNull(stored);
+
+            Assert.Equal(entryId, Guid.Parse((string)stored!));
+
+            return (string)stored!;
 
         }
 

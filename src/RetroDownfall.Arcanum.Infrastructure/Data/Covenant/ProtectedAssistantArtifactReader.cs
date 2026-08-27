@@ -129,6 +129,22 @@ internal sealed class ProtectedAssistantArtifactReader(ICovenantConnectionSource
 
     }
 
+    /// <summary>
+    /// Reads the artifact over the identity its writer stored, whichever writer that was.
+    /// </summary>
+    /// <remarks>
+    /// This bound <c>ToUpperInvariant()</c>, which is not an oversight — it is the object-relational
+    /// writer's spelling, chosen deliberately, and correct for every Entry that writer created. It is
+    /// wrong for the other one. The protected transfer store is the single production writer that puts
+    /// a lowercase identity into <c>"Entries"."Id"</c>, so a protected read of an artifact belonging to
+    /// an imported Session found no row and reported the artifact absent rather than protected. Half a
+    /// rule is how this defect family survives: a call site that pins one writer's spelling is right
+    /// until the day a second writer exists, and then it is silently wrong in exactly one direction.
+    ///
+    /// <para><b>The cost.</b> A normalised column cannot use the <c>"Entries"</c> primary-key index,
+    /// so this scans where it used to seek. It runs once per protected artifact read, inside a
+    /// deferred snapshot the caller has already opened for two reads, and it returns a single row.</para>
+    /// </remarks>
     private static async Task<(string? Content, Guid? SessionId)> ReadEntryAsync(
         SqliteConnection connection,
         SqliteTransaction snapshot,
@@ -140,11 +156,12 @@ internal sealed class ProtectedAssistantArtifactReader(ICovenantConnectionSource
 
         command.Transaction = snapshot;
 
-        command.CommandText = """
-            SELECT "Content", "SessionId" FROM "Entries" WHERE "Id" = $entryId;
+        command.CommandText = $"""
+            SELECT "Content", "SessionId" FROM "Entries"
+            WHERE {CovenantIdentitySql.Keyed("\"Id\"", "$entryKey")};
             """;
 
-        _ = command.Parameters.AddWithValue("$entryId", assistantEntryId.ToString().ToUpperInvariant());
+        _ = command.Parameters.AddWithValue("$entryKey", CovenantIdentitySql.Key(assistantEntryId));
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);

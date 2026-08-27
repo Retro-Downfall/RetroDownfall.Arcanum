@@ -298,7 +298,8 @@ public sealed class BackupSessionImporterTests : IDisposable
     }
 
     /// <summary>
-    /// A selective protected import of an ordinary archive, end to end and asserted to succeed.
+    /// A selective protected import of an ordinary archive, end to end and asserted to succeed — for a
+    /// Session that carries no committed assistant turn.
     /// </summary>
     /// <remarks>
     /// The case this family never had. Every other protected-import case in the suite either refuses
@@ -326,7 +327,7 @@ public sealed class BackupSessionImporterTests : IDisposable
     /// <c>BackupSessionImportPlannerTests</c>.</para>
     /// </remarks>
     [Fact]
-    public async Task A_selective_protected_import_of_an_ordinary_archive_commits_its_whole_graph()
+    public async Task A_selective_protected_import_of_an_ordinary_archive_commits_a_Session_with_no_finalization()
     {
 
         string sourceSecret = await SeedObjectRelationalSourceAsync();
