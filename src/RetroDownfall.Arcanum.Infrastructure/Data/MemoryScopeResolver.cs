@@ -84,7 +84,9 @@ internal sealed class MemoryScopeResolver(
             LIMIT 1;
             """;
 
-        AddParameter(command, "@sessionId", owner.ToString());
+        // As in SagaMemoryScopeClassifier: the foreign key to "Sessions"("Id") leaves this column no
+        // spelling of its own, and the parent is canonical.
+        AddParameter(command, "@sessionId", owner.ToString("D").ToUpperInvariant());
 
         AddParameter(command, "@campaignKind", (int)SessionCampaignBindingKind.Campaign);
 

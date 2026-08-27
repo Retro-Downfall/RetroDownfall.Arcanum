@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -252,7 +253,12 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
             WHERE b.SessionId = $sessionId;
             """;
 
-        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+        // session_campaign_bindings.SessionId is declared REFERENCES "Sessions"("Id") and foreign keys
+        // are set and verified on every connection this context opens, so the column holds exactly what
+        // the parent holds - and the parent is written by the object-relational writer, which the SQLite
+        // value binder renders uppercase unconditionally. A bare ToString() here was refused by the
+        // foreign key outright.
+        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
         SessionCampaignBinding stored;
 
@@ -345,12 +351,26 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
         await using SqliteCommand command = CreateSqliteCommand();
 
+        // The narrow, false-by-default authority session_campaign_bindings_guard_insert demands, and the
+        // same one CoreGrimoireSchemaDataInitializer opens for its own writes to this table. It begins
+        // FALSE on every connection so that direct SQL cannot fabricate Campaign authority for a Session;
+        // this method is the writer the schema means to allow, and it was refused with the rest because
+        // it never opened the scope. That is a separate defect from the spelling below - it would have
+        // refused a canonical write just as firmly - and both had to be true for a Session to be created.
+        using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(command.Connection!, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
         command.CommandText = """
             INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
             VALUES ($sessionId, $kindCode, $campaignId, $boundAtUtc);
             """;
 
-        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+        // session_campaign_bindings.SessionId is declared REFERENCES "Sessions"("Id") and foreign keys
+        // are set and verified on every connection this context opens, so the column holds exactly what
+        // the parent holds - and the parent is written by the object-relational writer, which the SQLite
+        // value binder renders uppercase unconditionally. A bare ToString() here was refused by the
+        // foreign key outright.
+        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
         _ = command.Parameters.AddWithValue("$kindCode", (long)campaign.Binding.Kind);
 

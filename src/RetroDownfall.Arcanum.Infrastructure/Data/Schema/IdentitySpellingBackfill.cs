@@ -76,6 +76,13 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// <c>ToString("N")</c> columns are a deliberate second canonical form and are excluded, and
     /// <c>artifact_sensitivity.SessionId</c> is left to the guard that refuses a bad write rather than to
     /// a count taken once.</para>
+    ///
+    /// <para><c>session_campaign_bindings.SessionId</c> is counted although its foreign key to
+    /// <c>"Sessions"("Id")</c> already forces it to agree with a column this step verifies. The two say
+    /// different things: a foreign key says the child matches the parent, and this count says the value
+    /// is canonical. A hand-edited installation could satisfy the first and fail the second, and the
+    /// operator should hear about it from a number rather than from the guard refusing the next write.
+    /// </para>
     /// </remarks>
     internal static readonly IReadOnlyList<(string Table, string Column)> VerifiedColumns =
     [
@@ -88,6 +95,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         ("assistant_entry_finalizations", "AssistantEntryId"),
         ("assistant_entry_finalizations", "SessionId"),
         ("session_sensitivity_state", "SessionId"),
+        ("session_campaign_bindings", "SessionId"),
         ("SessionAttachments", "Id"),
         ("SessionAttachments", "SessionId"),
         ("SessionAttachments", "EntryId"),

@@ -88,7 +88,10 @@ internal static class SagaMemoryScopeClassifier
 
         parameter.ParameterName = "@sessionId";
 
-        parameter.Value = owner.ToString();
+        // The column is REFERENCES "Sessions"("Id") under an enforced foreign key, so it holds the
+        // canonical spelling the object-relational writer gives the parent. Binding a bare ToString()
+        // here matched no binding at all, and every memory then classified as LegacyUnresolved.
+        parameter.Value = owner.ToString("D").ToUpperInvariant();
 
         command.Parameters.Add(parameter);
 

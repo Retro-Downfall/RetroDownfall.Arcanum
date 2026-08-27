@@ -475,6 +475,7 @@ public sealed class IdentitySpellingEvolutionTests
                 ("assistant_entry_finalizations", "AssistantEntryId"),
                 ("assistant_entry_finalizations", "SessionId"),
                 ("session_sensitivity_state", "SessionId"),
+                ("session_campaign_bindings", "SessionId"),
                 ("SessionAttachments", "Id"),
                 ("SessionAttachments", "SessionId"),
                 ("SessionAttachments", "EntryId"),

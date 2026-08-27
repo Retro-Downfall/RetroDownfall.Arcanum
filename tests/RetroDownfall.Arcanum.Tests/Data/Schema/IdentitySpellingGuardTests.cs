@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -99,20 +100,25 @@ public sealed class IdentitySpellingGuardTests
     ];
 
     /// <summary>
-    /// The tables that already refuse every update whatever it changes, and therefore carry no
-    /// update-time identity guard.
+    /// The governed columns that carry no update-time identity guard, because the schema already refuses
+    /// every update such a guard could judge.
     /// </summary>
     /// <remarks>
-    /// This is a per-table finding rather than a general rule, and it is pinned here so a table that
-    /// later loses its blanket refusal is noticed: <c>assistant_entry_finalizations_guard_update</c>
-    /// makes a finalization terminal, and <c>artifact_sensitivity_guard_update</c> makes a label
-    /// immutable evidence about one exact artifact revision. An identity check on an update either
-    /// table can never accept would be unreachable code in the schema.
+    /// Pinned here so a table that later loses its refusal is noticed, and kept per column rather than
+    /// per table because the three entries do not share one reason.
+    /// <c>assistant_entry_finalizations_guard_update</c> aborts every update to that table, because a
+    /// finalization is terminal; <c>artifact_sensitivity_guard_update</c> does the same, because a label
+    /// is immutable evidence about one exact artifact revision. <c>session_campaign_bindings</c> refuses
+    /// no update in general - it refuses one that <i>changes</i> <c>SessionId</c>, so the only update a
+    /// <c>BEFORE UPDATE OF "SessionId"</c> guard could ever see is one setting the column to the value it
+    /// already holds. In all three cases the guard would be unreachable code in the schema.
     /// </remarks>
-    internal static IReadOnlyList<string> TablesThatRefuseEveryUpdate =>
+    internal static IReadOnlyList<(string Table, string Column)> ColumnsWithNoUpdateGuard =>
     [
-        "assistant_entry_finalizations",
-        "artifact_sensitivity",
+        ("assistant_entry_finalizations", "AssistantEntryId"),
+        ("assistant_entry_finalizations", "SessionId"),
+        ("artifact_sensitivity", "SessionId"),
+        ("session_campaign_bindings", "SessionId"),
     ];
 
     public static TheoryData<string, string> GuardedInsertColumns
@@ -147,7 +153,7 @@ public sealed class IdentitySpellingGuardTests
             foreach ((string table, string column) in GovernedColumns)
             {
 
-                if (TablesThatRefuseEveryUpdate.Contains(table, StringComparer.Ordinal))
+                if (ColumnsWithNoUpdateGuard.Contains((table, column)))
                 {
 
                     continue;
@@ -311,7 +317,7 @@ public sealed class IdentitySpellingGuardTests
 
             string update = $"{table}_{column}_guard_identity_update";
 
-            if (TablesThatRefuseEveryUpdate.Contains(table, StringComparer.Ordinal))
+            if (ColumnsWithNoUpdateGuard.Contains((table, column)))
             {
 
                 Assert.DoesNotContain(update, objects);
@@ -408,6 +414,8 @@ public sealed class IdentitySpellingGuardTests
 
             ("session_attachment_index_state", "AttachmentId") => SecondAttachment,
 
+            ("session_campaign_bindings", "SessionId") => SecondSession,
+
             _ => Second,
 
         };
@@ -458,6 +466,25 @@ public sealed class IdentitySpellingGuardTests
             await harness.SeedAsync(table);
 
             return harness;
+
+        }
+
+        /// <summary>
+        /// Runs one write inside the narrow, false-by-default scope its own guard demands.
+        /// </summary>
+        /// <remarks>
+        /// <c>session_campaign_bindings_guard_insert</c> refuses any insert made without the Session
+        /// binding write scope, which is the same authority production borrows. Opening it here rather
+        /// than dropping the trigger keeps the identity guard the only thing under test while leaving the
+        /// rest of the table's rules in force.
+        /// </remarks>
+        internal async Task AuthorizedAsync(CovenantSqliteAuthorizationKind kind, Func<Task> write)
+        {
+
+            using CovenantSqliteAuthorizationScope scope =
+                CovenantSqliteConnectionInitializer.Instance.Authorize(_connection, kind);
+
+            await write().ConfigureAwait(false);
 
         }
 
@@ -656,6 +683,16 @@ public sealed class IdentitySpellingGuardTests
                     ("$session", Canonical(Session)),
                     ("$value", value),
                     ("$now", Timestamp)),
+
+                ("session_campaign_bindings", "SessionId") => AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => ExecuteAsync(
+                        """
+                        INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                        VALUES ($value, 1, NULL, $now);
+                        """,
+                        ("$value", value),
+                        ("$now", Timestamp))),
 
                 ("artifact_sensitivity", "SessionId") => ExecuteAsync(
                     ArtifactSensitivityInsert,
@@ -856,6 +893,16 @@ public sealed class IdentitySpellingGuardTests
                 ("$session", Canonical(Session)),
                 ("$attachment", Canonical(Attachment)),
                 ("$now", Timestamp));
+
+            await AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => ExecuteAsync(
+                    """
+                    INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                    VALUES ($value, 1, NULL, $now);
+                    """,
+                    ("$value", Canonical(Session)),
+                    ("$now", Timestamp)));
 
             await ExecuteAsync(
                 ArtifactSensitivityInsert,

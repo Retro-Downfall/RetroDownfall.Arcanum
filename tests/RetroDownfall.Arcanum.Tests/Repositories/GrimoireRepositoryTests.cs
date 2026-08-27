@@ -1,11 +1,14 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -1247,12 +1250,166 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(second.CreatedAt, latest.CreatedAt);
     }
 
-    private GrimoireRepository CreateRepository(ArcanumDbContext? db = null)
+    /// <summary>
+    /// Creating a Session through the production turn-begin path writes a binding row that agrees with
+    /// the Session it names, so the Session can actually be created and the binding can be read back.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the first test that drives the real <c>CreateBoundSessionAsync</c> against a database.</b>
+    /// Every other reference to it in the suite is a fake, which is why the defect below survived: the
+    /// object-relational writer stores <c>"Sessions"."Id"</c> as uppercase dashed text, the binding row was
+    /// written with a bare <c>ToString()</c>, and <c>session_campaign_bindings.SessionId</c> is declared
+    /// <c>REFERENCES "Sessions"("Id")</c> with foreign keys both set and verified on every connection this
+    /// context opens. Parent and child therefore disagreed and the insert failed the foreign key, rolling
+    /// the whole transaction back and returning <c>Grimoire.WriteFailed</c> - so no Session could be
+    /// created at all through the path a turn naming no Session takes.
+    ///
+    /// <para>Both arms matter and they fail for the same reason. A Campaign-bound Session and a
+    /// global-only one both write a binding row; only the <c>CampaignId</c> differs, and that column is
+    /// not what the foreign key is about.</para>
+    ///
+    /// <para>The assertion is that the two columns <i>agree</i>, read back out of the rows rather than
+    /// compared against a rendering this test chose. An assertion that the binding is uppercase would
+    /// pass vacuously on an all-digit identity, and one that it equals a spelling the test picked would
+    /// be describing the fix rather than the requirement: what the foreign key demands is that the child
+    /// holds exactly what the parent holds.</para>
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData(true)]
+
+    [InlineData(false)]
+
+    public async Task CreateBoundSessionAsync_writes_a_binding_that_agrees_with_the_Session_it_names(
+        bool campaignBound)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CanonicalCampaignContext campaign = campaignBound
+            ? await SeedCampaignContextAsync()
+            : CanonicalCampaignContext.GlobalOnly;
+
+        // The repository turns any failure here into one opaque message, so the captured exception is
+        // carried into the assertion. Without it a red says only "The session could not be created.",
+        // which is the same sentence for a refused authorization scope, a foreign key, and a bug nobody
+        // has written yet - and a mutation check that cannot tell those apart proves very little.
+        TestCapturingLogger<GrimoireRepository> logger = new();
+
+        GrimoireRepository repository = CreateRepository(logger: logger);
+
+        Result<Guid> created = await repository.CreateBoundSessionAsync(
+            campaign,
+            "a new conversation",
+            CancellationToken.None);
+
+        Assert.True(
+            created.IsSuccess,
+            created.IsFailure
+                ? created.Error.Message
+                    + System.Environment.NewLine
+                    + string.Join(
+                        System.Environment.NewLine,
+                        logger.Entries.Select(static entry => entry.Exception?.ToString()))
+                : string.Empty);
+
+        (string session, string binding) = await ReadSessionAndBindingAsync(created.Value);
+
+        Assert.Equal(session, binding);
+
+    }
+
+    /// <summary>
+    /// A Campaign the resolver would hand the turn-begin store, written the way the object-relational
+    /// writer writes one.
+    /// </summary>
+    private async Task<CanonicalCampaignContext> SeedCampaignContextAsync()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _ = _db!.Campaigns.Add(new Campaign
+        {
+
+            Id = campaignId,
+
+            Name = "binding-" + campaignId.ToString("N"),
+
+            NameLower = "binding-" + campaignId.ToString("N"),
+
+            Path = Path.Combine(Path.GetTempPath(), "binding-" + campaignId.ToString("N")),
+
+            Type = WorkspaceType.Campaign,
+
+            CreatedAt = now,
+
+            UpdatedAt = now,
+
+        });
+
+        _ = await _db.SaveChangesAsync(CancellationToken.None);
+
+        return CanonicalCampaignContext.Create(
+            SessionCampaignBinding.ForCampaign(campaignId),
+            campaignAvailabilityGeneration: 1,
+            pathIdentityPolicyVersion: 1,
+            pathIdentityRevision: null,
+            rootIdentityDigest: null);
+
+    }
+
+    /// <summary>
+    /// The two stored spellings, read as text so the comparison is the one the foreign key makes.
+    /// </summary>
+    private async Task<(string Session, string Binding)> ReadSessionAndBindingAsync(Guid sessionId)
+    {
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(CancellationToken.None);
+
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT session."Id", binding.SessionId
+            FROM "Sessions" AS session
+            JOIN session_campaign_bindings AS binding
+              ON lower(replace(binding.SessionId, '-', '')) = lower(replace(session."Id", '-', ''))
+            WHERE lower(replace(session."Id", '-', '')) = @id;
+            """;
+
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@id";
+
+        parameter.Value = sessionId.ToString("N");
+
+        command.Parameters.Add(parameter);
+
+        await using System.Data.Common.DbDataReader reader =
+            await command.ExecuteReaderAsync(CancellationToken.None);
+
+        Assert.True(await reader.ReadAsync(CancellationToken.None), "No Session and binding pair was written.");
+
+        return (reader.GetString(0), reader.GetString(1));
+
+    }
+
+    private GrimoireRepository CreateRepository(
+        ArcanumDbContext? db = null,
+        ILogger<GrimoireRepository>? logger = null)
     {
         return new GrimoireRepository(
             db ?? _db!,
             new NoOpSessionAttachmentStore(),
-            NullLogger<GrimoireRepository>.Instance,
+            logger ?? NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
     }

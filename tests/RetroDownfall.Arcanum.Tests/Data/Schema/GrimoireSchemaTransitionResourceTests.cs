@@ -192,6 +192,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "lexicon_fact_attachment_provenance_AttachmentId_guard_identity_insert",
                 "lexicon_fact_attachment_provenance_AttachmentId_guard_identity_update",
                 "artifact_sensitivity_SessionId_guard_identity_insert",
+                "session_campaign_bindings_SessionId_guard_identity_insert",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",

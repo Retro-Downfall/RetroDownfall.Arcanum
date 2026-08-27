@@ -56,6 +56,7 @@ internal static class CoreSchemaVersionFourFixture
         "lexicon_fact_attachment_provenance_AttachmentId_guard_identity_insert",
         "lexicon_fact_attachment_provenance_AttachmentId_guard_identity_update",
         "artifact_sensitivity_SessionId_guard_identity_insert",
+        "session_campaign_bindings_SessionId_guard_identity_insert",
     ];
 
     /// <summary>Every Core object as version 4 declared it.</summary>

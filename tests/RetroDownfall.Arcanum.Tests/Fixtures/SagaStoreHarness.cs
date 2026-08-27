@@ -262,7 +262,14 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         // GrimoireRepository.InsertBindingAsync and the three readers of this column all render the
         // minority form, which is a live defect this seed now describes rather than hides.
             ("$id", Canonical(sessionId)),
-            ("$campaignId", Canonical(campaignId)),
+            // NOT canonical, and the asymmetry with the SessionId above is the point.
+            // session_campaign_bindings.CampaignId is deliberately unconstrained by any foreign key - it
+            // is the historical authority identity, so a Campaign deletion can clear its own row without
+            // rewriting it - and GrimoireRepository.InsertBindingAsync, the writer these cases exercise,
+            // renders it with a bare ToString(). The Saga store copies that spelling into
+            // saga_memories.CampaignId, and DivinationService and DataRetentionService both bind the same
+            // rendering back. The column is outside the governed family and is guarded by nothing.
+            ("$campaignId", campaignId.ToString()),
             ("$now", now)).ConfigureAwait(false);
 
         return sessionId;

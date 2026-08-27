@@ -113,10 +113,18 @@ internal sealed class SagaMemoryCampaignScopeBackfill : IGrimoireSchemaBackfill
 
         read.Transaction = transaction;
 
+        // The join is normalised, and this is the one place in this file where that is the right answer
+        // rather than a defect. The two columns sit on opposite sides of a governance boundary:
+        // session_campaign_bindings.SessionId is bound by a foreign key to "Sessions"."Id" and therefore
+        // holds the canonical spelling, while saga_memories.SessionId is written by the Saga store with a
+        // bare ToString() and is read back the same way by every one of its own readers. Comparing them
+        // exactly would match nothing at all. This sweep runs once per installation over a bounded page,
+        // so the forfeited index costs nothing worth an alternative.
         read.CommandText = """
             SELECT memory.Id, memory.SessionId, binding.BindingKindCode, binding.CampaignId
             FROM saga_memories AS memory
-            LEFT JOIN session_campaign_bindings AS binding ON binding.SessionId = memory.SessionId
+            LEFT JOIN session_campaign_bindings AS binding
+                ON lower(replace(binding.SessionId, '-', '')) = lower(replace(memory.SessionId, '-', ''))
             WHERE memory.ScopeKindCode = 0
             ORDER BY memory.Id
             LIMIT $limit;

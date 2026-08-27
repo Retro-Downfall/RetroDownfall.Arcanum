@@ -440,7 +440,11 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
                 VALUES ($sessionId, $kindCode, $campaignId, $boundAtUtc);
                 """;
 
-            _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+            // Canonical, because the foreign key to "Sessions"("Id") leaves this column no spelling of
+            // its own and the parent is written by the object-relational writer. CampaignId below is
+            // deliberately left as it is: that column carries no foreign key, and the repository writer
+            // and both of its readers render it with a bare ToString().
+            _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
             _ = command.Parameters.AddWithValue(
                 "$kindCode",
