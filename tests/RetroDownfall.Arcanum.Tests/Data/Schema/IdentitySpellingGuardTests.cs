@@ -71,6 +71,12 @@ public sealed class IdentitySpellingGuardTests
     /// <summary>A second attachment, so a foreign-key child can be written beside the seeded one.</summary>
     private const string SecondAttachment = "D0000000-0000-4000-8000-0000000000A2";
 
+    /// <summary>
+    /// A third Session that exists but is deliberately given no <c>session_campaign_bindings</c> row, so
+    /// a case can rewrite a binding onto it without colliding with that table's primary key.
+    /// </summary>
+    private const string UnboundSession = "B0000000-0000-4000-8000-0000000000E3";
+
     private const string Timestamp = "2026-01-01T00:00:00.0000000+00:00";
 
     /// <summary>A Saga memory identity, which the provenance table keys on.</summary>
@@ -119,12 +125,16 @@ public sealed class IdentitySpellingGuardTests
     /// <c>BEFORE UPDATE OF "SessionId"</c> guard could ever see is one setting the column to the value it
     /// already holds. In all three cases the guard would be unreachable code in the schema.
     /// </remarks>
-    internal static IReadOnlyList<(string Table, string Column)> ColumnsWithNoUpdateGuard =>
+    internal static IReadOnlyList<(string Table, string Column, string Refusal)> ColumnsWithNoUpdateGuard =>
     [
-        ("assistant_entry_finalizations", "AssistantEntryId"),
-        ("assistant_entry_finalizations", "SessionId"),
-        ("artifact_sensitivity", "SessionId"),
-        ("session_campaign_bindings", "SessionId"),
+        ("assistant_entry_finalizations", "AssistantEntryId",
+            "assistant_entry_finalizations rows are terminal and cannot be updated."),
+        ("assistant_entry_finalizations", "SessionId",
+            "assistant_entry_finalizations rows are terminal and cannot be updated."),
+        ("artifact_sensitivity", "SessionId",
+            "artifact_sensitivity rows are immutable; a new artifact revision needs a new label."),
+        ("session_campaign_bindings", "SessionId",
+            "A Session Campaign binding cannot change the Session it belongs to."),
     ];
 
     public static TheoryData<string, string> GuardedInsertColumns
@@ -159,7 +169,9 @@ public sealed class IdentitySpellingGuardTests
             foreach ((string table, string column) in GovernedColumns)
             {
 
-                if (ColumnsWithNoUpdateGuard.Contains((table, column)))
+                if (ColumnsWithNoUpdateGuard.Any(entry =>
+                    string.Equals(entry.Table, table, StringComparison.Ordinal)
+                    && string.Equals(entry.Column, column, StringComparison.Ordinal)))
                 {
 
                     continue;
@@ -275,18 +287,18 @@ public sealed class IdentitySpellingGuardTests
 
     }
 
-    public static TheoryData<string, string> ColumnsWhoseUpdateIsAlreadyRefused
+    public static TheoryData<string, string, string> ColumnsWhoseUpdateIsAlreadyRefused
     {
 
         get
         {
 
-            TheoryData<string, string> data = [];
+            TheoryData<string, string, string> data = [];
 
-            foreach ((string table, string column) in ColumnsWithNoUpdateGuard)
+            foreach ((string table, string column, string refusal) in ColumnsWithNoUpdateGuard)
             {
 
-                data.Add(table, column);
+                data.Add(table, column, refusal);
 
             }
 
@@ -307,28 +319,68 @@ public sealed class IdentitySpellingGuardTests
     /// refusal that made the absence safe, leaving the column with no update-time protection at all from
     /// either direction. This case drives the write instead and asserts the schema still turns it back.
     ///
-    /// <para>The value written is canonical, so an identity guard would not have fired on it even if one
-    /// existed - what turns the write back is the table's own rule. The message is asserted <i>not</i> to
-    /// be this family's, which is the whole point: these three columns are protected by something else,
-    /// and an identity guard on them would be unreachable code in the schema.</para>
+    /// <para><b>The refusal is asserted positively, by its own text, and that is the whole mechanism.</b>
+    /// An earlier version of this case asserted only that <i>something</i> threw and that the message was
+    /// not this family's - and two of the four cases then passed for reasons that had nothing to do with
+    /// the guard. <c>assistant_entry_finalizations.SessionId</c> is a foreign key into
+    /// <c>"Sessions"("Id")</c>, so rewriting it to an unseeded identity threw
+    /// <c>FOREIGN KEY constraint failed</c>; <c>session_campaign_bindings.SessionId</c> is that table's
+    /// primary key and the update carried no <c>WHERE</c>, so collapsing two rows onto one value threw
+    /// <c>UNIQUE constraint failed</c>. Either table could have lost its blanket refusal entirely and
+    /// this case would have stayed green - which is exactly the failure it exists to prevent. A positive
+    /// assertion on the guard's own sentence cannot be satisfied by a constraint violation.</para>
+    ///
+    /// <para>So each case writes a value chosen to satisfy every constraint <i>except</i> the one under
+    /// test - see <see cref="RewriteTargetFor"/> - and updates exactly one row. What is left to refuse
+    /// the write is the table's own rule and nothing else. The value is also canonical, so an identity
+    /// guard would not have fired on it even if one existed.</para>
     /// </remarks>
     [Theory]
     [MemberData(nameof(ColumnsWhoseUpdateIsAlreadyRefused))]
     public async Task A_column_with_no_update_guard_is_one_the_schema_already_refuses_to_update(
         string table,
-        string column)
+        string column,
+        string refusal)
     {
 
         await using GuardHarness harness = await GuardHarness.StartAsync(table);
 
-        await harness.InsertAsync(table, column, SecondFor(table, column));
+        string seeded = SecondFor(table, column);
+
+        await harness.InsertAsync(table, column, seeded);
 
         SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
-            () => harness.UpdateAsync(table, column, Canonical(Rewrite)));
+            () => harness.UpdateOneAsync(table, column, seeded, RewriteTargetFor(table, column)));
+
+        Assert.Contains(refusal, failure.Message, StringComparison.Ordinal);
 
         Assert.DoesNotContain(Message(table, column), failure.Message, StringComparison.Ordinal);
 
     }
+
+    /// <summary>
+    /// The value each case rewrites its column to, chosen so that every constraint on that column is
+    /// satisfied and the table's own update rule is the only thing left to refuse the write.
+    /// </summary>
+    /// <remarks>
+    /// Two of these are load-bearing rather than arbitrary. <c>assistant_entry_finalizations.SessionId</c>
+    /// declares <c>REFERENCES "Sessions" ("Id")</c>, so it is rewritten to a Session the seed created;
+    /// an unseeded identity would be turned back by the foreign key before the guard was reached.
+    /// <c>session_campaign_bindings.SessionId</c> is both a foreign key and that table's primary key, so
+    /// it is rewritten to a third seeded Session that deliberately has no binding row of its own - a
+    /// Session that already had one would collide on the key instead.
+    /// </remarks>
+    private static string RewriteTargetFor(string table, string column) =>
+        (table, column) switch
+        {
+
+            ("assistant_entry_finalizations", "SessionId") => Canonical(Session),
+
+            ("session_campaign_bindings", "SessionId") => Canonical(UnboundSession),
+
+            _ => Canonical(Rewrite),
+
+        };
 
     /// <summary>
     /// A guarded column that is NULL is not judged, because there is no identity there to be spelled
@@ -385,7 +437,9 @@ public sealed class IdentitySpellingGuardTests
 
             string update = $"{table}_{column}_guard_identity_update";
 
-            if (ColumnsWithNoUpdateGuard.Contains((table, column)))
+            if (ColumnsWithNoUpdateGuard.Any(entry =>
+                string.Equals(entry.Table, table, StringComparison.Ordinal)
+                && string.Equals(entry.Column, column, StringComparison.Ordinal)))
             {
 
                 Assert.DoesNotContain(update, objects);
@@ -806,6 +860,32 @@ public sealed class IdentitySpellingGuardTests
                 $"""UPDATE "{table}" SET "{column}" = $value;""",
                 ("$value", value));
 
+        /// <summary>
+        /// Rewrites one identified row's column, so a refusal cannot come from collapsing two rows onto
+        /// one value.
+        /// </summary>
+        /// <remarks>
+        /// The row is found by the value it currently holds, which is unique across the seed in every
+        /// table this is used on. <c>session_campaign_bindings</c> additionally needs the Session binding
+        /// write scope open, or its guard refuses the update for want of authority before it can refuse it
+        /// for changing the Session - both are that table's own rules, but only the second is the one this
+        /// family's omission rests on.
+        /// </remarks>
+        internal Task UpdateOneAsync(string table, string column, string from, string to)
+        {
+
+            Task Write() =>
+                ExecuteAsync(
+                    $"""UPDATE "{table}" SET "{column}" = $to WHERE "{column}" = $from;""",
+                    ("$to", to),
+                    ("$from", from));
+
+            return string.Equals(table, "session_campaign_bindings", StringComparison.Ordinal)
+                ? AuthorizedAsync(CovenantSqliteAuthorizationKind.SessionBindingWrite, Write)
+                : Write();
+
+        }
+
         public async ValueTask DisposeAsync()
         {
 
@@ -857,6 +937,18 @@ public sealed class IdentitySpellingGuardTests
                 VALUES ($id, $campaign, 'active', $now, $now);
                 """,
                 ("$id", Canonical(SecondSession)),
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            // Exists, and deliberately gets no binding row below: it is the only Session a
+            // session_campaign_bindings row can be rewritten onto without colliding on that table's
+            // primary key, which is what lets its refusal be the thing that stops the write.
+            await ExecuteAsync(
+                """
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ($id, $campaign, 'active', $now, $now);
+                """,
+                ("$id", Canonical(UnboundSession)),
                 ("$campaign", Canonical(Campaign)),
                 ("$now", Timestamp));
 
