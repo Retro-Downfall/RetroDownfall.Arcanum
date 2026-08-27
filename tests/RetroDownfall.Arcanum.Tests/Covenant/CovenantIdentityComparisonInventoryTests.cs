@@ -61,12 +61,33 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// those three renderings changes. Neither fact is visible from the statement doing the comparing,
 /// which is the whole point.</para>
 ///
-/// <para><b>What this cannot see.</b> The scan reads authored source, so it recognises a rendered
-/// identity where the rendering and the comparison are in the same file. An identity rendered into a
-/// local in one method and bound in another, or handed in as a <c>string</c> parameter from a caller
-/// that rendered it, is invisible here. It also cannot resolve a table name that is composed at
-/// runtime; those are reported under <c>{composed}</c> rather than skipped, because a comparison whose
-/// table nobody can read is exactly where a member of this family hid before.</para>
+/// <para><b>What this cannot see, stated precisely, because a rule whose own limits are wrong is the
+/// failure mode it exists to prevent.</b> Four blind spots, and the first has live instances:</para>
+///
+/// <list type="number">
+/// <item><description><b>A raw <c>Guid</c> handed to the provider.</b> <see cref="RenderedIdentity"/>
+/// matches an explicit rendering — <c>ToString()</c>, <c>ToString("D")</c>, a <c>:D</c> format hole —
+/// and nothing else. <c>AddWithValue("$id", someGuid)</c> renders uppercase just as surely, through
+/// the provider's own type mapping, and is invisible here. <c>GrimoireRepository.TurnCommit</c> does
+/// exactly that against <c>assistant_entry_finalizations.AssistantEntryId</c>, which is a genuinely
+/// two-spelling column, so that is a live in-scope instance this rule does not report. Entity
+/// Framework LINQ — <c>db.Entries.Where(e =&gt; e.SessionId == id)</c> — is the same blind spot with
+/// no SQL text at all, and it too has live instances.</description></item>
+/// <item><description><b>Join predicates.</b> <see cref="IsPredicate"/> accepts a comparison only when
+/// <c>WHERE</c> is the nearest preceding clause keyword, so an identity compared in a <c>JOIN … ON</c>
+/// is not reported at all.</description></item>
+/// <item><description><b>A table resolved by proximity.</b> <see cref="ResolveTable"/> takes the
+/// nearest preceding <c>FROM</c>/<c>JOIN</c>/<c>UPDATE</c>/<c>INTO</c>, so a predicate in an outer
+/// query that follows a subquery is attributed to the subquery's table and may be dropped as
+/// out-of-scope.</description></item>
+/// <item><description><b>A rendering that crosses a method.</b> An identity rendered into a local in
+/// one method and bound in another, or arriving as an already-rendered <c>string</c> parameter, has no
+/// rendering for the scan to find beside the comparison.</description></item>
+/// </list>
+///
+/// <para>A table name composed at runtime is <em>not</em> in that list: those are reported under
+/// <c>{composed}</c> rather than skipped, because a comparison whose table nobody can read is exactly
+/// where a member of this family hid longest.</para>
 /// </remarks>
 public sealed class CovenantIdentityComparisonInventoryTests
 {
@@ -75,56 +96,50 @@ public sealed class CovenantIdentityComparisonInventoryTests
     /// The registered sites, each with the reason it is still here.
     /// </summary>
     /// <remarks>
-    /// Closer to a defect register than an exemption list. Most entries below are comparisons this
-    /// rule found that nobody has fixed, carried here so a <em>new</em> one cannot join them
-    /// unnoticed; the remainder are comparisons that match today only because two writers happen to
-    /// agree, and each entry says which of the two it is. An entry leaves this list by being fixed —
-    /// and the test fails if a fixed site is left registered, so the list cannot outlive what it
-    /// names.
+    /// Closer to a defect register than an exemption list. Four of these are comparisons that match
+    /// nothing they were meant to match and nobody has fixed; two match today only because writers
+    /// that never agreed to agree happen to render alike. Every entry carries its own reason and
+    /// opens by saying which of the two it is, so an entry appended later cannot inherit a
+    /// justification written for a different site.
+    ///
+    /// <para>An entry leaves this list by being fixed, and the test fails if a fixed site is left
+    /// registered — so the register cannot outlive what it names. Two entries left it that way when
+    /// the reads they described were normalised.</para>
     /// </remarks>
     private static readonly string[] Registered =
     [
-        // Matching, but on a coincidence. A scoped backup of one Session reads its attachment rows
-        // with the lowercase rendering, and all three writers of that column render lowercase, so it
-        // finds them. Nothing structural holds that: the protected transfer store and the merge path
-        // reached the same spelling through their own separate ToString() calls, and this reader can
-        // see none of them. Listed rather than fixed because a fix here changes no behaviour today.
+        // Matching, on a coincidence. A scoped backup of one Session reads its attachment rows with
+        // the lowercase rendering, and all three writers of that column render lowercase, so it finds
+        // them. Nothing structural holds that: the attachment store, the transfer store and the merge
+        // path reached the same spelling through three separate ToString() calls, and this reader can
+        // see none of them. Listed rather than fixed because a fix changes no behaviour today.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupInventoryPlanner.cs | SessionAttachments.SessionId",
 
-        // Not matching. The unprotected merge path predates the Covenant transfer store and is still
-        // reachable with the feature gate off. It probes and copies the source graph with the
-        // lowercase rendering against "Sessions"."Id" and "Entries"."SessionId", which an ordinary
-        // archive fills uppercase, so it reports "The archive does not contain every requested
-        // Session" for a Session the archive plainly holds. Confirmed by construction: seeding its
-        // fixture the way an archive is written turns its currently green cases red. The fourth
-        // fingerprint here is its attachment read, which matches for the same coincidental reason as
-        // the entry above.
+        // Not matching. The unprotected merge path copies the archived Entry graph with the lowercase
+        // rendering against a column the object-relational writer fills uppercase, so it copies no
+        // entries for a Session it did manage to find.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | Entries.SessionId",
+
+        // Matching, on the same coincidence as BackupInventoryPlanner above: this path's attachment
+        // read agrees with all three writers of that column by accident rather than by construction.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | SessionAttachments.SessionId",
+
+        // Not matching, and the one that decides the whole operation. The merge path probes
+        // "Sessions"."Id" with the lowercase rendering, so it reports "The archive does not contain
+        // every requested Session" for a Session the archive plainly holds. Confirmed by construction:
+        // seeding its fixture the way an archive is written turns its currently green cases red. That
+        // fixture is deliberately left alone — changing it would replace a suite that passes over a
+        // known gap with one that fails over it, which belongs to whoever fixes the path.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | Sessions.Id",
+
+        // Not matching. The same merge path's row probe, whose table is composed by its caller, so the
+        // rule can name the column but not the table. Reported under {composed} rather than skipped,
+        // because a comparison whose table nobody can read is where this family hid longest.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | {composed}.Id",
 
-        // Not matching, and the opposite polarity — the only site here that shows somebody already
-        // met this problem. It uppercases deliberately, which matches the object-relational writer and
-        // misses every Entry the protected transfer store wrote, because that store is the one
-        // production writer that puts a lowercase identity into "Entries"."Id". A protected read of an
-        // imported artifact therefore finds no row at all.
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ProtectedAssistantArtifactReader.cs | Entries.Id",
-
-        // Not matching. Ten comparisons across this file's EF interpolated-SQL queries, collapsing to
-        // these two fingerprints. The identity is a parameter rather than a literal, but the provider
-        // renders it uppercase, so loading an imported Session's history through any of them returns
-        // nothing for a Session the transfer store created — which makes this, with the reader above,
-        // the pair that costs an installation something today rather than latently. Reported by the
-        // composed-value arm rather than the bound-parameter one, which is why they read differently
-        // from the entries above.
-        "src/RetroDownfall.Arcanum.Infrastructure/Repositories/EntryTemporalQueries.cs | Entries.Id",
-        "src/RetroDownfall.Arcanum.Infrastructure/Repositories/EntryTemporalQueries.cs | Entries.SessionId",
-
-        // Not matching, and the mildest member: this probe only chooses between two error messages, so an unmatched row
-        // reports "Session not found" where the truth is "this Session has no Campaign binding". Wrong
-        // answer, no data loss — and still worth naming, because the next reader of this file should
-        // not have to rediscover which of the two spellings it compares.
+        // Not matching, and the mildest member. This probe only chooses between two error messages, so
+        // an unmatched row reports "Session not found" where the truth is "this Session has no
+        // Campaign binding". A wrong answer to an operator, and no data loss.
         "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionCampaignBindingReader.cs | Sessions.Id",
     ];
 
