@@ -421,6 +421,12 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         Assert.NotNull(importedEntryId);
 
+        // The precondition this case exists for, pinned rather than assumed. Everything below would
+        // still pass if the store switched to the uppercase spelling the label ledger uses — and would
+        // then be proving nothing, because that spelling matches under either comparison. A silent
+        // degradation into a no-evidence test is worse than a loud failure here.
+        Assert.Equal(importedEntryId.ToLowerInvariant(), importedEntryId);
+
         Guid entryId = Guid.Parse(importedEntryId, CultureInfo.InvariantCulture);
 
         ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
