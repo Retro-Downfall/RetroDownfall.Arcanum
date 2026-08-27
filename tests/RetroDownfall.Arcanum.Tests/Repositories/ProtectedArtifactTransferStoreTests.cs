@@ -4,10 +4,14 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
@@ -44,6 +48,16 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         "protected_session_transfer_intents_guard_delete",
         "protected_session_transfer_blobs_guard_update",
         "protected_session_transfer_blobs_guard_delete",
+
+        // What an imported Entry has to be erasable through afterwards. The store is the only
+        // production writer that puts a lowercase identity into "Entries"."Id", so the destination is
+        // the one place a purge of such a row can be exercised without a test choosing the spelling.
+        "entry_embeddings",
+        "artifact_sensitivity",
+        "session_sensitivity_state",
+        "assistant_entry_erasure_receipts",
+        "artifact_sensitivity_guard_delete",
+        "artifact_sensitivity_guard_update",
     ];
 
     private readonly string _root =
@@ -376,6 +390,113 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             CancellationToken.None)).IsFailure);
 
         Assert.Equal(4, await DestinationPhaseAsync());
+
+    }
+
+    /// <summary>
+    /// An imported Entry is still Covenant-erasable, over the identity this store chose for it.
+    /// </summary>
+    /// <remarks>
+    /// Lives here rather than beside the other erasure suites because the precondition is this store's
+    /// own destination write: it spells a new Entry identity lowercase, while the object-relational
+    /// writer that fills the same column everywhere else spells it uppercase. The equivalent assertion
+    /// over an object-relational Entry passes whether or not the purge compares identity correctly,
+    /// because that spelling is the one the label ledger also uses — so it would be evidence of
+    /// nothing. Nothing here seeds an Entry, an identity, or a label row: the store writes the graph,
+    /// the ledger writes the label, and the kernel is entered at its outermost method.
+    /// </remarks>
+    [Fact]
+    public async Task An_imported_entry_is_erased_by_the_protected_artifact_erasure_kernel()
+    {
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        Assert.True((await CommitAsync(request)).Result.IsSuccess);
+
+        // Read back rather than remembered. The identity under test is the one the store chose for the
+        // destination row, and a value supplied here would prove nothing about the spelling it stores.
+        string? importedEntryId = await _destination.ScalarStringAsync(
+            "SELECT \"Id\" FROM \"Entries\" WHERE \"Role\" = 1;",
+            CancellationToken.None);
+
+        Assert.NotNull(importedEntryId);
+
+        Guid entryId = Guid.Parse(importedEntryId, CultureInfo.InvariantCulture);
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            new DerivedArtifactWrite(
+                SensitiveArtifactKind.AssistantEntry,
+                entryId,
+
+                // Deliberately no Session. The ledger's Session projection is keyed by an uppercase
+                // spelling and carries a foreign key into "Sessions"."Id", which this store fills with
+                // a lowercase one, so naming the destination Session here fails the label insert on a
+                // constraint rather than exercising the erasure. The property under test is which
+                // "Entries" row the purge matches, and that comparison never reads the Session.
+                sessionId: null,
+                campaignId: null,
+                turnId: null,
+                artifactRevision: 1,
+                DerivedArtifactContentDigest.ForText("answer"),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([CovenantOperationGateFixture.DatasetGeneration])),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : string.Empty);
+
+        ArtifactSensitivityLabel label = (await ledger.TryReadLabelAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            entryId,
+            CancellationToken.None)).Value!;
+
+        CovenantProtectedArtifactErasureKernel kernel = new(
+            new FixedCovenantConnectionSource(_destination.Connection),
+            CovenantSqliteConnectionInitializer.Instance,
+            TimeProvider.System);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantExclusiveLease lease = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
+            CancellationToken.None)).Value;
+
+        Result<CovenantArtifactErasureProgress> erased = await kernel.ErasePageAsync(
+            new CovenantProtectedArtifactErasurePage(
+                CovenantOperationGateFixture.DatasetGeneration,
+                [
+                    new CovenantProtectedArtifactErasureItem(
+                        label.ArtifactId,
+                        label.ArtifactKind,
+                        label.SessionId,
+                        label.LabelId,
+                        label,
+                        label.ArtifactContentDigest,
+                        label.ArtifactRevision),
+                ]),
+            CovenantArtifactErasureAuthority
+                .ForExclusive(lease, CovenantExclusiveOperation.CovenantFamilyReinitialize)
+                .Value,
+            CancellationToken.None);
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.None, erased.Value.Blocker);
+
+        Assert.Equal(1UL, erased.Value.ErasedCount);
+
+        // The assistant Entry is gone and the user Entry beside it is untouched, so the purge matched
+        // one row rather than every row or none.
+        Assert.Equal(1, await CountDestinationAsync("Entries"));
+
+        Assert.Equal(
+            0,
+            await _destination.ScalarLongAsync(
+                "SELECT COUNT(*) FROM \"Entries\" WHERE \"Role\" = 1;",
+                CancellationToken.None));
+
+        Assert.Equal(0, await CountDestinationAsync("artifact_sensitivity"));
 
     }
 

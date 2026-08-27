@@ -9,13 +9,68 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
+/// The one shape every keyed purge statement compares an identity in, and the binding that goes with
+/// it.
+/// </summary>
+/// <remarks>
+/// The content tables a purge deletes from do not agree on how an identity is spelled. Saga writes a
+/// lowercase 36-character form, the Lexicon and the idempotency claim store write 32 lowercase hex
+/// characters with no dashes at all, and <c>"Entries"</c>, <c>"Sessions"</c>, and
+/// <c>entry_embeddings</c> hold an uppercase spelling from the object-relational writer beside a
+/// lowercase one from protected transfer and backup import in the same column. No single bound
+/// literal matches every row of those three, so binding "the right form per target" would be
+/// incorrect rather than merely verbose. The column is normalised instead, and the parameter is
+/// bound already normalised.
+///
+/// <para><b>The cost, chosen rather than overlooked.</b> <c>lower(replace(col, '-', '')) = @id</c>
+/// cannot use a BINARY-collated index, so every delete generated here degrades from an index seek to
+/// a table scan and a page of N artifacts becomes N scans of the largest table in the database.
+/// Erasure is a background path rather than the inference hot path, so a delete that finds its rows
+/// is worth the scan. The index-preserving alternative — <c>WHERE col IN ($upper, $lower, $n)</c> —
+/// is faster and silently wrong the first time a writer spells an identity a fourth way, and this
+/// shape is not.</para>
+/// </remarks>
+internal static class CovenantArtifactPurgeSql
+{
+
+    /// <summary>The keyed predicate for one column, against an already-normalised parameter.</summary>
+    internal static string Keyed(string column, string parameter) =>
+        $"lower(replace({column}, '-', '')) = {parameter}";
+
+    /// <summary>The normalised spelling of a typed identity.</summary>
+    /// <remarks>
+    /// <c>N</c> is already lowercase and dash-free, which is exactly what
+    /// <see cref="Keyed"/> reduces every stored spelling to.
+    /// </remarks>
+    internal static string Key(Guid value) => value.ToString("N");
+
+    /// <summary>The normalised spelling of an identity read back out of a database.</summary>
+    /// <remarks>
+    /// Deliberately not <c>Guid.Parse(value).ToString("N")</c>. A staged archive is somebody else's
+    /// database and may hold an identity this build cannot parse; normalising the text keeps such a
+    /// row one that matches nothing, rather than an exception that fails a whole protected-state
+    /// purge.
+    /// </remarks>
+    internal static string Key(string value) =>
+        value.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
+
+}
+
+/// <summary>
 /// One table the purge deletes from, and the column it is keyed by.
 /// </summary>
 /// <remarks>
 /// Both halves are fixed internal literals, never input. That is what makes it safe to interpolate
 /// them into the statement text SQLite gives no parameter form for.
 /// </remarks>
-internal sealed record CovenantArtifactPurgeTarget(string Table, string KeyColumn);
+internal sealed record CovenantArtifactPurgeTarget(string Table, string KeyColumn)
+{
+
+    /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
+    internal string DeleteBy(string parameter) =>
+        $"DELETE FROM {Table} WHERE {CovenantArtifactPurgeSql.Keyed(KeyColumn, parameter)};";
+
+}
 
 /// <summary>
 /// The statements one artifact kind's rule resolves to in this build's schema.
@@ -54,14 +109,20 @@ internal static class CovenantArtifactPurgePlans
             [],
             new CovenantArtifactPurgeTarget("session_summary_artifacts", "ArtifactId"),
             CurrentPointerTable: "session_summary_state",
-            RedactionSql: "UPDATE \"Sessions\" SET \"Summary\" = NULL WHERE \"Id\" = $sessionId;"),
+            RedactionSql:
+                "UPDATE \"Sessions\" SET \"Summary\" = NULL WHERE "
+                + CovenantArtifactPurgeSql.Keyed("\"Id\"", "$sessionKey")
+                + ";"),
 
         [SensitiveArtifactKind.SessionTitle] = new(
             SensitiveArtifactKind.SessionTitle,
             [],
             new CovenantArtifactPurgeTarget("session_title_artifacts", "ArtifactId"),
             CurrentPointerTable: "session_title_state",
-            RedactionSql: "UPDATE \"Sessions\" SET \"Title\" = NULL WHERE \"Id\" = $sessionId;"),
+            RedactionSql:
+                "UPDATE \"Sessions\" SET \"Title\" = NULL WHERE "
+                + CovenantArtifactPurgeSql.Keyed("\"Id\"", "$sessionKey")
+                + ";"),
 
         [SensitiveArtifactKind.Saga] = new(
             SensitiveArtifactKind.Saga,
@@ -94,7 +155,10 @@ internal static class CovenantArtifactPurgePlans
             [],
             Artifact: null,
             CurrentPointerTable: null,
-            RedactionSql: "UPDATE \"IdempotencyClaims\" SET \"ResponseBody\" = NULL WHERE \"Id\" = $artifactId;"),
+            RedactionSql:
+                "UPDATE \"IdempotencyClaims\" SET \"ResponseBody\" = NULL WHERE "
+                + CovenantArtifactPurgeSql.Keyed("\"Id\"", "$artifactKey")
+                + ";"),
     };
 
     /// <summary>
@@ -334,7 +398,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             await ExecuteAsync(
                 connection,
                 transaction,
-                $"DELETE FROM {projection.Table} WHERE {projection.KeyColumn} = $artifactId;",
+                projection.DeleteBy("$artifactKey"),
                 item,
                 cancellationToken).ConfigureAwait(false);
 
@@ -346,7 +410,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             await ExecuteAsync(
                 connection,
                 transaction,
-                $"DELETE FROM {pointer} WHERE CurrentArtifactId = $artifactId;",
+                $"DELETE FROM {pointer} WHERE {CovenantArtifactPurgeSql.Keyed("CurrentArtifactId", "$artifactKey")};",
                 item,
                 cancellationToken).ConfigureAwait(false);
 
@@ -365,12 +429,16 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             await ExecuteAsync(
                 connection,
                 transaction,
-                $"DELETE FROM {artifact.Table} WHERE {artifact.KeyColumn} = $artifactId;",
+                artifact.DeleteBy("$artifactKey"),
                 item,
                 cancellationToken).ConfigureAwait(false);
 
         }
 
+        // The label is the one table whose identities have a single writer. ArtifactSensitivityLedger
+        // is the sole INSERT into artifact_sensitivity and spells every identity the way Format does,
+        // so an exact comparison here is internally consistent and keeps the primary-key seek that
+        // makes the label delete cheap.
         await ExecuteAsync(
             connection,
             transaction,
@@ -418,15 +486,22 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         command.Transaction = transaction;
 
-        command.CommandText = """
+        // The guard is found through the normalised comparison for the same reason the content deletes
+        // are: assistant_entry_finalizations is keyed by the historical Entry identity, and a turn
+        // committed natively and one copied in by a protected transfer spell that identity differently.
+        // The receipt's own key stays the canonical spelling, because it is a value being written here
+        // rather than a row being matched.
+        command.CommandText = $"""
             INSERT OR IGNORE INTO assistant_entry_erasure_receipts (
                 AssistantEntryId, SessionId, FinalizationGuardDigest, ErasureReasonCode, OperationId, ErasedAtUtc)
             SELECT $artifactId, SessionId, RequestDigest, 2, $operationId, $now
             FROM assistant_entry_finalizations
-            WHERE AssistantEntryId = $artifactId;
+            WHERE {CovenantArtifactPurgeSql.Keyed("AssistantEntryId", "$artifactKey")};
             """;
 
         _ = command.Parameters.AddWithValue("$artifactId", Format(item.ArtifactId));
+
+        _ = command.Parameters.AddWithValue("$artifactKey", CovenantArtifactPurgeSql.Key(item.ArtifactId));
 
         _ = command.Parameters.AddWithValue("$operationId", Format(operationId));
 
@@ -571,11 +646,19 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         command.CommandText = sql;
 
-        // All three identities are bound for every statement rather than sniffed out of the text.
-        // SQLite ignores a bound parameter a statement does not mention, and choosing which to bind by
+        // Every identity is bound for every statement rather than sniffed out of the text. SQLite
+        // ignores a bound parameter a statement does not mention, and choosing which to bind by
         // searching the SQL would make the binding a property of how the statement happens to be
         // spelled.
+        //
+        // Each identity is bound twice, in two spellings that are never interchangeable. The canonical
+        // $artifactId, $labelId, and $sessionId match artifact_sensitivity, whose single writer spells
+        // them that way. The normalised $artifactKey and $sessionKey match the content tables, whose
+        // several writers do not agree on a spelling, and are the only forms a statement generated by
+        // CovenantArtifactPurgeSql may compare against.
         _ = command.Parameters.AddWithValue("$artifactId", Format(item.ArtifactId));
+
+        _ = command.Parameters.AddWithValue("$artifactKey", CovenantArtifactPurgeSql.Key(item.ArtifactId));
 
         _ = command.Parameters.AddWithValue("$labelId", Format(item.SensitivityLabelId));
 
@@ -583,9 +666,17 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             "$sessionId",
             item.SessionId is { } sessionId ? Format(sessionId) : DBNull.Value);
 
+        // A null Session binds null on both spellings, so a redaction for an item that names no Session
+        // matches nothing rather than matching every row — the same no-op the exact comparison gave.
+        _ = command.Parameters.AddWithValue(
+            "$sessionKey",
+            item.SessionId is { } key ? CovenantArtifactPurgeSql.Key(key) : DBNull.Value);
+
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
+
+
 
     private static Result<CovenantArtifactErasureProgress> Stalled(CovenantErasureBlocker blocker) =>
         Result<CovenantArtifactErasureProgress>.Success(
