@@ -686,6 +686,24 @@ public static class ErrorCodes
 
         public const string SearchFailed = "Saga.SearchFailed";
 
+        /// <summary>The caller's view of this memory's content is stale relative to what is stored now.</summary>
+        public const string StaleContent = "Saga.StaleContent";
+
+        /// <summary>The caller asked to retire a memory that is already retired.</summary>
+        public const string AlreadyRetired = "Saga.AlreadyRetired";
+
+        /// <summary>The caller asked to reinstate a memory that is not retired.</summary>
+        public const string NotRetired = "Saga.NotRetired";
+
+        /// <summary>The caller's correction would not have changed this memory's stored content.</summary>
+        public const string Unchanged = "Saga.Unchanged";
+
+        /// <summary>
+        /// The embedding substrate cannot produce a vector right now, so the write was refused rather
+        /// than leaving this memory's text and its vector disagreeing about what it says.
+        /// </summary>
+        public const string EmbeddingUnavailable = "Saga.EmbeddingUnavailable";
+
     }
 
     /// <summary>Lexicon — structured agent-directed entity memory (replaces model-facing Lore).</summary>

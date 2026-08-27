@@ -262,6 +262,35 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
     }
 
+    /// <summary>
+    /// Creates a Session with no <c>session_campaign_bindings</c> row at all, so a caller can drive a
+    /// Saga write the production scope classifier resolves into
+    /// <see cref="SagaMemoryScopeKind.LegacyUnresolved"/> — never by declaring that scope directly.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the one thing <see cref="SessionBoundToNewCampaignAsync"/> does that this does not:
+    /// no binding row. <see cref="SagaMemoryScopeClassifier"/> reads that absence, not a null Campaign
+    /// column, as the "ownership never resolved" case.
+    /// </remarks>
+    public async Task<Guid> SessionWithUnresolvedBindingAsync()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        string now = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($id, NULL, 'active', $now, $now);
+            """,
+            ("$id", sessionId.ToString()),
+            ("$now", now)).ConfigureAwait(false);
+
+        return sessionId;
+
+    }
+
     private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
     {
 

@@ -1195,6 +1195,11 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+        // Same lifetime as ISagaMemoryStore: this wraps that store's DbContext-backed calls directly,
+        // and a service scoped any looser would hold that DbContext across a boundary the store itself
+        // does not.
+        services.AddScoped<ISagaCurationService, SagaCurationService>();
+
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
         services.AddScoped<ILexiconService, LexiconService>();
