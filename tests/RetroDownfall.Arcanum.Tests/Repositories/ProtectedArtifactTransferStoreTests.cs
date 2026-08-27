@@ -422,47 +422,30 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         Assert.True((await CommitAsync(request)).Result.IsSuccess);
 
-        // Read back rather than remembered. The identity under test is the one the store chose for the
-        // destination row, and a value supplied here would prove nothing about the spelling it stores.
-        string? importedEntryId = await _destination.ScalarStringAsync(
-            "SELECT \"Id\" FROM \"Entries\" WHERE \"Role\" = 1;",
-            CancellationToken.None);
-
-        Assert.NotNull(importedEntryId);
-
-        // The precondition this case exists for, pinned rather than assumed. Everything below would
-        // still pass if the store switched to the uppercase spelling the label ledger uses — and would
-        // then be proving nothing, because that spelling matches under either comparison. A silent
-        // degradation into a no-evidence test is worse than a loud failure here.
-        Assert.Equal(importedEntryId.ToLowerInvariant(), importedEntryId);
-
-        Guid entryId = Guid.Parse(importedEntryId, CultureInfo.InvariantCulture);
+        // Read back rather than remembered, and the lowercase precondition pinned rather than assumed:
+        // the identities under test are the ones the store chose for its destination rows, and values
+        // supplied here would prove nothing about the spellings it stores.
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
 
         ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
 
+        // Named with its Session, which is what makes the purge repair the Session projection as well
+        // as delete the content. The label could not carry a Session at all until the projection began
+        // agreeing with "Sessions"."Id", so this is the assertion that had nowhere to live before.
         Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
-            new DerivedArtifactWrite(
-                SensitiveArtifactKind.AssistantEntry,
-                entryId,
-
-                // Deliberately no Session. The property under test is which "Entries" row the purge
-                // matches, and that comparison never reads the Session, so naming one would only add a
-                // second reason this case could fail. The Session projection an imported artifact's
-                // label does reach is proven by its own case below.
-                sessionId: null,
-                campaignId: null,
-                turnId: null,
-                artifactRevision: 1,
-                DerivedArtifactContentDigest.ForText("answer"),
-                ContentSensitivity.CovenantDerived,
-                GenerationProvenance.CreateExact([CovenantOperationGateFixture.DatasetGeneration])),
+            ImportedEntryLabel(imported),
             CancellationToken.None);
 
         Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : string.Empty);
 
+        Assert.Equal(
+            1,
+            (await ledger.ReadSessionProjectionAsync(imported.SessionId, CancellationToken.None))
+                .Value.TaintedArtifactCount);
+
         ArtifactSensitivityLabel label = (await ledger.TryReadLabelAsync(
             SensitiveArtifactKind.AssistantEntry,
-            entryId,
+            imported.EntryId,
             CancellationToken.None)).Value!;
 
         CovenantProtectedArtifactErasureKernel kernel = new(
@@ -511,6 +494,15 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                 CancellationToken.None));
 
         Assert.Equal(0, await CountDestinationAsync("artifact_sensitivity"));
+
+        // The Session projection was repaired, not merely left behind. That statement finds its row by
+        // the normalised comparison, because the projection agrees with "Sessions"."Id" and this
+        // Session's identity is the lowercase one the store wrote — an exact match would update
+        // nothing and leave the count reporting an artifact that no longer exists.
+        Assert.Equal(
+            0,
+            (await ledger.ReadSessionProjectionAsync(imported.SessionId, CancellationToken.None))
+                .Value.TaintedArtifactCount);
 
     }
 
