@@ -60,7 +60,21 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
     private const string DestinationIdentity = "11111111-2222-4333-8444-555555555555";
 
+    /// <summary>
+    /// The Session as the Session row and its projections spell it: lowercase, the form protected
+    /// transfer and backup import write. A staged archive is another installation's database, so this
+    /// suite seeds it — but it has to seed the spellings production actually produces.
+    /// </summary>
     private const string SessionId = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+
+    /// <summary>
+    /// The same Session as the label ledger spells it. <c>artifact_sensitivity.SessionId</c> has
+    /// exactly one writer and that writer uppercases, so seeding this column from
+    /// <see cref="SessionId"/> would put a spelling in the archive that nothing produces — and would
+    /// make every comparison the purger draws between a label and a Session-owned row agree by
+    /// accident, which is how this whole defect family survived its tests.
+    /// </summary>
+    private static readonly string LedgerSessionId = SessionId.ToUpperInvariant();
 
     private const string SummaryArtifactId = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
 
@@ -791,7 +805,7 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
         }
 
-        await SeedLabelAsync(SummaryLabelId, SummaryArtifactId, SensitiveArtifactKind.Summary, SessionId);
+        await SeedLabelAsync(SummaryLabelId, SummaryArtifactId, SensitiveArtifactKind.Summary, LedgerSessionId);
 
     }
 
