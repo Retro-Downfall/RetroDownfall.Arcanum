@@ -111,11 +111,14 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// An archive written the ordinary way is found, over the spelling that writer stores.
     /// </summary>
     /// <remarks>
-    /// The four reads that assemble the source graph bound a lowercase identity against columns the
-    /// object-relational writer fills uppercase, so a selective protected import of a genuine backup
-    /// found no Session and refused. Every other import case here is now also evidence of this,
-    /// because the fixture seeds the spelling that writer produces — but only this one says so, and
-    /// only this one fails with a message naming the cause when the fixture drifts back.
+    /// Three of the four reads that assemble the source graph bound a lowercase identity against
+    /// columns the object-relational writer fills uppercase, so a selective protected import of a
+    /// genuine backup found no Session and refused. The fourth reads
+    /// <c>"SessionAttachments"."SessionId"</c>, which that writer does not fill at all and which every
+    /// production writer spells lowercase — it was matching, and normalising it changed nothing.
+    /// Every other import case here is now also evidence of the three, because the fixture seeds the
+    /// spellings production writes — but only this one says so, and only this one fails with a message
+    /// naming the cause when the fixture drifts back.
     /// </remarks>
     [Fact]
     public async Task An_archive_written_by_the_object_relational_writer_is_found_and_imported()
@@ -984,20 +987,20 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         long attachments = await OwnedCountAsync(
             source,
-            "SELECT COUNT(*) FROM \"SessionAttachments\" WHERE \"SessionId\" = $id;",
+            $"SELECT COUNT(*) FROM \"SessionAttachments\" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")};",
             sourceSessionId);
 
         return new(
             1,
             (ulong)await OwnedCountAsync(
                 source,
-                "SELECT COUNT(*) FROM \"Entries\" WHERE \"SessionId\" = $id;",
+                $"SELECT COUNT(*) FROM \"Entries\" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")};",
                 sourceSessionId),
             (ulong)attachments,
             (ulong)attachments,
             (ulong)await OwnedCountAsync(
                 source,
-                "SELECT COUNT(*) FROM assistant_entry_finalizations WHERE SessionId = $id AND OutcomeCode = 1;",
+                $"SELECT COUNT(*) FROM assistant_entry_finalizations WHERE {CovenantIdentitySql.Keyed("SessionId", "$id")} AND OutcomeCode = 1;",
                 sourceSessionId),
             0);
 
@@ -1013,9 +1016,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         command.CommandText = sql;
 
-        // The identity as the row holds it, not a spelling this test chose: the graph under count may
-        // have been written by this store, which spells a Session lowercase, or seeded uppercase.
-        _ = command.Parameters.AddWithValue("$id", await StoredSessionIdAsync(database, sessionId));
+        // Normalised, exactly as the planner and the store both compare. Binding the Session's own
+        // stored text instead was wrong across tables: "Sessions"."Id" is uppercase for an ordinary
+        // archive while "SessionAttachments"."SessionId" is lowercase whoever wrote it, so one bound
+        // literal counted the entries and missed the attachments.
+        _ = command.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(sessionId));
 
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(CancellationToken.None),
@@ -1051,7 +1056,9 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Guid sourceSessionId)
     {
 
-        string session = await StoredSessionIdAsync(source, sourceSessionId);
+        // Normalised for the reason OwnedCountAsync states: the child tables of one Session do not
+        // agree on how that Session is spelled, so no single bound literal reaches all three.
+        string session = CovenantIdentitySql.Key(sourceSessionId);
 
         List<byte[]> items = [];
 
@@ -1059,7 +1066,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         {
 
             entries.CommandText =
-                "SELECT \"Id\", \"Sequence\" FROM \"Entries\" WHERE \"SessionId\" = $id ORDER BY \"Sequence\", \"Id\";";
+                $"SELECT \"Id\", \"Sequence\" FROM \"Entries\" WHERE "
+                + $"{CovenantIdentitySql.Keyed("\"SessionId\"", "$id")} ORDER BY \"Sequence\", \"Id\";";
 
             _ = entries.Parameters.AddWithValue("$id", session);
 
@@ -1078,9 +1086,10 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         await using (SqliteCommand attachments = source.Connection.CreateCommand())
         {
 
-            attachments.CommandText = """
+            attachments.CommandText = $"""
                 SELECT "RelativePath", "ContentSha256", "ByteLength"
-                FROM "SessionAttachments" WHERE "SessionId" = $id ORDER BY "Id";
+                FROM "SessionAttachments"
+                WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")} ORDER BY "Id";
                 """;
 
             _ = attachments.Parameters.AddWithValue("$id", session);
@@ -1102,9 +1111,10 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         await using (SqliteCommand finalizations = source.Connection.CreateCommand())
         {
 
-            finalizations.CommandText = """
+            finalizations.CommandText = $"""
                 SELECT AssistantEntryId FROM assistant_entry_finalizations
-                WHERE SessionId = $id AND OutcomeCode = 1 ORDER BY AssistantEntryId;
+                WHERE {CovenantIdentitySql.Keyed("SessionId", "$id")} AND OutcomeCode = 1
+                ORDER BY AssistantEntryId;
                 """;
 
             _ = finalizations.Parameters.AddWithValue("$id", session);
@@ -1129,12 +1139,22 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// Seeds the archive the way an ordinary Grimoire is written.
     /// </summary>
     /// <remarks>
-    /// Uppercase, because that is what the object-relational writer stores: <c>Session.Id</c> is a
-    /// <see cref="Guid"/> property mapped to TEXT, and the SQLite provider renders one as uppercase
-    /// dashed text. This fixture used to seed the lowercase form, which is the spelling the store's
-    /// own source reads bound — so every import case here agreed with those reads by accident and the
-    /// suite could not have caught them being wrong about a real archive. The onward-transfer cases
-    /// cover the other spelling, because their source is a Session this store itself wrote.
+    /// A mixture, because that is what an installation actually holds. <c>"Sessions"."Id"</c> and
+    /// <c>"Entries"."SessionId"</c> are uppercase: they come from a <see cref="Guid"/> property mapped
+    /// to TEXT, and the object-relational writer renders one as uppercase dashed text.
+    /// <c>"SessionAttachments"."SessionId"</c> is lowercase, because that table has no such writer —
+    /// all three of its production writers hand the column a string from <c>ToString()</c>.
+    ///
+    /// <para>That last one was seeded uppercase, under a remark asserting the object-relational writer
+    /// filled it. There is no such writer for that table, and the claim was wrong. It mattered: the
+    /// mutation proof for the attachment read was taken against a spelling no production writer
+    /// produces, which is this defect family's own anti-pattern committed inside its own fix. The
+    /// spelling is now read off the writers, and the attachment read is no longer claimed as a fix.</para>
+    ///
+    /// <para>This fixture used to seed every identity lowercase, which is the spelling the store's own
+    /// source reads bound — so every import case here agreed with those reads by accident and the suite
+    /// could not have caught them being wrong about a real archive. The onward-transfer cases cover the
+    /// other spelling, because their source is a Session this store itself wrote.</para>
     /// </remarks>
     private async Task SeedSourceSessionAsync()
     {
@@ -1193,7 +1213,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                  ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey",
                   "OriginalFileName", "Version", "RelativePath", "ContentSha256", "MimeType",
                   "ByteLength", "Kind", "CreatedAt", "SourceKind", "SourceStatus", "EncryptionVersion")
-             VALUES ('{Guid.Parse("cccccccc-1111-4222-8333-444444444444")}', '{session}', NULL, NULL,
+             VALUES ('{Guid.Parse("cccccccc-1111-4222-8333-444444444444")}',
+                     '{_sourceSessionId:D}', NULL, NULL,
                      0, 'note', 'note.txt', 1, '{owner}/note.txt', '{hash}', 'text/plain',
                      {bytes.Length}, 0, '{now}', 'SnapshotOnly', 'NotApplicable', 0);
              """,
