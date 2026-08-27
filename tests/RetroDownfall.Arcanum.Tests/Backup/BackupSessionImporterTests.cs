@@ -6,9 +6,15 @@ using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Core.Tower;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -32,6 +38,16 @@ public sealed class BackupSessionImporterTests : IDisposable
     private static readonly Guid SessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     private static readonly Guid CampaignId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    // Hex letters, deliberately. The protected import case below turns on the difference between the
+    // uppercase spelling an archive holds and the lowercase one a Guid renders by default, and an
+    // all-digit identity renders identically in both — which is how a suite proves nothing while
+    // looking like it proves this.
+    private static readonly Guid ArchivedSessionId =
+        Guid.Parse("a6b5c4d3-e2f1-4098-8765-4a3b2c1d0e9f");
+
+    private static readonly Guid AssistantEntryId =
+        Guid.Parse("d3e2f1a6-b5c4-4987-8650-9f0e1d2c3b4a");
 
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -281,6 +297,86 @@ public sealed class BackupSessionImporterTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A selective protected import of an ordinary archive, end to end and asserted to succeed.
+    /// </summary>
+    /// <remarks>
+    /// The case this family never had. Every other protected-import case in the suite either refuses
+    /// before the store is reached or hands the store a request a test assembled, so all of them were
+    /// green while a selective protected import of a genuine backup could not work at all: the planner
+    /// bound a lowercase identity against columns an ordinary archive spells uppercase, refused with
+    /// "The archive does not contain Session {id}", and returned before
+    /// <c>CommitImportedSessionAsync</c> was ever called.
+    ///
+    /// <para>Entered at <see cref="BackupSessionImporter.ImportProtectedAsync"/> — the outermost
+    /// production method, the one the restore service calls — so the planner, the compound lease, the
+    /// real transfer store, and the lease disposition all run. Starting one layer lower, at
+    /// <c>PlanAsync</c> plus a hand-assembled request, would prove the store works on a request no
+    /// production caller can currently produce.</para>
+    ///
+    /// <para>The counts are asserted, not just the absence of issues. A plan assembled from a graph the
+    /// planner could not see would still commit — of nothing — and report success.</para>
+    ///
+    /// <para>The archive carries no committed finalization, and that is a limit of this case rather
+    /// than a choice about what an archive holds: the destination's finalization guard requires a
+    /// consumed capacity reservation for the imported assistant identity, and the transfer store
+    /// writes the guard without one, so an archive with a finalization cannot commit here for a reason
+    /// that has nothing to do with how an identity is spelled. The planner's own two finalization
+    /// reads are covered where they can be reached — over an archive that has one — in
+    /// <c>BackupSessionImportPlannerTests</c>.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_selective_protected_import_of_an_ordinary_archive_commits_its_whole_graph()
+    {
+
+        string sourceSecret = await SeedObjectRelationalSourceAsync();
+
+        string destinationSecret = await SeedDestinationAsync();
+
+        // The precondition, pinned rather than assumed. Both halves: uppercase is what an ordinary
+        // archive holds, and the inequality is what proves this identity still carries hex letters —
+        // an all-digit one renders the same in either case and would leave this case proving nothing.
+        string stored = await ReadStoredSessionIdAsync(sourceSecret);
+
+        Assert.Equal(stored.ToUpperInvariant(), stored);
+
+        Assert.NotEqual(ArchivedSessionId.ToString("D"), stored);
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportProtectedAsync(
+            new CovenantSelectiveImportServices(
+                new ProtectedTransferGate(),
+                new ProtectedArtifactTransferStore(
+                    CovenantSqliteConnectionInitializer.Instance,
+                    TimeProvider.System)),
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            [ArchivedSessionId],
+            Path.Combine(_sourceRoot, "attachments"),
+            Path.Combine(_destinationRoot, "attachments"),
+            destinationSecret,
+            sourceSecret,
+            [],
+            CancellationToken.None);
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(1, result.Sessions);
+
+        // The graph, not just the Session row. Each of these comes from a separate planner comparison
+        // against a separate column, and a plan that saw none of them commits an empty import that
+        // still reports success.
+        Assert.Equal(2, result.Entries);
+
+        Assert.Equal(1, result.Attachments);
+
+        Assert.Equal(1, await CountDestinationAsync(destinationSecret, "Sessions"));
+
+        Assert.Equal(2, await CountDestinationAsync(destinationSecret, "Entries"));
+
+        Assert.Equal(1, await CountDestinationAsync(destinationSecret, "SessionAttachments"));
+
+    }
+
     private sealed class UnreachableTransferStore : IProtectedArtifactTransferStore
     {
 
@@ -293,6 +389,133 @@ public sealed class BackupSessionImporterTests : IDisposable
                 CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "A refused selection commits no protected transfer.");
+
+    }
+
+    /// <summary>
+    /// The compound lease a selective protected import runs under, granted rather than arbitrated.
+    /// </summary>
+    /// <remarks>
+    /// Only the protected-transfer acquisition is answered; every other member throws, because a
+    /// selective import takes no other lease and a fake that quietly answered one would hide a caller
+    /// that started needing it. What is under test here is the archive the planner reads and the graph
+    /// the store copies — not the arbitration, which has its own suite.
+    /// </remarks>
+    private sealed class ProtectedTransferGate : ICovenantOperationGate
+    {
+
+        public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
+            ProtectedTransferScope scope,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                Result<CovenantProtectedTransferLease>.Success(
+                    new CovenantProtectedTransferLease(
+                        new GrantedRegistration(owner, scope.ToOperationScope()))));
+
+        public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import takes no installation read lease.");
+
+        public ValueTask<Result<CovenantReadLease>> AcquireReadAsync(
+            CovenantOperationScope scope,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import takes no nested read lease.");
+
+        public ValueTask<Result<CovenantWriteLease>> AcquireWriteAsync(
+            CovenantOperationScope scope,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import takes no nested write lease.");
+
+        public ValueTask<Result<CovenantTurnLease>> AcquireTurnAsync(
+            CanonicalCampaignContext context,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import runs no turn.");
+
+        public ValueTask<Result<CovenantMcpLease>> AcquireMcpAsync(
+            CovenantOperationScope scope,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import runs no MCP mutation.");
+
+        public ValueTask<Result<CovenantAcceleratorLease>> AcquireAcceleratorAsync(
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import synchronizes no accelerator.");
+
+        public ValueTask<Result<CovenantCleanupLease>> AcquireCleanupAsync(
+            CovenantOperationScope scope,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import runs no owner cleanup.");
+
+        public ValueTask<Result<CovenantCampaignExclusiveLease>> AcquireCampaignExclusiveAsync(
+            Guid campaignId,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import closes no Campaign.");
+
+        public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import closes no installation.");
+
+        public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A live import resumes nothing.");
+
+        public ValueTask<Result<CovenantCampaignExclusiveLease>> ResumeCampaignExclusiveAsync(
+            Guid campaignId,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A live import resumes no Campaign scope.");
+
+        public ValueTask<Result<CovenantProtectedTransferLease>> ResumeProtectedTransferAsync(
+            ProtectedTransferScope scope,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A live import acquires; only startup resumes.");
+
+        public ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A live import acquires; only startup resumes.");
+
+        private sealed class GrantedRegistration(
+            CovenantExclusiveRecoveryOwner owner,
+            CovenantOperationScope scope) : ICovenantExclusiveLeaseRegistration
+        {
+
+            public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
+                Guid.NewGuid(),
+                RuntimeAuthorityGeneration: 1,
+                CovenantLeaseKind.ProtectedTransfer,
+                CovenantLeaseCoverage.Scoped,
+                scope,
+                DatasetGeneration: Guid.NewGuid(),
+                CapabilityGeneration: 1,
+                AuthorityEpoch: 1,
+                CanonicalSequence: 1,
+                CampaignAvailabilityGeneration: null,
+                CampaignPathRevision: null,
+                AcceleratorEpoch: null,
+                AppliedCampaignDeletionSequence: null,
+                owner,
+                CleanupOnlyHistoricalCampaign: false);
+
+            public CancellationToken Revocation => CancellationToken.None;
+
+            public Result ExecuteWhileHeld(Func<Result> callback) => callback();
+
+            public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
+                ValueTask.FromResult(Result.Success());
+
+            public ValueTask<Result> CompleteAsync(
+                CovenantExclusiveLeaseDisposition disposition,
+                CancellationToken cancellationToken) =>
+                ValueTask.FromResult(Result.Success());
+
+            public ValueTask ReleaseAsync() => ValueTask.CompletedTask;
+
+        }
 
     }
 
@@ -342,6 +565,125 @@ public sealed class BackupSessionImporterTests : IDisposable
         _ = await seed.ExecuteNonQueryAsync();
 
         return secret;
+
+    }
+
+    /// <summary>
+    /// Seeds an archive the way an ordinary installation writes one.
+    /// </summary>
+    /// <remarks>
+    /// <c>"Sessions"."Id"</c> and <c>"Entries"."SessionId"</c> come from a <see cref="Guid"/> property
+    /// mapped to TEXT, and the object-relational writer stores one as uppercase dashed text.
+    /// <c>"SessionAttachments"."SessionId"</c> is seeded lowercase in the same archive, because that
+    /// is what all three of its writers render — this is a real installation's mixture rather than one
+    /// spelling applied everywhere, and inventing a spelling nowhere writes would be the same mistake
+    /// as seeding the one a broken read expects. Kept apart from <see cref="SeedSourceAsync"/> rather
+    /// than folded into it: the unprotected merge path binds the lowercase rendering against
+    /// <c>"Sessions"."Id"</c> and would refuse this archive outright, so seeding it there would replace
+    /// a suite that passes over a known gap with a suite that fails over one.
+    ///
+    /// <para>The attachment's owner segment is the Session in <c>"N"</c> form, exactly as
+    /// <c>SessionAttachmentStore</c> writes it, and its digest is the real SHA-256 of the payload,
+    /// because the store reopens the copied bytes and refuses a blob that does not match.</para>
+    /// </remarks>
+    private async Task<string> SeedObjectRelationalSourceAsync()
+    {
+
+        string secret = await CreateDatabaseAsync(_sourceRoot);
+
+        string session = ArchivedSessionId.ToString("D").ToUpperInvariant();
+
+        string assistantEntryId = AssistantEntryId.ToString("D").ToUpperInvariant();
+
+        string owner = ArchivedSessionId.ToString("N");
+
+        string relative = owner + "/note/v1/note.bin";
+
+        string payload = Path.Combine(
+            _sourceRoot,
+            "attachments",
+            relative.Replace('/', Path.DirectorySeparatorChar));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(payload)!);
+
+        byte[] bytes = "attachment bytes"u8.ToArray();
+
+        await File.WriteAllBytesAsync(payload, bytes, CancellationToken.None);
+
+        string digest = Convert.ToHexString(SHA256.HashData(bytes));
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            secret,
+            readOnly: false,
+            CancellationToken.None);
+
+        await using SqliteCommand seed = connection.CreateCommand();
+
+        seed.CommandText = $"""
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ('{session}', NULL, 'Archived session', 'active',
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+            INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                   "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+            VALUES ('{Guid.Parse("b7c8d9ea-1f20-4a31-8b42-c53d64e75f86").ToString("D").ToUpperInvariant()}',
+                    '{session}', 0, 'ask', '', '2026-01-01T00:00:00Z', 1, NULL, NULL, NULL, 0);
+
+            INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                   "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+            VALUES ('{assistantEntryId}', '{session}', 1, 'answer', 'model',
+                    '2026-01-01T00:00:00Z', 2, NULL, NULL, NULL, 0);
+
+            INSERT INTO "SessionAttachments"
+                ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
+                 "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                 "SourceKind", "SourceStatus", "EncryptionVersion")
+            VALUES ('{Guid.Parse("c8d9ea1f-2031-4b42-8c53-d64e75f86a97"):D}',
+                    '{ArchivedSessionId:D}', 'Bound', 'note', 'note.txt', 1, '{relative}', '{digest}',
+                    'text/plain', {bytes.Length}, 'Text', '2026-01-01T00:00:00Z',
+                    'WorkspaceFile', 'Refreshable', 0);
+            """;
+
+        _ = await seed.ExecuteNonQueryAsync();
+
+        return secret;
+
+    }
+
+    private async Task<string> ReadStoredSessionIdAsync(string sourceSecret)
+    {
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            sourceSecret,
+            readOnly: true,
+            CancellationToken.None);
+
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.CommandText = """
+            SELECT "Id" FROM "Sessions" WHERE "Title" = 'Archived session';
+            """;
+
+        return (string)(await read.ExecuteScalarAsync())!;
+
+    }
+
+    private async Task<long> CountDestinationAsync(string destinationSecret, string table)
+    {
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            destinationSecret,
+            readOnly: true,
+            CancellationToken.None);
+
+        await using SqliteCommand count = connection.CreateCommand();
+
+        count.CommandText = $"SELECT COUNT(*) FROM \"{table}\";";
+
+        return Convert.ToInt64(await count.ExecuteScalarAsync());
 
     }
 
