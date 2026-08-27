@@ -1230,12 +1230,11 @@ internal sealed class ProtectedArtifactTransferStore(
     /// Counts the source's own labels for one Session, in the spelling the label ledger writes them.
     /// </summary>
     /// <remarks>
-    /// <c>artifact_sensitivity.SessionId</c> is written by exactly one component and it spells an
-    /// identity uppercase, while the Session identities that arrive here are carried as
-    /// <see cref="Guid"/> and were spelled lowercase by whichever writer created the archived Session.
-    /// SQLite compares TEXT byte for byte, so an exact match counted zero for every labelled Session
-    /// and the refusal this feeds never fired — the one member of this defect family that returned a
-    /// clean verdict and authorized the export it exists to prevent. Both sides are normalised now.
+    /// <c>artifact_sensitivity.SessionId</c> has exactly one writer and that writer spells an identity
+    /// uppercase, while this scan bound <c>ToString("D")</c>, which is lowercase. SQLite compares TEXT
+    /// byte for byte, so the count was zero for every labelled Session and the refusal this feeds
+    /// never fired for any of them — the one member of its defect family that returned a clean verdict
+    /// and authorized the export it exists to prevent. Both sides are normalised now.
     ///
     /// <para><b>The cost, specific to this site.</b> A normalised column cannot use
     /// <c>idx_artifact_sensitivity_session</c>, so this becomes a full scan of the archive's label
