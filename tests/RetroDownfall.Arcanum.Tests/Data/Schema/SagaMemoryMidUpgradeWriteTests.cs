@@ -601,6 +601,101 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
+    /// <summary>
+    /// The sweep settles the Campaign a suppression recorded before version 5 named it, and leaves the
+    /// digest beside it alone.
+    /// </summary>
+    /// <remarks>
+    /// The other half of the same rule. Canonicalizing the write keeps every suppression made from now
+    /// on findable; this repairs the ones an installation already holds, which is every retirement taken
+    /// against a Campaign-scoped memory before the column was settled. Seeded at version 4 rather than
+    /// written, because the guard version 5 installs refuses that row outright - which is exactly the
+    /// state the sweep exists for, and cannot be produced any other way once the guard is in place.
+    ///
+    /// <para>The digest is asserted unchanged in the same breath. It has no preimage left to recompute
+    /// from, so a sweep that decided to settle it too would be inventing evidence, and the release path
+    /// that asks for both renderings would then be asking about a row that no longer says what any
+    /// retirement recorded.</para>
+    /// </remarks>
+    [Fact]
+    public async Task The_sweep_settles_a_suppression_recorded_before_the_campaign_spelling_did()
+    {
+
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            CoreSchemaVersionFourFixture.ChainSet(),
+            TestDimensions,
+            CancellationToken.None);
+
+        await SeedBoundSessionAsync(connection);
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO saga_retirement_suppressions (
+                SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+            VALUES (zeroblob(32), 2, $campaign, $now);
+            """,
+            ("$campaign", CampaignIdentity.ToString("D").ToLowerInvariant()),
+            ("$now", Timestamp));
+
+        ServiceCollection collection = new();
+
+        _ = collection.AddOptions();
+
+        _ = collection.Configure<ArcanumSettings>(static _ => { });
+
+        await using ServiceProvider services = collection.BuildServiceProvider();
+
+        GrimoireSchemaInstaller installer =
+            GrimoireSchemaTestInstaller.Create(GrimoireSchemaVersionChains.Default);
+
+        GrimoireSchemaTransitionCoordinator coordinator = new(
+            new MidUpgradeConnectionSource(connection),
+            GrimoireSchemaVersionChains.Default,
+            installer,
+            new GrimoireSchemaBackfillRunner(installer, TimeProvider.System),
+            services,
+            new CovenantAvailability(new CovenantRuntimeGenerationProvider()),
+            TimeProvider.System);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            GrimoireSchemaVersionChains.Default,
+            TestDimensions,
+            CancellationToken.None);
+
+        while ((await coordinator.RunOnceAsync(CancellationToken.None)).Value.Advanced)
+        {
+        }
+
+        Assert.Equal(
+            Canonical(CampaignIdentity),
+            await ScalarStringAsync(
+                connection,
+                "SELECT CampaignId FROM saga_retirement_suppressions;"));
+
+        Assert.Equal(
+            0L,
+            await IdentitySpellingBackfill.CountNonCanonicalAsync(
+                connection,
+                transaction: null,
+                "saga_retirement_suppressions",
+                "CampaignId",
+                CancellationToken.None));
+
+        Assert.Equal(
+            1,
+            await CountAsync(
+                connection,
+                "SELECT COUNT(*) FROM saga_retirement_suppressions WHERE SuppressionDigest = zeroblob(32);"));
+
+    }
+
     /// <summary>Hands the coordinator the one open scratch connection this case drives everything on.</summary>
     private sealed class MidUpgradeConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
