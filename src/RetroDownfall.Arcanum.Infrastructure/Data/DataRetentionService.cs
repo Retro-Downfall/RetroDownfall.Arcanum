@@ -2304,9 +2304,9 @@ internal sealed partial class DataRetentionService(
                 // identities carry that guarantee, and it carries it because a selection like this one
                 // needed it to.
                 //
-                // The key is deliberately absent. This reset clears one Campaign's evidence, not the
-                // installation's, and every Global suppression and every other Campaign's still needs
-                // the key that binds it.
+                // The key is deliberately absent. This reset clears one Campaign's evidence rather than
+                // the installation's, and a digest left standing is unmatchable without the key that
+                // binds it.
                 new(
                     "saga_retirement_suppressions",
                     "\"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
