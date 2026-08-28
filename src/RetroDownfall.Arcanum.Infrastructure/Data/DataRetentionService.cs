@@ -7128,9 +7128,9 @@ internal sealed partial class DataRetentionService(
     ///
     /// <para>Emptying the table is what a bare count rests on, and only an untargeted reset does that. A
     /// Campaign-targeted reset leaves every other Campaign's rows standing in the same tables, so a bare
-    /// count over them reports another Campaign's memories as this reset's unfinished work and the
-    /// operation is recovered as failed for as long as that Campaign has any. Its witness is
-    /// <see cref="BuildMemoryResetSelections"/> instead, which is what
+    /// count over them reads another Campaign's memories as this reset's unfinished work. That settles
+    /// the operation at Failed - once and terminally, on the wrong answer, for rows the reset was never
+    /// asked to remove. Its witness is <see cref="BuildMemoryResetSelections"/> instead, which is what
     /// <see cref="MemoryResetResidueSelections"/> chooses between.</para>
     ///
     /// <para>That is why the Annals tables a memory reset also clears are absent. Their rows belong to
@@ -7210,12 +7210,14 @@ internal sealed partial class DataRetentionService(
     /// through. <see cref="BuildMemoryResetSelections"/> is that list, and reading it here is what keeps
     /// recovery from becoming a fifth idea of which rows a reset owns.
     ///
-    /// <para>Two tables a whole-store Saga reset clears are absent from the targeted list, and their
-    /// absence is what a bare count gets wrong. <c>saga_suppression_key</c> is one row for the
-    /// installation and a targeted reset deliberately leaves it, so counting it would report every
-    /// recovered targeted reset as failed on an installation where anything had ever been retired.
-    /// <c>lexicon_fts</c> is an external-content index with no scope column, and its rows go as the
-    /// entries that own them do.</para>
+    /// <para>Two tables the untargeted witness names are absent from the targeted list, and their
+    /// absence is what a bare count gets wrong. <c>saga_suppression_key</c> is the one a whole-store
+    /// Saga reset does clear: it holds a single row for the installation, a targeted reset deliberately
+    /// leaves it, and counting it settles every targeted Saga reset at failed wherever anything had ever
+    /// been retired. <c>lexicon_fts</c> is cleared by no reset at all - it is an external-content index
+    /// whose rows the <c>lexicon_entries_ad</c> trigger retires as the entries go, which is why it is
+    /// named in <see cref="MemoryResetResidueTables"/> and in neither selection list - and it carries no
+    /// scope column, so every other scope's terms are what a count of it reads.</para>
     /// </remarks>
     private static IReadOnlyList<MemoryResetSelection> MemoryResetResidueSelections(
         MemoryResetScope scope,

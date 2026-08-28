@@ -590,6 +590,10 @@ public sealed partial class DataRetentionServiceTests
     /// the memories the operator asked to remove still readable and no further attempt ever made. It is
     /// the other half of the sibling above - one arm says which rows may not answer, this one says the
     /// rows that must.
+    ///
+    /// <para>Expecting Failed is also the only way an arm binds the Campaign the target parsed back to,
+    /// because a wrong one counts nothing and reaches Completed. This one binds the canonical upper-case
+    /// spelling that saga_memories and session_campaign_bindings are compared on.</para>
     /// </remarks>
     [SkippableFact]
 
@@ -626,10 +630,11 @@ public sealed partial class DataRetentionServiceTests
     /// spell that Campaign differently and one residue table cannot be scoped at all.
     /// </summary>
     /// <remarks>
-    /// The journal writes the Campaign in the "N" form and lexicon_entries.ScopeCampaignId holds a bare
-    /// ToString(), so the target has to be read back as an identity rather than carried through as the
-    /// text it arrived as. Text would match no row, and this reset would be recovered as committed
-    /// whether it had committed or not.
+    /// What this arm proves is that nothing outside this Campaign holds a committed reset open: another
+    /// Campaign's entry, the global scope's, and the index terms of both. It cannot prove which Campaign
+    /// was parsed. An identity that matches no row counts no residue and reaches Completed too, so every
+    /// wrong identity satisfies an arm that expects Completed - which is what the interrupted sibling
+    /// below is for.
     ///
     /// <para>lexicon_fts is what a scoped count cannot reach. It is an external-content index with no
     /// scope column, its rows go as the entries that own them do, and the two terms asserted here are
@@ -669,6 +674,51 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+    }
+
+    /// <summary>
+    /// A Campaign-targeted Lexicon reset that was interrupted is still recovered as interrupted.
+    /// </summary>
+    /// <remarks>
+    /// The arm that binds the Lexicon spelling. The journal writes the Campaign in the "N" form and
+    /// lexicon_entries.ScopeCampaignId holds a bare ToString(), so the target has to be read back as an
+    /// identity rather than carried through as the text it arrived as - and the Saga sibling cannot say
+    /// so, because it binds the canonical upper-case form instead.
+    ///
+    /// <para>It has to expect Failed to say anything at all. A Campaign that matched no row would leave
+    /// this Campaign's entry standing and still report the reset committed, which is the reading every
+    /// arm expecting Completed accepts.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task MutationRecovery_ForAnInterruptedCampaignTargetedLexiconReset_SeesThatCampaignsEntries()
+    {
+
+        RequireSqlCipher();
+
+        await SeedScopedLexiconEntryAsync("config", ResetCampaignA.ToString());
+
+        Assert.Equal(
+            1,
+            await CountAsync("lexicon_entries", "ScopeCampaignId", ResetCampaignA.ToString()));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedMemoryResetJournalAsync(
+            operations,
+            "interrupted-campaign-lexicon-recovery-test",
+            CampaignResetTarget(MemoryResetScope.Lexicon, ResetCampaignA));
+
+        DataRetentionMutationRecoveryHandler handler = new(CreateService());
+
+        LongRunningOperationRecoveryResult recovered = await handler.RecoverAsync(
+            operation,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Failed, recovered.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, recovered.ErrorCode);
 
     }
 
