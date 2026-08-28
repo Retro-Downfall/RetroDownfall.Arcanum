@@ -101,13 +101,13 @@ public sealed class CovenantIdentityComparisonInventoryTests
     /// The registered sites, each with the reason it is still here.
     /// </summary>
     /// <remarks>
-    /// Closer to a defect register than an exemption list, and it now holds three kinds of entry. Four
-    /// are comparisons that match nothing they were meant to match and nobody has fixed. One matches
-    /// by construction against a column whose writers were converted under it. Two are exact on
-    /// purpose, against columns a guard trigger governs, and they are the outcome this work was for
-    /// rather than a debt against it. Every entry carries its own reason and opens by saying which of
-    /// the three it is, so an entry appended later cannot inherit a justification written for a
-    /// different site.
+    /// Closer to a defect register than an exemption list, and it now holds three kinds of entry:
+    /// comparisons that match nothing they were meant to match and nobody has fixed; comparisons that
+    /// match by construction against a column whose writers were converted under them; and comparisons
+    /// that are exact on purpose, against columns a guard trigger governs, which are the outcome this
+    /// work was for rather than a debt against it. Every entry carries its own reason and opens by
+    /// saying which of the three it is, so an entry appended later cannot inherit a justification
+    /// written for a different site.
     ///
     /// <para>An entry leaves this list by being fixed, and the test fails if a fixed site is left
     /// registered — so the register cannot outlive what it names. Two entries left it that way when the
@@ -127,22 +127,14 @@ public sealed class CovenantIdentityComparisonInventoryTests
         // should be: this reads the installation's own database, where exact is the correct shape.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupInventoryPlanner.cs | SessionAttachments.SessionId",
 
-        // Not matching. The unprotected merge path copies the archived Entry graph with the lowercase
-        // rendering against a column the object-relational writer fills uppercase, so it copies no
-        // entries for a Session it did manage to find.
-        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | Entries.SessionId",
-
-        // Not matching, and the one that decides the whole operation. The merge path probes
-        // "Sessions"."Id" with the lowercase rendering, so it reports "The archive does not contain
-        // every requested Session" for a Session the archive plainly holds. Confirmed by construction:
-        // seeding its fixture the way an archive is written turns its currently green cases red. That
-        // fixture is deliberately left alone — changing it would replace a suite that passes over a
-        // known gap with one that fails over it, which belongs to whoever fixes the path.
-        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | Sessions.Id",
-
-        // Not matching. The same merge path's row probe, whose table is composed by its caller, so the
-        // rule can name the column but not the table. Reported under {composed} rather than skipped,
-        // because a comparison whose table nobody can read is where this family hid longest.
+        // Matching, and exact on purpose. This entry used to open "Not matching", and it named the
+        // merge path's probe of the archive - the read that decided the whole operation and refused
+        // every archive an ordinary installation produces. That probe is now a separate, normalised
+        // one, and what is left behind this composed table is the probe of the DESTINATION, which is
+        // this installation: its "Sessions"."Id" is a guarded column holding the canonical form, and
+        // the identity bound against it has been uppercased, so exact is both correct and what lets it
+        // seek. Still reported under {composed} rather than skipped, because a comparison whose table
+        // nobody can read is where this family hid longest.
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs | {composed}.Id",
 
         // Not matching, and the mildest member. This probe only chooses between two error messages, so

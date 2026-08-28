@@ -37,18 +37,19 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// entering there runs the planner, the compound lease, the real store and the merge loop exactly as
 /// production does.</para>
 ///
-/// <para><b>Why the unprotected merge case forces a remap.</b> The merge path's own existence gate
-/// binds an unnormalised identity against an archive the object-relational writer fills uppercase, so
-/// it is unreachable for a Session id that carries a hex letter — see the design note this suite's
-/// sibling <see cref="BackupSessionImporterTests"/> carries on <c>SessionId</c>. Reaching the writer at
-/// all therefore requires an all-digit Session id, whose own spelling cannot tell a fix from a
-/// regression because upper and lower render identically. Forcing a collision in the destination makes
-/// the importer mint a fresh <see cref="Guid.NewGuid()"/> for the remapped Session — a value that
-/// almost certainly carries a letter — which is what actually exercises the conversion.</para>
+/// <para><b>Why the unprotected merge case forces a remap.</b> Without a collision the identity the
+/// merge writes is the archive's own text uppercased, so a fixture that seeds an archive canonically —
+/// as this one does, because that is what an installation writes — would be handing the writer a value
+/// that was already canonical and learning nothing from it agreeing. Forcing a collision in the
+/// destination makes the importer mint a fresh <see cref="Guid.NewGuid()"/> for the remapped Session,
+/// and that value is the writer's own rendering rather than the archive's.</para>
 ///
-/// <para><b>What is deliberately not covered.</b> This proves the writers, not the comparisons: no
-/// case here depends on a read normalising anything, and neither drive method below is changed by the
-/// reader-side reversions a later task in this series makes.</para>
+/// <para><b>What each case depends on.</b> The protected case proves a writer and nothing else: it is
+/// unaffected by whether any read normalises. The unprotected case is not independent in that way, and
+/// deliberately so — its archive is spelled the way an installation writes one, so the merge path's
+/// reads of that archive have to tolerate a spelling other than the one this build renders before the
+/// writer under test is reached at all. Reverting the archive-existence gate, the Session read or the
+/// Entry read turns this case red, which is what makes its green mean something.</para>
 ///
 /// <para><b>Why <c>SessionAttachmentStore</c> is covered by a sibling suite rather than a third case
 /// here.</b> That store's conversion could not be made until the data migration that moves the rows it
@@ -367,9 +368,10 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
 
     /// <summary>
     /// Drives <see cref="BackupSessionImporter"/>'s unprotected merge path through
-    /// <see cref="BackupSessionImporter.ImportAsync"/>, forcing a Session id collision so the importer
-    /// mints a fresh remapped identity — a value the writer under test actually has to canonicalise,
-    /// unlike the all-digit id the existence gate requires to reach this path at all.
+    /// <see cref="BackupSessionImporter.ImportAsync"/>, over an archive spelled the way an installation
+    /// writes one, forcing a Session id collision so the importer mints a fresh remapped identity — a
+    /// value the writer under test actually has to canonicalise, rather than the archive's own text
+    /// echoed back.
     /// </summary>
     public async Task ImportSessionThroughTheUnprotectedMergeAsync(
         CancellationToken cancellationToken = default)
@@ -392,16 +394,22 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
         string destinationSecret = await CreateGrimoireDatabaseAsync(destinationRoot, cancellationToken)
             .ConfigureAwait(false);
 
-        // Deliberately all-digit hex. The unprotected merge path's own existence gate binds this
-        // rendering unnormalised against the archive, and only an identity with no hex letters
-        // renders the same either way — see the design note on IdentitySpellingContractTests.
-        Guid sessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        // Hex letters, deliberately. This was all ones, so that upper and lower rendered the same bytes
+        // and the merge path's existence gate — which bound an unnormalised rendering against the
+        // archive — could reach the writer at all. A fixture built on such an identity cannot tell a
+        // canonicalising writer from one that does nothing, which is the shape this whole family keeps
+        // hiding inside. The gate reads the archive normalised now, so the identity can carry letters
+        // and the two spellings can be different bytes again.
+        Guid sessionId = Guid.Parse("3f2e1d0c-9b8a-4756-8432-1a0b9c8d7e6f");
 
         // Canonical, which is what a real archive holds and what the version-5 guards now enforce. These
-        // two were lowercase, with a comment saying so was inert because nothing read them back; the
-        // guard reads every write, so an inert misrepresentation is no longer one. Entries."Id" is the
-        // object-relational writer's own uppercase form, and "SessionAttachments"."Id" is what an archive
-        // taken after the version-5 attachment move holds.
+        // were lowercase, with a comment saying so was inert because nothing read them back; the guard
+        // reads every write, so an inert misrepresentation is no longer one. Entries."Id" is the
+        // object-relational writer's own uppercase form, "Sessions"."Id" and "Entries"."SessionId" are
+        // the same writer's, and "SessionAttachments"."Id" and "SessionId" are what an archive taken
+        // after the version-5 attachment move holds.
+        string session = sessionId.ToString("D").ToUpperInvariant();
+
         string sourceEntryId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
         string sourceAttachmentId = Guid.NewGuid().ToString("D").ToUpperInvariant();
@@ -428,19 +436,19 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
 
             seed.CommandText = $"""
                 INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
-                VALUES ('{sessionId}', NULL, 'Archived session', 'active',
+                VALUES ('{session}', NULL, 'Archived session', 'active',
                         '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
                 INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
                                        "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
-                VALUES ('{sourceEntryId}', '{sessionId}', 0, 'ask', '', '2026-01-01T00:00:00Z', 1, NULL,
+                VALUES ('{sourceEntryId}', '{session}', 0, 'ask', '', '2026-01-01T00:00:00Z', 1, NULL,
                         NULL, NULL, 0);
 
                 INSERT INTO "SessionAttachments"
                     ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
                      "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                      "SourceKind", "SourceStatus", "EncryptionVersion")
-                VALUES ('{sourceAttachmentId}', '{sessionId}', 'Bound', 'note', 'note.txt', 1,
+                VALUES ('{sourceAttachmentId}', '{session}', 'Bound', 'note', 'note.txt', 1,
                         '{relative}', 'abc', 'text/plain', 16, 'Text', '2026-01-01T00:00:00Z',
                         'WorkspaceFile', 'Refreshable', 0);
                 """;
@@ -464,7 +472,7 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
 
             seed.CommandText = $"""
                 INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
-                VALUES ('{sessionId}', NULL, 'The Session already living here', 'active',
+                VALUES ('{session}', NULL, 'The Session already living here', 'active',
                         '2026-02-02T00:00:00Z', '2026-02-02T00:00:00Z');
                 """;
 

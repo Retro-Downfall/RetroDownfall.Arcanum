@@ -450,6 +450,82 @@ public sealed class BackupSessionImporterTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The unprotected merge of an ordinary archive — the branch the restore service takes with the
+    /// Covenant flag off — end to end, and asserted to land the whole graph.
+    /// </summary>
+    /// <remarks>
+    /// The counterpart of the protected case above, over the same archive, and the case this suite
+    /// could not hold until now. Every other merge case here seeds <c>"Sessions"."Id"</c> in the
+    /// minority spelling, which is the one spelling a lowercase probe of that column already finds; the
+    /// object-relational writer has never written it, so all of them were green while a merge of a
+    /// genuine backup could not begin. Three separate reads of the archive bound the lowercase
+    /// rendering: the existence gate refused the archive outright, and behind it the Session and Entry
+    /// reads would each have matched nothing and said nothing about it.
+    ///
+    /// <para>The destination is left empty, so no collision remaps anything: what is asserted is a
+    /// plain import of an archive as written, not the remap path the sibling cases exercise.</para>
+    ///
+    /// <para>Destination rows are counted, not just the returned totals. <c>CopySessionAsync</c>
+    /// returns silently when its read finds nothing while the caller counts the Session regardless, so
+    /// a result reporting one Session is not by itself evidence that a Session was written.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_unprotected_merge_of_an_ordinary_archive_lands_the_whole_Session_graph()
+    {
+
+        string sourceSecret = await SeedObjectRelationalSourceAsync();
+
+        string destinationSecret = await SeedDestinationAsync();
+
+        // The precondition, pinned rather than assumed, and both halves of it. Uppercase is what an
+        // ordinary archive holds; the inequality is what proves this identity carries hex letters, an
+        // all-digit one rendering the same either way and leaving the case proving nothing.
+        string stored = await ReadStoredSessionIdAsync(sourceSecret);
+
+        Assert.Equal(stored.ToUpperInvariant(), stored);
+
+        Assert.NotEqual(ArchivedSessionId.ToString("D"), stored);
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportAsync(
+            Path.Combine(_sourceRoot, "arcanum.db"),
+            Path.Combine(_destinationRoot, "arcanum.db"),
+            [ArchivedSessionId],
+            Path.Combine(_sourceRoot, "attachments"),
+            Path.Combine(_destinationRoot, "attachments"),
+            destinationSecret,
+            sourceSecret,
+            CancellationToken.None);
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(1, result.Sessions);
+
+        Assert.Equal(2, result.Entries);
+
+        Assert.Equal(1, result.Attachments);
+
+        Assert.Equal(0, result.RemappedIds);
+
+        Assert.Equal(1, await CountDestinationAsync(destinationSecret, "Sessions"));
+
+        Assert.Equal(2, await CountDestinationAsync(destinationSecret, "Entries"));
+
+        Assert.Equal(1, await CountDestinationAsync(destinationSecret, "SessionAttachments"));
+
+        Assert.Equal(
+            "attachment bytes",
+            await File.ReadAllTextAsync(
+                Path.Combine(
+                    _destinationRoot,
+                    "attachments",
+                    ArchivedSessionId.ToString("N"),
+                    "note",
+                    "v1",
+                    "note.bin")));
+
+    }
+
     private sealed class UnreachableTransferStore : IProtectedArtifactTransferStore
     {
 
@@ -606,13 +682,14 @@ public sealed class BackupSessionImporterTests : IDisposable
     /// the minority spelling; one taken after holds the canonical form. The importer has to read both,
     /// and it cannot tell which it has been handed, so both are seeded and both are asserted.
     ///
-    /// <para><b>What this archive is not.</b> <c>"Sessions"."Id"</c> stays in the minority spelling in
-    /// both vintages, and that is a fixture compromise rather than a real installation's shape: the
-    /// object-relational writer has always stored it uppercase. The unprotected merge path binds an
-    /// unnormalised identity against that column and would find no Session at all, which is a separate,
-    /// pre-existing gap that <see cref="SeedObjectRelationalSourceAsync"/> exists to hold. Seeding it
-    /// realistically here would make these cases fail on that gap before they could say anything about
-    /// the attachment vintage they are about.</para>
+    /// <para><b>What this archive is not, and what that is now worth.</b> <c>"Sessions"."Id"</c> stays
+    /// in the minority spelling in both vintages, which is not a real installation's shape — the
+    /// object-relational writer has always stored it uppercase, and
+    /// <see cref="An_unprotected_merge_of_an_ordinary_archive_lands_the_whole_Session_graph"/> is where
+    /// that shape is asserted. It is kept because the merge's reads of the archive are normalised
+    /// rather than re-pointed, and a normalisation is only worth having if it tolerates more than one
+    /// spelling: this is the archive a read re-bound exactly to the canonical form — the plausible
+    /// wrong fix, which that case alone would not catch — would stop finding.</para>
     /// </remarks>
     private async Task<string> SeedSourceAsync(
         bool campaignBound = false,
@@ -677,10 +754,10 @@ public sealed class BackupSessionImporterTests : IDisposable
     /// an archive taken <i>before</i> that upgrade holds. An archive taken after holds the canonical
     /// form, which is why <see cref="SeedSourceAsync"/> now seeds both and the importer's read of that
     /// column is normalised rather than exact. Inventing a spelling nowhere writes would still be the
-    /// same mistake as seeding the one a broken read expects. Kept apart from <see cref="SeedSourceAsync"/> rather
-    /// than folded into it: the unprotected merge path binds the lowercase rendering against
-    /// <c>"Sessions"."Id"</c> and would refuse this archive outright, so seeding it there would replace
-    /// a suite that passes over a known gap with a suite that fails over one.
+    /// same mistake as seeding the one a broken read expects. Kept apart from
+    /// <see cref="SeedSourceAsync"/> rather than folded into it: that one holds <c>"Sessions"."Id"</c>
+    /// in the spelling no installation writes, deliberately, and this one is what the two import paths
+    /// meet in the field.
     ///
     /// <para>The attachment's owner segment is the Session in <c>"N"</c> form, exactly as
     /// <c>SessionAttachmentStore</c> writes it, and its digest is the real SHA-256 of the payload,

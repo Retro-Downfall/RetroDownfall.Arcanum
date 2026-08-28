@@ -282,7 +282,7 @@ internal static class BackupSessionImporter
         foreach (Guid sessionId in sessionIds)
         {
 
-            if (!await RowExistsAsync(source, "Sessions", sessionId.ToString(), cancellationToken)
+            if (!await ArchivedSessionExistsAsync(source, sessionId, cancellationToken)
                     .ConfigureAwait(false))
             {
 
@@ -505,14 +505,21 @@ internal static class BackupSessionImporter
 
         await using SqliteCommand read = source.CreateCommand();
 
-        read.CommandText = """
+        // Normalised, for the reason the attachment read below states in full: this is the SOURCE
+        // archive, and the spelling of a foreign installation's rows is not this build's to assume. An
+        // exact bind of the minority rendering found no row in an archive the object-relational writer
+        // filled canonically, and the failure had no sound - the reader below simply returns before it
+        // writes anything, while the caller counts the Session it never copied. The primary-key seek
+        // this forfeits is taken once per selected Session, on a path that goes on to copy files off
+        // disk.
+        read.CommandText = $"""
             SELECT "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt", "Summary",
                    "LastSummarizedMessageAt", "TotalTokensUsed", "TotalCostUsd",
                    "UnsummarizedEntryCount", "ForkedFromSessionId"
-            FROM "Sessions" WHERE "Id" = $id;
+            FROM "Sessions" WHERE {CovenantIdentitySql.Keyed("\"Id\"", "$id")};
             """;
 
-        _ = read.Parameters.AddWithValue("$id", originalId);
+        _ = read.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(originalId));
 
         await using SqliteDataReader reader = await read
             .ExecuteReaderAsync(cancellationToken)
@@ -584,13 +591,23 @@ internal static class BackupSessionImporter
         await using (SqliteCommand read = source.CreateCommand())
         {
 
-            read.CommandText = """
+            // Normalised for the same reason as the Session read above, and the same reason the
+            // attachment read below states in full: the archive's spelling belongs to the installation
+            // that wrote it. Bound exactly to the minority rendering, this matched no Entry of any
+            // Session an ordinary archive holds, and the import then committed a Session with none of
+            // its conversation in it and reported that as a success. The cost here is the larger one in
+            // this method - "IX_Entries_SessionId_Sequence" answers neither the filter nor the order
+            // once the column is wrapped, so the archive's "Entries" is scanned and the result sorted.
+            // It is paid once per selected Session, against a snapshot, on a path already copying
+            // payload bytes.
+            read.CommandText = $"""
                 SELECT "Role", "Content", "ModelUsed", "CreatedAt", "Sequence", "ToolCallId",
                        "ToolName", "ToolArguments", "IsPinned"
-                FROM "Entries" WHERE "SessionId" = $id ORDER BY "Sequence";
+                FROM "Entries" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")}
+                ORDER BY "Sequence";
                 """;
 
-            _ = read.Parameters.AddWithValue("$id", originalSessionId);
+            _ = read.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(originalSessionId));
 
             await using SqliteDataReader reader = await read
                 .ExecuteReaderAsync(cancellationToken)
@@ -687,18 +704,18 @@ internal static class BackupSessionImporter
         await using (SqliteCommand read = source.CreateCommand())
         {
 
-            // Normalised, and permanently so - this is the one comparison in this family that must not
-            // be exact. An archive is a snapshot of a foreign installation at a vintage this build does
-            // not control: one taken before the version-5 attachment backfill holds "SessionId" in the
-            // minority spelling, one taken after holds the canonical form, and the importer has to read
-            // both. Binding either spelling exactly fixes one vintage by silently breaking the other,
-            // and the failure has no sound: this read simply returns no rows, so the import copies no
-            // attachment, throws nothing, and reports Completed.
+            // Normalised, and permanently so. An archive is a snapshot of a foreign installation at a
+            // vintage this build does not control: one taken before the version-5 attachment backfill
+            // holds "SessionId" in the minority spelling, one taken after holds the canonical form, and
+            // the importer has to read both. Binding either spelling exactly fixes one vintage by
+            // silently breaking the other, and the failure has no sound: this read simply returns no
+            // rows, so the import copies no attachment, throws nothing, and reports Completed.
             //
-            // The rule this is an instance of: normalise when reading foreign data whose vintage you do
-            // not control; compare exactly when reading your own. Every other comparison this change
-            // touched is the second case. The index this forfeits costs nothing on a path that is
-            // already copying files off disk.
+            // The rule this is an instance of, and which every read of the source archive in this
+            // method family now follows: normalise when reading foreign data whose vintage you do not
+            // control; compare exactly when reading your own. The destination reads are the second
+            // case. The index this forfeits costs nothing on a path that is already copying files off
+            // disk.
             read.CommandText = $"""
                 SELECT "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName", "Version",
                        "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
@@ -1025,6 +1042,39 @@ internal static class BackupSessionImporter
         command.CommandText = $"SELECT 1 FROM \"{table}\" WHERE \"Id\" = $id LIMIT 1;";
 
         _ = command.Parameters.AddWithValue("$id", id);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+
+    }
+
+    /// <summary>
+    /// Whether the archive holds the requested Session, in whichever spelling its vintage stored.
+    /// </summary>
+    /// <remarks>
+    /// Normalised, and separate from <see cref="RowExistsAsync"/> for exactly that reason: that one
+    /// probes the destination, which is this installation, and comparing our own guarded column
+    /// exactly is what lets it seek. This one probes a foreign archive, and it is the gate the whole
+    /// operation turns on — an unmatched row here does not degrade the import, it refuses it, with
+    /// "The archive does not contain every requested Session" for a Session the archive plainly holds.
+    /// Bound exactly to the minority rendering, that is what it said about every archive an ordinary
+    /// installation produces.
+    ///
+    /// <para>The table's presence is established once before the loop that calls this, so nothing is
+    /// re-checked here. The primary-key seek the normalisation forfeits is spent once per selected
+    /// Session against a snapshot, on a path that goes on to copy payload bytes off disk.</para>
+    /// </remarks>
+    private static async Task<bool> ArchivedSessionExistsAsync(
+        SqliteConnection source,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = source.CreateCommand();
+
+        command.CommandText =
+            $"SELECT 1 FROM \"Sessions\" WHERE {CovenantIdentitySql.Keyed("\"Id\"", "$id")} LIMIT 1;";
+
+        _ = command.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(sessionId));
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
 

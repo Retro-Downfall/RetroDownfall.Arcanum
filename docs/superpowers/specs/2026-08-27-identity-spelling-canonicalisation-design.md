@@ -52,7 +52,7 @@ Six one-line edits make the two minority writers render the canonical form, usin
 
 Both minority-spelling writers were unreachable for their entire existence, and this is the fact the whole design rests on.
 
-The unprotected merge path checks whether a Session exists in the archive by binding the lowercase form against a column the archive holds uppercase. It matches nothing, every requested Session is reported absent, and the method returns before it opens a transaction. That gate has been at those lines since the file was introduced.
+The unprotected merge path checked whether a Session exists in the archive by binding the lowercase form against a column the archive holds uppercase. It matched nothing, every requested Session was reported absent, and the method returned before it opened a transaction. That gate stood at those lines from the file's introduction until this work normalised its read of the archive, so the writer behind it was never reached on any installation.
 
 The protected transfer store has exactly one public method, one production caller, and one gate above that caller: the import planner, which refused every archive by the same mechanism until the fix earlier on this branch. The planner and the transfer store were introduced in the same commit, so there was never a window between them.
 
