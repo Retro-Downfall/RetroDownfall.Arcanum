@@ -3114,14 +3114,24 @@ internal sealed partial class DataRetentionService(
             foreach (MemoryResetSelection selection in selections)
             {
 
-                deleted += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    selection.Predicate is null
-                        ? $"DELETE FROM \"{selection.Table}\""
-                        : $"DELETE FROM \"{selection.Table}\" WHERE {selection.Predicate}",
-                    cancellationToken,
-                    selection.Parameters).ConfigureAwait(false);
+                // annal_versions goes through the leaf-first delete for the reason stated there: a bare
+                // statement over it empties the table and reports fewer rows than it removed, and this
+                // sum is the number the operator is shown.
+                deleted += string.Equals(selection.Table, "annal_versions", StringComparison.Ordinal)
+                    ? await DeleteAnnalVersionsAsync(
+                        connection,
+                        transaction,
+                        selection.Predicate,
+                        cancellationToken,
+                        selection.Parameters).ConfigureAwait(false)
+                    : await ExecuteAsync(
+                        connection,
+                        transaction,
+                        selection.Predicate is null
+                            ? $"DELETE FROM \"{selection.Table}\""
+                            : $"DELETE FROM \"{selection.Table}\" WHERE {selection.Predicate}",
+                        cancellationToken,
+                        selection.Parameters).ConfigureAwait(false);
 
             }
 
@@ -5831,6 +5841,73 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// Deletes from <c>annal_versions</c> a revision chain at a time, from its leaves inward, and
+    /// returns how many rows went.
+    /// </summary>
+    /// <remarks>
+    /// <c>PredecessorVersionId</c> references this same table <c>ON DELETE CASCADE</c>, and SQLite
+    /// counts only the rows a statement deletes directly — never the ones a foreign-key action takes
+    /// with them. One bare delete over this table therefore removes a whole chain while reporting one
+    /// row for it, and every caller here does something with that number: the factory reset compares it
+    /// against its own preview and aborts as a conflict when it falls short, and a memory reset shows it
+    /// to the operator as what the reset removed. One claim carrying more than one revision is enough,
+    /// and a retirement or a correction writes exactly that.
+    ///
+    /// <para>Deleting the leaves first — the versions no other version names as its predecessor — means
+    /// the cascade never has anything to take, so each pass's count is the whole truth about that pass.
+    /// A chain that could not be reduced leaves rows standing rather than looping, and both callers
+    /// re-count their tables afterwards, so that outcome is refused rather than reported as success.</para>
+    ///
+    /// <para><c>PredecessorVersionId IS NOT NULL</c> inside the subquery is load-bearing. <c>NOT IN</c>
+    /// over a set containing a single NULL is never true for any row, so without it the first pass
+    /// deletes nothing and the table survives the delete intact.</para>
+    ///
+    /// <para>The leaf test is deliberately taken over the whole table rather than over
+    /// <paramref name="predicate"/>'s rows. A predecessor edge never leaves the claim it belongs to and
+    /// every caller selects by claim, so the wider test blocks nothing; taking it over the selection
+    /// instead would delete a row whose successor outside the selection then cascaded away uncounted,
+    /// which is the miscount this exists to end.</para>
+    /// </remarks>
+    private static async Task<int> DeleteAnnalVersionsAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string? predicate,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+
+        const string LeafOnly =
+            "VersionId NOT IN ("
+            + "SELECT PredecessorVersionId FROM annal_versions WHERE PredecessorVersionId IS NOT NULL)";
+
+        string sql = predicate is null
+            ? $"DELETE FROM annal_versions WHERE {LeafOnly}"
+            : $"DELETE FROM annal_versions WHERE ({predicate}) AND {LeafOnly}";
+
+        int total = 0;
+
+        int removed;
+
+        do
+        {
+
+            removed = await ExecuteAsync(
+                connection,
+                transaction,
+                sql,
+                cancellationToken,
+                parameters).ConfigureAwait(false);
+
+            total += removed;
+
+        }
+        while (removed > 0);
+
+        return total;
 
     }
 

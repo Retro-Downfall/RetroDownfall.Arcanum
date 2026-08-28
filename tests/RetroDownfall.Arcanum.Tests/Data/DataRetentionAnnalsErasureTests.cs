@@ -6,7 +6,9 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -80,6 +82,70 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountLexiconFtsMatchesAsync("config"));
 
         Assert.Equal(0, await CountLexiconFtsMatchesAsync("other"));
+
+    }
+
+    /// <summary>
+    /// Both memory-reset arms report every version they removed, including the ones a cascade took.
+    /// </summary>
+    /// <remarks>
+    /// <c>annal_versions.PredecessorVersionId</c> references its own table <c>ON DELETE CASCADE</c> and
+    /// SQLite counts only what a statement deletes directly, so one delete over a claim carrying two
+    /// revisions removed both and reported one. Nothing aborts on it — a memory reset's conflict check
+    /// compares a pre-delete count rather than this sum — so the only symptom is an operator told that
+    /// fewer records went than went, about the one operation whose whole purpose is removal.
+    ///
+    /// <para>The rehearsal's own number is the expectation rather than a literal, so this stays a
+    /// statement about the two agreeing rather than about how many versions a retirement happens to
+    /// write.</para>
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public async Task ApplyAsync_ResetMemory_Saga_ReportsEveryVersionItRemoved(bool forOneCampaign)
+    {
+
+        RequireSqlCipher();
+
+        Guid? campaign = forOneCampaign ? AnnalsCampaignA : null;
+
+        Guid? session = null;
+
+        if (campaign is { } owned)
+        {
+
+            await SeedCampaignRowAsync(owned);
+
+            session = await SessionBindingWriters.BoundByTheRepositoryAsync(
+                _db!, owned, CancellationToken.None);
+
+        }
+
+        _ = await WriteAndRetireSagaMemoryAsync(session, "the operator prefers tabs");
+
+        Assert.Equal(2, await CountTableRowsAsync("annal_versions"));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.ResetMemory,
+            campaign,
+            MemoryResetScope.Saga);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
+
+        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal(plan.DerivedRecords, applied.Value.DerivedRecordsDeleted);
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_versions"));
 
     }
 
