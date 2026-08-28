@@ -183,7 +183,7 @@ public sealed class SagaCurationServiceTests
     }
 
     [SkippableFact]
-    public async Task Correcting_a_retired_memory_is_refused_because_the_text_does_not_change()
+    public async Task Correcting_a_retired_memory_is_refused_because_it_is_reinstated_before_it_is_corrected()
     {
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);

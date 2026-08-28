@@ -101,6 +101,11 @@ public sealed class ArcanumErrorMapperTests
     // A malformed expected-content hash is a request-shape problem, and the curation service is the
     // caller that raises it. Unmapped, it reached the operator as a 500 saying Arcanum broke.
     [InlineData(ErrorCodes.Validation.InvalidFields, StatusCodes.Status400BadRequest)]
+    // The two request-body faults that are not the caller's body being wrong. Each is distinct from
+    // Validation.InvalidBody because what the caller should do next differs, which is the same reason
+    // every other code on this installation's 413 is distinct from its family's invalid-request code.
+    [InlineData(ErrorCodes.Validation.BodyTooLarge, StatusCodes.Status413PayloadTooLarge)]
+    [InlineData(ErrorCodes.Validation.BodyReadTimeout, StatusCodes.Status408RequestTimeout)]
     // FeatureDisabled means an operator turned a feature off in config, not that the caller lacks
     // permission, so it maps to 503 (retry later) rather than sharing the 403 used by genuine
     // access-control failures (PathNotAllowed, AccessDenied, etc.) above.

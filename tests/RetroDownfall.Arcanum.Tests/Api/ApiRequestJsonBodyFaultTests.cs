@@ -55,7 +55,7 @@ public sealed class ApiRequestJsonBodyFaultTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
-        await AssertInvalidBodyEnvelopeAsync(response, ApiRequestJson.IncompleteBodyMessage);
+        await AssertEnvelopeAsync(response, ErrorCodes.Validation.InvalidBody, ApiRequestJson.IncompleteBodyMessage);
 
     }
 
@@ -75,11 +75,59 @@ public sealed class ApiRequestJsonBodyFaultTests
         // told them apart. Collapsing them would tell a client to retry a body that can never fit.
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
 
-        await AssertInvalidBodyEnvelopeAsync(response, ApiRequestJson.BodyTooLargeMessage);
+        // A distinct code, not the invalid-body one. Every other code on this installation's 413 is
+        // distinct from its family's invalid-request code, and Validation.InvalidBody is pinned to 400
+        // by the mapper and its tests — so reusing it here would have put one code on two statuses.
+        await AssertEnvelopeAsync(response, ErrorCodes.Validation.BodyTooLarge, ApiRequestJson.BodyTooLargeMessage);
 
     }
 
-    private static async Task AssertInvalidBodyEnvelopeAsync(HttpResponseMessage response, string expectedMessage)
+    /// <summary>
+    /// A body arriving under Kestrel's minimum data rate is a 408, and says so.
+    /// </summary>
+    /// <remarks>
+    /// Reachable in production on a slow or stalled upload, and it was the third status the helper's
+    /// new catch could receive. Nothing is wrong with the body, so a 400 would be actively misleading:
+    /// it is worth resending unchanged on a better connection.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("/api/lore")]
+    [InlineData("/api/memory/saga/m-1/retire")]
+    public async Task A_body_arriving_too_slowly_is_a_timeout_rather_than_a_bad_request(string route)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpResponseMessage response = await SendFaultingBodyAsync(
+            route,
+            new BadHttpRequestException(
+                "Reading the request body timed out due to data arriving too slowly",
+                StatusCodes.Status408RequestTimeout));
+
+        Assert.Equal(HttpStatusCode.RequestTimeout, response.StatusCode);
+
+        await AssertEnvelopeAsync(
+            response,
+            ErrorCodes.Validation.BodyReadTimeout,
+            ApiRequestJson.BodyReadTimeoutMessage);
+
+    }
+
+    /// <summary>
+    /// Each code resolves through the mapper to the very status the helper set, so the two authorities
+    /// cannot drift apart.
+    /// </summary>
+    [Theory]
+    [InlineData(ErrorCodes.Validation.InvalidBody, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Validation.BodyTooLarge, StatusCodes.Status413PayloadTooLarge)]
+    [InlineData(ErrorCodes.Validation.BodyReadTimeout, StatusCodes.Status408RequestTimeout)]
+    public void Every_body_fault_code_maps_to_the_status_the_helper_sends_it_with(string code, int expected) =>
+        Assert.Equal(expected, RetroDownfall.Arcanum.Api.Primitives.ArcanumErrorMapper.ResolveStatusCode(code));
+
+    private static async Task AssertEnvelopeAsync(
+        HttpResponseMessage response,
+        string expectedCode,
+        string expectedMessage)
     {
 
         ApiResponse<bool>? body = JsonSerializer.Deserialize(
@@ -90,7 +138,7 @@ public sealed class ApiRequestJsonBodyFaultTests
 
         Assert.False(body!.IsSuccess);
 
-        Assert.Equal(ErrorCodes.Validation.InvalidBody, body.Error?.Code);
+        Assert.Equal(expectedCode, body.Error?.Code);
 
         Assert.Equal(expectedMessage, body.Error?.Message);
 

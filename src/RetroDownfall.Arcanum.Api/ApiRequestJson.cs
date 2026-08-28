@@ -21,6 +21,8 @@ internal static class ApiRequestJson
 
     public const string BodyTooLargeMessage = "Request body exceeded the maximum size this server accepts.";
 
+    public const string BodyReadTimeoutMessage = "Request body arrived too slowly and the server stopped waiting for it.";
+
     public static async ValueTask<(T? Body, IResult? Error)> ReadAsync<T>(
         HttpContext httpContext,
         JsonTypeInfo<T> typeInfo,
@@ -80,22 +82,33 @@ internal static class ApiRequestJson
     /// </summary>
     /// <remarks>
     /// The status comes from <paramref name="failure"/> rather than being decided here, because Kestrel
-    /// has already distinguished the two cases that matter to a client: 413 for a body past the ceiling,
-    /// 400 for one that ended early. Only the wording is ours -- the framework's own message is not
-    /// echoed back.
+    /// has already distinguished the cases that matter to a client: 413 for a body past the ceiling, 408
+    /// for one arriving under the minimum data rate, 400 for one that ended early. Each gets its own
+    /// code, because what the caller should do next differs -- resend corrected, resend unchanged on a
+    /// better connection, or do not resend at all -- and because every other code on this installation's
+    /// 413 is distinct from its family's invalid-request code. Each code resolves through
+    /// <c>ArcanumErrorMapper</c> to the same status set here, so the two never disagree. Only the wording
+    /// is ours; the framework's own message is not echoed back.
     /// </remarks>
     public static IResult UnreadableBodyResult(HttpContext httpContext, BadHttpRequestException failure)
     {
 
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-        string message = failure.StatusCode == StatusCodes.Status413PayloadTooLarge
-            ? BodyTooLargeMessage
-            : IncompleteBodyMessage;
+        (string code, string message) = failure.StatusCode switch
+        {
+
+            StatusCodes.Status413PayloadTooLarge => (ErrorCodes.Validation.BodyTooLarge, BodyTooLargeMessage),
+
+            StatusCodes.Status408RequestTimeout => (ErrorCodes.Validation.BodyReadTimeout, BodyReadTimeoutMessage),
+
+            _ => (ErrorCodes.Validation.InvalidBody, IncompleteBodyMessage),
+
+        };
 
         return Results.Json(
             ApiResponse<bool>.FromResult(
-                Result<bool>.Failure(new Error(ErrorCodes.Validation.InvalidBody, message)),
+                Result<bool>.Failure(new Error(code, message)),
                 traceId),
             ArcanumJsonContext.Default.ApiResponseBoolean,
             statusCode: failure.StatusCode);

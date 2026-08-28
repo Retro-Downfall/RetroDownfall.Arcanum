@@ -20,6 +20,27 @@ public static class ErrorCodes
         /// <summary>A JSON route received a body whose <c>Content-Type</c> is missing or is not JSON.</summary>
         public const string UnsupportedMediaType = "Validation.UnsupportedMediaType";
 
+        /// <summary>
+        /// The request body is larger than this server accepts, so it was never read to the end.
+        /// </summary>
+        /// <remarks>
+        /// Distinct from <see cref="InvalidBody"/> because the two ask the caller for different things:
+        /// a malformed body is worth resending corrected, and an oversized one is not worth resending at
+        /// all. That is the same reason <c>Attachment.TooLarge</c> is distinct from
+        /// <c>Attachment.InvalidRequest</c>, and every other code on this installation's 413.
+        /// </remarks>
+        public const string BodyTooLarge = "Validation.BodyTooLarge";
+
+        /// <summary>
+        /// The request body arrived too slowly to be read, so the server stopped waiting for it.
+        /// </summary>
+        /// <remarks>
+        /// Kestrel enforces a minimum data rate and answers 408 when a body falls under it. Distinct
+        /// from <see cref="InvalidBody"/> because nothing is wrong with the body: it is worth resending
+        /// unchanged on a better connection, which is the one thing a 400 would tell the caller not to do.
+        /// </remarks>
+        public const string BodyReadTimeout = "Validation.BodyReadTimeout";
+
         public const string InvalidQuery = "Validation.InvalidQuery";
 
         public const string InvalidProviderType = "Validation.InvalidProviderType";

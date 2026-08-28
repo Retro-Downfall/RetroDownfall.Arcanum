@@ -58,9 +58,10 @@ public sealed record SagaReinstateRequest(string ExpectedContentHash);
 /// <para>Whether a state a memory is already in is reported or refused depends on the verb, because
 /// what the operator asked for does. Retiring what is already retired and reinstating what is not
 /// retired hand the operator the state they named, so they answer 200 carrying their own kind;
-/// correcting a retired memory does not — the text does not change — so it is refused. That decision
-/// belongs to <see cref="ISagaCurationService"/> and the status codes to
-/// <see cref="ArcanumErrorMapper"/>; neither is restated here.</para>
+/// correcting a retired memory does not act on it at all, so it is refused — a retired memory is
+/// reinstated before it is corrected, whatever text the correction carried. That decision belongs to
+/// <see cref="ISagaCurationService"/> and the status codes to <see cref="ArcanumErrorMapper"/>; neither
+/// is restated here.</para>
 /// </remarks>
 internal static class SagaCurationEndpoints
 {

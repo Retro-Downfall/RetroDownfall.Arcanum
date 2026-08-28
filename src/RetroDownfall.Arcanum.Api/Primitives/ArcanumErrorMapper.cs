@@ -141,8 +141,13 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Spell.PathNotAllowed or ErrorCodes.Campaign.PathNotAllowed or ErrorCodes.Workspace.PathNotAllowed or ErrorCodes.Workspace.FileWriteDisabled or ErrorCodes.Workspace.AccessDenied or ErrorCodes.WebBrowsing.SsrfBlocked or ErrorCodes.WebResearch.SsrfBlocked or ErrorCodes.Mcp.DiagnosticBlocked or ErrorCodes.Mcp.WorkspaceNotTrusted =>
                 StatusCodes.Status403Forbidden,
 
-            ErrorCodes.Workspace.FileTooLarge or ErrorCodes.Scrying.ImageTooLarge or ErrorCodes.Files.TooLarge or ErrorCodes.WebResearch.ResponseTooLarge =>
+            ErrorCodes.Workspace.FileTooLarge or ErrorCodes.Scrying.ImageTooLarge or ErrorCodes.Files.TooLarge or ErrorCodes.WebResearch.ResponseTooLarge or ErrorCodes.Validation.BodyTooLarge =>
                 StatusCodes.Status413PayloadTooLarge,
+
+            // Kestrel answers 408 when a request body arrives under its minimum data rate. The body is
+            // not wrong, so this is not a 400: it is worth resending unchanged on a better connection.
+            ErrorCodes.Validation.BodyReadTimeout =>
+                StatusCodes.Status408RequestTimeout,
 
             ErrorCodes.Attachment.TooLarge =>
                 StatusCodes.Status413PayloadTooLarge,
