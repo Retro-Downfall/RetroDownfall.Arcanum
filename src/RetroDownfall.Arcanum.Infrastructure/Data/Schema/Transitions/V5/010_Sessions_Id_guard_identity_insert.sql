@@ -14,11 +14,12 @@
 -- ONE TRIGGER PER COLUMN, not one per table, and the reasons are in this order of weight. RAISE(ABORT)
 -- takes a string literal, so a trigger covering several columns structurally cannot name the one that
 -- failed - and the message is the whole of what a developer sees. The update half has to be
--- BEFORE UPDATE OF <column>, which is per-column by construction. And five of the twelve guarded tables
--- carry identity-shaped columns that are deliberately outside this family - the provenance SessionIds,
+-- BEFORE UPDATE OF <column>, which is per-column by construction. And a guarded table can carry
+-- identity-shaped columns that are deliberately outside this family - the provenance SessionIds,
 -- lexicon_fact_attachment_provenance.EntryId, attachment_memory_consultations.SourceEntryId - so a name
--- of the form <table>_guard_identity would claim a coverage the trigger does not have. The cost is
--- roughly thirty objects where a dozen would do, paid once, in a tree that is one object per file.
+-- of the form <table>_guard_identity would claim a coverage the trigger does not have. The cost is an
+-- object per governed column where one per table would do, paid once, in a tree that is one object per
+-- file.
 --
 -- The authoritative list of what this family governs is IdentitySpellingBackfill.VerifiedColumns plus
 -- artifact_sensitivity.SessionId, and a test pins that every entry has its guards.

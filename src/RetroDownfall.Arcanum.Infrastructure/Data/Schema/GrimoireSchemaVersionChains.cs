@@ -32,14 +32,14 @@ internal static class GrimoireSchemaVersionChains
     /// memory from being re-extracted. No verb writes to any of it yet.</para>
     ///
     /// <para>Version 5 settles every stored identity on one spelling, so a comparison can be an exact
-    /// indexed equality again. It is a verifier before it is a repair: both writers that ever rendered
-    /// the minority spelling were unreachable for their entire existence, so the sweep counts zero on an
-    /// installation that predates it and records that it did. What it repairs is a reference whose
-    /// canonical target already exists - the Campaign a Session names, the Entry an embedding belongs to
-    /// - because an identity a row is known by cannot be moved in place: the tables that depend on a
-    /// Session identity refuse the write by trigger. It also installs the write-time guards that keep the
-    /// form once it is settled: one <c>BEFORE INSERT</c> per governed identity column, and one
-    /// <c>BEFORE UPDATE OF</c> that column wherever the table does not already refuse every update.</para>
+    /// indexed equality again. Its sweep counts each identity column it governs before it touches one
+    /// and records what it found, which is what tells an installation that already held the canonical
+    /// form apart from one that did not. What it repairs is narrower than what it counts, and the sweep
+    /// is where that boundary is drawn rather than here: an identity a row is known by cannot be moved
+    /// in place at all, because the tables depending on a Session identity refuse the write by trigger.
+    /// It also installs the write-time guards that keep the form once it is settled: one
+    /// <c>BEFORE INSERT</c> per governed identity column, and one <c>BEFORE UPDATE OF</c> that column
+    /// wherever the table does not already refuse every update.</para>
     /// </remarks>
     internal const int CoreSchemaVersion = 5;
 

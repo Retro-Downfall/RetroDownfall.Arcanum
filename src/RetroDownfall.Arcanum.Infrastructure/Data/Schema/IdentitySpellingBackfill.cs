@@ -13,18 +13,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// that can be repaired without breaking a pairing that currently works.
 /// </summary>
 /// <remarks>
-/// This is a verifier before it is a repair for every column outside the attachment family, and that
-/// distinction is the whole design. Outside it, the writers that ever rendered the minority spelling
-/// were unreachable for their entire existence - the import planner refused every archive, and
-/// the merge path returns before it opens a transaction - so an installation that predates this version
-/// already holds the canonical form and those counts are zero. They are still taken, and still logged
-/// when they are zero, because that log line is the evidence the reasoning held in the field, and
-/// because source can prove no code path wrote a bad row while it cannot prove nobody edited the
-/// database by hand.
+/// This is a verifier before it is a repair, and that distinction is the whole design. Where it only
+/// verifies, the writers that ever rendered the minority spelling were unreachable for their entire
+/// existence - the import planner refused every archive, and the merge path returns before it opens a
+/// transaction - so an installation that predates this version already holds the canonical form there
+/// and those counts are zero. They are still taken, and still logged when they are zero, because that
+/// log line is the evidence the reasoning held in the field, and because source can prove no code path
+/// wrote a bad row while it cannot prove nobody edited the database by hand.
 ///
-/// <para>The <c>SessionAttachments</c> family is the exception, and it is a repair rather than a
-/// verification: six reachable writers filled its eight columns with the minority spelling, so every
-/// installation that has ever held an attachment reports a number for them and has rows rewritten.</para>
+/// <para>A reachable writer left the minority spelling in two places, and both are repairs rather than
+/// verifications. The <c>SessionAttachments</c> family is the one whose identity moves: an installation
+/// that has ever held an attachment reports a number for its columns and has rows rewritten. The
+/// Campaign columns are the other, filled by the turn path that binds a Session to a Campaign and copied
+/// onward from there, so an installation that ever bound one reports a number for them too - see
+/// <see cref="RepairedColumns"/>, which is where what they hold is kept.</para>
 ///
 /// <para><b>What may be repaired, and why it is narrower than "every identity column".</b> A stored
 /// identity is either an <i>identity</i> - the primary key a row is known by - or a <i>reference</i> to
@@ -135,7 +137,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// installation - which is the worst outcome available in this step and the reason the family is
     /// declared in one place rather than assembled at three call sites.</para>
     ///
-    /// <para><c>session_attachment_chunks</c> keeps two columns out of this family deliberately, and their
+    /// <para><c>session_attachment_chunks</c> keeps columns out of this family deliberately, and their
     /// absence is a decision rather than an omission. <c>session_attachment_chunks.SessionId</c>
     /// and <c>RetrievalScope</c> hold a Session
     /// identity in the minority form and stay there: the tapestry reads
@@ -224,12 +226,12 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     ///
     /// <para><c>saga_memories.CampaignId</c> holds the same Campaign identity, taken from the binding by
     /// <see cref="SagaMemoryScopeClassifier"/> - which is why they are repaired together and in this
-    /// order. Every row already written took that value <i>verbatim</i>, so the two columns disagree on
-    /// exactly the rows the binding writers disagreed about, and repairing the binding alone would leave
-    /// every one of those memories pointing at a Campaign spelled the other way. That is the halved
-    /// recall this step exists to end. A row written from now on is canonical whatever the binding holds,
-    /// because the classifier canonicalizes what it hands on - so what this repairs is history, and the
-    /// column stays settled without it.</para>
+    /// order. Every row already written took that value <i>verbatim</i>, so the binding and the memory
+    /// disagree on exactly the rows the binding writers disagreed about, and repairing the binding alone
+    /// would leave every one of those memories pointing at a Campaign spelled the other way. That is the
+    /// halved recall this step exists to end. A row written from now on is canonical whatever the
+    /// binding holds, because the classifier canonicalizes what it hands on - so what this repairs is
+    /// history, and the column stays settled without it.</para>
     ///
     /// <para><c>saga_retirement_suppressions.CampaignId</c> is here because a caller began comparing it,
     /// having been recorded as deliberately unrepaired while none did. It is a copy of
@@ -271,8 +273,8 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// This bounds the <i>identities</i> a batch moves, not the rows it writes, and the difference is
     /// deliberate. An attachment identity and every column naming it have to move inside one transaction
     /// or the deferred foreign-key check aborts the batch at <c>COMMIT</c>, so the unit of work is the
-    /// attachment: its chunks, its index state and its three provenance rows move with it however many
-    /// there are, and the batch reports the attachments rather than the rows. Counting the rows instead
+    /// attachment: its chunks, its index state and its provenance rows move with it however many there
+    /// are, and the batch reports the attachments rather than the rows. Counting the rows instead
     /// would trip the runner's own bound on a batch that had done exactly what it must.
     /// </remarks>
     public int MaxRowsPerBatch => 200;
@@ -450,12 +452,11 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// Takes the step's precondition count and records it, whatever it is.
     /// </summary>
     /// <remarks>
-    /// Zero across the board is the outcome this design predicts and the one every installation that
-    /// predates this version will produce. Logging it rather than skipping it is the point: a silent
-    /// no-op proves nothing, and a line naming every column it looked at and what it found there is what
-    /// turns "verifier, not backfill" from an argument into evidence on that installation. The
-    /// attachment family is the exception the count exists to make visible: on an installation that has
-    /// ever held an attachment those eight columns are the ones that report a number.
+    /// Recording it rather than skipping it is the point: a silent no-op proves nothing, and a line
+    /// naming every column it looked at and what it found there is what turns "verifier, not backfill"
+    /// from an argument into evidence on that installation. Which columns come back with a number is a
+    /// property of what the installation holds rather than of this method, which is why it logs each one
+    /// rather than predicting any of them.
     /// </remarks>
     private static async Task VerifyAsync(
         SqliteConnection connection,
@@ -494,14 +495,14 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         // Named rather than merely counted, because an operator who sees a number here needs to know
         // which half of it this step can act on. Some of what it repairs is expected on an ordinary
         // installation - the attachment family on any that has held an attachment, and the Campaign
-        // columns on any that has created a Session through the turn path - so a number here is not by
-        // itself evidence of anything having gone wrong. What is left behind is: outside those,
+        // columns on any that bound a Session to a Campaign before this version - so a number here is
+        // not by itself evidence of anything having gone wrong. What is left behind is: outside those,
         // the only thing that can produce a non-canonical identity is an edit made outside Arcanum.
         Log.Warning(
             "Identity spelling: {Count} stored identities are not canonical. The attachment identity and "
                 + "every column naming it are moved together; a reference whose canonical target still "
-                + "exists is repaired onto it; and a Campaign identity on a Session binding or a Saga "
-                + "memory is settled on its own. An identity a row is known by is left where it is, "
+                + "exists is repaired onto it; and a Campaign identity that names no stored column is "
+                + "settled on its own shape. An identity a row is known by is left where it is, "
                 + "because the tables that depend on it refuse the write.",
             total);
 
@@ -566,10 +567,10 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// without a bound.
     /// </summary>
     /// <remarks>
-    /// <b>The absence of a limit here is the whole safety property, not an oversight.</b> Two of the
-    /// dependents carry a foreign key to the identity above, and a deferred foreign key is still checked
-    /// at <c>COMMIT</c>; a page of parents whose children were cut off by a row budget would abort the
-    /// batch, and every retry of it, permanently. What is bounded is the number of <i>identities</i> a
+    /// <b>The absence of a limit here is the whole safety property, not an oversight.</b> A dependent
+    /// carrying a foreign key to the identity above is checked at <c>COMMIT</c> however deferred that
+    /// key was; a page of parents whose children were cut off by a row budget would abort the batch, and
+    /// every retry of it, permanently. What is bounded is the number of <i>identities</i> a
     /// batch moves, and every column naming those identities moves with them, which is why the batch
     /// reports the identity count rather than the row count - see <see cref="MaxRowsPerBatch"/>.
     ///

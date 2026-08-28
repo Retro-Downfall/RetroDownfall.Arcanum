@@ -20,29 +20,31 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// the sweep.
 /// </summary>
 /// <remarks>
-/// Version 5 is a <i>verifier</i> before it is a repair, for every column but one family. Both
-/// minority-spelling writers outside that family were unreachable for their entire existence, so an
-/// installation that predates this work already holds the canonical form and the sweep counts zero for
-/// those columns, rewrites nothing, and records that it found nothing. The repair arm reaches them at
-/// all because source can prove no code path wrote a bad row and cannot prove nobody edited the
-/// database by hand.
+/// Version 5 verifies more than it repairs, and where it only verifies the minority-spelling writers
+/// were unreachable for their entire existence, so an installation that predates this work already
+/// holds the canonical form in those columns and the sweep counts zero for them, rewrites nothing, and
+/// records that it found nothing. The repair arm reaches them at all because source can prove no code
+/// path wrote a bad row and cannot prove nobody edited the database by hand.
 ///
-/// <para>The <c>SessionAttachments</c> family is the exception and the one genuine data move in this
-/// work: six reachable writers filled its eight columns with the minority spelling, so on any
-/// installation that has ever held an attachment the sweep reports a number and rewrites rows. The
-/// hazard there is not the count but the pairing - three of the columns join to the parent with no
-/// foreign key at all, so moving the parent without them converts joins that work today into ones that
-/// silently return nothing.</para>
+/// <para>The <c>SessionAttachments</c> family is the one genuine data move in this work: reachable
+/// writers filled its columns with the minority spelling, so on any installation that has ever held an
+/// attachment the sweep reports a number and rewrites rows. The hazard there is not the count but the
+/// pairing - some of those columns join to the parent with no foreign key at all, so moving the parent
+/// without them converts joins that work today into ones that silently return nothing.</para>
+///
+/// <para>The Campaign columns are the other place a reachable writer left the minority spelling. They
+/// are repaired too, and on their own shape rather than against a target, because they name no stored
+/// column an <c>EXISTS</c> could be qualified against.</para>
 ///
 /// <para>What the repair arm may touch is narrower than "every identity column", and the boundary is
 /// the schema's own immutability contract rather than a preference. A Session identity cannot be moved
 /// in place at all: eight of its fourteen foreign-key children refuse the write by trigger, four of
 /// them unconditionally, and <c>session_turn_quota_state</c> holds one row for every Session ever
 /// created. An identity that is only <i>referenced</i> by an unenforced column - the Campaign a Session
-/// names, the Entry an embedding belongs to - can be moved, and those are the two the plan calls out as
-/// the expensive silent failures. So the repair is scoped to a reference whose canonical target already
-/// exists, which is provably a restoration of a broken pairing rather than a rewrite that could break a
-/// working one.</para>
+/// names, the Entry an embedding belongs to - can be moved, and those are the ones the plan calls out
+/// as the expensive silent failures. A reference repair is therefore scoped to one whose canonical
+/// target already exists, which is provably a restoration of a broken pairing rather than a rewrite
+/// that could break a working one.</para>
 /// </remarks>
 public sealed class IdentitySpellingEvolutionTests
 {
@@ -247,7 +249,7 @@ public sealed class IdentitySpellingEvolutionTests
     /// </summary>
     /// <remarks>
     /// This is not the case every real installation takes any more - one that has ever held an
-    /// attachment reports a number for the eight family columns and has rows rewritten, which is what
+    /// attachment reports a number for the family's columns and has rows rewritten, which is what
     /// <see cref="The_attachment_family_moves_together_and_every_provenance_join_still_resolves"/>
     /// covers. What this case still proves is that the sweep is inert where it has nothing to do, which
     /// is the property that keeps a repair from being a rewrite in disguise.
@@ -277,27 +279,27 @@ public sealed class IdentitySpellingEvolutionTests
     }
 
     /// <summary>
-    /// The one genuine data move in this work: an attachment identity, its two foreign-key children and
-    /// the three provenance tables that join to it with no foreign key at all, all moved inside one
-    /// transaction - and every join that worked before the move still resolving after it.
+    /// The one genuine data move in this work: an attachment identity, its foreign-key children and the
+    /// provenance tables that join to it with no foreign key at all, all moved inside one transaction -
+    /// and every join that worked before the move still resolving after it.
     /// </summary>
     /// <remarks>
     /// <b>Every row here is the exact shape the shipped writers rendered before this change.</b> The
-    /// attachment store spelled <c>SessionAttachments</c>' three identity columns with a bare
+    /// attachment store spelled <c>SessionAttachments</c>' identity columns with a bare
     /// <c>ToString()</c>; the index repository spelled <c>session_attachment_chunks.AttachmentId</c> and
     /// <c>session_attachment_index_state.AttachmentId</c> the same way; and the attachment-memory
     /// provenance store, the Saga memory store and the Lexicon service each spelled their own
     /// <c>AttachmentId</c> that way too. That agreement is why the joins below resolve <i>before</i> the
-    /// upgrade, and it is the whole hazard: moving the parent without all five of them silently converts
+    /// upgrade, and it is the whole hazard: moving the parent without all of them silently converts
     /// working joins into ones that return nothing.
     ///
     /// <para>The assertions are therefore in two halves that both have to hold. Every column must end
     /// canonical - which a repair that moved only the parent would satisfy - <i>and</i> every join must
-    /// still resolve, which is what a partial move breaks. The two foreign-key children would abort the
+    /// still resolve, which is what a partial move breaks. The foreign-key children would abort the
     /// migration at <c>COMMIT</c> if they were left behind, so their assertion is a belt on a brace; the
-    /// three provenance tables have nothing but this suite, which is why each gets its own count.</para>
+    /// provenance tables have nothing but this suite, which is why each gets its own count.</para>
     ///
-    /// <para>The three provenance predicates are the ones production asks, copied from
+    /// <para>The provenance predicates are the ones production asks, copied from
     /// <c>AttachmentMemoryProvenanceStore.ListConsultationsAsync</c>,
     /// <c>SagaMemoryStore</c>'s memory reads and <c>LexiconService</c>'s fact read: an
     /// <c>EXISTS</c> against <c>SessionAttachments."Id"</c> filtered on <c>State = 'Bound'</c>, which is
@@ -434,8 +436,8 @@ public sealed class IdentitySpellingEvolutionTests
     /// than uppercased onto nothing.
     /// </summary>
     /// <remarks>
-    /// The dependent repair carries the same canonical-target <c>EXISTS</c> the two plain references
-    /// carry, and for the same reason: a reference column exists in order to join, so moving one whose
+    /// The dependent repair carries the same canonical-target <c>EXISTS</c> the plain references carry,
+    /// and for the same reason: a reference column exists in order to join, so moving one whose
     /// target is absent buys nothing and costs the ability to tell a repaired row from an orphan. This
     /// is reachable from the shipped tree - a consultation records what a turn read, and the attachment
     /// it read can be deleted afterwards, which the attachment-memory provenance store's own suite

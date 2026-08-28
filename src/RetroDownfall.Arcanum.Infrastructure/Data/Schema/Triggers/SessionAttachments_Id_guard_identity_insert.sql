@@ -1,6 +1,6 @@
 -- SessionAttachments."Id" is the one identity in this schema that version 5 moves in place rather than
 -- merely verifying: every row held the minority spelling, written by an attachment store that rendered a
--- bare ToString(), and five columns in five other tables name it. It is written by the attachment store,
+-- bare ToString(), and columns in other tables name it. It is written by the attachment store,
 -- the protected artifact transfer store and the backup session importer, all three of which now render
 -- the canonical form.
 --
