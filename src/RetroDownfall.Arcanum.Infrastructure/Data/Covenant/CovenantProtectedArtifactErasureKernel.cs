@@ -519,12 +519,11 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     /// by this path even when the count reaches zero, because taint that has been purged still bars a
     /// cached replay.
     ///
-    /// <para>Both identity comparisons are exact indexed matches against one bound spelling.
-    /// <c>artifact_sensitivity.SessionId</c> and <c>session_sensitivity_state.SessionId</c> are both
-    /// governed identity columns, refused at the write by a guard trigger and verified by the version-5
-    /// sweep, so the second no longer has to be found by a normalised comparison merely because its
-    /// foreign key makes it agree with whichever spelling created the Session. There is one spelling
-    /// for it to agree with.</para>
+    /// <para>Both identity comparisons are exact indexed matches against one bound spelling, and both
+    /// columns carry a write-time identity guard that refuses any spelling but the canonical one. The
+    /// second used to need a normalised comparison instead, because its foreign key makes it agree with
+    /// whichever spelling created the Session and that was once either of two. There is one spelling
+    /// for it to agree with now.</para>
     /// </remarks>
     private async Task RepairSessionSensitivityAsync(
         SqliteConnection connection,

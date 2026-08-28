@@ -1,5 +1,7 @@
 using System.Data.Common;
 
+using System.Text.RegularExpressions;
+
 using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -32,9 +34,25 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 /// explained SQL of its own would keep passing after the real query quietly lost its index, which is
 /// the whole failure this file exists to catch.</para>
 ///
-/// <para>The assertion names the index and refuses a scan of <c>"Entries"</c>, rather than refusing the
-/// word <c>SCAN</c> outright: SQLite writes <c>SCAN … USING COVERING INDEX …</c> for a full walk of an
-/// index, which is a different thing from the table scan being ruled out here.</para>
+/// <para><b>The plan is judged row by row, and nothing is keyed on the table's name.</b> An earlier
+/// draft searched the whole plan text for <c>SCAN Entries</c>, and that was blind for two of these
+/// nine reads. Both wrap the table twice — unaliased inside a boundary CTE, and as <c>e</c> in the
+/// outer query — so normalising the outer predicate makes it walk the table under a name that needle
+/// does not contain, while the CTE beside it goes on seeking and satisfies the index assertion by
+/// itself. Both plans were measured in that state: neither contains <c>SCAN Entries</c> and both
+/// contain <c>IX_Entries_SessionId</c>, so that draft passed over both regressions.</para>
+///
+/// <para>So instead: every row that reaches a stored object must be a <c>SEARCH</c> naming the
+/// expected index, whatever alias it wears, and every such row is judged rather than one of them. The
+/// only rows exempt are those reaching an object the plan itself declares derived, through a
+/// <c>MATERIALIZE</c> or <c>CO-ROUTINE</c> row — read out of the plan under judgement rather than
+/// listed here, so a renamed CTE cannot quietly widen the exemption.</para>
+///
+/// <para><c>SCAN … USING COVERING INDEX …</c> fails that rule and is meant to. It walks an index
+/// instead of the table, which is cheaper than a table scan and still a walk of every row: it is
+/// exactly what <c>CountAfterWatermarkThroughTimestampGroup</c> degrades to when its predicate is
+/// normalised, so treating it as an allowance would have been the blind spot rather than a
+/// concession.</para>
 /// </remarks>
 [Collection("Grimoire")]
 public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
@@ -90,9 +108,8 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     /// </summary>
     /// <remarks>
     /// The most-recent window is the read the conversation loop makes on every turn, and the one whose
-    /// ordering the index also serves — so a plan naming this index proves both halves at once: the
-    /// rows are found by seek rather than by scan, and they come back in <c>Sequence</c> order without
-    /// a sort.
+    /// ordering the same index serves — so both halves are worth proving separately here: the rows are
+    /// found by seek rather than by walk, and they come back in <c>Sequence</c> order without a sort.
     /// </remarks>
     [SkippableFact]
     public async Task The_recent_transcript_window_seeks_its_session_index()
@@ -103,11 +120,7 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
         string plan = await ExplainAsync(
             db => EntryTemporalQueries.LoadRecentDescending(db, Guid.NewGuid(), 50));
 
-        Assert.Contains("IX_Entries_SessionId_Sequence", plan, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("SCAN \"Entries\"", plan, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("SCAN Entries", plan, StringComparison.Ordinal);
+        AssertEveryStoredRowIsReachedBySeek(plan, "IX_Entries_SessionId_Sequence");
 
         // A sort would mean the index was reached for the filter but not for the order, which is half
         // the regression and would otherwise pass the assertion above.
@@ -116,16 +129,18 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Every other read in the file seeks a <c>SessionId</c>-led index too.
+    /// The single-statement reads seek a <c>SessionId</c>-led index and never sort.
     /// </summary>
     /// <remarks>
     /// Named individually rather than swept, because a theory over a list this file also owns would
     /// pass by shrinking. Each case is one production entry point with the arguments its caller
     /// supplies, so a read that regains its rows by losing its index is reported by name.
     ///
-    /// <para><c>SequenceOf</c> is absent because it filters on both identity columns and SQLite
-    /// resolves it through the stronger of the two; it has its own case below, for the seek that only
-    /// an exact comparison on <c>"Entries"."Id"</c> can produce.</para>
+    /// <para>These five have no subquery and one table reference, so a sort in the plan can only mean
+    /// the index served the filter and not the order — half the regression, and worth refusing here.
+    /// The two watermark reads cannot carry that assertion and have their own case below.
+    /// <c>SequenceOf</c> is absent because it filters on both identity columns and SQLite resolves it
+    /// through the stronger of the two.</para>
     /// </remarks>
     [SkippableTheory]
     [InlineData("LoadAfterSequence")]
@@ -133,8 +148,6 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     [InlineData("LoadBeforeDeletedKeyset")]
     [InlineData("LoadDescendingPaged")]
     [InlineData("CountAfter")]
-    [InlineData("LoadAfterWatermarkThroughTimestampGroup")]
-    [InlineData("CountAfterWatermarkThroughTimestampGroup")]
     public async Task Every_transcript_read_seeks_a_session_index(string read)
     {
 
@@ -142,11 +155,42 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 
         string plan = await ExplainAsync(db => Query(db, read));
 
-        Assert.Contains("IX_Entries_SessionId", plan, StringComparison.Ordinal);
+        AssertEveryStoredRowIsReachedBySeek(plan, "IX_Entries_SessionId");
 
-        Assert.DoesNotContain("SCAN \"Entries\"", plan, StringComparison.Ordinal);
+        Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("SCAN Entries", plan, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The two watermark reads seek their index through the alias they give the table.
+    /// </summary>
+    /// <remarks>
+    /// <b>These are the two the first version of this gate could not see, and they are the reason it
+    /// judges rows rather than text.</b> Both wrap the table twice — once unaliased inside the boundary
+    /// CTE and once as <c>e</c> in the outer query — so a normalised predicate leaves the CTE seeking
+    /// its index while the outer query walks the whole table under a name no <c>SCAN Entries</c> needle
+    /// contains. Measured, the load degrades to <c>SCAN e</c> and the count to
+    /// <c>SCAN e USING COVERING INDEX …</c>, and every assertion the earlier version made was satisfied
+    /// by the CTE beside them.
+    ///
+    /// <para>No sort assertion, and the absence is the decision. Both statements legitimately sort: the
+    /// boundary CTE orders by <c>("CreatedAt", "Id")</c> where the index supplies only the first term,
+    /// and the load's outer query orders the selected window by <c>"Sequence"</c>, which no index over
+    /// a materialised CTE can serve. Asserting no temporary B-tree here would fail on correct code, and
+    /// a sort that has to be permitted proves nothing about the seek — which is what the row-by-row
+    /// rule is for.</para>
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("LoadAfterWatermarkThroughTimestampGroup")]
+    [InlineData("CountAfterWatermarkThroughTimestampGroup")]
+    public async Task Every_watermark_read_seeks_its_session_index_under_its_alias(string read)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string plan = await ExplainAsync(db => Query(db, read));
+
+        AssertEveryStoredRowIsReachedBySeek(plan, "IX_Entries_SessionId_CreatedAt");
 
     }
 
@@ -167,13 +211,96 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 
         string plan = await ExplainAsync(db => EntryTemporalQueries.SequenceOf(db, Guid.NewGuid(), Guid.NewGuid()));
 
-        Assert.Contains("SEARCH Entries USING INDEX", plan, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("SCAN \"Entries\"", plan, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("SCAN Entries", plan, StringComparison.Ordinal);
+        AssertEveryStoredRowIsReachedBySeek(plan, "sqlite_autoindex_Entries_1");
 
     }
+
+    /// <summary>
+    /// Fails unless every row of the plan that reaches a stored object seeks <paramref name="index"/>.
+    /// </summary>
+    /// <remarks>
+    /// The alias-proof half of this gate. A plan row names the object it reaches and the verb it
+    /// reaches it with, and the verb is the whole judgement: <c>SEARCH</c> is a seek into an index,
+    /// <c>SCAN</c> is a walk of every row — including <c>SCAN … USING COVERING INDEX …</c>, which walks
+    /// an index rather than the table and is still a walk. The object's name is read but never
+    /// compared against the table's, so a statement that aliases <c>"Entries"</c> as <c>e</c> is judged
+    /// exactly as one that does not.
+    ///
+    /// <para>A row reaching a derived object is exempt, and the exemption is computed from the plan
+    /// under judgement rather than listed here: a name SQLite introduces with <c>MATERIALIZE</c> or
+    /// <c>CO-ROUTINE</c> is a temporary result the outer query is entitled to walk. Reading it out of
+    /// the plan is what stops a renamed or newly added CTE from silently widening the exemption.</para>
+    ///
+    /// <para>Every qualifying row is judged rather than one, which is the other half. A statement here
+    /// can reach the table twice, and the earlier version of this gate was satisfied by whichever of
+    /// the two still seeked. The final count assertion covers the opposite failure: a statement that
+    /// stopped reaching the table at all would otherwise pass with nothing to judge.</para>
+    /// </remarks>
+    private static void AssertEveryStoredRowIsReachedBySeek(string plan, string index)
+    {
+
+        string[] rows = plan.Split(
+            '\n',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        HashSet<string> derived = new(StringComparer.Ordinal);
+
+        foreach (string row in rows)
+        {
+
+            Match introduced = DerivedObject.Match(row);
+
+            if (introduced.Success)
+            {
+
+                _ = derived.Add(introduced.Groups["object"].Value);
+
+            }
+
+        }
+
+        int seeks = 0;
+
+        foreach (string row in rows)
+        {
+
+            Match access = ObjectAccess.Match(row);
+
+            if (!access.Success || derived.Contains(access.Groups["object"].Value))
+            {
+
+                continue;
+
+            }
+
+            Assert.True(
+                string.Equals(access.Groups["verb"].Value, "SEARCH", StringComparison.Ordinal),
+                $"A plan row walks a stored object instead of seeking it: {row}{Plan(plan)}");
+
+            Assert.True(
+                row.Contains(index, StringComparison.Ordinal),
+                $"A plan row seeks something other than {index}: {row}{Plan(plan)}");
+
+            seeks++;
+
+        }
+
+        Assert.True(
+            seeks > 0,
+            $"No plan row reaches a stored object, so there was nothing to judge.{Plan(plan)}");
+
+    }
+
+    private static string Plan(string plan) =>
+        System.Environment.NewLine + System.Environment.NewLine + "Whole plan:" + System.Environment.NewLine + plan;
+
+    /// <summary>A plan row that reaches an object, whatever the object is called.</summary>
+    private static readonly Regex ObjectAccess =
+        new("^(?<verb>SCAN|SEARCH)\\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\\b");
+
+    /// <summary>A plan row that introduces a derived object the rest of the plan may walk.</summary>
+    private static readonly Regex DerivedObject =
+        new("^(?:MATERIALIZE|CO-ROUTINE)\\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\\b");
 
     private static IQueryable Query(ArcanumDbContext db, string read)
     {

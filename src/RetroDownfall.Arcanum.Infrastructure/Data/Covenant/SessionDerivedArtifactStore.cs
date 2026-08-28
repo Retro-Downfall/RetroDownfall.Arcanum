@@ -22,12 +22,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// foreign key had nothing to name, and labelling last means a label failure aborts before any
 /// evidence has been destroyed.</para>
 ///
-/// <para>Every one of those steps names the Session, and this type used to spell that identity
-/// uppercase for itself. Both artifact tables and both pointer tables carry
-/// <c>REFERENCES "Sessions" ("Id")</c>, and a Session created by protected transfer or backup import
-/// holds a lowercase identity there — so for such a Session the first insert aborted on the foreign
-/// key and no summary or title could be written at all. The Session's own spelling is resolved once
-/// per replacement and bound to every step, which keeps all four comparisons exact and indexed.</para>
+/// <para>Every one of those steps names the Session, and all four comparisons are exact and indexed
+/// against one canonical spelling. Both artifact tables and both pointer tables carry
+/// <c>REFERENCES "Sessions" ("Id")</c>, which SQLite resolves by byte equality, so while a Session
+/// created by protected transfer or backup import held a lowercase identity there the first insert
+/// aborted on that foreign key and no summary or title could be written for it at all. Those writers
+/// were converted, a guard trigger refuses any other spelling, and the parent now holds one form — so
+/// the step that read the parent row's own text before writing a child was removed with the reason for
+/// it.</para>
 /// </remarks>
 internal sealed class SessionDerivedArtifactStore(
     ICovenantConnectionSource connections,
