@@ -11,7 +11,13 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// opens (an embedding-provider call made inside one would hold a write lock across the network while
 /// it waits on a round trip the store has no way to bound), mapping the store's
 /// <see cref="SagaCurationOutcomeKind"/> to typed <see cref="ErrorCodes.Saga"/> codes a caller can act
-/// on, and composing the <see cref="SagaMemoryDetail"/> projection every call reads back.
+/// on where the outcome really is an error, and composing the <see cref="SagaMemoryDetail"/> projection every call reads back.
+///
+/// <para>Only two of the store's outcome kinds are errors here: no such memory, and content the caller
+/// did not read. The rest are reported through <see cref="SagaCurationResult.Outcome"/> as the
+/// successes they are — an operator who asks for a state a memory is already in has been given what
+/// they asked for, and a tool that answered "no" there would be arguing with them rather than serving
+/// them.</para>
 /// </remarks>
 public interface ISagaCurationService
 {
@@ -34,21 +40,21 @@ public interface ISagaCurationService
     /// hash on the wire. A malformed hex string fails with <see cref="ErrorCodes.Validation"/>, not a
     /// Saga code.
     /// </param>
-    Task<Result<SagaMemoryDetail>> CorrectAsync(
+    Task<Result<SagaCurationResult>> CorrectAsync(
         string id, string expectedContentHash, string content, CancellationToken cancellationToken);
 
     /// <summary>
     /// Retires one memory. Needs no embedding — retiring only removes a memory's vector, it never
     /// writes one — so it is never refused for the embedding substrate being unavailable.
     /// </summary>
-    Task<Result<SagaMemoryDetail>> RetireAsync(
+    Task<Result<SagaCurationResult>> RetireAsync(
         string id, string expectedContentHash, CancellationToken cancellationToken);
 
     /// <summary>
     /// Reinstates a retired memory, computing a fresh embedding of its stored content first, exactly as
     /// <see cref="CorrectAsync"/> does.
     /// </summary>
-    Task<Result<SagaMemoryDetail>> ReinstateAsync(
+    Task<Result<SagaCurationResult>> ReinstateAsync(
         string id, string expectedContentHash, CancellationToken cancellationToken);
 
     /// <summary>
@@ -56,6 +62,6 @@ public interface ISagaCurationService
     /// never refused for the embedding substrate being unavailable — an operator must be able to retire
     /// or pin a memory precisely when retrieval is degraded.
     /// </summary>
-    Task<Result<SagaMemoryDetail>> SetPinAsync(string id, bool pinned, CancellationToken cancellationToken);
+    Task<Result<SagaCurationResult>> SetPinAsync(string id, bool pinned, CancellationToken cancellationToken);
 
 }

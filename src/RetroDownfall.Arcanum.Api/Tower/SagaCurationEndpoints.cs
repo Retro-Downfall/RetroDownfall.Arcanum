@@ -48,11 +48,18 @@ public sealed record SagaReinstateRequest(string ExpectedContentHash);
 /// OpenAI-compatible <c>/v1</c> surface, which maps its own routes and knows nothing about Saga
 /// curation.</para>
 ///
-/// <para>Refusals are the store's <see cref="SagaCurationOutcomeKind"/>, translated to
-/// <see cref="ErrorCodes.Saga"/> codes by <see cref="ISagaCurationService"/> and to status codes by
-/// <see cref="ArcanumErrorMapper"/>. <see cref="SagaCurationOutcomeKind.Unchanged"/> is not among them:
-/// the service treats it as a success, so a correction that restates the stored text answers 200 with
-/// the memory's current projection.</para>
+/// <para>The detail route answers <c>ApiResponse&lt;SagaMemoryDetail&gt;</c>; the five write routes answer
+/// <c>ApiResponse&lt;SagaCurationResult&gt;</c>, which carries what the call did beside the memory it
+/// left behind. That extra field is what lets a caller tell "I retired it" from "it was already
+/// retired" — both of which are successes here. Asking for a state a memory is already in is not
+/// refused: <see cref="SagaCurationOutcomeKind.AlreadyRetired"/>,
+/// <see cref="SagaCurationOutcomeKind.NotRetired"/> and <see cref="SagaCurationOutcomeKind.Unchanged"/>
+/// all reach the caller as 200 carrying their own kind.</para>
+///
+/// <para>What is refused is what the caller could not have seen: no such memory, content that moved
+/// since it was read, an embedding substrate that cannot produce a vector, and a body or hash the route
+/// could not parse. <see cref="ISagaCurationService"/> decides which outcomes are errors and
+/// <see cref="ArcanumErrorMapper"/> decides their status codes; neither decision is restated here.</para>
 /// </remarks>
 internal static class SagaCurationEndpoints
 {
@@ -95,13 +102,13 @@ internal static class SagaCurationEndpoints
 
                 }
 
-                Result<SagaMemoryDetail> corrected = await curation
+                Result<SagaCurationResult> corrected = await curation
                     .CorrectAsync(id, request.ExpectedContentHash, request.Content, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return Results.Json(
-                    ApiResponse<SagaMemoryDetail>.FromResult(corrected, traceId),
-                    ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail,
+                    ApiResponse<SagaCurationResult>.FromResult(corrected, traceId),
+                    ArcanumJsonContext.Default.ApiResponseSagaCurationResult,
                     statusCode: corrected.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(corrected.Error.Code));
@@ -123,13 +130,13 @@ internal static class SagaCurationEndpoints
 
                 }
 
-                Result<SagaMemoryDetail> retired = await curation
+                Result<SagaCurationResult> retired = await curation
                     .RetireAsync(id, request.ExpectedContentHash, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return Results.Json(
-                    ApiResponse<SagaMemoryDetail>.FromResult(retired, traceId),
-                    ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail,
+                    ApiResponse<SagaCurationResult>.FromResult(retired, traceId),
+                    ArcanumJsonContext.Default.ApiResponseSagaCurationResult,
                     statusCode: retired.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(retired.Error.Code));
@@ -151,13 +158,13 @@ internal static class SagaCurationEndpoints
 
                 }
 
-                Result<SagaMemoryDetail> reinstated = await curation
+                Result<SagaCurationResult> reinstated = await curation
                     .ReinstateAsync(id, request.ExpectedContentHash, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return Results.Json(
-                    ApiResponse<SagaMemoryDetail>.FromResult(reinstated, traceId),
-                    ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail,
+                    ApiResponse<SagaCurationResult>.FromResult(reinstated, traceId),
+                    ArcanumJsonContext.Default.ApiResponseSagaCurationResult,
                     statusCode: reinstated.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(reinstated.Error.Code));
@@ -174,13 +181,13 @@ internal static class SagaCurationEndpoints
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                Result<SagaMemoryDetail> pinned = await curation
+                Result<SagaCurationResult> pinned = await curation
                     .SetPinAsync(id, pinned: true, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return Results.Json(
-                    ApiResponse<SagaMemoryDetail>.FromResult(pinned, traceId),
-                    ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail,
+                    ApiResponse<SagaCurationResult>.FromResult(pinned, traceId),
+                    ArcanumJsonContext.Default.ApiResponseSagaCurationResult,
                     statusCode: pinned.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(pinned.Error.Code));
@@ -195,13 +202,13 @@ internal static class SagaCurationEndpoints
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                Result<SagaMemoryDetail> unpinned = await curation
+                Result<SagaCurationResult> unpinned = await curation
                     .SetPinAsync(id, pinned: false, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return Results.Json(
-                    ApiResponse<SagaMemoryDetail>.FromResult(unpinned, traceId),
-                    ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail,
+                    ApiResponse<SagaCurationResult>.FromResult(unpinned, traceId),
+                    ArcanumJsonContext.Default.ApiResponseSagaCurationResult,
                     statusCode: unpinned.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(unpinned.Error.Code));
@@ -223,10 +230,10 @@ internal static class SagaCurationEndpoints
     /// </remarks>
     private static IResult CurationBadBody(string traceId, string detail) =>
         Results.Json(
-            ApiResponse<SagaMemoryDetail>.FromResult(
-                Result<SagaMemoryDetail>.Failure(new Error(ErrorCodes.Validation.InvalidBody, detail)),
+            ApiResponse<SagaCurationResult>.FromResult(
+                Result<SagaCurationResult>.Failure(new Error(ErrorCodes.Validation.InvalidBody, detail)),
                 traceId),
-            ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail,
+            ArcanumJsonContext.Default.ApiResponseSagaCurationResult,
             statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Validation.InvalidBody));
 
 }

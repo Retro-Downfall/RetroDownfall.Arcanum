@@ -67,7 +67,7 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, corrected.StatusCode);
 
-        SagaMemoryDetail detail = await ReadDetailAsync(corrected);
+        SagaMemoryDetail detail = await ReadWriteResultAsync(corrected, SagaCurationOutcomeKind.Applied);
 
         Assert.Equal(CorrectedContent, detail.Memory.Content);
 
@@ -107,7 +107,8 @@ public sealed class SagaCurationEndpointTests
     /// <summary>
     /// Correcting a memory to the text it already holds succeeds. The store writes nothing for that
     /// case and reports <c>Unchanged</c>; the service treats it as a success rather than a refusal, so
-    /// the route answers 200 with the memory's current projection.
+    /// the route answers 200 — and says <c>Unchanged</c>, which is how the caller tells this apart from
+    /// the correction that did the work.
     /// </summary>
     [SkippableFact]
     public async Task A_correction_restating_the_stored_text_answers_with_the_memory_rather_than_a_refusal()
@@ -128,9 +129,96 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        SagaMemoryDetail detail = await ReadDetailAsync(response);
+        SagaMemoryDetail detail = await ReadWriteResultAsync(response, SagaCurationOutcomeKind.Unchanged);
 
         Assert.Equal(OriginalContent, detail.Memory.Content);
+
+    }
+
+    /// <summary>
+    /// A retired memory is reinstated before it is corrected, and the route says which of the two
+    /// happened rather than refusing.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is written, so the stored text is asserted unchanged as well as the outcome: the kind
+    /// alone would be satisfied by a route that reported it and corrected the memory anyway.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Correcting_a_retired_memory_reports_that_it_is_retired_rather_than_refusing()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedMemoryAsync(factory, "mem-gone", OriginalContent);
+
+        using HttpResponseMessage retired = await PostRetireAsync(
+            client,
+            "mem-gone",
+            new SagaRetireRequest(Hash(OriginalContent)));
+
+        Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
+
+        using HttpResponseMessage response = await PostCorrectAsync(
+            client,
+            "mem-gone",
+            new SagaCorrectRequest(Hash(OriginalContent), CorrectedContent));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        SagaMemoryDetail detail = await ReadWriteResultAsync(response, SagaCurationOutcomeKind.AlreadyRetired);
+
+        Assert.Equal(OriginalContent, detail.Memory.Content);
+
+    }
+
+    /// <summary>
+    /// The detail view's other half — the claim and the versions behind it — reaching the wire.
+    /// </summary>
+    /// <remarks>
+    /// A memory written while the Annals feature is off carries no claim, and a correction opens one on
+    /// the way through, so this case reads the claim a correction it drove actually produced rather than
+    /// one it arranged. It is also the only case that serializes <c>AnnalClaimHead</c> and
+    /// <c>AnnalClaimVersion</c> through the source-generated context; without it those two shapes would
+    /// be compile-verified and never exercised.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_detail_route_carries_the_claim_a_correction_opened_and_the_versions_behind_it()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedMemoryAsync(factory, "mem-claim", OriginalContent);
+
+        using HttpResponseMessage corrected = await PostCorrectAsync(
+            client,
+            "mem-claim",
+            new SagaCorrectRequest(Hash(OriginalContent), CorrectedContent));
+
+        Assert.Equal(HttpStatusCode.OK, corrected.StatusCode);
+
+        using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-claim");
+
+        Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+
+        SagaMemoryDetail detail = await ReadDetailAsync(shown);
+
+        Assert.NotNull(detail.Claim);
+
+        Assert.Equal(AnnalSubjectStore.Saga, detail.Claim!.SubjectStore);
+
+        Assert.Equal("mem-claim", detail.Claim.SubjectId);
+
+        Assert.Equal(AnnalOperation.Correct, detail.Claim.CurrentOperation);
+
+        Assert.NotEmpty(detail.History);
 
     }
 
@@ -204,7 +292,7 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
 
-        SagaMemoryDetail detail = await ReadDetailAsync(retired);
+        SagaMemoryDetail detail = await ReadWriteResultAsync(retired, SagaCurationOutcomeKind.Applied);
 
         Assert.NotNull(detail.Lifecycle.RetiredAtUtc);
 
@@ -218,8 +306,17 @@ public sealed class SagaCurationEndpointTests
 
     }
 
+    /// <summary>
+    /// Retiring a memory that is already retired succeeds and says so.
+    /// </summary>
+    /// <remarks>
+    /// This is the retry a dropped connection produces: the first attempt landed, the caller never saw
+    /// the answer, and asking again must not be told its own success was a failure. The outcome is what
+    /// keeps that from collapsing into "it worked" — a caller counting what it retired reads
+    /// <c>Applied</c> and leaves this one out.
+    /// </remarks>
     [SkippableFact]
-    public async Task Retiring_a_memory_that_is_already_retired_is_refused_with_its_own_code()
+    public async Task Retiring_a_memory_that_is_already_retired_succeeds_and_says_it_was_already_retired()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -237,14 +334,18 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
 
+        _ = await ReadWriteResultAsync(first, SagaCurationOutcomeKind.Applied);
+
         using HttpResponseMessage second = await PostRetireAsync(
             client,
             "mem-twice",
             new SagaRetireRequest(Hash(OriginalContent)));
 
-        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
 
-        await AssertRefusalAsync(second, ErrorCodes.Saga.AlreadyRetired);
+        SagaMemoryDetail detail = await ReadWriteResultAsync(second, SagaCurationOutcomeKind.AlreadyRetired);
+
+        Assert.NotNull(detail.Lifecycle.RetiredAtUtc);
 
     }
 
@@ -274,7 +375,7 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, reinstated.StatusCode);
 
-        SagaMemoryDetail detail = await ReadDetailAsync(reinstated);
+        SagaMemoryDetail detail = await ReadWriteResultAsync(reinstated, SagaCurationOutcomeKind.Applied);
 
         Assert.Null(detail.Lifecycle.RetiredAtUtc);
 
@@ -284,8 +385,44 @@ public sealed class SagaCurationEndpointTests
 
     }
 
+    /// <summary>
+    /// Reinstating against content the caller never read is still refused — the one refusal reinstate
+    /// keeps, and the line the operator's ruling draws: this tells them something they could not have
+    /// seen, rather than telling them they already have what they asked for.
+    /// </summary>
     [SkippableFact]
-    public async Task Reinstating_a_memory_that_was_never_retired_is_refused_with_its_own_code()
+    public async Task Reinstating_against_content_the_caller_never_read_is_refused_with_its_own_code()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedMemoryAsync(factory, "mem-stalereinstate", OriginalContent);
+
+        using HttpResponseMessage retired = await PostRetireAsync(
+            client,
+            "mem-stalereinstate",
+            new SagaRetireRequest(Hash(OriginalContent)));
+
+        Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
+
+        using HttpResponseMessage response = await PostReinstateAsync(
+            client,
+            "mem-stalereinstate",
+            new SagaReinstateRequest(Hash("something else entirely")));
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        await AssertRefusalAsync(response, ErrorCodes.Saga.StaleContent);
+
+    }
+
+    /// <summary>Reinstating a memory that is not retired succeeds and says so, for the same reason.</summary>
+    [SkippableFact]
+    public async Task Reinstating_a_memory_that_was_never_retired_succeeds_and_says_it_was_not_retired()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -301,9 +438,11 @@ public sealed class SagaCurationEndpointTests
             "mem-live",
             new SagaReinstateRequest(Hash(OriginalContent)));
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        await AssertRefusalAsync(response, ErrorCodes.Saga.NotRetired);
+        SagaMemoryDetail detail = await ReadWriteResultAsync(response, SagaCurationOutcomeKind.NotRetired);
+
+        Assert.Null(detail.Lifecycle.RetiredAtUtc);
 
     }
 
@@ -323,7 +462,8 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, pinned.StatusCode);
 
-        Assert.NotNull((await ReadDetailAsync(pinned)).Lifecycle.PinnedAtUtc);
+        Assert.NotNull(
+            (await ReadWriteResultAsync(pinned, SagaCurationOutcomeKind.Applied)).Lifecycle.PinnedAtUtc);
 
         using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-pin");
 
@@ -351,13 +491,15 @@ public sealed class SagaCurationEndpointTests
 
         using HttpResponseMessage pinned = await client.PostAsync("/api/memory/saga/mem-unpin/pin", content: null);
 
-        Assert.NotNull((await ReadDetailAsync(pinned)).Lifecycle.PinnedAtUtc);
+        Assert.NotNull(
+            (await ReadWriteResultAsync(pinned, SagaCurationOutcomeKind.Applied)).Lifecycle.PinnedAtUtc);
 
         using HttpResponseMessage unpinned = await client.PostAsync("/api/memory/saga/mem-unpin/unpin", content: null);
 
         Assert.Equal(HttpStatusCode.OK, unpinned.StatusCode);
 
-        Assert.Null((await ReadDetailAsync(unpinned)).Lifecycle.PinnedAtUtc);
+        Assert.Null(
+            (await ReadWriteResultAsync(unpinned, SagaCurationOutcomeKind.Applied)).Lifecycle.PinnedAtUtc);
 
         using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-unpin");
 
@@ -379,7 +521,7 @@ public sealed class SagaCurationEndpointTests
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
-        await AssertRefusalAsync(response, ErrorCodes.Saga.NotFound);
+        await AssertDetailRefusalAsync(response, ErrorCodes.Saga.NotFound);
 
     }
 
@@ -520,6 +662,7 @@ public sealed class SagaCurationEndpointTests
 
     private static StringContent JsonBody(string payload) => new(payload, Encoding.UTF8, "application/json");
 
+    /// <summary>The detail route's body: the projection alone, with no outcome to report.</summary>
     private static async Task<SagaMemoryDetail> ReadDetailAsync(HttpResponseMessage response)
     {
 
@@ -537,12 +680,60 @@ public sealed class SagaCurationEndpointTests
 
     }
 
-    private static async Task AssertRefusalAsync(HttpResponseMessage response, string expectedCode)
+    /// <summary>
+    /// A write route's body, asserting the outcome it reports before handing back the projection.
+    /// </summary>
+    /// <remarks>
+    /// The outcome is asserted by every success case rather than by one of them, because it is the only
+    /// thing distinguishing "this call did the work" from "the memory was already like that" — and a
+    /// change that collapsed the two would otherwise leave every one of these cases still passing.
+    /// </remarks>
+    private static async Task<SagaMemoryDetail> ReadWriteResultAsync(
+        HttpResponseMessage response,
+        SagaCurationOutcomeKind expectedOutcome)
+    {
+
+        ApiResponse<SagaCurationResult>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSagaCurationResult);
+
+        Assert.NotNull(body);
+
+        Assert.True(body!.IsSuccess);
+
+        Assert.NotNull(body.Data);
+
+        Assert.Equal(expectedOutcome, body.Data!.Outcome);
+
+        return body.Data.Detail;
+
+    }
+
+    /// <summary>A refusal from the detail route, whose envelope carries no outcome.</summary>
+    private static async Task AssertDetailRefusalAsync(HttpResponseMessage response, string expectedCode)
     {
 
         ApiResponse<SagaMemoryDetail>? body = JsonSerializer.Deserialize(
             await response.Content.ReadAsStringAsync(),
             ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
+
+        Assert.NotNull(body);
+
+        Assert.False(body!.IsSuccess);
+
+        Assert.Null(body.Data);
+
+        Assert.Equal(expectedCode, body.Error?.Code);
+
+    }
+
+    /// <summary>A refusal from one of the five write routes.</summary>
+    private static async Task AssertRefusalAsync(HttpResponseMessage response, string expectedCode)
+    {
+
+        ApiResponse<SagaCurationResult>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSagaCurationResult);
 
         Assert.NotNull(body);
 

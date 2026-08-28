@@ -26,7 +26,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             "the operator prefers spaces",
@@ -141,7 +141,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1", "not-a-valid-hex-string", "the operator prefers spaces", CancellationToken.None)
             .ConfigureAwait(false);
 
@@ -170,7 +170,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("something else entirely")),
             "the operator prefers spaces",
@@ -183,7 +183,7 @@ public sealed class SagaCurationServiceTests
     }
 
     [SkippableFact]
-    public async Task Correcting_a_retired_memory_is_refused()
+    public async Task Correcting_a_retired_memory_reports_that_it_is_retired_rather_than_refusing()
     {
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -198,15 +198,19 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             "the operator prefers spaces",
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess);
 
-        Assert.Equal(ErrorCodes.Saga.AlreadyRetired, result.Error.Code);
+        Assert.Equal(SagaCurationOutcomeKind.AlreadyRetired, result.Value.Outcome);
+
+        // Nothing was written: the stored text is still what it was, which is the half of this the
+        // outcome kind alone would not prove.
+        Assert.Equal("the operator prefers tabs", result.Value.Detail.Memory.Content);
 
     }
 
@@ -242,7 +246,7 @@ public sealed class SagaCurationServiceTests
         // test would catch it, even though the service still pays for the (wasted) embed call to get here.
         SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             "the operator prefers tabs",
@@ -250,7 +254,9 @@ public sealed class SagaCurationServiceTests
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal("the operator prefers tabs", result.Value.Memory.Content);
+        Assert.Equal(SagaCurationOutcomeKind.Unchanged, result.Value.Outcome);
+
+        Assert.Equal("the operator prefers tabs", result.Value.Detail.Memory.Content);
 
         Assert.Equal(
             "the operator prefers tabs",
@@ -311,7 +317,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             "the operator prefers tabs",
@@ -353,7 +359,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             "the operator prefers spaces",
@@ -361,12 +367,14 @@ public sealed class SagaCurationServiceTests
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal("the operator prefers spaces", result.Value.Memory.Content);
+        Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
+
+        Assert.Equal("the operator prefers spaces", result.Value.Detail.Memory.Content);
 
     }
 
     [SkippableFact]
-    public async Task Reinstating_a_live_memory_is_refused()
+    public async Task Reinstating_a_live_memory_reports_that_it_is_not_retired_rather_than_refusing()
     {
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -377,14 +385,16 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.ReinstateAsync(
+        Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess);
 
-        Assert.Equal(ErrorCodes.Saga.NotRetired, result.Error.Code);
+        Assert.Equal(SagaCurationOutcomeKind.NotRetired, result.Value.Outcome);
+
+        Assert.Null(result.Value.Detail.Lifecycle.RetiredAtUtc);
 
     }
 
@@ -406,7 +416,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.ReinstateAsync(
+        Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             CancellationToken.None).ConfigureAwait(false);
@@ -435,7 +445,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.CorrectAsync(
+        Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             "the operator prefers spaces",
@@ -468,7 +478,7 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.ReinstateAsync(
+        Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             CancellationToken.None).ConfigureAwait(false);
@@ -496,14 +506,16 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service.RetireAsync(
+        Result<SagaCurationResult> result = await service.RetireAsync(
             "m-1",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal(SagaRetrievalEligibility.Retired, result.Value.Eligibility);
+        Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
+
+        Assert.Equal(SagaRetrievalEligibility.Retired, result.Value.Detail.Eligibility);
 
     }
 
@@ -521,12 +533,14 @@ public sealed class SagaCurationServiceTests
 
         SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
 
-        Result<SagaMemoryDetail> result = await service
+        Result<SagaCurationResult> result = await service
             .SetPinAsync("m-1", true, CancellationToken.None).ConfigureAwait(false);
 
         Assert.True(result.IsSuccess);
 
-        Assert.NotNull(result.Value.Lifecycle.PinnedAtUtc);
+        Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
+
+        Assert.NotNull(result.Value.Detail.Lifecycle.PinnedAtUtc);
 
     }
 

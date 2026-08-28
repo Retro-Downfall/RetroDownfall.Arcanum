@@ -79,10 +79,10 @@ public enum SagaCurationOutcomeKind
     /// <summary>The caller's view of the content is stale relative to what is stored now.</summary>
     StaleContent = 3,
 
-    /// <summary>A retire was attempted against a memory that is already retired.</summary>
+    /// <summary>A retire was asked for against a memory that is already retired. Nothing was written.</summary>
     AlreadyRetired = 4,
 
-    /// <summary>A reinstate was attempted against a memory that is not retired.</summary>
+    /// <summary>A reinstate was asked for against a memory that is not retired. Nothing was written.</summary>
     NotRetired = 5,
 
     /// <summary>The verb would not have changed anything, so nothing was written.</summary>
@@ -92,6 +92,22 @@ public enum SagaCurationOutcomeKind
 
 /// <summary>One curation verb's outcome, and the lifecycle that resulted when it applied.</summary>
 public sealed record SagaCurationOutcome(SagaCurationOutcomeKind Kind, SagaMemoryLifecycle? Lifecycle);
+
+/// <summary>What one curation verb did, and the memory it left behind.</summary>
+/// <remarks>
+/// The four write verbs report an outcome beside the projection rather than returning the projection
+/// alone, because three of their outcomes write nothing and none of them is an error: asking to retire
+/// a memory that is already retired, to reinstate one that is not retired, or to correct one to the
+/// text it already holds all leave the operator with the state they asked for. Reporting only the
+/// projection would make those indistinguishable from the call that did the work.
+///
+/// <para>The distinction is load-bearing in two directions. A caller retrying after a dropped
+/// connection must not be told its first attempt's success was a failure, and a caller that later
+/// reports how many memories it retired must be able to leave out the ones that were already retired —
+/// which it can only do by reading <paramref name="Outcome"/> rather than by counting calls that
+/// returned without an error.</para>
+/// </remarks>
+public sealed record SagaCurationResult(SagaCurationOutcomeKind Outcome, SagaMemoryDetail Detail);
 
 /// <summary>Whether a write actually landed, or was refused by retirement suppression.</summary>
 public enum SagaMemoryWriteOutcome

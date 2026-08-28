@@ -86,13 +86,13 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Campaign.PathIdentityRequired =>
                 StatusCodes.Status409Conflict,
 
-            // Saga curation's three state refusals. Each says the store moved out from under the
-            // caller's view of it — the content is not what was read, the memory is already retired,
-            // the memory is not retired — so re-reading and deciding again is the action, which is
-            // what 409 asks for and what 400 would wrongly blame on the request's shape.
-            ErrorCodes.Saga.StaleContent
-                or ErrorCodes.Saga.AlreadyRetired
-                or ErrorCodes.Saga.NotRetired =>
+            // Saga curation's one state refusal. It says the stored content moved out from under the
+            // caller's view of it, so re-reading and deciding again is the action — which is what 409
+            // asks for and what 400 would wrongly blame on the request's shape. Asking to retire a
+            // memory that is already retired, or to reinstate one that is not, is not refused at all:
+            // the operator asked for a state and has it, and ISagaCurationService reports which of the
+            // two happened rather than answering no.
+            ErrorCodes.Saga.StaleContent =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.Covenant.Unavailable

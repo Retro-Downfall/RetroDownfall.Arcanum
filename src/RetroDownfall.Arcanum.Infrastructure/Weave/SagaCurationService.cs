@@ -51,7 +51,7 @@ internal sealed class SagaCurationService(
     /// and kept alongside this one. Paying for one wasted embed call on a no-op request is the accepted
     /// cost of keeping that refusal exactly as strict as it was before.
     /// </remarks>
-    public async Task<Result<SagaMemoryDetail>> CorrectAsync(
+    public async Task<Result<SagaCurationResult>> CorrectAsync(
         string id, string expectedContentHash, string content, CancellationToken cancellationToken)
     {
 
@@ -64,7 +64,7 @@ internal sealed class SagaCurationService(
         if (parsedHash.IsFailure)
         {
 
-            return Result<SagaMemoryDetail>.Failure(parsedHash.Error);
+            return Result<SagaCurationResult>.Failure(parsedHash.Error);
 
         }
 
@@ -75,7 +75,7 @@ internal sealed class SagaCurationService(
         if (embedding.IsFailure)
         {
 
-            return Result<SagaMemoryDetail>.Failure(embedding.Error);
+            return Result<SagaCurationResult>.Failure(embedding.Error);
 
         }
 
@@ -87,7 +87,7 @@ internal sealed class SagaCurationService(
 
     }
 
-    public async Task<Result<SagaMemoryDetail>> RetireAsync(
+    public async Task<Result<SagaCurationResult>> RetireAsync(
         string id, string expectedContentHash, CancellationToken cancellationToken)
     {
 
@@ -98,7 +98,7 @@ internal sealed class SagaCurationService(
         if (parsedHash.IsFailure)
         {
 
-            return Result<SagaMemoryDetail>.Failure(parsedHash.Error);
+            return Result<SagaCurationResult>.Failure(parsedHash.Error);
 
         }
 
@@ -112,7 +112,7 @@ internal sealed class SagaCurationService(
 
     }
 
-    public async Task<Result<SagaMemoryDetail>> ReinstateAsync(
+    public async Task<Result<SagaCurationResult>> ReinstateAsync(
         string id, string expectedContentHash, CancellationToken cancellationToken)
     {
 
@@ -123,7 +123,7 @@ internal sealed class SagaCurationService(
         if (parsedHash.IsFailure)
         {
 
-            return Result<SagaMemoryDetail>.Failure(parsedHash.Error);
+            return Result<SagaCurationResult>.Failure(parsedHash.Error);
 
         }
 
@@ -134,7 +134,7 @@ internal sealed class SagaCurationService(
         if (row is null)
         {
 
-            return Result<SagaMemoryDetail>.Failure(NotFoundError());
+            return Result<SagaCurationResult>.Failure(NotFoundError());
 
         }
 
@@ -143,7 +143,7 @@ internal sealed class SagaCurationService(
         if (embedding.IsFailure)
         {
 
-            return Result<SagaMemoryDetail>.Failure(embedding.Error);
+            return Result<SagaCurationResult>.Failure(embedding.Error);
 
         }
 
@@ -155,7 +155,7 @@ internal sealed class SagaCurationService(
 
     }
 
-    public async Task<Result<SagaMemoryDetail>> SetPinAsync(string id, bool pinned, CancellationToken cancellationToken)
+    public async Task<Result<SagaCurationResult>> SetPinAsync(string id, bool pinned, CancellationToken cancellationToken)
     {
 
         ArgumentException.ThrowIfNullOrEmpty(id);
@@ -171,11 +171,19 @@ internal sealed class SagaCurationService(
     }
 
     /// <summary>
-    /// Maps a store outcome to its projection or its error, and — on <see cref="SagaCurationOutcomeKind.Applied"/>
-    /// or <see cref="SagaCurationOutcomeKind.Unchanged"/> — returns <see cref="ShowAsync"/>'s own
-    /// composition rather than a second copy of it, so a caller sees the state its own call produced.
+    /// Pairs a store outcome with <see cref="ShowAsync"/>'s own composition rather than a second copy of
+    /// it, so a caller sees both what its call did and the state that call produced.
     /// </summary>
-    private async Task<Result<SagaMemoryDetail>> FinishAsync(
+    /// <remarks>
+    /// Two of the store's kinds reach the caller as errors, and the line between them and the rest is
+    /// whether the caller could have known. <see cref="SagaCurationOutcomeKind.NotFound"/> and
+    /// <see cref="SagaCurationOutcomeKind.StaleContent"/> each report something the operator could not
+    /// have seen in the state they were shown — the memory is gone, or its content moved since they read
+    /// it — and acting on either without being told would lose work. Every other kind describes a memory
+    /// that is now in the state the operator asked for, which is what they wanted, so it is reported
+    /// through <see cref="SagaCurationResult.Outcome"/> instead of refused.
+    /// </remarks>
+    private async Task<Result<SagaCurationResult>> FinishAsync(
         string id, SagaCurationOutcome outcome, CancellationToken cancellationToken)
     {
 
@@ -184,11 +192,20 @@ internal sealed class SagaCurationService(
         if (failure is { } error)
         {
 
-            return Result<SagaMemoryDetail>.Failure(error);
+            return Result<SagaCurationResult>.Failure(error);
 
         }
 
-        return await ShowAsync(id, cancellationToken).ConfigureAwait(false);
+        Result<SagaMemoryDetail> detail = await ShowAsync(id, cancellationToken).ConfigureAwait(false);
+
+        if (detail.IsFailure)
+        {
+
+            return Result<SagaCurationResult>.Failure(detail.Error);
+
+        }
+
+        return Result<SagaCurationResult>.Success(new SagaCurationResult(outcome.Kind, detail.Value));
 
     }
 
@@ -251,26 +268,21 @@ internal sealed class SagaCurationService(
         kind switch
         {
 
-            // A correction that restates the stored text is not a request that misread the state, and
-            // refusing it bought the operator nothing. The store already writes nothing for this case
-            // (SagaMemoryStore.CorrectAsync rolls its transaction back before any write), so treating it
-            // as a success alongside Applied costs nothing and the caller still learns nothing changed
-            // from SagaMemoryDetail's own projection.
-            SagaCurationOutcomeKind.Applied or SagaCurationOutcomeKind.Unchanged => null,
+            // The three kinds that write nothing because the memory is already in the state the caller
+            // asked for. None of them misread anything: the operator asked for a state and has it. The
+            // store rolls each of these back before any write (see SagaMemoryStore.Curation.cs), so the
+            // caller is told which of the two things happened through SagaCurationResult.Outcome rather
+            // than being refused something it already has.
+            SagaCurationOutcomeKind.Applied
+                or SagaCurationOutcomeKind.Unchanged
+                or SagaCurationOutcomeKind.AlreadyRetired
+                or SagaCurationOutcomeKind.NotRetired => null,
 
             SagaCurationOutcomeKind.NotFound => NotFoundError(),
 
             SagaCurationOutcomeKind.StaleContent => new Error(
                 ErrorCodes.Saga.StaleContent,
                 "The content read before this call no longer matches what is stored now."),
-
-            SagaCurationOutcomeKind.AlreadyRetired => new Error(
-                ErrorCodes.Saga.AlreadyRetired,
-                "This memory is already retired."),
-
-            SagaCurationOutcomeKind.NotRetired => new Error(
-                ErrorCodes.Saga.NotRetired,
-                "This memory is not retired, so it cannot be reinstated."),
 
             _ => throw new InvalidOperationException($"Unhandled {nameof(SagaCurationOutcomeKind)}: {kind}."),
 
