@@ -263,11 +263,11 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         Assert.True(await harness.Store.DeleteAsync("m-retired", CancellationToken.None).ConfigureAwait(false));
 
-        // The memory left standing is what makes this bite. Its own claim belongs where it is, so a
-        // claim count alone would pass whatever the delete did; an orphan is the only thing that moves.
-        Assert.Equal(1, await harness.CountAsync("annal_claims", "SubjectStoreCode = 1").ConfigureAwait(false));
-
         Assert.Equal(0, await OrphanedSagaClaimsAsync(harness).ConfigureAwait(false));
+
+        // The memory left standing is what makes the line above bite: its own claim belongs where it
+        // is, so what a delete failed to take is the only thing an orphan count can be counting.
+        Assert.Equal(1, await harness.CountAsync("annal_claims", "SubjectStoreCode = 1").ConfigureAwait(false));
 
         await harness.Store.DeleteAllAsync(CancellationToken.None).ConfigureAwait(false);
 

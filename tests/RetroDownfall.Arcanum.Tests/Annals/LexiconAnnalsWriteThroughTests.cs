@@ -358,10 +358,6 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
         Assert.True(
             (await service.DeleteByNameAsync("config", LexiconScope.Global, CancellationToken.None)).Value);
 
-        // The entity left standing is what makes this bite. Its own claim belongs where it is, so a
-        // claim count alone would pass whatever the delete did; an orphan is the only thing that moves.
-        Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 2;"));
-
         Assert.Equal(
             0,
             await CountAsync(
@@ -370,6 +366,10 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
                 WHERE SubjectStoreCode = 2
                   AND SubjectId NOT IN (SELECT Id FROM lexicon_entries);
                 """));
+
+        // The entity left standing is what makes the assertion above bite: its own claim belongs where
+        // it is, so what a delete failed to take is the only thing an orphan count can be counting.
+        Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 2;"));
 
     }
 
