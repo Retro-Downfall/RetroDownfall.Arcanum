@@ -551,7 +551,8 @@ public sealed class SagaEndpointTests
             // historical authority identity, so a Campaign deletion can clear its own row without
             // rewriting it - but its two production writers no longer disagree about how to spell one:
             // GrimoireRepository.InsertBindingAsync, the writer these cases stand in for, now renders
-            // exactly this. The Saga store copies that spelling into saga_memories.CampaignId, and
+            // exactly this. The Saga store once copied that spelling into saga_memories.CampaignId - it
+            // now canonicalizes the identity first, so a memory no longer inherits it - and
             // DivinationService and DataRetentionService bind it back exactly.
             ("$campaignId", Canonical(campaignId)),
             ("$now", now));

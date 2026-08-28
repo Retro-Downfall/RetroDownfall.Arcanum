@@ -480,6 +480,12 @@ internal sealed partial class SagaMemoryStore
                     // again, permanently, with no error anywhere. Deleting both is right rather than
                     // merely tolerant: the digest binds content-and-scope, and the two renderings are one
                     // Campaign, so they are two records of the same rejection.
+                    //
+                    // The pair is canonicalized inside SuppressionDigests rather than here, and that is
+                    // the part this once got wrong. campaignId below is read out of the memory row, which
+                    // the version-5 sweep may not have reached; handing that on unchanged made the pair
+                    // one digest twice and released nothing at all whenever the two ends of the digest
+                    // disagreed about the spelling.
                     (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
                         SuppressionDigests(suppressionKey, scopeKind, campaignId, content);
 

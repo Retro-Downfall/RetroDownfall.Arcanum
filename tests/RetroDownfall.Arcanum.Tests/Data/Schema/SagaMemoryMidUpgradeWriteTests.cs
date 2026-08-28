@@ -4,6 +4,7 @@ using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -52,7 +53,11 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     private static readonly Guid CampaignIdentity = new("A0000000-0000-4000-8000-0000000000C5");
 
+    /// <summary>The Session whose binding the sweep has not reached: the minority spelling.</summary>
     private static readonly Guid SessionIdentity = new("B0000000-0000-4000-8000-0000000000E5");
+
+    /// <summary>A Session in the same Campaign whose binding the core data initializer canonicalized.</summary>
+    private static readonly Guid CanonicalSessionIdentity = new("B0000000-0000-4000-8000-0000000000E6");
 
     private static readonly string Timestamp =
         new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).ToString("o", CultureInfo.InvariantCulture);
@@ -99,23 +104,15 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
         Assert.Equal(
             CampaignIdentity.ToString("D").ToLowerInvariant(),
-            await ScalarStringAsync(connection, "SELECT CampaignId FROM session_campaign_bindings;"));
+            await ScalarStringAsync(
+                connection,
+                $"SELECT CampaignId FROM session_campaign_bindings WHERE SessionId = '{Canonical(SessionIdentity)}';"));
 
         string memoryId = Guid.NewGuid().ToString();
 
         await using ArcanumDbContext db = CreateContext(file);
 
-        SagaMemoryStore store = new(
-            db,
-            new WeaveIndexAvailability(),
-            new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings
-                {
-                    Integrations = new IntegrationSettings
-                    {
-                        Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
-                    },
-                }));
+        SagaMemoryStore store = CreateStore(db);
 
         SagaMemoryWriteOutcome outcome = await store.InsertAsync(
             memoryId,
@@ -141,6 +138,187 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                 "saga_memories",
                 "CampaignId",
                 CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// Reinstating a memory mid-drain releases the suppression its identical twin recorded on the other
+    /// half of the installation, so the content really is writable again.
+    /// </summary>
+    /// <remarks>
+    /// <b>Sharing a function is not sharing a value, and the first attempt at this shared only the
+    /// function.</b> A suppression digest takes the Campaign identity into its preimage, and the two ends
+    /// of the digest read that identity from different places: the write path from the classifier, which
+    /// canonicalizes, and the release from the memory row, which the version-5 sweep may not have
+    /// reached. Handed the row's minority spelling, the pair collapsed to one digest asked for twice - so
+    /// a release removed only the record written on its own half, returned <c>Applied</c>, and the next
+    /// write of that content was still refused with nothing reporting why.
+    ///
+    /// <para><b>One row is seeded and everything else is driven.</b> Two Sessions in one Campaign, bound
+    /// the two ways an upgrading installation is bound, each carrying a memory with identical content,
+    /// each retired through <c>RetireAsync</c> - which is what puts one suppression under each spelling.
+    /// The memory on the un-swept half is the seeded one, because no build since the classifier began
+    /// canonicalizing can write a row holding the minority spelling; that row is exactly what the sweep
+    /// exists to repair, so a case about behaviour before the sweep has to start from one.</para>
+    ///
+    /// <para><b>What it counts is the release, not the row.</b> It writes the content back through the
+    /// store afterwards and demands <see cref="SagaMemoryWriteOutcome.Written"/>, because asserting that
+    /// a suppression row disappeared would pass a release that deleted the wrong one.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_reinstate_before_the_sweep_drains_releases_the_suppression_its_twin_recorded()
+    {
+
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            CoreSchemaVersionFourFixture.ChainSet(),
+            TestDimensions,
+            CancellationToken.None);
+
+        await SeedBoundSessionAsync(connection);
+
+        await using ArcanumDbContext db = CreateContext(file);
+
+        SagaMemoryStore store = CreateStore(db);
+
+        const string Content = "a conclusion both halves of the installation drew";
+
+        byte[] contentDigest = AnnalContentDigest.ForSagaMemory(Content);
+
+        string onTheCanonicalHalf = await WriteAsync(store, CanonicalSessionIdentity, Content);
+
+        // The un-swept half's memory is seeded rather than written, and it is the one thing here that
+        // has to be: it stands for a row the shipped code wrote before the classifier canonicalized what
+        // it hands on, which is every Campaign-scoped memory on every installation this upgrade will run
+        // on. No build after that change can produce it, which is the point - the row is what the sweep
+        // exists to repair, and what the release has to keep working against until it has.
+        string onTheUnsweptHalf = Guid.NewGuid().ToString();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO saga_memories ("Id", "Content", "CreatedAt", "SessionId", ScopeKindCode, CampaignId)
+            VALUES ($id, $content, $now, $session, 2, $campaign);
+            """,
+            ("$id", onTheUnsweptHalf),
+            ("$content", Content),
+            ("$session", SessionIdentity.ToString("D")),
+            ("$campaign", CampaignIdentity.ToString("D").ToLowerInvariant()),
+            ("$now", Timestamp));
+
+        // One Campaign under two spellings, one on each half - which is what makes the two retirements
+        // below record two different digests for what is one rejection.
+        Assert.Equal(
+            Canonical(CampaignIdentity),
+            await ScalarStringAsync(
+                connection,
+                $"""SELECT CampaignId FROM saga_memories WHERE "Id" = '{onTheCanonicalHalf}';"""));
+
+        Assert.Equal(
+            CampaignIdentity.ToString("D").ToLowerInvariant(),
+            await ScalarStringAsync(
+                connection,
+                $"""SELECT CampaignId FROM saga_memories WHERE "Id" = '{onTheUnsweptHalf}';"""));
+
+        foreach (string retiring in new[] { onTheCanonicalHalf, onTheUnsweptHalf })
+        {
+
+            SagaCurationOutcome retired = await store.RetireAsync(
+                retiring,
+                contentDigest,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+
+            Assert.Equal(SagaCurationOutcomeKind.Applied, retired.Kind);
+
+        }
+
+        Assert.Equal(2, await CountAsync(connection, "SELECT COUNT(*) FROM saga_retirement_suppressions;"));
+
+        // One call, which is what leaves the version-5 DDL committed and the sweep still pending.
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            GrimoireSchemaVersionChains.Default,
+            TestDimensions,
+            CancellationToken.None);
+
+        Assert.Equal(
+            CampaignIdentity.ToString("D").ToLowerInvariant(),
+            await ScalarStringAsync(
+                connection,
+                $"""SELECT CampaignId FROM saga_memories WHERE "Id" = '{onTheUnsweptHalf}';"""));
+
+        SagaCurationOutcome reinstated = await store.ReinstateAsync(
+            onTheUnsweptHalf,
+            contentDigest,
+            new float[TestDimensions],
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, reinstated.Kind);
+
+        SagaMemoryWriteOutcome rewritten = await store.InsertAsync(
+            Guid.NewGuid().ToString(),
+            Content,
+            DateTimeOffset.UtcNow,
+            SessionIdentity,
+            tags: null,
+            source: "test",
+            new float[TestDimensions],
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, rewritten);
+
+    }
+
+    private static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
+    {
+
+        string id = Guid.NewGuid().ToString();
+
+        SagaMemoryWriteOutcome outcome = await store.InsertAsync(
+            id,
+            content,
+            DateTimeOffset.UtcNow,
+            sessionId,
+            tags: null,
+            source: "test",
+            new float[TestDimensions],
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
+
+        return id;
+
+    }
+
+    private static SagaMemoryStore CreateStore(ArcanumDbContext db) =>
+        new(
+            db,
+            new WeaveIndexAvailability(),
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+                    Integrations = new IntegrationSettings
+                    {
+                        Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
+                    },
+                }));
+
+    private static async Task<int> CountAsync(SqliteConnection connection, string sql)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            CultureInfo.InvariantCulture);
 
     }
 
@@ -171,6 +349,16 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             ("$campaign", Canonical(CampaignIdentity)),
             ("$now", Timestamp));
 
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($session, $campaign, 'active', $now, $now);
+            """,
+            ("$session", Canonical(CanonicalSessionIdentity)),
+            ("$campaign", Canonical(CampaignIdentity)),
+            ("$now", Timestamp));
+
         using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
             .Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
 
@@ -184,6 +372,19 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             // The minority spelling, on purpose and legally: at version 4 no guard refuses it, and it is
             // exactly what the unconverted writer left on every installation this upgrade will run on.
             ("$campaign", CampaignIdentity.ToString("D").ToLowerInvariant()),
+            ("$now", Timestamp));
+
+        // The other half of the same installation: a Session the core data initializer bound, which
+        // canonicalized what it backfilled. One Campaign, two spellings, which is the state every
+        // upgrading installation is in.
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+            VALUES ($session, 2, $campaign, $now);
+            """,
+            ("$session", Canonical(CanonicalSessionIdentity)),
+            ("$campaign", Canonical(CampaignIdentity)),
             ("$now", Timestamp));
 
     }

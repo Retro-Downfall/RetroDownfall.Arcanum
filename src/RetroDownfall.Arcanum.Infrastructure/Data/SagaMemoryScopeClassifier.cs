@@ -47,7 +47,7 @@ internal static class SagaMemoryScopeClassifier
             (true, (long)SagaMemoryScopeKind.Global, _) => (SagaMemoryScopeKind.Global, null),
 
             (true, (long)SagaMemoryScopeKind.Campaign, { } owner) =>
-                (SagaMemoryScopeKind.Campaign, Canonical(owner)),
+                (SagaMemoryScopeKind.Campaign, CanonicalCampaignIdentity(owner)),
 
             _ => (SagaMemoryScopeKind.LegacyUnresolved, null),
 
@@ -78,11 +78,19 @@ internal static class SagaMemoryScopeClassifier
     /// authority with no foreign key precisely so such a fact survives, and inventing an identity for it
     /// would be worse than reporting it. The guard refuses such a value and the sweep's count names it,
     /// which is the same treatment every other hand-edited identity in this family gets.</para>
+    ///
+    /// <para>Internal rather than private because the retirement suppression digest needs the same
+    /// rendering and must not derive a second one. That digest takes the Campaign identity into its
+    /// preimage, and its two ends read it from different places - the write path from this classifier,
+    /// the release from the memory row the sweep has not necessarily reached - so a release that
+    /// canonicalized differently, or not at all, would ask for a digest no retirement ever wrote.</para>
     /// </remarks>
-    private static string Canonical(string boundCampaignId) =>
-        Guid.TryParse(boundCampaignId, out Guid parsed)
-            ? parsed.ToString("D").ToUpperInvariant()
-            : boundCampaignId;
+    internal static string? CanonicalCampaignIdentity(string? campaignId) =>
+        campaignId is null
+            ? null
+            : Guid.TryParse(campaignId, out Guid parsed)
+                ? parsed.ToString("D").ToUpperInvariant()
+                : campaignId;
 
     /// <summary>
     /// Reads one Session's binding and classifies it, inside the caller's transaction.

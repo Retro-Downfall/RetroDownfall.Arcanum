@@ -844,21 +844,43 @@ internal sealed partial class SagaMemoryStore(
     /// reporting why. Returning both from one place is what stops the two paths from disagreeing
     /// again.</para>
     ///
+    /// <para><b>Sharing the function was not enough on its own, and the first attempt at this shared
+    /// only that.</b> The pair is derived from whatever the caller hands in, and the two callers do not
+    /// read the Campaign identity from the same place: the write path takes it from the classifier,
+    /// which canonicalizes, while the release reads it out of the memory row, which the version-5 sweep
+    /// may not have reached. Handed the minority spelling, this returned one digest twice - so a release
+    /// asked only for the spelling the row happened to hold, removed nothing when the retirement had
+    /// been recorded on the other half, and still reported success. Canonicalizing here rather than
+    /// trusting the callers to agree is what makes the pair a property of the function.</para>
+    ///
     /// <para>A Global or unresolved scope carries no Campaign, so both renderings are
     /// <see langword="null"/> and the two digests are the same value. Asking for it twice is
     /// harmless.</para>
+    ///
+    /// <para><c>RetireAsync</c> deliberately does not come through here: it writes one digest, over the
+    /// spelling the memory row holds. The pair above covers it, because every spelling either binding
+    /// writer has ever produced is the canonical form or its lowercase image. A parseable identity in
+    /// any other casing would not be covered - but no writer can produce one, version 5's guard refuses
+    /// one, and the sweep repairs one, since a mixed-case value is canonically shaped and
+    /// <c>upper()</c> settles it.</para>
     /// </remarks>
     private static (byte[] Settled, byte[] Legacy) SuppressionDigests(
         byte[] suppressionKey,
         SagaMemoryScopeKind scopeKind,
         string? campaignId,
-        string content) =>
-        (SagaSuppressionDigest.Compute(suppressionKey, scopeKind, campaignId, content),
+        string content)
+    {
+
+        string? settled = SagaMemoryScopeClassifier.CanonicalCampaignIdentity(campaignId);
+
+        return (SagaSuppressionDigest.Compute(suppressionKey, scopeKind, settled, content),
             SagaSuppressionDigest.Compute(
                 suppressionKey,
                 scopeKind,
-                campaignId?.ToLowerInvariant(),
+                settled?.ToLowerInvariant(),
                 content));
+
+    }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {

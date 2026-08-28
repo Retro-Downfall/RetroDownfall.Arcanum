@@ -21,11 +21,13 @@
 -- identity it hands on, so what reaches this column is canonical whatever the binding beside it holds
 -- and whatever the sweep has drained.
 --
--- The update half judges no write the schema ships today: the one shipped writer that updates this
--- column is the version-two classification sweep, and a step's backfill drains to completion before the
--- next step's DDL runs, so version 5's triggers do not exist while it is working. It is here because
--- the column is otherwise open to any update, and a guard is what makes the next writer of it fail
--- loudly instead of quietly halving recall again.
+-- The update half judges two shipped writes, not none. The version-two classification sweep writes this
+-- column on every memory an upgrade classifies, and it runs before version 5's DDL exists, so this
+-- trigger never sees it. Version 5's own sweep is the other: IdentitySpellingBackfill declares this
+-- column in RepairedColumns and MoveColumnPageAsync issues UPDATE saga_memories SET CampaignId =
+-- upper(CampaignId) against it - which runs precisely when this trigger exists, because the step's DDL
+-- commits before its backfill drains. That write is admitted rather than refused only because the
+-- repair selects on shape as well as case, so upper() of what it moves is canonical by construction.
 --
 -- Canonical means uppercase AND dashed AND 36 characters, and each of those is a separate way to be
 -- wrong: a dash-free rendering is already its own uppercase image, so a case-only check would pass

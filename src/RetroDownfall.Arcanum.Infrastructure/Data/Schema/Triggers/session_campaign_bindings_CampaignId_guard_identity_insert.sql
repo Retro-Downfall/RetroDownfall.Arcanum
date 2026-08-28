@@ -3,9 +3,12 @@
 -- without rewriting the durable fact that this Session was bound to that Campaign. Nothing therefore
 -- forced its two writers to agree, and they did not. The core data initializer canonicalized what it
 -- backfilled while the turn-begin repository bound a bare ToString(), so one table held two spellings of
--- one Campaign - and SagaMemoryScopeClassifier copies whichever it finds straight into
+-- one Campaign - and SagaMemoryScopeClassifier copied whichever it found straight into
 -- saga_memories.CampaignId, so Campaign-scoped recall returned only the half whose binding came from the
--- repository and the assistant simply did not remember the rest.
+-- repository and the assistant simply did not remember the rest. That is the history this guard exists
+-- for rather than a description of the code now: the classifier canonicalizes the identity it hands on,
+-- so a memory no longer inherits this column's spelling. What still reads this column exactly is a
+-- Campaign memory reset, which selects the Sessions whose watermarks it must clear by comparing it.
 --
 -- Nullable, and legitimately so: a global-only or unresolved binding carries no Campaign at all, which
 -- the table's own CHECK states. The guard therefore says nothing about a NULL and everything about a

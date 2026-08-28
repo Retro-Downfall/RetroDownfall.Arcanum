@@ -225,12 +225,14 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// Campaign is gone, and leave the table mixed forever on the one class of row nothing else will ever
     /// touch.</para>
     ///
-    /// <para><c>saga_memories.CampaignId</c> is the same value copied verbatim by
-    /// <see cref="SagaMemoryScopeClassifier"/>, from the live write path and from the version-two
-    /// classification sweep alike, so it inherits whichever spelling the binding held. The two are
-    /// repaired together and in this order because mixed is the one state that must not survive: repairing
-    /// the binding alone would leave every memory already written pointing at a Campaign spelled the other
-    /// way, which is the halved recall this step exists to end.</para>
+    /// <para><c>saga_memories.CampaignId</c> holds the same Campaign identity, taken from the binding by
+    /// <see cref="SagaMemoryScopeClassifier"/> - which is why the two are repaired together and in this
+    /// order. Every row already written took that value <i>verbatim</i>, so the two columns disagree on
+    /// exactly the rows the binding writers disagreed about, and repairing the binding alone would leave
+    /// every one of those memories pointing at a Campaign spelled the other way. That is the halved
+    /// recall this step exists to end. A row written from now on is canonical whatever the binding holds,
+    /// because the classifier canonicalizes what it hands on - so what this repairs is history, and the
+    /// column stays settled without it.</para>
     ///
     /// <para>Neither column takes part in any unique constraint, so the <c>upper()</c> collision hazard
     /// the other two lists have to reason about does not arise here: two rows whose Campaign identities

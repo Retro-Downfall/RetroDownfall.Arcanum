@@ -379,8 +379,11 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         // fact that this Session was bound to that Campaign - and nothing therefore forced this writer to
         // agree with CoreGrimoireSchemaDataInitializer, which canonicalizes the same column. A bare
         // ToString() here made the table hold two spellings of one Campaign, and SagaMemoryScopeClassifier
-        // copies whichever it finds straight into saga_memories.CampaignId, so Campaign-scoped recall
-        // returned only the rows whose binding came from this writer.
+        // copied whichever it found straight into saga_memories.CampaignId, so Campaign-scoped recall
+        // returned only the rows whose binding came from this writer. Recall no longer depends on this
+        // line - the classifier canonicalizes the identity it hands on - but this column has an exact
+        // reader of its own: a Campaign memory reset selects the Sessions whose extraction watermarks it
+        // must clear by comparing it, and a minority-spelled binding is omitted from that selection.
         _ = command.Parameters.AddWithValue(
             "$campaignId",
             campaign.CampaignId is { } id ? id.ToString("D").ToUpperInvariant() : DBNull.Value);

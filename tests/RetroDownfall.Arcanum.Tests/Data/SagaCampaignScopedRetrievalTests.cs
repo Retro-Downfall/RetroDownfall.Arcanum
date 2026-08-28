@@ -267,14 +267,22 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     /// memories and reported nothing at all about the rest, so an assertion that a column now reads
     /// uppercase would have been green while recall stayed halved.
     ///
-    /// <para><b>What reverts it is now more than one thing, and that is worth knowing before trusting
-    /// this case as a mutation target.</b> Reverting the turn-begin repository's rendering alone no
-    /// longer halves this - measured, not assumed - because
-    /// <see cref="SagaMemoryScopeClassifier"/> canonicalizes the Campaign identity it hands on, so a
-    /// memory records the right Campaign whatever spelling the binding beside it holds. Reverting both
-    /// returns one memory where this demands two. The writer conversion is still load-bearing for the
-    /// column's own exact reader, which is the Campaign memory reset's watermark selection, and that has
-    /// a case of its own.</para>
+    /// <para><b>What reverts it is now more than one thing, and a mutation against this case needs to
+    /// know which tree it is on.</b> On the shipped tree, reverting the turn-begin repository's rendering
+    /// alone reds this case <i>at the seed</i>, with
+    /// <c>session_campaign_bindings.CampaignId must be stored as an uppercase dashed 36-character
+    /// identity</c> surfacing as "The session could not be created." - the guard refuses the binding
+    /// before any memory is written, so what comes back is an abort and not a halved count. Measured.
+    ///
+    /// <para>To see the halving itself the guards have to come out too, and then the classifier decides
+    /// it: with all four Campaign identity guards removed, reverting that writer alone leaves this case
+    /// <b>green</b>, because <see cref="SagaMemoryScopeClassifier"/> canonicalizes the identity it hands
+    /// on and a memory records the right Campaign whatever spelling the binding beside it holds.
+    /// Reverting the classifier as well returns one memory where this demands two. All three measured,
+    /// none inferred.</para>
+    ///
+    /// <para>The writer conversion is still load-bearing for the column's own exact reader, which is the
+    /// Campaign memory reset's watermark selection, and that has a case of its own.</para>
     ///
     /// <para>Both Sessions are bound through a real writer rather than seeded.
     /// <c>CreateBoundSessionAsync</c> is the path every Session created since the binding table shipped
@@ -692,8 +700,9 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             // session_campaign_bindings.CampaignId still carries no foreign key - it is the historical
             // authority identity, so a Campaign deletion can clear its own row without rewriting it - but
             // its two writers no longer disagree: the core data initializer always canonicalized, and
-            // GrimoireRepository.InsertBindingAsync now does too. The Saga store copies that spelling into
-            // saga_memories.CampaignId, and DivinationService and DataRetentionService bind it back
+            // GrimoireRepository.InsertBindingAsync now does too. The Saga store once copied that spelling
+            // into saga_memories.CampaignId - it now canonicalizes the identity first, so a memory no
+            // longer inherits it - and DivinationService and DataRetentionService bind that column back
             // exactly. This seed once rendered a bare ToString(), which is the spelling that made recall
             // return half of a Campaign's memories, and the version-5 guard now refuses it outright.
             ("$campaignId", bindingKindCode == 2 ? Canonical(campaignId!.Value) : null),
