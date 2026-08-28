@@ -344,6 +344,84 @@ public sealed partial class DataRetentionServiceTests
     }
 
     /// <summary>
+    /// A committed Saga reset is recovered as committed while another store's claims are still standing.
+    /// </summary>
+    /// <remarks>
+    /// The sibling below asks that a reset which left something behind be seen. This asks the opposite,
+    /// and it is what decides which tables may answer the question at all: the residue count carries no
+    /// predicate, so a table holding more than one store's rows cannot witness one store's reset. Naming
+    /// one would leave a reset that had committed being recovered as failed for as long as the other
+    /// store held a claim - on every retry, because nothing about it would ever change.
+    ///
+    /// <para>The Lexicon claim is what makes this bite. Without it the Annals are empty too, and the
+    /// recovery reaches the right answer for a reason that says nothing about the question.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task MutationRecovery_ForACommittedSagaReset_IsNotHeldOpenByAnotherStoresClaims()
+    {
+
+        RequireSqlCipher();
+
+        string memory = await SeedGlobalSagaMemoryAsync();
+
+        await SeedClaimAsync(1, memory);
+
+        string entry = await SeedClaimedLexiconEntryAsync("config", string.Empty);
+
+        await ApplyUntargetedResetAsync(MemoryResetScope.Saga);
+
+        Assert.Equal(0, await CountTableRowsAsync("saga_memories"));
+
+        Assert.Equal(1, await CountAnnalClaimsAsync(2, entry));
+
+        DataRetentionService service = CreateService();
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        const string ownerId = "committed-saga-reset-recovery-test";
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionMutation,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                "Interrupted Saga memory reset.",
+                now));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            ownerId,
+            now,
+            now.AddMinutes(5));
+
+        Assert.True(lease.Acquired);
+
+        Assert.True(
+            await operations.SaveCheckpointAsync(
+                operation.Id,
+                ownerId,
+                expectedCheckpointVersion: 0,
+                checkpointVersion: 2,
+                SerializeEmptyMutationCheckpoint(
+                    "reset-memory",
+                    ((int)MemoryResetScope.Saga).ToString(CultureInfo.InvariantCulture)),
+                checkpointReference: "retention-mutation:" + operation.Id.ToString("N"),
+                "Interrupted Saga memory reset.",
+                now));
+
+        DataRetentionMutationRecoveryHandler handler = new(service);
+
+        LongRunningOperationRecoveryResult recovered = await handler.RecoverAsync(
+            Assert.IsType<LongRunningOperation>(await operations.GetAsync(operation.Id)),
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+    }
+
+    /// <summary>
     /// An interrupted Saga reset whose only surviving rows are the retirement evidence and its key is
     /// still an interrupted reset.
     /// </summary>

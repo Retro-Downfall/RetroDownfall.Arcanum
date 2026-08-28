@@ -7155,6 +7155,16 @@ internal sealed partial class DataRetentionService(
             && Enum.IsDefined((MemoryResetScope)scopeValue))
         {
 
+            // What a scope names below is a witness that the reset's data mutation did not commit - not
+            // an inventory of what that reset clears. The mutation is one transaction, so any table it
+            // empties answers for the whole of it, and a witness only has to be readable by the bare
+            // count further down, which carries no predicate.
+            //
+            // That is why the Annals tables a memory reset also clears are absent. Their rows belong to
+            // whichever store's claim wrote them, and a count with no predicate cannot tell those apart -
+            // so naming one here would report another store's claims as this reset's unfinished work, and
+            // a reset that had committed would be recovered as failed for as long as that other store
+            // held a claim. On every retry, because nothing about it would ever change.
             string[] tables = (MemoryResetScope)scopeValue switch
             {
 
