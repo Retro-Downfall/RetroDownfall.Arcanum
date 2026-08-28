@@ -1484,15 +1484,15 @@ internal static class MemoryEndpoints
     /// </summary>
     /// <remarks>
     /// <c>@canonicalSessionId</c> is for a column that holds the uppercase dashed form the
-    /// object-relational writer renders. <c>@sessionId</c> is for the three that deliberately hold the
+    /// object-relational writer renders. <c>@sessionId</c> is for the columns that deliberately hold the
     /// lowercase one: <c>session_attachment_chunks.SessionId</c>, which the tapestry reads as its live
     /// scope-id set, <c>saga_memories.SessionId</c>, and <c>tapestry_generations.ScopeId</c>, which is
     /// filled from the first. One parameter served both groups until the attachment family moved, and
     /// the bound-attachment count then compared a lowercase value against a canonical column and
     /// reported zero.
     ///
-    /// <para><b>Two of the predicates below still bind the minority name against a canonical column, and
-    /// that is a defect this split does not fix.</b> <c>Entries.SessionId</c> and <c>Sessions.Id</c>
+    /// <para><b>Predicates below still bind the minority name against a canonical column, and that is a
+    /// defect this split does not fix.</b> <c>Entries.SessionId</c> and <c>Sessions.Id</c>
     /// have held the canonical form since long before this work, so the entry, pinned-entry and
     /// campaign-summary counts have reported zero for a session filter for as long as they have existed.
     /// Correcting them changes numbers an operator reads, on a family this change is not about, so they

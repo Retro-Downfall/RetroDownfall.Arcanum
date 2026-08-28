@@ -43,9 +43,9 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
-/// The behavioural contract for the attachment family: six writers that all render one attachment
-/// identity, driven through their own production entry points against a real Grimoire, and the three
-/// provenance reads that decide whether an attachment-derived memory or fact can still name its source.
+/// The behavioural contract for the attachment family: every writer of one attachment identity, driven
+/// through its own production entry point against a real Grimoire, and the provenance reads that decide
+/// whether an attachment-derived memory or fact can still name its source.
 /// </summary>
 /// <remarks>
 /// This is the third case <see cref="RetroDownfall.Arcanum.Tests.Covenant.IdentitySpellingContractTests"/>
@@ -54,10 +54,10 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 /// needs the object-relational context the attachment store, the index repository, the Saga store and
 /// the Lexicon service all share.
 ///
-/// <para><b>Why every case ends in a read rather than in a column comparison.</b> Six writers agreeing
-/// on a spelling is not the property that matters; the property that matters is that the joins between
-/// them resolve. Three of those joins have no foreign key to make a disagreement loud - a consultation,
-/// a Saga memory and a Lexicon fact each report their source unavailable and carry on - so each is
+/// <para><b>Why every case ends in a read rather than in a column comparison.</b> Writers agreeing on a
+/// spelling is not the property that matters; the property that matters is that the joins between them
+/// resolve. Some of those joins have no foreign key to make a disagreement loud - a consultation, a
+/// Saga memory and a Lexicon fact each report their source unavailable and carry on - so each is
 /// asserted through the reader that production actually asks, not through the text of the column.</para>
 ///
 /// <para><b>What is asserted to stay in the minority form.</b> A chunk's own <c>SessionId</c> and its

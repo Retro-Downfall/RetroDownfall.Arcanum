@@ -4,7 +4,9 @@
 
 **Goal:** Make every stored Guid identity in the Grimoire hold one textual form, so comparisons return to exact indexed equality, the per-turn table scan disappears, and the identity-comparison register can be deleted rather than maintained.
 
-**Architecture:** Six writer call sites are converted to the form the EF provider already renders. A Core schema version-5 step counts non-canonical rows per column and repairs them in place under deferred foreign keys — a verifier with a repair arm, because both minority writers were unreachable for their entire existence. Guard triggers then refuse a non-canonical write whatever produces it, which is what lets the normalised comparisons revert to exact equality and the register retire in favour of a behavioural contract test.
+**Architecture:** Writer call sites are converted to the form the EF provider already renders. A Core schema version-5 step counts non-canonical rows per column and repairs them in place under deferred foreign keys — a verifier where the minority writers were unreachable for their entire existence, with a repair arm for the columns a reachable writer reached. Guard triggers then refuse a non-canonical write whatever produces it, which is what lets the normalised comparisons revert to exact equality and the register retire in favour of a behavioural contract test.
+
+**Revised under implementation.** This said the step was a verifier throughout, because both minority writers then known were unreachable. A reachable one was found afterwards — the turn-begin repository, which bound a Campaign identity on the per-turn path — so an ordinary installation has rows rewritten rather than only counted. The correction is marked rather than applied silently, because a reader who expects a rewrite of nothing will read a real repair as a defect.
 
 **Tech Stack:** .NET 10, C# with Native AOT discipline, xUnit 2.9.3, raw `DbCommand` SQL over SQLCipher-encrypted SQLite, EF Core 10.0.10 with a mandatory compiled model.
 

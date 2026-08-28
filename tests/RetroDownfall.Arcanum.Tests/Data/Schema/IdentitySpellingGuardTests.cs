@@ -33,9 +33,8 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 ///
 /// <para><b>The two shapes this family settled on.</b> One trigger per column rather than one per table:
 /// <c>RAISE(ABORT, …)</c> takes a string literal, so a trigger covering several columns cannot name the
-/// one that failed, and five of the twelve guarded tables carry identity-shaped columns that are
-/// deliberately outside this family - a table-level name would claim a coverage the trigger does not
-/// have. And <c>BEFORE INSERT</c> always, plus <c>BEFORE UPDATE OF</c> that column wherever the table
+/// one that failed, and a guarded table can carry identity-shaped columns that are deliberately outside
+/// this family - a table-level name would claim a coverage the trigger does not have. And <c>BEFORE INSERT</c> always, plus <c>BEFORE UPDATE OF</c> that column wherever the table
 /// does not already refuse every update: <c>assistant_entry_finalizations</c> and
 /// <c>artifact_sensitivity</c> both abort every update whatever it changes, so an update-time identity
 /// check on either could never be reached. See <c>Sessions_Id_guard_identity_insert</c> and its update
