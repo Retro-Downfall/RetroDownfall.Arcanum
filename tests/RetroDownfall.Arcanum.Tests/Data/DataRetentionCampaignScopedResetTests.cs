@@ -242,6 +242,84 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// A Campaign memory reset takes that Campaign's retirement evidence, and leaves every other
+    /// Campaign's, every installation-scoped one, and the key that binds them all, standing.
+    /// </summary>
+    /// <remarks>
+    /// A suppression names a scope rather than a memory, so none of the deletes beside it reaches one.
+    /// Left behind, it would go on refusing extraction for an owner that no longer exists — and because
+    /// the memory it described is gone, nothing would ever surface that it was still doing so.
+    ///
+    /// <para>The key is the same rule read the other way. This reset clears one Campaign's evidence
+    /// rather than the installation's, so clearing the key here would leave every surviving digest
+    /// permanently unmatchable while still reading as evidence.</para>
+    ///
+    /// <para>The outcome is asserted through the insert chokepoint rather than only by counting rows,
+    /// because what a suppression is <i>for</i> is refusing a write. A predicate that matched nothing —
+    /// the failure this Campaign spelling has already produced once for the watermarks beside it —
+    /// leaves the row count unchanged <i>and</i> leaves the write refused, and only the second of those
+    /// is what the operator would notice.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task ApplyAsync_ResetMemory_ForOneCampaign_RemovesOnlyThatCampaignsSuppressions()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCampaignRowAsync(ResetCampaignA);
+
+        await SeedCampaignRowAsync(ResetCampaignB);
+
+        Guid sessionInA = await SessionBindingWriters.BoundByTheRepositoryAsync(
+            _db!, ResetCampaignA, CancellationToken.None);
+
+        Guid sessionInB = await SessionBindingWriters.BoundByTheRepositoryAsync(
+            _db!, ResetCampaignB, CancellationToken.None);
+
+        const string retiredInA = "the operator prefers tabs";
+
+        const string retiredInB = "the operator prefers spaces";
+
+        const string retiredGlobally = "the operator prefers braces";
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionInA, retiredInA);
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionInB, retiredInB);
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, retiredGlobally);
+
+        Assert.Equal(3, await CountAllAsync("saga_retirement_suppressions"));
+
+        await ApplyCampaignResetAsync(MemoryResetScope.Saga, ResetCampaignA);
+
+        Assert.Equal(2, await CountAllAsync("saga_retirement_suppressions"));
+
+        // The key belongs to the installation, not to this Campaign.
+        Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
+
+        ISagaMemoryStore store = CreateSagaMemoryStore();
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Written,
+            await store.InsertAsync(
+                Guid.NewGuid().ToString(), retiredInA, DateTimeOffset.UtcNow, sessionInA,
+                tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Suppressed,
+            await store.InsertAsync(
+                Guid.NewGuid().ToString(), retiredInB, DateTimeOffset.UtcNow, sessionInB,
+                tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Suppressed,
+            await store.InsertAsync(
+                Guid.NewGuid().ToString(), retiredGlobally, DateTimeOffset.UtcNow, sessionId: null,
+                tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
+
+    }
+
     private async Task ApplyCampaignResetAsync(MemoryResetScope scope, Guid campaignId)
     {
 

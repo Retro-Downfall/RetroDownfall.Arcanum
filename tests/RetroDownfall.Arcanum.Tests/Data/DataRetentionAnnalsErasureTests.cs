@@ -125,6 +125,43 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// A Lexicon reset leaves the Saga store's retirement evidence and its key exactly where they were.
+    /// </summary>
+    /// <remarks>
+    /// The two tables belong to one store, and a reset that named the other one has no business
+    /// reaching them. Taking them here would un-retire, silently and for the whole installation, every
+    /// conclusion an operator had rejected — and the operator who asked to clear the Lexicon would have
+    /// no reason to look.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ApplyAsync_ResetMemory_Lexicon_LeavesSagaRetirementEvidenceStanding()
+    {
+
+        RequireSqlCipher();
+
+        await SeedScopedLexiconEntryAsync("config", string.Empty);
+
+        const string retired = "the operator prefers tabs";
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, retired);
+
+        await ApplyUntargetedResetAsync(MemoryResetScope.Lexicon);
+
+        Assert.Equal(0, await CountTableRowsAsync("lexicon_entries"));
+
+        Assert.Equal(1, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Suppressed,
+            await CreateSagaMemoryStore().InsertAsync(
+                Guid.NewGuid().ToString(), retired, DateTimeOffset.UtcNow, sessionId: null,
+                tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
+
+    }
+
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_Lexicon_ClearsLexiconClaimsAndLeavesSagaClaimsStanding()
     {

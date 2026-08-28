@@ -2814,6 +2814,84 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A whole-store Saga reset clears the retirement evidence and the key that made it.
+    /// </summary>
+    /// <remarks>
+    /// The two go together. Clearing the digests alone would leave a key nothing can use, and clearing
+    /// the key alone would leave rows that can never match again while still reading as evidence — an
+    /// operator asking what this installation still suppresses would be told rows that suppress nothing.
+    ///
+    /// <para>The write that follows the reset is the half a row count cannot see: a reset that emptied
+    /// <c>saga_memories</c> and left the evidence standing would report every table it named as clear,
+    /// and the next extraction pass would still refuse the conclusion the operator had just asked to be
+    /// forgotten, with nothing anywhere saying why.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task ApplyAsync_ResetMemory_Saga_ClearsItsSuppressionsAndTheKeyThatMadeThem()
+    {
+
+        RequireSqlCipher();
+
+        const string retired = "the operator prefers tabs";
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, retired);
+
+        Assert.Equal(1, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
+
+        await ApplyUntargetedResetAsync(MemoryResetScope.Saga);
+
+        Assert.Equal(0, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(0, await CountAllAsync("saga_suppression_key"));
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Written,
+            await CreateSagaMemoryStore().InsertAsync(
+                Guid.NewGuid().ToString(), retired, DateTimeOffset.UtcNow, sessionId: null,
+                tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A factory reset leaves neither curation table behind.
+    /// </summary>
+    /// <remarks>
+    /// Both are durable rows an operator's own action created, so a factory reset that returned the
+    /// installation to its shipped state while keeping them would hand the next owner keyed evidence of
+    /// what the last one had rejected, and a store that silently refused to record it again.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task ApplyAsync_FactoryReset_LeavesNeitherCurationTableBehind()
+    {
+
+        RequireSqlCipher();
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
+
+        Assert.Equal(1, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
+
+        (LongRunningOperationReconciliationSummary recovery, _) =
+            await ReconcileFactoryResetV0Async(
+                CreateService(),
+                "curation-factory-recovery-test");
+
+        Assert.Equal(1, recovery.Completed);
+
+        Assert.Equal(0, recovery.RequiresAttention);
+
+        Assert.Equal(0, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(0, await CountAllAsync("saga_suppression_key"));
+
+    }
+
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_ErasesTapestrySummariesOfDeletedCorpora()

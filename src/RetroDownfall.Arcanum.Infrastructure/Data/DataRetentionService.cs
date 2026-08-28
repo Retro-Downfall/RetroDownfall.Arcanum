@@ -261,8 +261,10 @@ internal sealed partial class DataRetentionService(
                 "saga_memory_embeddings_vec",
                 "saga_memory_attachment_provenance",
                 "saga_extraction_watermarks",
+                "saga_retirement_suppressions",
+                "saga_suppression_key",
             ],
-            "Saga facts, embedding companions, typed provenance, and extraction watermarks remain independent from source attachment availability.",
+            "Saga facts and the companion rows the store keeps beside them remain independent from source attachment availability.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -2292,6 +2294,20 @@ internal sealed partial class DataRetentionService(
                     "saga_memories",
                     "\"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
                     campaignAndKind),
+
+                // A suppression names a scope rather than a memory, so the deletes above cannot reach
+                // it, and one left standing would go on refusing extraction for an owner that no longer
+                // exists. It is bound exactly, against the same column pair the memory delete above
+                // binds: the suppression's CampaignId is a copy of the memory's, so the two predicates
+                // cannot disagree about which rows this Campaign owns.
+                //
+                // The key is deliberately absent. This reset clears one Campaign's evidence, not the
+                // installation's, and every Global suppression and every other Campaign's still needs
+                // the key that binds it.
+                new(
+                    "saga_retirement_suppressions",
+                    "\"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
+                    campaignAndKind),
             ],
 
             MemoryResetScope.Lexicon =>
@@ -2356,6 +2372,12 @@ internal sealed partial class DataRetentionService(
                     Whole("saga_memory_attachment_provenance"),
                     Whole("saga_extraction_watermarks"),
                     Whole("saga_memories"),
+
+                    // The evidence and the key that binds it go together. Clearing the digests alone
+                    // would leave a key nothing can use, and clearing the key alone would leave rows
+                    // that can never match again while still reading as evidence.
+                    Whole("saga_retirement_suppressions"),
+                    Whole("saga_suppression_key"),
                 ],
 
             // lexicon_fts is deliberately absent, exactly as it is from the Campaign-targeted list and
@@ -7082,6 +7104,8 @@ internal sealed partial class DataRetentionService(
                         "saga_memory_attachment_provenance",
                         "saga_extraction_watermarks",
                         "saga_memories",
+                        "saga_retirement_suppressions",
+                        "saga_suppression_key",
                     ],
 
                 MemoryResetScope.Lexicon =>
