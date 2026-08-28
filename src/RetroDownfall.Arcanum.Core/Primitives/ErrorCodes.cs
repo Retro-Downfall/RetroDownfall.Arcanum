@@ -41,6 +41,16 @@ public static class ErrorCodes
         /// </remarks>
         public const string BodyReadTimeout = "Validation.BodyReadTimeout";
 
+        /// <summary>
+        /// The request's headers or trailers exceed the total size this server accepts.
+        /// </summary>
+        /// <remarks>
+        /// Reachable while reading a chunked body, because trailers arrive after it and count against
+        /// the same ceiling. Distinct from <see cref="BodyTooLarge"/> because shrinking the body will
+        /// not help, and from <see cref="InvalidBody"/> because the body may be perfectly well formed.
+        /// </remarks>
+        public const string RequestHeadersTooLarge = "Validation.RequestHeadersTooLarge";
+
         public const string InvalidQuery = "Validation.InvalidQuery";
 
         public const string InvalidProviderType = "Validation.InvalidProviderType";

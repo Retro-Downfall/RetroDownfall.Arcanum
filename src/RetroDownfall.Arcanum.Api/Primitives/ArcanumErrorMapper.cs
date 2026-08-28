@@ -87,9 +87,10 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status409Conflict,
 
             // Saga curation's two state refusals. StaleContent says the stored content moved out from
-            // under the caller's view of it; AlreadyRetired reaches here only from a correction, whose
-            // text did not change because the memory is retired. Both are 409 because re-reading and
-            // deciding again is the action, and 400 would wrongly blame the request's shape.
+            // under the caller's view of it; AlreadyRetired reaches here only from a correction, and
+            // says the memory is retired and must be reinstated before it can be corrected at all.
+            // Both are 409 because re-reading and deciding again is the action, and 400 would wrongly
+            // blame the request's shape.
             //
             // Retiring a memory that is already retired, and reinstating one that is not, are not
             // refused and have no codes: the operator asked for a state and has it, and
@@ -148,6 +149,9 @@ internal static class ArcanumErrorMapper
             // not wrong, so this is not a 400: it is worth resending unchanged on a better connection.
             ErrorCodes.Validation.BodyReadTimeout =>
                 StatusCodes.Status408RequestTimeout,
+
+            ErrorCodes.Validation.RequestHeadersTooLarge =>
+                StatusCodes.Status431RequestHeaderFieldsTooLarge,
 
             ErrorCodes.Attachment.TooLarge =>
                 StatusCodes.Status413PayloadTooLarge,

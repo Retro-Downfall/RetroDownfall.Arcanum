@@ -350,6 +350,17 @@ internal static class ConfigurationEndpoints
                 "Request body must be a valid ArcanumSettings JSON object."));
 
         }
+        catch (BadHttpRequestException failure)
+        {
+
+            // The same fault ApiRequestJson.ReadAsync answers for every route that can use it. This
+            // method reads the raw JsonDocument tree for RejectObsoleteJsonKeys and so cannot route
+            // through that helper, which is exactly how PUT /api/config and POST /api/config/validate
+            // kept answering 500 Hub.Unhandled for a truncated or oversized body after every other
+            // JSON-reading route was repaired. Sharing the helper's result keeps the two in step.
+            return (null, ApiRequestJson.UnreadableBodyResult(httpContext, failure));
+
+        }
 
         using (document)
         {

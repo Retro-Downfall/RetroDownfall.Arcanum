@@ -169,7 +169,9 @@ public sealed class SagaCurationEndpointTests
 
         await AssertRefusalAsync(response, ErrorCodes.Saga.AlreadyRetired);
 
-        // And the refusal is honest about the store: the text really did not change.
+        // And the refusal is honest about the store: the memory really was left untouched. This is
+        // evidence that nothing was written, not the reason for the refusal -- the reason is the
+        // retirement, which is checked before either content comparison.
         using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-gone");
 
         Assert.Equal(OriginalContent, (await ReadDetailAsync(shown)).Memory.Content);

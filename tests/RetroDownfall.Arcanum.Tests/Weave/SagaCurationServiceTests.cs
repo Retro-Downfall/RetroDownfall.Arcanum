@@ -208,8 +208,11 @@ public sealed class SagaCurationServiceTests
 
         Assert.Equal(ErrorCodes.Saga.AlreadyRetired, result.Error.Code);
 
-        // The refusal is the honest answer precisely because the text did not change: retiring an
-        // already-retired memory hands the operator what they asked for, correcting one does not.
+        // The refusal is the honest answer because the retirement, not the submitted text, is what the
+        // operator has to deal with: retiring an already-retired memory hands them the state they named,
+        // and correcting one never touches the memory at all. The read-back below is evidence of that
+        // second half, not the reason for it -- the next test corrects a live memory to its own text and
+        // gets a 200, so "the text did not change" cannot be what makes this a refusal.
         Assert.Equal(
             "the operator prefers tabs",
             (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)

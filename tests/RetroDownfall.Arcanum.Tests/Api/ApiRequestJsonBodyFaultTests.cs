@@ -44,6 +44,10 @@ public sealed class ApiRequestJsonBodyFaultTests
     [SkippableTheory]
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
+    // Reads its body with JsonDocument.ParseAsync because it needs the raw tree, so it cannot route
+    // through the helper at all -- and kept answering 500 for these faults after every route that
+    // could use the helper was repaired. It is here so "every JSON-reading route" means every one.
+    [InlineData("/api/config/validate")]
     public async Task A_body_that_ends_early_is_answered_with_the_envelope_and_not_a_server_error(string route)
     {
 
@@ -62,6 +66,10 @@ public sealed class ApiRequestJsonBodyFaultTests
     [SkippableTheory]
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
+    // Reads its body with JsonDocument.ParseAsync because it needs the raw tree, so it cannot route
+    // through the helper at all -- and kept answering 500 for these faults after every route that
+    // could use the helper was repaired. It is here so "every JSON-reading route" means every one.
+    [InlineData("/api/config/validate")]
     public async Task A_body_past_the_size_ceiling_keeps_the_status_kestrel_chose(string route)
     {
 
@@ -93,6 +101,10 @@ public sealed class ApiRequestJsonBodyFaultTests
     [SkippableTheory]
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
+    // Reads its body with JsonDocument.ParseAsync because it needs the raw tree, so it cannot route
+    // through the helper at all -- and kept answering 500 for these faults after every route that
+    // could use the helper was repaired. It is here so "every JSON-reading route" means every one.
+    [InlineData("/api/config/validate")]
     public async Task A_body_arriving_too_slowly_is_a_timeout_rather_than_a_bad_request(string route)
     {
 
@@ -114,13 +126,51 @@ public sealed class ApiRequestJsonBodyFaultTests
     }
 
     /// <summary>
-    /// Each code resolves through the mapper to the very status the helper set, so the two authorities
-    /// cannot drift apart.
+    /// Trailers over the header ceiling are a 431, not a 400 wearing a 431's status.
     /// </summary>
+    /// <remarks>
+    /// Reachable while reading a chunked body, because trailers arrive after it and count against the
+    /// same ceiling. Before this was named, the response carried Kestrel's 431 while the code said
+    /// <c>Validation.InvalidBody</c>, which the mapper resolves to 400 — the one shape the helper's
+    /// own remark promised could not happen.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("/api/lore")]
+    [InlineData("/api/memory/saga/m-1/retire")]
+    [InlineData("/api/config/validate")]
+    public async Task Trailers_over_the_header_ceiling_are_named_as_such(string route)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpResponseMessage response = await SendFaultingBodyAsync(
+            route,
+            new BadHttpRequestException(
+                "Request headers too long",
+                StatusCodes.Status431RequestHeaderFieldsTooLarge));
+
+        Assert.Equal(HttpStatusCode.RequestHeaderFieldsTooLarge, response.StatusCode);
+
+        await AssertEnvelopeAsync(
+            response,
+            ErrorCodes.Validation.RequestHeadersTooLarge,
+            ApiRequestJson.RequestHeadersTooLargeMessage);
+
+    }
+
+    /// <summary>
+    /// Each code resolves through the mapper to the very status the helper sends it with.
+    /// </summary>
+    /// <remarks>
+    /// This derives the mapper side only — it asserts code-to-status against literal statuses. The other
+    /// direction, that the helper actually sends each code with that status, is what the wire cases
+    /// above assert. Neither alone closes the loop; together they do.
+    /// </remarks>
     [Theory]
     [InlineData(ErrorCodes.Validation.InvalidBody, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Validation.BodyTooLarge, StatusCodes.Status413PayloadTooLarge)]
     [InlineData(ErrorCodes.Validation.BodyReadTimeout, StatusCodes.Status408RequestTimeout)]
+    [InlineData(ErrorCodes.Validation.RequestHeadersTooLarge, StatusCodes.Status431RequestHeaderFieldsTooLarge)]
     public void Every_body_fault_code_maps_to_the_status_the_helper_sends_it_with(string code, int expected) =>
         Assert.Equal(expected, RetroDownfall.Arcanum.Api.Primitives.ArcanumErrorMapper.ResolveStatusCode(code));
 

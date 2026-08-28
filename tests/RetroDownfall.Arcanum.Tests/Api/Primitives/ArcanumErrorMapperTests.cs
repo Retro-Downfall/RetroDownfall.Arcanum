@@ -106,6 +106,7 @@ public sealed class ArcanumErrorMapperTests
     // every other code on this installation's 413 is distinct from its family's invalid-request code.
     [InlineData(ErrorCodes.Validation.BodyTooLarge, StatusCodes.Status413PayloadTooLarge)]
     [InlineData(ErrorCodes.Validation.BodyReadTimeout, StatusCodes.Status408RequestTimeout)]
+    [InlineData(ErrorCodes.Validation.RequestHeadersTooLarge, StatusCodes.Status431RequestHeaderFieldsTooLarge)]
     // FeatureDisabled means an operator turned a feature off in config, not that the caller lacks
     // permission, so it maps to 503 (retry later) rather than sharing the 403 used by genuine
     // access-control failures (PathNotAllowed, AccessDenied, etc.) above.
