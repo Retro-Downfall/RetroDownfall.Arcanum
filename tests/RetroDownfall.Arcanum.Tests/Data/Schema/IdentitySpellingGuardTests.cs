@@ -437,8 +437,11 @@ public sealed class IdentitySpellingGuardTests
     /// <para>The accepting case is the one that makes the refusals mean something: a guard that refused
     /// everything would satisfy the four refusals on its own while leaving the sweep unable to run.</para>
     ///
-    /// <para>The fifth way of being something else - a binding that carries no Campaign at all - is the
-    /// case beside this one, split out for the reason its own remarks give.</para>
+    /// <para>Two further ways of being something else - a binding that carries no Campaign being given
+    /// one, and a Campaign binding having its Campaign cleared - are the two cases beside this one. They
+    /// are split out because each discriminates one of the exemption's two <c>IS NOT NULL</c> conjuncts,
+    /// and because each is a row the table's own CHECK would also refuse, so each has to assert the
+    /// guard's own sentence rather than any failure.</para>
     /// </remarks>
     [Fact]
     public async Task A_resolved_campaign_binding_admits_a_spelling_rewrite_and_nothing_else()
@@ -506,20 +509,26 @@ public sealed class IdentitySpellingGuardTests
     }
 
     /// <summary>
-    /// A binding that carries no Campaign cannot be given one by the spelling exemption, which is the
-    /// case three-valued logic would have let through.
+    /// A binding that carries no Campaign is refused a Campaign <i>by this guard</i>, which is what the
+    /// exemption's <c>OLD.CampaignId IS NOT NULL</c> conjunct buys and the only thing it buys.
     /// </summary>
     /// <remarks>
-    /// Both <c>IS NOT NULL</c> tests inside the exemption are load-bearing rather than defensive:
-    /// without them the exemption evaluates to NULL for a global-only or unresolved row, whose
-    /// <c>CampaignId</c> is NULL by this table's own CHECK, and <c>NOT NULL</c> is NULL rather than
-    /// true - so the abort silently does not fire and a scope-holding writer could put a Campaign
-    /// identity on a row that carries no authority at all.
+    /// <b>The conjunct is defence in depth, not the refusal, and an earlier version of this remark said
+    /// otherwise.</b> Removing it does open the exemption's three-valued hole - <c>upper(NULL)</c> is
+    /// NULL, the comparison against it is NULL, <c>NOT NULL</c> is NULL, and the abort does not fire -
+    /// but the write still never lands, because this table's own CHECK pairs <c>BindingKindCode</c> with
+    /// the presence of <c>CampaignId</c> and refuses the row. What the conjunct changes is <i>which
+    /// layer</i> refuses and therefore what a developer is told, and that is exactly what this case
+    /// asserts: the guard's own sentence, not merely that something threw. A case satisfied by any
+    /// failure would stay green with the conjunct gone, because the CHECK would still refuse.
     ///
-    /// <para>Split from the case above because it is the only one whose refusal the table's own CHECK
-    /// would also produce, and a case that accepted any failure would therefore pass with the guard
-    /// removed. That is why the assertion is on the guard's own sentence rather than on any exception.
-    /// The seeded global-only row is the shape: kind 1, Campaign NULL, and no authority to lend.</para>
+    /// <para>Measured rather than reasoned about. Against the real table in SQLite, removing this
+    /// conjunct changes this row alone from a guard refusal to a CHECK refusal, and removing both
+    /// conjuncts admits nothing that was not admitted before - <c>NULL AND FALSE</c> is <c>FALSE</c>, so
+    /// any other pinned conjunct that differs collapses the exemption on its own.</para>
+    ///
+    /// <para>The seeded global-only row is the shape: kind 1, Campaign NULL, and no authority to
+    /// lend.</para>
     /// </remarks>
     [Fact]
     public async Task A_binding_with_no_campaign_cannot_be_given_one_by_the_spelling_exemption()
@@ -535,6 +544,46 @@ public sealed class IdentitySpellingGuardTests
                     UPDATE session_campaign_bindings
                     SET CampaignId = '{Canonical(Campaign)}'
                     WHERE BindingKindCode = 1;
+                    """)));
+
+        Assert.Contains(
+            "Only an unresolved legacy Session Campaign binding can be resolved.",
+            refused.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A Campaign binding cannot have its Campaign cleared <i>by this guard</i>, which is the sibling
+    /// half - what the exemption's <c>NEW.CampaignId IS NOT NULL</c> conjunct buys.
+    /// </summary>
+    /// <remarks>
+    /// Its own case because the two conjuncts protect opposite directions and neither covers the other:
+    /// the case above rewrites a row that holds no Campaign, this one empties a row that does. Removing
+    /// <c>NEW.CampaignId IS NOT NULL</c> changes this row alone from a guard refusal to a CHECK refusal
+    /// and leaves the case above untouched, so with a case each the two are distinguished - which a
+    /// single mutation removing both could not do.
+    ///
+    /// <para>Like its sibling, the assertion is on the guard's own sentence, because the CHECK would
+    /// refuse this row too and a case that accepted any failure would prove nothing about the
+    /// guard.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_campaign_binding_cannot_have_its_campaign_cleared_by_the_spelling_exemption()
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync("session_campaign_bindings");
+
+        await harness.InsertAsync("session_campaign_bindings", "CampaignId", Canonical(Campaign));
+
+        SqliteException refused = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => harness.ExecuteAsync(
+                    """
+                    UPDATE session_campaign_bindings
+                    SET CampaignId = NULL
+                    WHERE BindingKindCode = 2;
                     """)));
 
         Assert.Contains(

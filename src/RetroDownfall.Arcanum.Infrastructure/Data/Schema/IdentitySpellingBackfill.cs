@@ -297,9 +297,46 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
 
         bool moved = false;
 
-        // Families first, so the bounded page is never spent on a reference and left unable to finish an
-        // attachment. Starving the plain references for a batch or two costs nothing, because none of
-        // them carries a foreign key; splitting a family across two transactions aborts the migration.
+        // The two Campaign columns first, and the order between them is load-bearing rather than tidy:
+        // the binding is the authority a memory's Campaign was taken from, so repairing the binding
+        // first and the memories second means a batch cut short by its budget leaves the two agreeing on
+        // fewer rows rather than disagreeing on more.
+        //
+        // Ahead of the attachment families for a reason that is a courtesy rather than a correctness
+        // requirement. Nothing depends on these two being settled early - the classifier canonicalizes
+        // what it hands on, so a Saga write is correct at any point in the drain - but a Campaign memory
+        // reset selects on both columns exactly, and on an installation holding many attachments the
+        // families would otherwise spend every batch's budget for a long time and leave that one
+        // operator-facing path selecting only the rows the sweep had reached.
+        foreach (RepairedColumn column in RepairedColumns)
+        {
+
+            int columnBudget = MaxRowsPerBatch - counted;
+
+            if (columnBudget <= 0)
+            {
+
+                break;
+
+            }
+
+            int settled = await RepairColumnAsync(
+                connection,
+                transaction,
+                column,
+                columnBudget,
+                cancellationToken).ConfigureAwait(false);
+
+            counted += settled;
+
+            moved |= settled > 0;
+
+        }
+
+        // Families before the plain references, so the bounded page is never spent on a reference and
+        // left unable to finish an attachment. Starving the plain references for a batch or two costs
+        // nothing, because none of them carries a foreign key; splitting a family across two
+        // transactions aborts the migration.
         foreach (IdentityFamily family in RepairedFamilies)
         {
 
@@ -332,31 +369,6 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
             }
 
             int repaired = await RepairAsync(connection, transaction, reference, budget, cancellationToken)
-                .ConfigureAwait(false);
-
-            counted += repaired;
-
-            moved |= repaired > 0;
-
-        }
-
-        // Last, and the order between these two is load-bearing rather than tidy: the binding is the
-        // authority a memory's Campaign was copied from, so repairing the binding first and the memories
-        // that inherited from it second means a batch cut short by its budget leaves the two agreeing on
-        // fewer rows rather than disagreeing on more.
-        foreach (RepairedColumn column in RepairedColumns)
-        {
-
-            int budget = MaxRowsPerBatch - counted;
-
-            if (budget <= 0)
-            {
-
-                break;
-
-            }
-
-            int repaired = await RepairColumnAsync(connection, transaction, column, budget, cancellationToken)
                 .ConfigureAwait(false);
 
             counted += repaired;
@@ -673,11 +685,12 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// scope its table's own guard demands and only when there is work for it.
     /// </summary>
     /// <remarks>
-    /// The count comes first and returns early on zero, so a database with nothing to repair takes no
-    /// authorization at all - the same discipline the Session binding backfill keeps, and for the same
+    /// The count exists only to keep a scope from being opened for nothing, so it is taken only for the
+    /// column that needs one - the same discipline the Session binding backfill keeps, and for the same
     /// reason: the Session binding write scope is the narrow permission that lets a writer state a
     /// Session's Campaign authority, and nothing should be able to read a granted scope as evidence that
-    /// work happened.
+    /// work happened. A column with no scope to open goes straight to the page and lets the
+    /// <c>UPDATE</c>'s own row count answer, which is one scan per batch rather than two.
     ///
     /// <para>It counts what it is about to repair rather than what
     /// <see cref="CountNonCanonicalAsync"/> reports, so a hand-edited dash-free row - which
@@ -692,19 +705,19 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         CancellationToken cancellationToken)
     {
 
-        if (await CountRepairableAsync(connection, transaction, column, cancellationToken)
-            .ConfigureAwait(false) == 0)
-        {
-
-            return 0;
-
-        }
-
         if (!column.RequiresSessionBindingWriteScope)
         {
 
             return await MoveColumnPageAsync(connection, transaction, column, limit, cancellationToken)
                 .ConfigureAwait(false);
+
+        }
+
+        if (await CountRepairableAsync(connection, transaction, column, cancellationToken)
+            .ConfigureAwait(false) == 0)
+        {
+
+            return 0;
 
         }
 

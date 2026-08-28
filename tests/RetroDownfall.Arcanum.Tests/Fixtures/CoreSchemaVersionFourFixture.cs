@@ -7,15 +7,16 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// real version-4 installation rather than from a hand-written metadata row.
 /// </summary>
 /// <remarks>
-/// Version 5 only <i>adds</i>, so the reconstruction only removes: the objects listed below come out of
-/// the shipped list and nothing else changes. That is what keeps it honest - the fingerprint this list
-/// produces is compared against the pin the shipped chain carries for version 5, so a reconstruction
-/// that drifted fails rather than quietly certifying the wrong pin.
+/// Version 5 both <i>adds</i> and <i>edits</i>, so the reconstruction does both: the objects listed
+/// below come out of the shipped list, and <c>session_campaign_bindings_guard_update</c>'s frozen
+/// version-4 text is substituted for the shipped one - exactly as
+/// <see cref="CoreSchemaVersionThreeFixture"/> does for <c>saga_memories</c>. That is what keeps it
+/// honest: the fingerprint this list produces is compared against the pin the shipped chain carries for
+/// version 5, so a reconstruction that drifted fails rather than quietly certifying the wrong pin.
 ///
-/// <para>A later version-5 statement that <i>edits</i> an existing Core object would have to freeze that
-/// object's version-4 text here as well, exactly as <see cref="CoreSchemaVersionThreeFixture"/> freezes
-/// <c>saga_memories</c>, or the reconstruction stops describing version 4 and the pin assertion says so.
-/// Every guard trigger version 5 goes on to add belongs in the list below for the same reason.</para>
+/// <para>Every guard trigger version 5 adds belongs in the name list below, and every further Core
+/// object a version-5 statement edits needs its version-4 text frozen here beside the one that already
+/// is, or the reconstruction stops describing version 4 and the pin assertion says so.</para>
 /// </remarks>
 internal static class CoreSchemaVersionFourFixture
 {

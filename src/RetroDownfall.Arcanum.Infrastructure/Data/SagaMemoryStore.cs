@@ -131,27 +131,12 @@ internal sealed partial class SagaMemoryStore(
                 if (suppressionKey is not null)
                 {
 
-                    byte[] suppressionDigest = SagaSuppressionDigest.Compute(
-                        suppressionKey, scopeKind, scopeCampaignId, content);
+                    (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
+                        SuppressionDigests(suppressionKey, scopeKind, scopeCampaignId, content);
 
                     await using DbCommand suppressionCheckCmd = connection.CreateCommand();
 
                     suppressionCheckCmd.Transaction = transaction;
-
-                    // Two digests, and the second is a compatibility branch that cannot be dropped.
-                    // The Campaign identity is part of the preimage, because a rejection made inside one
-                    // Campaign is not an opinion about another. Before the binding column was settled,
-                    // the identity a retirement hashed was whichever spelling that Session's binding
-                    // happened to carry, and for every Session created through the turn-begin path that
-                    // was the minority form. A digest cannot be recomputed after the fact - retirement
-                    // deletes the content that is its preimage - so an installation's existing
-                    // suppressions are the only copy, and checking the settled spelling alone would let
-                    // the next extraction pass re-add exactly what an operator retired.
-                    byte[] legacySuppressionDigest = SagaSuppressionDigest.Compute(
-                        suppressionKey,
-                        scopeKind,
-                        scopeCampaignId?.ToLowerInvariant(),
-                        content);
 
                     suppressionCheckCmd.CommandText =
                         "SELECT 1 FROM saga_retirement_suppressions"
@@ -837,6 +822,43 @@ internal sealed partial class SagaMemoryStore(
         return connection;
 
     }
+
+    /// <summary>
+    /// The two digests a suppression can be recorded under: the one this installation writes now, and
+    /// the one it wrote before the Campaign spelling was settled.
+    /// </summary>
+    /// <remarks>
+    /// <b>The second is a compatibility branch that cannot be dropped.</b> The Campaign identity is part
+    /// of the preimage, because a rejection made inside one Campaign is not an opinion about another.
+    /// Before <c>session_campaign_bindings.CampaignId</c> was settled, the identity a retirement hashed
+    /// was whichever spelling that Session's binding happened to carry, and for every Session created
+    /// through the turn-begin path that was the minority form. A digest cannot be recomputed after the
+    /// fact - retirement deletes the content that is its preimage - so an installation's existing
+    /// suppression rows are the only copy of it.
+    ///
+    /// <para><b>Both halves of the lifecycle have to ask the same pair, and one of them did not.</b> The
+    /// write path checks a suppression before adding a memory; the release path deletes one when an
+    /// operator reinstates. Shipping the pair to the first and a single digest to the second made a
+    /// memory retired before the upgrade impossible to un-retire: the delete matched nothing, the
+    /// suppression stayed, and the reinstated memory was refused on the next extraction with nothing
+    /// reporting why. Returning both from one place is what stops the two paths from disagreeing
+    /// again.</para>
+    ///
+    /// <para>A Global or unresolved scope carries no Campaign, so both renderings are
+    /// <see langword="null"/> and the two digests are the same value. Asking for it twice is
+    /// harmless.</para>
+    /// </remarks>
+    private static (byte[] Settled, byte[] Legacy) SuppressionDigests(
+        byte[] suppressionKey,
+        SagaMemoryScopeKind scopeKind,
+        string? campaignId,
+        string content) =>
+        (SagaSuppressionDigest.Compute(suppressionKey, scopeKind, campaignId, content),
+            SagaSuppressionDigest.Compute(
+                suppressionKey,
+                scopeKind,
+                campaignId?.ToLowerInvariant(),
+                content));
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {

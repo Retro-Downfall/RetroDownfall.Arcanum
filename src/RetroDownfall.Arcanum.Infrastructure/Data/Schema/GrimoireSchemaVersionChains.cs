@@ -87,7 +87,8 @@ internal static class GrimoireSchemaVersionChains
 
             // Read out of the Core head tree immediately before the first identity guard trigger was
             // added. Nothing can recompute it either. CoreSchemaVersionFourFixture reconstructs that
-            // tree by removing that object from the shipped list and a test hashes it, so a wrong value
+            // tree by removing the objects version 5 adds and restoring the version-4 text of the one it
+            // edits - session_campaign_bindings_guard_update - and a test hashes it, so a wrong value
             // here fails there rather than against every operator's version-4 installation.
             [(GrimoireSchemaTransactionTier.Core, 5)] =
                 "35B3B5AD90B8BE3571516C88CB0FDF4F8E61712F86F8D1134D07D92B3F980AC1",
@@ -117,13 +118,17 @@ internal static class GrimoireSchemaVersionChains
             // the upgrade, and every memory an installation already had would be unexplained.
             [(GrimoireSchemaTransactionTier.Core, 3)] = new MemoryAnnalsBackfill(),
 
-            // Version 5's DDL is the guard triggers and needs no sweep to be correct. The sweep is the half
-            // of the step that answers for the data: it counts the seventeen identity columns it declares
-            // before it touches one, so an installation that already holds the canonical form says so in
-            // its log rather than passing silently, and repairs a reference only where the identity it
-            // names already exists. The attachment family is the one genuine rewrite in it, and the whole
-            // family moves inside one transaction because three of its members join to the parent with no
-            // foreign key and nothing but the sweep's own declaration pairs them.
+            // Version 5's DDL is the guard triggers, plus the one replacement the sweep beneath it cannot
+            // run without: session_campaign_bindings_guard_update gains a spelling-only exemption, since
+            // the version-four guard aborts every update to a binding whose kind is not 3 and every
+            // binding carrying a Campaign has kind 2. The sweep is the half of the step that answers for
+            // the data: it counts the twenty identity columns it declares before it touches one, so an
+            // installation that already holds the canonical form says so in its log rather than passing
+            // silently. It repairs a reference only where the identity it names already exists, and the
+            // two Campaign columns on their own shape, because those name no stored column at all. The
+            // attachment family is the one genuine rewrite in it, and the whole family moves inside one
+            // transaction because three of its members join to the parent with no foreign key and nothing
+            // but the sweep's own declaration pairs them.
             [(GrimoireSchemaTransactionTier.Core, 5)] = new IdentitySpellingBackfill(),
 
         };

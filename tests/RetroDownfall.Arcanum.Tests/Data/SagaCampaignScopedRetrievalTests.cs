@@ -265,8 +265,16 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     /// <b>This counts what comes back, and that is the whole design of the case.</b> The defect was not
     /// that a column held the wrong text - it was that a join silently returned half of a Campaign's
     /// memories and reported nothing at all about the rest, so an assertion that a column now reads
-    /// uppercase would have been green while recall stayed halved. Reverting either binding writer to a
-    /// bare <c>ToString()</c> makes this case return one memory where it demands two.
+    /// uppercase would have been green while recall stayed halved.
+    ///
+    /// <para><b>What reverts it is now more than one thing, and that is worth knowing before trusting
+    /// this case as a mutation target.</b> Reverting the turn-begin repository's rendering alone no
+    /// longer halves this - measured, not assumed - because
+    /// <see cref="SagaMemoryScopeClassifier"/> canonicalizes the Campaign identity it hands on, so a
+    /// memory records the right Campaign whatever spelling the binding beside it holds. Reverting both
+    /// returns one memory where this demands two. The writer conversion is still load-bearing for the
+    /// column's own exact reader, which is the Campaign memory reset's watermark selection, and that has
+    /// a case of its own.</para>
     ///
     /// <para>Both Sessions are bound through a real writer rather than seeded.
     /// <c>CreateBoundSessionAsync</c> is the path every Session created since the binding table shipped
@@ -380,6 +388,10 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
         const string Legacy = "a conclusion retired before the spelling settled";
 
+        // The spelling GrimoireRepository.InsertBindingAsync rendered before this change, which the Saga
+        // store then copied into saga_memories.CampaignId and the retirement hashed.
+        string legacyCampaign = CampaignA.ToString("D").ToLowerInvariant();
+
         byte[] key = Assert.IsType<byte[]>(
             await SagaSuppressionKeyStore.ReadAsync(
                 (SqliteConnection)Connection, transaction: null, CancellationToken.None));
@@ -390,12 +402,16 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
                 SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
             VALUES ($digest, 2, $campaignId, $now);
             """,
+            // The column and the digest are filled from one string, because a shipped retirement filled
+            // them from one value: the memory's own stored CampaignId. Seeding the column canonical while
+            // hashing the minority form described a row no installation ever held - harmless to the
+            // assertion, which selects on the digest alone, and still a fixture claiming something false.
             ("$digest", SagaSuppressionDigest.Compute(
                 key,
                 SagaMemoryScopeKind.Campaign,
-                CampaignA.ToString("D").ToLowerInvariant(),
+                legacyCampaign,
                 Legacy)),
-            ("$campaignId", Canonical(CampaignA)),
+            ("$campaignId", legacyCampaign),
             ("$now", Timestamp));
 
         SagaMemoryWriteOutcome written = await _store.InsertAsync(
@@ -409,6 +425,92 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(SagaMemoryWriteOutcome.Suppressed, written);
+
+    }
+
+    /// <summary>
+    /// A memory retired before the Campaign spelling was settled can be un-retired, and the content it
+    /// held is writable again afterwards.
+    /// </summary>
+    /// <remarks>
+    /// <b>The sibling of the case above, and the half that was missed.</b> The write path was taught to
+    /// ask for both digests and the release path was not, so an operator could retire a memory, upgrade,
+    /// change their mind, and reinstate it - and the delete would match nothing, the suppression would
+    /// stand, and the next extraction pass would refuse the content again with no error anywhere. Both
+    /// paths now take their pair from one place, so they cannot drift apart a second time.
+    ///
+    /// <para><b>What this counts is the release, not the row.</b> It writes the same content back
+    /// through the store afterwards and demands <see cref="SagaMemoryWriteOutcome.Written"/>. Asserting
+    /// that a suppression row disappeared would pass a release that deleted the wrong row; only asking
+    /// the write path whether the content is still refused proves the suppression is actually gone.</para>
+    ///
+    /// <para>The pre-upgrade state is built by replacing the suppression the production retirement just
+    /// wrote with the one the same retirement would have written before the spelling settled - same key,
+    /// same production digest function, same content and scope, the Campaign rendered the way the
+    /// turn-begin repository rendered it. The memory row itself stays canonical, because the sweep
+    /// repairs it; that asymmetry is exactly the state an upgraded installation is in.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_memory_retired_before_the_campaign_spelling_settled_can_be_reinstated()
+    {
+
+        Guid session = await SeedCampaignSessionAsync(CampaignA);
+
+        const string Content = "a conclusion the operator changed their mind about";
+
+        string id = await InsertAsync(session, Content, Vec(1f));
+
+        SagaCurationOutcome retired = await _store!.RetireAsync(
+            id,
+            AnnalContentDigest.ForSagaMemory(Content),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, retired.Kind);
+
+        string legacyCampaign = CampaignA.ToString("D").ToLowerInvariant();
+
+        byte[] key = Assert.IsType<byte[]>(
+            await SagaSuppressionKeyStore.ReadAsync(
+                (SqliteConnection)Connection, transaction: null, CancellationToken.None));
+
+        // Stand the row down to the shape a retirement made before the upgrade left behind.
+        await ExecuteAsync("DELETE FROM saga_retirement_suppressions;");
+
+        await ExecuteAsync(
+            """
+            INSERT INTO saga_retirement_suppressions (
+                SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+            VALUES ($digest, 2, $campaignId, $now);
+            """,
+            ("$digest", SagaSuppressionDigest.Compute(
+                key,
+                SagaMemoryScopeKind.Campaign,
+                legacyCampaign,
+                Content)),
+            ("$campaignId", legacyCampaign),
+            ("$now", Timestamp));
+
+        SagaCurationOutcome reinstated = await _store.ReinstateAsync(
+            id,
+            AnnalContentDigest.ForSagaMemory(Content),
+            Vec(1f),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, reinstated.Kind);
+
+        SagaMemoryWriteOutcome rewritten = await _store.InsertAsync(
+            Guid.NewGuid().ToString(),
+            Content,
+            DateTimeOffset.UtcNow,
+            session,
+            tags: null,
+            source: "test",
+            Vec(1f),
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, rewritten);
 
     }
 

@@ -12,10 +12,17 @@
 -- cannot launder a Campaign binding into a Global one, and cannot alter the receipt. It still demands
 -- the Session binding write scope, which begins FALSE on every connection.
 --
--- Both IS NOT NULL tests are load-bearing rather than defensive. Without them the exemption evaluates
--- to NULL for a Global-only or unresolved row, whose CampaignId is NULL by this table's own CHECK,
--- and NOT NULL is NULL rather than true - so the abort would silently not fire and a scope-holding
--- writer could put a Campaign identity on a row that carries no authority at all.
+-- Both IS NOT NULL tests are defence in depth, and an earlier version of this comment claimed more for
+-- them than is true. Removing either does open the exemption's three-valued hole - a Global-only row
+-- given a Campaign identity, or a Campaign binding whose identity is cleared to NULL, passes this
+-- trigger with the matching conjunct gone - but the write still never lands, because the table's own
+-- CHECK pairs BindingKindCode with the presence of CampaignId and refuses exactly those two rows. With
+-- both conjuncts removed, nothing is admitted that was not admitted before: NULL AND FALSE is FALSE, so
+-- any other pinned conjunct that differs collapses the exemption and the abort fires normally, and the
+-- hole is left open only for an update that changes nothing at all. What these two buy is that the
+-- trigger keeps refusing on its own terms if that CHECK is ever relaxed, and that the refusal names
+-- this guard rather than a constraint. Measured against the real table in SQLite, each conjunct removed
+-- individually and together, rather than reasoned about - which is how the original claim went wrong.
 CREATE TRIGGER IF NOT EXISTS session_campaign_bindings_guard_update
 BEFORE UPDATE ON session_campaign_bindings
 BEGIN

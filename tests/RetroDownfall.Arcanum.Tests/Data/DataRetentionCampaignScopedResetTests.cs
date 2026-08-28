@@ -181,6 +181,12 @@ public sealed partial class DataRetentionServiceTests
     /// the negative half: a predicate wide enough to take every watermark on the installation would
     /// satisfy the first two assertions on its own.</para>
     ///
+    /// <para>This is also where the turn-begin repository's own rendering is pinned. Campaign-scoped
+    /// recall no longer depends on it - the classifier canonicalizes what a memory records whatever the
+    /// binding holds - but this selection reads <c>session_campaign_bindings.CampaignId</c> itself and
+    /// compares it exactly, so reverting that writer leaves the repository-bound Session's watermark
+    /// standing and this case says so.</para>
+    ///
     /// <para>The watermarks are written and read through <see cref="ISagaMemoryStore"/> rather than
     /// seeded, because <c>saga_extraction_watermarks.SessionId</c> holds the minority spelling that store
     /// renders and the selection has to reach it across that boundary. A seed choosing the spelling would

@@ -3,10 +3,10 @@
 -- kept the older text would report DefinitionDrift on the very version this step completes.
 --
 -- The change is the CampaignId canonicalization exemption; see the head object for why the exemption
--- is spelling and nothing else, and why both IS NOT NULL tests inside it are load-bearing. Without
--- it, the version-five sweep below cannot repair a Campaign binding at all: every row that needs
--- repairing carries BindingKindCode 2, and the version-four guard aborts any update to a row whose
--- kind is not 3.
+-- is spelling and nothing else, and for what the two IS NOT NULL tests inside it do and do not buy.
+-- Without it, the version-five sweep below cannot repair a Campaign binding at all: every row that
+-- needs repairing carries BindingKindCode 2, and the version-four guard aborts any update to a row
+-- whose kind is not 3.
 DROP TRIGGER IF EXISTS session_campaign_bindings_guard_update;
 
 CREATE TRIGGER IF NOT EXISTS session_campaign_bindings_guard_update

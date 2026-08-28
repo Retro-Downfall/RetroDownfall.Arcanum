@@ -473,15 +473,27 @@ internal sealed partial class SagaMemoryStore
                 if (suppressionKey is not null)
                 {
 
-                    byte[] suppressionDigest = SagaSuppressionDigest.Compute(suppressionKey, scopeKind, campaignId, content);
+                    // Both digests, symmetrically with the check the write path makes. A memory retired
+                    // before the Campaign spelling was settled has its suppression recorded under the
+                    // minority rendering, and releasing only the settled one deleted nothing at all - so
+                    // an operator could reinstate a memory and watch the next extraction pass refuse it
+                    // again, permanently, with no error anywhere. Deleting both is right rather than
+                    // merely tolerant: the digest binds content-and-scope, and the two renderings are one
+                    // Campaign, so they are two records of the same rejection.
+                    (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
+                        SuppressionDigests(suppressionKey, scopeKind, campaignId, content);
 
                     await using DbCommand releaseCmd = connection.CreateCommand();
 
                     releaseCmd.Transaction = transaction;
 
-                    releaseCmd.CommandText = "DELETE FROM saga_retirement_suppressions WHERE SuppressionDigest = @digest";
+                    releaseCmd.CommandText =
+                        "DELETE FROM saga_retirement_suppressions"
+                        + " WHERE SuppressionDigest IN (@digest, @legacyDigest)";
 
                     AddParameter(releaseCmd, "@digest", suppressionDigest);
+
+                    AddParameter(releaseCmd, "@legacyDigest", legacySuppressionDigest);
 
                     _ = await releaseCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
