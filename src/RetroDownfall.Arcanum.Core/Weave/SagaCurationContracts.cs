@@ -79,7 +79,14 @@ public enum SagaCurationOutcomeKind
     /// <summary>The caller's view of the content is stale relative to what is stored now.</summary>
     StaleContent = 3,
 
-    /// <summary>A retire was asked for against a memory that is already retired. Nothing was written.</summary>
+    /// <summary>
+    /// A verb was asked for against a memory that is already retired. Nothing was written.
+    /// </summary>
+    /// <remarks>
+    /// Produced by <b>both</b> retirement and correction, which is why the service maps it per verb: a
+    /// retire that meets it has given the operator the state they named, and a correction that meets it
+    /// has not acted on the memory at all.
+    /// </remarks>
     AlreadyRetired = 4,
 
     /// <summary>A reinstate was asked for against a memory that is not retired. Nothing was written.</summary>
@@ -102,8 +109,9 @@ public sealed record SagaCurationOutcome(SagaCurationOutcomeKind Kind, SagaMemor
 /// would make those indistinguishable from the call that did the work.
 ///
 /// <para>Writing nothing is not by itself what makes an outcome a success — correcting a retired memory
-/// also writes nothing, and is refused, because the operator asked for new text and did not get it.
-/// <c>SagaCurationService.MapOutcome</c> is where that is decided, per verb.</para>
+/// also writes nothing, and is refused, because a retired memory is reinstated before it is corrected
+/// rather than corrected in place. <c>SagaCurationService.MapOutcome</c> is where that is decided, per
+/// verb.</para>
 ///
 /// <para>The distinction is load-bearing in two directions. A caller retrying after a dropped
 /// connection must not be told its first attempt's success was a failure, and a caller that later

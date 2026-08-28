@@ -694,8 +694,9 @@ public static class ErrorCodes
         /// </summary>
         /// <remarks>
         /// Emitted by correction alone. Retiring a memory that is already retired is not an error — the
-        /// operator asked for a state and has it — but correcting one is: they asked for new text and
-        /// the retirement is why they did not get it.
+        /// operator asked for a state and has it — but correcting one is: a retired memory is reinstated
+        /// before it is corrected, and the store checks the retirement before it compares any content,
+        /// so this is the answer whatever text the correction carried.
         /// </remarks>
         public const string AlreadyRetired = "Saga.AlreadyRetired";
 

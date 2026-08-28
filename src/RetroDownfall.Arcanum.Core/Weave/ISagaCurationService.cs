@@ -17,8 +17,9 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// operator who asks for a state a memory is already in has been given what they asked for, and a tool
 /// that answered "no" there would be arguing with them rather than serving them — so retiring what is
 /// already retired, reinstating what is not retired, and correcting to the stored text are reported
-/// through <see cref="SagaCurationResult.Outcome"/>. Correcting a <i>retired</i> memory is refused: the
-/// operator asked for new text and the retirement is why they did not get it.</para>
+/// through <see cref="SagaCurationResult.Outcome"/>. Correcting a <i>retired</i> memory is refused: a
+/// retired memory is reinstated before it is corrected, which is a different sentence, and that answer
+/// does not depend on what text the correction carried.</para>
 /// </remarks>
 public interface ISagaCurationService
 {

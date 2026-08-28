@@ -288,10 +288,13 @@ internal sealed class SagaCurationService(
     /// reported through <see cref="SagaCurationResult.Outcome"/> rather than refused.
     ///
     /// <para>A correction of a retired memory is the one that does not fit that shape, and it is why
-    /// this mapping takes a verb at all. The operator asked for new text; the text did not change; the
-    /// retirement is the reason. Reporting it as a success would tell them their correction landed when
-    /// it did not — so it keeps <see cref="ErrorCodes.Saga.AlreadyRetired"/>, which is the refusal the
-    /// design's correction table names.</para>
+    /// this mapping takes a verb at all. A retired memory is reinstated before it is corrected — a
+    /// different sentence, not a correction that happened to change nothing — and
+    /// <c>SagaMemoryStore.CorrectAsync</c> checks the retirement before it compares either the expected
+    /// digest or the new content, so this is the answer whatever text the correction carried, the text
+    /// already stored included. Reporting it as a success would tell the operator their correction
+    /// landed when the memory was never touched, so it keeps
+    /// <see cref="ErrorCodes.Saga.AlreadyRetired"/>, the refusal the design's correction table names.</para>
     ///
     /// <para>The pairs below are the ones <c>SagaMemoryStore.Curation.cs</c> can actually produce, read
     /// off its four verbs; an unlisted pair throws rather than being silently mapped to something.</para>

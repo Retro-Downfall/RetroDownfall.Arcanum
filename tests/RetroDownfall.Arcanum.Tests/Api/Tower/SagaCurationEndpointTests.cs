@@ -137,9 +137,9 @@ public sealed class SagaCurationEndpointTests
 
     /// <summary>
     /// A retired memory is reinstated before it is corrected. This one stays a refusal where retire's
-    /// own already-retired outcome does not, and the difference is what the operator asked for: here
-    /// they asked for new text and the retirement is why they did not get it, so answering 200 would
-    /// tell them a correction landed that did not.
+    /// own already-retired outcome does not, and the difference is whether the verb gave the operator
+    /// what they named: a retire did, and a correction never touched the memory at all, so answering
+    /// 200 would tell them a correction landed that did not.
     /// </summary>
     [SkippableFact]
     public async Task Correcting_a_retired_memory_is_refused_because_the_text_does_not_change()
@@ -383,6 +383,46 @@ public sealed class SagaCurationEndpointTests
         Assert.Equal(SagaRetrievalEligibility.Eligible, detail.Eligibility);
 
         Assert.Equal(OriginalContent, Assert.Single(await DivineAsync(client)).Content);
+
+    }
+
+    /// <summary>
+    /// The retirement is the answer even when the correction carries the text already stored.
+    /// </summary>
+    /// <remarks>
+    /// This is the cell that makes "they asked for new text" the wrong reason to attach to this refusal:
+    /// here they asked for the text the memory already holds. <c>SagaMemoryStore.CorrectAsync</c> checks
+    /// the retirement before it compares either the expected digest or the new content, so the answer is
+    /// the retirement rather than <c>Unchanged</c> — and the reason written on the code has to survive
+    /// this case, not only the ordinary one.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Correcting_a_retired_memory_to_the_text_it_already_holds_is_still_the_retirement()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedMemoryAsync(factory, "mem-samegone", OriginalContent);
+
+        using HttpResponseMessage retired = await PostRetireAsync(
+            client,
+            "mem-samegone",
+            new SagaRetireRequest(Hash(OriginalContent)));
+
+        Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
+
+        using HttpResponseMessage response = await PostCorrectAsync(
+            client,
+            "mem-samegone",
+            new SagaCorrectRequest(Hash(OriginalContent), OriginalContent));
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        await AssertRefusalAsync(response, ErrorCodes.Saga.AlreadyRetired);
 
     }
 
