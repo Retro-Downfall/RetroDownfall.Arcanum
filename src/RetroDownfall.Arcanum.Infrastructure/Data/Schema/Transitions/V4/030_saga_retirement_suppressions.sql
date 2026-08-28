@@ -10,10 +10,17 @@
 -- useless for confirming a guess about content that has since been erased, which one row cannot do
 -- for an unkeyed hash.
 --
--- The scope columns restate what the digest was computed over. That is not a second measurement of
--- the digest: it is the only way a Campaign deletion can find its own suppressions, and a suppression
--- that outlived the Campaign identity it applied to would suppress extraction for an owner that no
--- longer exists with nothing left to remove it.
+-- The scope columns say which scope the retirement applied to, and are stored rather than derived
+-- because the Campaign-scoped memory reset selects on them: that is the operation an operator runs to
+-- take one Campaign's memories and the evidence about them together. Deleting the Campaign itself
+-- reaches neither, and reaches that Campaign's memories no more than its suppressions - a project
+-- deletion removes the project and clears the Session references, and leaves what was extracted inside
+-- it exactly where it is.
+--
+-- CampaignId is settled the way every other stored Campaign identity is, because that reset compares it
+-- exactly. The digest is not, and cannot be: it binds whatever spelling the memory row held when the
+-- retirement was recorded and has no preimage left to recompute from, so both paths that ask about it
+-- ask for the canonical rendering and its lowercase image together.
 CREATE TABLE IF NOT EXISTS saga_retirement_suppressions (
     SuppressionDigest BLOB NOT NULL PRIMARY KEY CHECK (length(SuppressionDigest) = 32),
     ScopeKindCode INTEGER NOT NULL CHECK (ScopeKindCode IN (0, 1, 2, 3)),

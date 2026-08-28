@@ -69,7 +69,7 @@ Null means active and unpinned. Each column carries *when* as well as *whether*,
 
 The keyed evidence, one row per retired content-and-scope. It holds the 32-byte suppression digest as its primary key, the scope kind and Campaign the digest was computed over, and when the retirement happened. It holds no memory identity and no content.
 
-No memory identity, because the row has to survive the memory: an operator who retires a memory and then hard-deletes it must not thereby re-enable the extraction they rejected. The scope columns are stored rather than derived because a Campaign deletion has to find and remove that Campaign's suppressions in the transaction that removes the Campaign, and because a suppression must not outlive the Campaign identity it applied to — the same reason a Covenant mask cannot.
+No memory identity, because the row has to survive the memory: an operator who retires a memory and then hard-deletes it must not thereby re-enable the extraction they rejected. The scope columns are stored rather than derived because the Campaign-scoped memory reset selects on them — that is the operation that takes one Campaign's memories and the evidence about them together, and it compares the Campaign exactly, which is why that column is settled the way every other stored Campaign identity is.
 
 ### 5.3 `saga_suppression_key`
 
@@ -210,9 +210,11 @@ Six verbs under `arcanum memory saga`, beside `arcanum memory covenant` and `arc
 
 ## 13. Lifecycle
 
-The two new tables join every path that already owns Saga data: the retention inventory and its pruning arm, both memory-reset arms, factory reset, Campaign-scoped reset, and the backup database worker. A Campaign deletion removes that Campaign's suppressions in the transaction that removes the Campaign, so a suppression cannot outlive the Campaign identity it applied to.
+The two new tables join every path that already owns Saga data: the retention inventory, both memory-reset arms, the Campaign-scoped reset, and factory reset. A backup carries them without being told to, because the database component is a page-level copy of the whole encrypted file and a table joins a backup by existing; there is no list there to extend and nothing that could omit one. Retention pruning is the one owning path they stay out of, and deliberately: a suppression names no memory and has to outlive the one it describes, which is the whole reason it holds no memory identity.
 
-The suppression key is cleared by whatever clears the suppressions, and generated again on the next retirement. Clearing it alone would leave rows that can never match again while still looking like evidence.
+The suppression key is cleared by whatever clears the suppressions, and generated again on the next retirement. Clearing it alone would leave rows that can never match again while still looking like evidence. The Campaign-scoped reset is the exception that proves the rule rather than a departure from it: it clears one Campaign's evidence rather than the installation's, and the key every other scope's digests are bound by stays.
+
+**Deleting a Campaign removes neither its memories nor its suppressions, and that is a decision.** `CampaignRepository.DeleteAsync` clears the Session references and removes the Campaign row; the memories extracted inside that Campaign survive it and stay retrievable, exactly as they did before this slice. Adding destruction to a delete path would take data the operator never asked to lose, and the Campaign-scoped memory reset already exists for the operator who does want it.
 
 ## 14. Testing
 

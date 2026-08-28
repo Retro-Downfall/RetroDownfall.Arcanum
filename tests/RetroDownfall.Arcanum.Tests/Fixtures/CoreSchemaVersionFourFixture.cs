@@ -15,8 +15,11 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// version 5, so a reconstruction that drifted fails rather than quietly certifying the wrong pin.
 ///
 /// <para>Every guard trigger version 5 adds belongs in the name list below, and every further Core
-/// object a version-5 statement edits needs its version-4 text frozen here beside the one that already
-/// is, or the reconstruction stops describing version 4 and the pin assertion says so.</para>
+/// object whose shipped text has moved since version 4 needs its version-4 text frozen here beside the
+/// ones that already are, or the reconstruction stops describing version 4 and the pin assertion says
+/// so. A version-5 statement is the usual reason the text moves and it is not the only one: the
+/// fingerprint is taken over the file rather than over the SQL it holds, so a corrected comment moves
+/// it too.</para>
 /// </remarks>
 internal static class CoreSchemaVersionFourFixture
 {
@@ -102,6 +105,45 @@ internal static class CoreSchemaVersionFourFixture
 
         """;
 
+    /// <summary><c>saga_retirement_suppressions</c> before its two Campaign comments were corrected.</summary>
+    /// <remarks>
+    /// Version 5 does not touch this object. Its shipped text moved because two of its comments asserted
+    /// that a Campaign deletion removes that Campaign's suppressions, which nothing does — and a
+    /// corrected comment is still a changed file, which is all the fingerprint reads.
+    /// </remarks>
+    private const string SagaRetirementSuppressionsSql =
+        """
+        -- Content-free, keyed evidence that one memory was retired, kept so the next extraction pass cannot
+        -- re-add what the operator just removed. It deliberately names no memory: the row has to outlive the
+        -- row it describes, because an operator who retires a memory and then deletes it must not thereby
+        -- re-enable the extraction they rejected.
+        --
+        -- The digest is an HMAC rather than a bare hash for two reasons, both narrow and both stated in full.
+        -- annal_versions.ContentHash is already a bare SHA-256 of the same bytes, so an unkeyed digest here
+        -- would be that identical value and the two tables would join into one confirmation oracle rather
+        -- than none. And deleting the single saga_suppression_key row makes every digest here permanently
+        -- useless for confirming a guess about content that has since been erased, which one row cannot do
+        -- for an unkeyed hash.
+        --
+        -- The scope columns restate what the digest was computed over. That is not a second measurement of
+        -- the digest: it is the only way a Campaign deletion can find its own suppressions, and a suppression
+        -- that outlived the Campaign identity it applied to would suppress extraction for an owner that no
+        -- longer exists with nothing left to remove it.
+        CREATE TABLE IF NOT EXISTS saga_retirement_suppressions (
+            SuppressionDigest BLOB NOT NULL PRIMARY KEY CHECK (length(SuppressionDigest) = 32),
+            ScopeKindCode INTEGER NOT NULL CHECK (ScopeKindCode IN (0, 1, 2, 3)),
+            CampaignId TEXT NULL,
+            RetiredAtUtc TEXT NOT NULL,
+            CHECK ((ScopeKindCode = 2 AND CampaignId IS NOT NULL) OR (ScopeKindCode <> 2 AND CampaignId IS NULL))
+        );
+
+        -- Campaign cleanup reads this to remove a deleted Campaign's suppressions in the transaction that
+        -- removes the Campaign.
+        CREATE INDEX IF NOT EXISTS idx_saga_retirement_suppressions_campaign
+        ON saga_retirement_suppressions(ScopeKindCode, CampaignId);
+
+        """;
+
     /// <summary>Every Core object as version 4 declared it.</summary>
     /// <remarks>
     /// Line endings are normalized because the frozen text above is a C# literal and the catalog's text
@@ -118,6 +160,11 @@ internal static class CoreSchemaVersionFourFixture
                 "session_campaign_bindings_guard_update" => definition with
                 {
                     Sql = SessionCampaignBindingsGuardUpdateSql.ReplaceLineEndings("\n"),
+                },
+
+                "saga_retirement_suppressions" => definition with
+                {
+                    Sql = SagaRetirementSuppressionsSql.ReplaceLineEndings("\n"),
                 },
 
                 _ => definition,
