@@ -13,9 +13,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// that can be repaired without breaking a pairing that currently works.
 /// </summary>
 /// <remarks>
-/// This is a verifier before it is a repair for every column but one family, and that distinction is
-/// the whole design. Outside the attachment family, both writers that ever rendered the minority
-/// spelling were unreachable for their entire existence - the import planner refused every archive, and
+/// This is a verifier before it is a repair for every column outside the attachment family, and that
+/// distinction is the whole design. Outside it, the writers that ever rendered the minority spelling
+/// were unreachable for their entire existence - the import planner refused every archive, and
 /// the merge path returns before it opens a transaction - so an installation that predates this version
 /// already holds the canonical form and those counts are zero. They are still taken, and still logged
 /// when they are zero, because that log line is the evidence the reasoning held in the field, and
@@ -47,11 +47,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// repair provably a restoration of a broken pairing.</para>
 ///
 /// <para><b>An identity may be moved where nothing refuses the write and everything that names it moves
-/// with it.</b> <c>SessionAttachments.Id</c> is the one such identity in this schema and the one genuine
-/// data rewrite in this work: no table that depends on it carries a trigger, so the refusals that make a
-/// Session identity immutable have no counterpart here. What it does have is seven columns that name it,
-/// five of them in tables the schema will not pair for us - see <see cref="RepairedFamilies"/>, which is
-/// where that pairing is kept.</para>
+/// with it.</b> <c>SessionAttachments.Id</c> is such an identity: no table that depends on it carries a
+/// trigger, so the refusals that make a Session identity immutable have no counterpart here. What it does
+/// have is columns that name it, some of them in tables the schema will not pair for us - see
+/// <see cref="RepairedFamilies"/>, which is where that pairing is kept.</para>
 ///
 /// <para>There is no cursor beyond a marker that the precondition count has been taken. The batch's own
 /// predicate is the mismatch, and every row it repairs stops matching in the same transaction, so the
@@ -69,12 +68,12 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// Internal so a test can assert the sweep's own idea of the family rather than restate it, which is
     /// how a verifier that quietly stopped covering a column would otherwise pass.
     ///
-    /// <para><c>Campaigns.Id</c> is counted although nothing repairs it, and that is the point: it is the
-    /// identity <c>Sessions.CampaignId</c> is repaired <i>against</i>, so a non-canonical Campaign makes
-    /// the repair below decline every row. Without a count the operator would see a silent no-op with
-    /// nothing saying why; with one, the decline has a number behind it.</para>
+    /// <para><c>Campaigns.Id</c> is counted for what it is repaired <i>against</i> rather than for any
+    /// repair of its own: it is the identity <c>Sessions.CampaignId</c> is qualified by, so a
+    /// non-canonical Campaign makes that repair decline every row. Without a count the operator would see
+    /// a silent no-op with nothing saying why; with one, the decline has a number behind it.</para>
     ///
-    /// <para>This is what the step verifies, not every identity column in the Grimoire. The two
+    /// <para>This is what the step verifies, not every identity column in the Grimoire. The
     /// <c>ToString("N")</c> columns are a deliberate second canonical form and are excluded, and
     /// <c>artifact_sensitivity.SessionId</c> is left to the guard that refuses a bad write rather than to
     /// a count taken once.</para>
@@ -87,10 +86,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// </para>
     ///
     /// <para>The Campaign columns are counted and repaired without a target - see
-    /// <see cref="RepairedColumns"/>, which is where that set is declared. Unlike the attachment family,
-    /// whose counts are non-zero on any installation that ever held an attachment, a Campaign column
-    /// copied out of a Session binding is non-zero on any installation that ever created a Session
-    /// through the turn-begin path.</para>
+    /// <see cref="RepairedColumns"/>, which is where that set is declared.</para>
     /// </remarks>
     internal static readonly IReadOnlyList<(string Table, string Column)> VerifiedColumns =
     [
@@ -118,18 +114,17 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     ];
 
     /// <summary>
-    /// The one identity in this schema that both must move and can, together with every column that
-    /// names it.
+    /// An identity that both must move and can, together with every column that names it.
     /// </summary>
     /// <remarks>
     /// <c>SessionAttachments.Id</c> is an identity rather than a reference, so nothing above applies to
     /// it: there is no canonical target for it to be repaired against, and the reason it can move where
     /// a Session identity cannot is that the tables depending on it carry no trigger at all. Every row
     /// of it held the minority spelling, written by an attachment store that rendered a bare
-    /// <c>ToString()</c>, and the five columns below were filled from the same value by five more
-    /// writers that agreed with it.
+    /// <c>ToString()</c>, and the columns below were filled from the same value by writers that agreed
+    /// with it.
     ///
-    /// <para><b>Nothing but this declaration pairs the last three with their parent.</b>
+    /// <para><b>Nothing but this declaration pairs the unenforced dependents with their parent.</b>
     /// <c>session_attachment_chunks</c> and <c>session_attachment_index_state</c> carry a real foreign
     /// key, so leaving either behind aborts the migration at <c>COMMIT</c> and says so.
     /// <c>attachment_memory_consultations</c>, <c>saga_memory_attachment_provenance</c> and
@@ -140,8 +135,9 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// installation - which is the worst outcome available in this step and the reason the family is
     /// declared in one place rather than assembled at three call sites.</para>
     ///
-    /// <para>Two attachment columns are deliberately absent, and their absence is a decision rather than
-    /// an omission. <c>session_attachment_chunks.SessionId</c> and <c>RetrievalScope</c> hold a Session
+    /// <para><c>session_attachment_chunks</c> keeps two columns out of this family deliberately, and their
+    /// absence is a decision rather than an omission. <c>session_attachment_chunks.SessionId</c>
+    /// and <c>RetrievalScope</c> hold a Session
     /// identity in the minority form and stay there: the tapestry reads
     /// <c>SELECT DISTINCT "SessionId" FROM session_attachment_chunks</c> as its live scope-id set and
     /// those values become <c>tapestry_nodes.ScopeId</c>, so moving them would orphan every
@@ -149,7 +145,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// across a component boundary, which is what this work exists to end.</para>
     ///
     /// <para>Every table here is an ordinary rowid table, which the parent page's <c>rowid IN (…)</c>
-    /// selection depends on. Four of these columns take part in a unique constraint -
+    /// selection depends on. Several of these columns take part in a unique constraint -
     /// <c>SessionAttachments."Id"</c> is that table's primary key, <c>session_attachment_index_state</c>
     /// keys on <c>AttachmentId</c> alone, and the chunk and consultation tables each carry it inside a
     /// composite key - so a database holding two spellings of one attachment would collide on
@@ -175,12 +171,13 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// The references the repair arm may move, each with the identity it has to agree with.
     /// </summary>
     /// <remarks>
-    /// Every one is unenforced by design, and the first two are the ones the design calls out as the
-    /// expensive silent failures. A Session naming a Campaign in the minority spelling keeps pointing at
+    /// Every one is unenforced by design, and the Campaign and Entry references are the ones the design
+    /// calls out as the expensive silent failures. A Session naming a Campaign in the minority
+    /// spelling keeps pointing at
     /// a deleted Campaign and is omitted from the Campaign-filtered listing; an embedding naming its
     /// Entry in the minority spelling makes the weaving service's left join report that Entry as
-    /// unembedded, and the corpus is silently re-embedded at provider cost. The two
-    /// <c>SessionAttachments</c> entries are the family's own outward references - the Session and the
+    /// unembedded, and the corpus is silently re-embedded at provider cost. The
+    /// <c>SessionAttachments</c> entries are that family's own outward references - the Session and the
     /// Entry an attachment belongs to - and are ordinary references rather than part of
     /// <see cref="RepairedFamilies"/>, because nothing ties them atomically to the identity move.
     ///
@@ -213,9 +210,9 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// <b>The absence of a canonical target here is the decision, not an omission.</b> Every other repair
     /// in this file is qualified by an <c>EXISTS</c> against the identity the column names, because those
     /// columns join to a stored column and uppercasing one whose target is spelled the minority way would
-    /// break a pairing that works. Neither of these two joins to a stored column at all. Every reader of
-    /// both binds a <c>Guid</c> it rendered itself, so the value they must agree with is the canonical
-    /// rendering of the identity rather than another row's spelling of it, and there is no pairing an
+    /// break a pairing that works. None of these joins to a stored column at all. Their readers bind a
+    /// <c>Guid</c> rendered from the identity itself, so the value they must agree with is the canonical
+    /// rendering of that identity rather than another row's spelling of it, and there is no pairing an
     /// unqualified repair could break.
     ///
     /// <para>Qualifying them anyway would be actively wrong. <c>session_campaign_bindings.CampaignId</c>
@@ -226,7 +223,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// touch.</para>
     ///
     /// <para><c>saga_memories.CampaignId</c> holds the same Campaign identity, taken from the binding by
-    /// <see cref="SagaMemoryScopeClassifier"/> - which is why the two are repaired together and in this
+    /// <see cref="SagaMemoryScopeClassifier"/> - which is why they are repaired together and in this
     /// order. Every row already written took that value <i>verbatim</i>, so the two columns disagree on
     /// exactly the rows the binding writers disagreed about, and repairing the binding alone would leave
     /// every one of those memories pointing at a Campaign spelled the other way. That is the halved
@@ -243,11 +240,11 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// preimage left to recompute it from.</para>
     ///
     /// <para>No column here takes part in any unique constraint, so the <c>upper()</c> collision hazard
-    /// the other two lists have to reason about does not arise: two rows whose Campaign identities
+    /// the qualified repairs have to reason about does not arise: two rows whose Campaign identities
     /// differ only in case are simply two rows.</para>
     ///
-    /// <para><c>session_campaign_bindings</c> is the one table in this file whose own guard has an opinion
-    /// about the repair. <c>session_campaign_bindings_guard_update</c> demands the Session binding write
+    /// <para><c>session_campaign_bindings</c> carries a guard with an opinion about the repair.
+    /// <c>session_campaign_bindings_guard_update</c> demands the Session binding write
     /// scope on every update and admits exactly one rewrite of this column, the spelling-only
     /// canonicalization below; version 5 replaces that guard with the one carrying the exemption, in the
     /// same step's DDL, before this sweep runs.</para>
@@ -259,7 +256,8 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         new("saga_retirement_suppressions", "CampaignId", RequiresSessionBindingWriteScope: false),
     ];
 
-    /// <summary>Written once the precondition count has been taken, so a resumed pass does not retake it.</summary>
+    /// <summary>Written once the precondition count has been taken, so a resumed pass does not
+    /// retake it.</summary>
     private const string VerifiedCursor = "verified";
 
     /// <summary>Recorded in the transition journal, so a resumed run can prove it is this sweep.</summary>
@@ -292,8 +290,8 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
 
         // Deferred rather than disabled: PRAGMA foreign_keys=OFF is a no-op inside a transaction, and
         // the Covenant connection policy both sets and verifies enforcement on every connection. It is
-        // what the attachment family rests on - the two foreign-key children of SessionAttachments(Id)
-        // dangle between the parent's UPDATE and their own, and only the end state has to be consistent.
+        // what the attachment family rests on - its foreign-key children dangle between the parent's
+        // UPDATE and their own, and only the end state has to be consistent.
         await ExecuteAsync(connection, transaction, "PRAGMA defer_foreign_keys=ON;", cancellationToken)
             .ConfigureAwait(false);
 
@@ -308,10 +306,11 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
 
         bool moved = false;
 
-        // The Campaign columns first, and their order is load-bearing rather than tidy: each is copied
-        // from the one above it - the binding is the authority a memory's Campaign was taken from, and a
-        // suppression's is a copy of the memory's - so repairing them in that order means a batch cut
-        // short by its budget leaves them agreeing on fewer rows rather than disagreeing on more.
+        // The Campaign columns first, and their declared order is load-bearing rather than tidy: each is
+        // copied from the one declared before it - the binding is the authority a memory's Campaign was
+        // taken from, and a suppression's is a copy of the memory's - so repairing them in that order
+        // means a batch cut short by its budget leaves them agreeing on fewer rows rather than
+        // disagreeing on more.
         //
         // Ahead of the attachment families for a reason that is a courtesy rather than a correctness
         // requirement. A write made during the drain is canonical whatever these rows still hold, so
@@ -493,10 +492,10 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         }
 
         // Named rather than merely counted, because an operator who sees a number here needs to know
-        // which half of it this step can act on. Two of the three repairable kinds are expected on an
-        // ordinary installation - the attachment family on any that has held an attachment, and the two
-        // Campaign columns on any that has created a Session through the turn path - so a number here is
-        // not by itself evidence of anything having gone wrong. What is left behind is: outside those,
+        // which half of it this step can act on. Some of what it repairs is expected on an ordinary
+        // installation - the attachment family on any that has held an attachment, and the Campaign
+        // columns on any that has created a Session through the turn path - so a number here is not by
+        // itself evidence of anything having gone wrong. What is left behind is: outside those,
         // the only thing that can produce a non-canonical identity is an edit made outside Arcanum.
         Log.Warning(
             "Identity spelling: {Count} stored identities are not canonical. The attachment identity and "

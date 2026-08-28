@@ -65,7 +65,7 @@ internal static class GrimoireSchemaVersionChains
 
             // Read out of the Core head tree immediately before saga_memories.sql and
             // lexicon_entries.sql were edited for version 2. Nothing can recompute it: the tree that
-            // produced it no longer exists. A test reconstructs that tree from the two files' frozen
+            // produced it no longer exists. A test reconstructs that tree from those files' frozen
             // version-1 text and hashes it, so a wrong value here fails there rather than against every
             // operator's version-1 installation.
             [(GrimoireSchemaTransactionTier.Core, 2)] =
@@ -118,17 +118,17 @@ internal static class GrimoireSchemaVersionChains
             // the upgrade, and every memory an installation already had would be unexplained.
             [(GrimoireSchemaTransactionTier.Core, 3)] = new MemoryAnnalsBackfill(),
 
-            // Version 5's DDL is the guard triggers, plus the one replacement the sweep beneath it cannot
+            // Version 5's DDL is the guard triggers, plus the replacement the sweep beneath it cannot
             // run without: session_campaign_bindings_guard_update gains a spelling-only exemption, since
             // the version-four guard aborts every update to a binding whose kind is not 3 and every
             // binding carrying a Campaign has kind 2. The sweep is the half of the step that answers for
-            // the data: it counts the twenty identity columns it declares before it touches one, so an
+            // the data: it counts the identity columns it declares before it touches one, so an
             // installation that already holds the canonical form says so in its log rather than passing
             // silently. It repairs a reference only where the identity it names already exists, and the
-            // two Campaign columns on their own shape, because those name no stored column at all. The
-            // attachment family is the one genuine rewrite in it, and the whole family moves inside one
-            // transaction because three of its members join to the parent with no foreign key and nothing
-            // but the sweep's own declaration pairs them.
+            // Campaign columns on their own shape, because those name no stored column at all. The
+            // attachment family is where it rewrites data rather than verifying it, and the family moves
+            // inside one transaction because members of it join to the parent with no foreign key and
+            // nothing but the sweep's own declaration pairs them.
             [(GrimoireSchemaTransactionTier.Core, 5)] = new IdentitySpellingBackfill(),
 
         };
