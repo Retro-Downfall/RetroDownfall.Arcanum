@@ -90,6 +90,16 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Saga.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Saga.NotEmpty, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Saga.SearchFailed, StatusCodes.Status500InternalServerError)]
+    // The Saga curation refusals. The three state ones are 409 because the caller's view of the store
+    // moved, not because its request was malformed; the embedding one joins the provider-unavailable
+    // 503 because the substrate is what has to be fixed before the write can be asked for again.
+    [InlineData(ErrorCodes.Saga.StaleContent, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Saga.AlreadyRetired, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Saga.NotRetired, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Saga.EmbeddingUnavailable, StatusCodes.Status503ServiceUnavailable)]
+    // A malformed expected-content hash is a request-shape problem, and the curation service is the
+    // caller that raises it. Unmapped, it reached the operator as a 500 saying Arcanum broke.
+    [InlineData(ErrorCodes.Validation.InvalidFields, StatusCodes.Status400BadRequest)]
     // FeatureDisabled means an operator turned a feature off in config, not that the caller lacks
     // permission, so it maps to 503 (retry later) rather than sharing the 403 used by genuine
     // access-control failures (PathNotAllowed, AccessDenied, etc.) above.

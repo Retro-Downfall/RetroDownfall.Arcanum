@@ -13,6 +13,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Validation.InvalidPrompt
                 or ErrorCodes.Validation.AttachedFiles
                 or ErrorCodes.Validation.InvalidBody
+                or ErrorCodes.Validation.InvalidFields
                 or ErrorCodes.Validation.InvalidQuery
                 or ErrorCodes.Validation.InvalidProviderType
                 or ErrorCodes.Validation.InvalidReasoningEffort
@@ -30,6 +31,10 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Api.TooManyConnections
                 or ErrorCodes.Embeddings.ProviderUnavailable
                 or ErrorCodes.Embeddings.FeatureDisabled
+                // A curation write refused because nothing could embed is the same answer as the
+                // provider being down, and the operator's action is the same: fix the substrate and
+                // ask again. It is not the caller's request that was wrong.
+                or ErrorCodes.Saga.EmbeddingUnavailable
                 or ErrorCodes.Session.RestQueueFull
                 or ErrorCodes.WebResearch.MissingCredential
                 or ErrorCodes.WebResearch.AuthenticationOrCreditsFailed
@@ -79,6 +84,15 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Hub.SessionTurnRestoredInterrupted
                 or ErrorCodes.Session.CampaignBindingRequired
                 or ErrorCodes.Campaign.PathIdentityRequired =>
+                StatusCodes.Status409Conflict,
+
+            // Saga curation's three state refusals. Each says the store moved out from under the
+            // caller's view of it — the content is not what was read, the memory is already retired,
+            // the memory is not retired — so re-reading and deciding again is the action, which is
+            // what 409 asks for and what 400 would wrongly blame on the request's shape.
+            ErrorCodes.Saga.StaleContent
+                or ErrorCodes.Saga.AlreadyRetired
+                or ErrorCodes.Saga.NotRetired =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.Covenant.Unavailable
