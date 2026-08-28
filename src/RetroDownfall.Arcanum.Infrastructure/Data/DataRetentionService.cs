@@ -7132,20 +7132,23 @@ internal sealed partial class DataRetentionService(
     /// that had committed would be recovered as failed for as long as that other store held a claim. On
     /// every retry, because nothing about it would ever change.</para>
     ///
-    /// <para><b>Leaving them out is sound only while no Annals row outlives the durable row it
-    /// describes.</b> A claim binds to the row that carries its content, that row is in a table the
-    /// scope clearing it names here, and the heads, versions and dependencies are keyed up to the
-    /// claim. Every removal that can reach one of those rows today holds it: the claim and the row it
-    /// explains go in one transaction or neither goes.</para>
+    /// <para><b>Leaving them out needs no Annals row to outlive the durable row it describes, and that
+    /// is a requirement on every removal rather than something this list can establish.</b> A claim
+    /// binds to the row that carries its content, that row is in a table the scope clearing it names
+    /// here, and the heads, versions and dependencies are keyed up to the claim. A removal that takes
+    /// the row and that store's claims in one transaction keeps this count sufficient; one that takes
+    /// only the row leaves records describing a row that is gone, and an interrupted reset then finds
+    /// every table named here empty with those records still standing. What makes a removal the first
+    /// kind is running the Annals erasure plan for the store in the same transaction, which is where
+    /// the requirement is written down and what a removal added later has to adopt.</para>
     ///
-    /// <para><b>One removal does not hold it, and the omission is conditional on that removal staying
-    /// out of reach.</b> The protected-artifact erasure kernel deletes a Saga memory or a Lexicon entry
-    /// through its own purge plan and takes no claim with it. It runs only against a labelled artifact,
-    /// and nothing produces a label of either kind, so it cannot reach these rows - which is a fact
-    /// about what production labels rather than about this list, and it is pinned as such rather than
-    /// assumed here. The day something labels one, this omission stops being sound: an interrupted
-    /// reset would find every table named here empty and report itself complete while the Annals rows
-    /// for a memory that is already gone still stood.</para>
+    /// <para><b>The protected-artifact purge is a known exception, wherever its plan table is read.</b>
+    /// It deletes a Saga memory or a Lexicon entry by that plan and takes no claim, and it runs only
+    /// against a labelled artifact - so it cannot reach these rows while nothing produces a label of
+    /// either kind, which is pinned rather than assumed here. This is what is known rather than a
+    /// closed account of what can exist: a removal composed from a table name held elsewhere is
+    /// invisible to a search for the statement that would name it, and the account above has been
+    /// incomplete that way before.</para>
     /// </remarks>
     internal static string[] MemoryResetResidueTables(MemoryResetScope scope) =>
         scope switch

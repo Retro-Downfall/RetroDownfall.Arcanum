@@ -154,11 +154,17 @@ public sealed class CovenantDerivedOutputInventoryTests
     /// lives rather than in a comment on the list it protects.
     ///
     /// <para>Derived from <see cref="AnnalSubjectStore"/> rather than restated, so a third subject
-    /// store arrives here as a failure asking whether its rows can be labelled. What this cannot see is
-    /// a producer that merely calls the ledger: the inventory is closed over types implementing a
-    /// labelled-write contract, not over label-writing call sites. Declaring the producer is the step
-    /// it reds on, which is why the purge plan carries the same statement for a reader who never
-    /// reaches this suite.</para>
+    /// store arrives here as a failure asking whether its rows can be labelled.</para>
+    ///
+    /// <para><b>This is weaker than the condition it stands for, and the gap is not small.</b> The
+    /// inventory is closed over types implementing a labelled-write contract, not over label-writing
+    /// call sites, and the ledger is an injected interface anything can hold: <c>CovenantDispatchGate</c>,
+    /// <c>CovenantSensitiveRetentionPurgeCoordinator</c> and <c>CovenantLabeledArtifactGuard</c> already
+    /// hold it without appearing in the inventory at all. A producer that labels a Saga memory by
+    /// calling the ledger and implements none of the governed contracts would leave this case green.
+    /// What it catches is the label being <i>declared</i>, which is the honest step rather than the
+    /// only one - and is why the purge plan carries the same statement for a reader who never reaches
+    /// this suite.</para>
     /// </remarks>
     [Fact]
     public void No_declared_producer_labels_a_kind_whose_rows_carry_an_annals_claim()

@@ -87,14 +87,16 @@ internal static class CovenantArtifactPurgePlans
                 + ";"),
 
         // FOLLOW-UP, and its trigger is labelling rather than a date: the Saga and Lexicon plans below
-        // take the durable row and leave the Annals claim describing it. Every other removal of a saga_memories
-        // or lexicon_entries row deletes that store's claim in the same transaction, and a memory
-        // reset's recovery relies on it - it counts only the store's own tables and infers from them
-        // that the Annals went too. These plans are out of reach while nothing labels either kind, so
-        // the reliance holds today and the gap is recorded here rather than closed here: taking a claim
-        // is an erasure ordering over annal_heads, annal_versions and annal_claims, and the policy for
-        // these two kinds would have to say so. Whoever first labels a Saga memory or a Lexicon entry
-        // is the person this is addressed to, and closing it belongs to that change.
+        // take the durable row and leave the Annals claim describing it. A removal of a saga_memories or
+        // lexicon_entries row is required to take that store's claims in the same transaction - a memory
+        // reset's recovery counts only the store's own tables and infers from them that the Annals went
+        // too - and these plans do not. Every consumer of this table inherits that, this kernel and the
+        // staged-restore purger alike, so it is a property of the plan rather than of one caller.
+        //
+        // Out of reach while nothing labels either kind, which is what makes this a record rather than a
+        // live defect. Closing it is an erasure ordering over annal_heads, annal_versions and
+        // annal_claims, and the purge policy for these two kinds saying so. Whoever first labels a Saga
+        // memory or a Lexicon entry is the person this is addressed to, and it belongs to that change.
         [SensitiveArtifactKind.Saga] = new(
             SensitiveArtifactKind.Saga,
             [
