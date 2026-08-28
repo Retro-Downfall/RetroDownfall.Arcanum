@@ -252,7 +252,7 @@ internal sealed partial class SessionAttachmentStore
                       AND attachment."State" = @state
                       {{cursorClause}}
                       -- Exact, not COLLATE NOCASE. Both sides of both comparisons now hold the one
-                      -- canonical spelling - Entries' two columns have always held it, and this table's
+                      -- canonical spelling - Entries' own columns have always held it, and this table's
                       -- EntryId does from the schema step that moved this family - so the case-insensitive
                       -- collation this predicate used to carry bought nothing and cost the index behind
                       -- Entries' primary key, once per attachment row, on a fork that pages them.
