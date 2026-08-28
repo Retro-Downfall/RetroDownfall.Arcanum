@@ -86,12 +86,11 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// operator should hear about it from a number rather than from the guard refusing the next write.
     /// </para>
     ///
-    /// <para>The Campaign columns of <c>session_campaign_bindings</c>, <c>saga_memories</c> and
-    /// <c>saga_retirement_suppressions</c> are counted and repaired without a target - see
-    /// <see cref="RepairedColumns"/>. Unlike the attachment family, whose counts are non-zero on any
-    /// installation that ever held an attachment, the first two are non-zero on any installation that
-    /// ever created a Session through the turn-begin path, which is every installation that has been
-    /// used.</para>
+    /// <para>The Campaign columns are counted and repaired without a target - see
+    /// <see cref="RepairedColumns"/>, which is where that set is declared. Unlike the attachment family,
+    /// whose counts are non-zero on any installation that ever held an attachment, a Campaign column
+    /// copied out of a Session binding is non-zero on any installation that ever created a Session
+    /// through the turn-begin path.</para>
     /// </remarks>
     internal static readonly IReadOnlyList<(string Table, string Column)> VerifiedColumns =
     [
@@ -235,15 +234,13 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// because the classifier canonicalizes what it hands on - so what this repairs is history, and the
     /// column stays settled without it.</para>
     ///
-    /// <para><c>saga_retirement_suppressions.CampaignId</c> is the third, and it is here because this
-    /// slice gave it a comparer. It is a copy of <c>saga_memories.CampaignId</c> taken at the moment a
-    /// retirement was recorded, and a retirement taken during this sweep's own drain copies a row the
-    /// sweep has not reached - so the two disagree on exactly the rows where the memory was repaired
-    /// afterwards, and a Campaign-scoped memory reset comparing this column exactly would walk past its
-    /// own evidence. It was recorded as deliberately unrepaired while nothing compared it, which was
-    /// true when it was written; what changed is that something compares it now. The digest beside it
-    /// stays where it is, because it cannot be recomputed and both paths that ask about it already ask
-    /// for both renderings.</para>
+    /// <para><c>saga_retirement_suppressions.CampaignId</c> is here because a caller began comparing it,
+    /// having been recorded as deliberately unrepaired while none did. It is a copy of
+    /// <c>saga_memories.CampaignId</c> taken when a retirement was recorded, so a row written before its
+    /// writer canonicalized holds whatever spelling that memory row held then. A row written from now on
+    /// is canonical - so what this repairs is history, and the column stays settled without it. The
+    /// digest recorded beside it is not of this family and is not repaired: it binds a spelling with no
+    /// preimage left to recompute it from.</para>
     ///
     /// <para>No column here takes part in any unique constraint, so the <c>upper()</c> collision hazard
     /// the other two lists have to reason about does not arise: two rows whose Campaign identities
@@ -317,11 +314,11 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         // short by its budget leaves them agreeing on fewer rows rather than disagreeing on more.
         //
         // Ahead of the attachment families for a reason that is a courtesy rather than a correctness
-        // requirement. Nothing depends on them being settled early - both writers canonicalize what they
-        // hand on, so a Saga write is correct at any point in the drain - but a Campaign memory reset
-        // selects on all three exactly, and on an installation holding many attachments the families
-        // would otherwise spend every batch's budget for a long time and leave that one operator-facing
-        // path selecting only the rows the sweep had reached.
+        // requirement. A write made during the drain is canonical whatever these rows still hold, so
+        // nothing depends on them being settled early; but they are what a Campaign-scoped selection
+        // compares, and on an installation holding many attachments the families would otherwise spend
+        // every batch's budget for a long time and leave such a selection reaching only the rows the
+        // sweep had.
         foreach (RepairedColumn column in RepairedColumns)
         {
 

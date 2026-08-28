@@ -289,17 +289,16 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     /// </summary>
     /// <remarks>
     /// <b>The column this asserts about was settled because something started comparing it.</b> A
-    /// suppression's Campaign is copied from the memory row, and <c>RetireAsync</c> copied it verbatim -
-    /// which was safe while the column was a projection nothing anywhere read back. The Campaign-scoped
-    /// memory reset compares it exactly, and from that moment a retirement taken mid-drain, off a memory
-    /// row the sweep had not reached, left evidence that reset could not see. Nothing in a build notices
-    /// a divergence documented as safe becoming unsafe.
+    /// suppression's Campaign is copied from the memory row, and <c>RetireAsync</c> copied it verbatim,
+    /// which was justified by the column having no reader. Once a selection compared it, a retirement
+    /// taken mid-drain off a memory row the sweep had not reached left evidence that selection could not
+    /// see. A justification resting on the absence of something expires without saying so.
     ///
     /// <para>The window is the one this file exists for: version 5's DDL commits with its journal row
     /// and the sweep runs in later coordinator passes, so the memory row below still holds the minority
     /// spelling while the guard on it is already enforcing. The memory is seeded rather than written for
-    /// the reason its sibling above gives - no build since the classifier began canonicalizing can
-    /// produce that row, and it is exactly what the sweep exists to repair.</para>
+    /// the reason its sibling above gives: it stands for a row written before the classifier
+    /// canonicalized what it hands on, which is what the sweep exists to repair.</para>
     ///
     /// <para>Everything after the seed is production: the retirement through <c>RetireAsync</c>, the
     /// drain through the transition coordinator, and the reset through the retention service's own plan
@@ -606,16 +605,15 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     /// digest beside it alone.
     /// </summary>
     /// <remarks>
-    /// The other half of the same rule. Canonicalizing the write keeps every suppression made from now
-    /// on findable; this repairs the ones an installation already holds, which is every retirement taken
-    /// against a Campaign-scoped memory before the column was settled. Seeded at version 4 rather than
-    /// written, because the guard version 5 installs refuses that row outright - which is exactly the
-    /// state the sweep exists for, and cannot be produced any other way once the guard is in place.
+    /// The other half of the same rule. Canonicalizing the write settles what is recorded from now on;
+    /// this settles what an installation already holds. Seeded at version 4 rather than written, because
+    /// the guard version 5 installs refuses that row outright - which is the state the sweep exists for,
+    /// and seeding ahead of the guard is what can still reach it.
     ///
     /// <para>The digest is asserted unchanged in the same breath. It has no preimage left to recompute
-    /// from, so a sweep that decided to settle it too would be inventing evidence, and the release path
-    /// that asks for both renderings would then be asking about a row that no longer says what any
-    /// retirement recorded.</para>
+    /// from, so a sweep that settled it too would be inventing evidence: the row would stop saying what
+    /// the retirement recorded, and a reader asking about it would be answered from a value nothing
+    /// wrote.</para>
     /// </remarks>
     [Fact]
     public async Task The_sweep_settles_a_suppression_recorded_before_the_campaign_spelling_did()

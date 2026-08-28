@@ -1,22 +1,20 @@
--- saga_retirement_suppressions.CampaignId is the Campaign one retirement applied to, copied from the
--- memory row's own Campaign by RetireAsync and canonicalized on the way in. A Campaign-scoped memory
--- reset deletes by it and compares it exactly.
+-- saga_retirement_suppressions.CampaignId is the Campaign one retirement applied to. It is a governed
+-- stored identity, and IdentitySpellingBackfill.VerifiedColumns is the register that decides which
+-- columns those are.
 --
--- That comparison is why the column is settled, and the reason is worth stating rather than implying.
--- It was a projection nothing anywhere compared, and was recorded as deliberately unrepaired on exactly
--- that ground. A divergence documented as safe because nothing compares it stops being safe the moment
--- something does, and nothing in a build notices the moment arriving.
+-- It was not governed while it was a projection with no reader, and it was recorded as deliberately
+-- unrepaired on that ground. The ground moved when a caller began comparing it. A decision justified by
+-- the absence of something is only as durable as that absence, and its expiry is not a thing a build can
+-- report.
 --
--- Nullable, and legitimately so: a suppression over a Global or unresolved scope carries no Campaign,
+-- Nullable, and legitimately so: a suppression over a scope that carries no Campaign holds NULL here,
 -- which this table's own CHECK pairs with ScopeKindCode. The guard therefore says nothing about a NULL
 -- and everything about a value.
 --
--- The digest beside it is not of this family and is left alone. It binds whatever spelling the memory
--- row held when the retirement was recorded, it cannot be recomputed once the retired content is gone,
--- and both paths that ask about it ask for the canonical rendering and its lowercase image together.
+-- The digest beside it is left alone. It binds whichever spelling its preimage carried when the
+-- retirement was recorded, and a retirement leaves no preimage to recompute it from.
 --
--- Both an insert guard and an update guard, because this table refuses no update - which is the only
--- reason this family ever omits the update half.
+-- An insert guard and an update guard, because this table refuses no update.
 --
 -- Canonical means uppercase AND dashed AND 36 characters, and each of those is a separate way to be
 -- wrong: a dash-free rendering is already its own uppercase image, so a case-only check would pass

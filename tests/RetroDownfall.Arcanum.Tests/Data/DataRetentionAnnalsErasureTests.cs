@@ -91,9 +91,9 @@ public sealed partial class DataRetentionServiceTests
     /// <remarks>
     /// <c>annal_versions.PredecessorVersionId</c> references its own table <c>ON DELETE CASCADE</c> and
     /// SQLite counts only what a statement deletes directly, so one delete over a claim carrying two
-    /// revisions removed both and reported one. Nothing aborts on it — a memory reset's conflict check
-    /// compares a pre-delete count rather than this sum — so the only symptom is an operator told that
-    /// fewer records went than went, about the one operation whose whole purpose is removal.
+    /// revisions removed both and reported one. The reset does not abort on it — its conflict check
+    /// compares a pre-delete count rather than this sum — so what an operator sees is a removal reported
+    /// as smaller than it was.
     ///
     /// <para>The rehearsal's own number is the expectation rather than a literal, so this stays a
     /// statement about the two agreeing rather than about how many versions a retirement happens to

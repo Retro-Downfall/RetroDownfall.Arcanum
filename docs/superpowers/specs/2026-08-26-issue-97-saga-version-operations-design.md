@@ -229,7 +229,7 @@ The suppression test that matters most is the end-to-end one: retire a memory th
 - The Core schema version constant, its version-3 pin, and a version-3 fixture that freezes `saga_memories.sql`'s current text and removes the version-4 tables.
 - `GrimoireSchemaTransitionResourceTests` — every new transition statement, pinned by name in install order.
 - `GrimoireSchemaVersionChainTests` — the Core head version literal.
-- The retention inventory's table list, the pruning candidate and execution paths, both memory-reset arms, factory reset, Campaign-scoped reset, and the backup database worker's table list.
+- The retention inventory's table list, both memory-reset arms, the Campaign-scoped reset, and factory reset. Pruning is not among them and a backup needs no list of its own; §13 says why.
 - `ErrorCodes.Saga` — the new refusal codes.
 - `docs/Arcanum.CommandMap.json`, regenerated, which a committed test diffs.
 - `SettingDescriptors` and its coverage count, if a configuration key is added. None is planned.

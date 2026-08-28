@@ -237,13 +237,12 @@ internal sealed partial class SagaMemoryStore
 
                     // The stored scope is canonicalized; the digest above is not, and the asymmetry is
                     // deliberate. The digest binds the spelling this memory row holds now and cannot be
-                    // recomputed once the retired content is gone, and both paths that ask about it -
-                    // the insert chokepoint and the release - ask for the canonical rendering and its
-                    // lowercase image together. This column is compared exactly, by the Campaign-scoped
-                    // memory reset, so it has to be settled the way every other stored identity is: a
-                    // retirement taken during the version-5 drain reads a memory row the sweep has not
-                    // reached, and a suppression left holding that spelling would be invisible to the
-                    // reset that came for it.
+                    // recomputed once the retired content is gone, so a reader of it has to ask for
+                    // whichever spellings it might carry - SuppressionDigests is where that pair is
+                    // decided. The column is a governed stored identity and is written as one: the
+                    // memory row this reads from may not have been swept yet, and a suppression left
+                    // holding that spelling would be invisible to a selection binding the canonical
+                    // form.
                     AddParameter(
                         suppressionCmd,
                         "@campaignId",

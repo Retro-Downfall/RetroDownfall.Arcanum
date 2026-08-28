@@ -2299,10 +2299,10 @@ internal sealed partial class DataRetentionService(
                 // it, and one left standing would go on refusing extraction for an owner that no longer
                 // exists.
                 //
-                // Bound exactly, which this column is settled for: it is written canonical, guarded on
-                // insert and update, and repaired by the version-5 sweep, exactly as the memory column
-                // above it is. It was none of those while it was a projection nothing compared, and this
-                // predicate is what changed that.
+                // Bound exactly, which the column is governed for:
+                // IdentitySpellingBackfill.VerifiedColumns is the register that decides which stored
+                // identities carry that guarantee, and it carries it because a selection like this one
+                // needed it to.
                 //
                 // The key is deliberately absent. This reset clears one Campaign's evidence, not the
                 // installation's, and every Global suppression and every other Campaign's still needs
@@ -5854,26 +5854,25 @@ internal sealed partial class DataRetentionService(
     /// <remarks>
     /// <c>PredecessorVersionId</c> references this same table <c>ON DELETE CASCADE</c>, and SQLite
     /// counts only the rows a statement deletes directly — never the ones a foreign-key action takes
-    /// with them. One bare delete over this table therefore removes a whole chain while reporting one
-    /// row for it, and every caller here does something with that number: the factory reset compares it
-    /// against its own preview and aborts as a conflict when it falls short, and a memory reset shows it
-    /// to the operator as what the reset removed. One claim carrying more than one revision is enough,
-    /// and a retirement or a correction writes exactly that.
+    /// with them. One bare delete over this table therefore removes a whole revision chain while
+    /// reporting one row for it. The number returned here is read rather than discarded, so that
+    /// shortfall is a wrong answer rather than a harmless one.
     ///
     /// <para>Deleting the leaves first — the versions no other version names as its predecessor — means
     /// the cascade never has anything to take, so each pass's count is the whole truth about that pass.
-    /// A chain that could not be reduced leaves rows standing rather than looping, and both callers
-    /// re-count their tables afterwards, so that outcome is refused rather than reported as success.</para>
+    /// A chain that could not be reduced stops the loop and leaves its rows standing rather than
+    /// spinning; whether that is noticed afterwards is the caller's to decide, and this returns the
+    /// count it actually made either way.</para>
     ///
     /// <para><c>PredecessorVersionId IS NOT NULL</c> inside the subquery is load-bearing. <c>NOT IN</c>
     /// over a set containing a single NULL is never true for any row, so without it the first pass
     /// deletes nothing and the table survives the delete intact.</para>
     ///
-    /// <para>The leaf test is deliberately taken over the whole table rather than over
-    /// <paramref name="predicate"/>'s rows. A predecessor edge never leaves the claim it belongs to and
-    /// every caller selects by claim, so the wider test blocks nothing; taking it over the selection
-    /// instead would delete a row whose successor outside the selection then cascaded away uncounted,
-    /// which is the miscount this exists to end.</para>
+    /// <para>The leaf test is taken over the whole table rather than over
+    /// <paramref name="predicate"/>'s rows. A predecessor edge does not leave the claim it belongs to,
+    /// so a predicate selecting whole claims is unaffected by the wider test; taking it over the
+    /// selection instead would delete a row whose successor outside the selection then cascaded away
+    /// uncounted, which is the miscount this exists to end.</para>
     /// </remarks>
     private static async Task<int> DeleteAnnalVersionsAsync(
         DbConnection connection,

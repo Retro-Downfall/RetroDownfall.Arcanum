@@ -354,8 +354,8 @@ public sealed partial class DataRetentionServiceTests
     /// whose suppressions had not, and the reset would be marked done with the evidence still standing
     /// and no further attempt ever made.
     ///
-    /// <para>Every other table the reset owns is emptied first, so the only thing left for recovery to
-    /// find is what this case is about. The memory is retired through the store, because a seeded
+    /// <para>The memory row is removed after the retirement, so what is left for recovery to find is
+    /// the evidence and its key. The retirement is driven through the store, because a seeded
     /// suppression row would be the test choosing the answer.</para>
     /// </remarks>
     [SkippableFact]

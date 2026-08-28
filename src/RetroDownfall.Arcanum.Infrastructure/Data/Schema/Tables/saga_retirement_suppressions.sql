@@ -10,17 +10,16 @@
 -- useless for confirming a guess about content that has since been erased, which one row cannot do
 -- for an unkeyed hash.
 --
--- The scope columns say which scope the retirement applied to, and are stored rather than derived
--- because the Campaign-scoped memory reset selects on them: that is the operation an operator runs to
--- take one Campaign's memories and the evidence about them together. Deleting the Campaign itself
--- reaches neither, and reaches that Campaign's memories no more than its suppressions - a project
--- deletion removes the project and clears the Session references, and leaves what was extracted inside
--- it exactly where it is.
+-- The scope columns say which scope the retirement applied to. They are stored rather than derived
+-- because callers select on them; which callers those are is a property of the code at any given moment
+-- and is not recorded here.
 --
--- CampaignId is settled the way every other stored Campaign identity is, because that reset compares it
--- exactly. The digest is not, and cannot be: it binds whatever spelling the memory row held when the
--- retirement was recorded and has no preimage left to recompute from, so both paths that ask about it
--- ask for the canonical rendering and its lowercase image together.
+-- CampaignId is a governed stored identity, written and repaired in the canonical spelling.
+-- IdentitySpellingBackfill.VerifiedColumns is the register that decides which columns those are, and
+-- the guard triggers named after this column are what refuse a write in any other spelling.
+--
+-- The digest is not governed and cannot be. It binds whichever spelling its preimage carried when the
+-- retirement was recorded, and a retirement leaves no preimage to recompute it from.
 CREATE TABLE IF NOT EXISTS saga_retirement_suppressions (
     SuppressionDigest BLOB NOT NULL PRIMARY KEY CHECK (length(SuppressionDigest) = 32),
     ScopeKindCode INTEGER NOT NULL CHECK (ScopeKindCode IN (0, 1, 2, 3)),
@@ -29,6 +28,6 @@ CREATE TABLE IF NOT EXISTS saga_retirement_suppressions (
     CHECK ((ScopeKindCode = 2 AND CampaignId IS NOT NULL) OR (ScopeKindCode <> 2 AND CampaignId IS NULL))
 );
 
--- The Campaign-scoped memory reset reads this to take one Campaign's suppressions.
+-- Selecting one Campaign's suppressions by scope and Campaign.
 CREATE INDEX IF NOT EXISTS idx_saga_retirement_suppressions_campaign
 ON saga_retirement_suppressions(ScopeKindCode, CampaignId);

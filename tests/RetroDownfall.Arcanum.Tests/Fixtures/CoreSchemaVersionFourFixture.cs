@@ -105,11 +105,10 @@ internal static class CoreSchemaVersionFourFixture
 
         """;
 
-    /// <summary><c>saga_retirement_suppressions</c> before its two Campaign comments were corrected.</summary>
+    /// <summary><c>saga_retirement_suppressions</c> as version 4 declared it.</summary>
     /// <remarks>
-    /// Version 5 does not touch this object. Its shipped text moved because two of its comments asserted
-    /// that a Campaign deletion removes that Campaign's suppressions, which nothing does — and a
-    /// corrected comment is still a changed file, which is all the fingerprint reads.
+    /// Version 5 does not touch this object; its shipped text moved afterwards, because comments in it
+    /// were corrected. A corrected comment is still a changed file, and the fingerprint reads the file.
     /// </remarks>
     private const string SagaRetirementSuppressionsSql =
         """

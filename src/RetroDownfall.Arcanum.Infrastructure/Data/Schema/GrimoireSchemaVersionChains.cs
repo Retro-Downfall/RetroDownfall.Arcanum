@@ -87,9 +87,9 @@ internal static class GrimoireSchemaVersionChains
 
             // Read out of the Core head tree immediately before the first identity guard trigger was
             // added. Nothing can recompute it either. CoreSchemaVersionFourFixture reconstructs that
-            // tree by removing the objects version 5 adds and restoring the version-4 text of the one it
-            // edits - session_campaign_bindings_guard_update - and a test hashes it, so a wrong value
-            // here fails there rather than against every operator's version-4 installation.
+            // tree and a test hashes it, so a wrong value here fails there rather than against every
+            // operator's version-4 installation. How that reconstruction is built is kept there, with
+            // the objects it names.
             [(GrimoireSchemaTransactionTier.Core, 5)] =
                 "35B3B5AD90B8BE3571516C88CB0FDF4F8E61712F86F8D1134D07D92B3F980AC1",
 
