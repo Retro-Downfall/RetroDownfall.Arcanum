@@ -34,12 +34,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// ascending sequence page each planned as <c>SCAN Entries</c> followed by
 /// <c>USE TEMP B-TREE FOR ORDER BY</c> — a walk of the largest table in the database and then a sort
 /// of the result, on the conversation read path that runs once per turn for every user — and the
-/// cursor resolution planned as a bare <c>SCAN Entries</c> to return one row. Exactly is measured for
-/// all nine: seven seek <c>IX_Entries_SessionId_Sequence</c> or
-/// <c>IX_Entries_SessionId_CreatedAt</c> with the ordering served by the same index, and the cursor
-/// resolution seeks the <c>"Entries"</c> identity index. <c>EntryTemporalQueryPlanTests</c> asserts
-/// that from the plan of the statement each entry point actually issues, so the scan cannot come back
-/// unremarked.</para>
+/// cursor resolution planned as a bare <c>SCAN Entries</c> to return one row. Exactly, every read here
+/// seeks: a <c>SessionId</c>-led index for those that filter on that column, with the ordering served
+/// by the same index where there is one, and the <c>"Entries"</c> identity index for the cursor
+/// resolution, which filters on <c>"Id"</c> as well. <c>EntryTemporalQueryPlanTests</c> pins the plan
+/// of the statement each entry point actually issues and compares it whole, so neither the scan nor
+/// anything else about those plans can move unremarked.</para>
 /// </remarks>
 internal static class EntryTemporalQueries
 {

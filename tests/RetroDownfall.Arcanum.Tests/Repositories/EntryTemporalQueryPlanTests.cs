@@ -15,7 +15,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
 /// <summary>
-/// <c>EXPLAIN QUERY PLAN</c> evidence that the transcript reads seek a <c>SessionId</c> index.
+/// The pinned <c>EXPLAIN QUERY PLAN</c> of every transcript read.
 /// </summary>
 /// <remarks>
 /// <b>This is the test that keeps the reason for the identity settlement paid.</b> Nine defects in one
@@ -23,36 +23,42 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 /// — and each fix was correct and each cost an index. The tenth landed that shape here, on the
 /// conversation read path, which runs once per turn for every user against the largest table in the
 /// database. A normalised column cannot use a BINARY-collated index, so every <c>SessionId</c>-led
-/// index these reads reach went unused at once. Settling every stored identity on one form is what let
-/// the comparison become exact again, and nothing else in the suite would notice if a later change
-/// wrapped that column in a function once more: the reads would still return the right rows, and would
+/// index these reads reach went unused at once. Nothing else in the suite would notice if a later
+/// change wrapped that column in a function again: the reads would still return the right rows and
 /// still pass every behavioural test in this repository, while scanning. That is not a guess — the
 /// normalised shape shipped, and the whole suite was green over it.
 ///
-/// <para>The plan is taken from the statement <see cref="EntryTemporalQueries"/> actually issues,
-/// as the context's own query pipeline renders it, rather than reassembled here. A plan test that
+/// <para><b>The plan is pinned whole and compared whole. Nothing about it is classified, and that is
+/// the entire design.</b> Three earlier versions of this gate each judged the plan by reasoning about
+/// a name in it, and two of the three were defeated by a name that turned out to live in a different
+/// namespace than the version assumed. The first searched the plan text for the table's name and was
+/// blind to the two reads that alias it. The second read a derived object's name off a
+/// <c>MATERIALIZE</c> row and exempted access rows carrying that name — but SQLite prints the CTE's
+/// name on one row and the alias in scope on the other, so renaming the boundary CTE to <c>e</c>
+/// exempted the aliased full walk of the real table, and the CTE beside it satisfied every remaining
+/// assertion. Both defeats have the same shape, and a fourth naming scheme would have a fourth blind
+/// spot. So this version decides nothing about any row: it asserts that the plan is the pinned plan,
+/// which cannot misclassify a row because it does not classify one.</para>
+///
+/// <para><b>The one thing not pinned is the identifier, and it is the one thing that has been
+/// ambiguous every time.</b> Each <c>SCAN</c>, <c>SEARCH</c>, <c>MATERIALIZE</c> and
+/// <c>CO-ROUTINE</c> row has its object token replaced by <c>&lt;object&gt;</c> before comparison, so
+/// renaming a CTE or an alias — a change that alters no plan and no cost — leaves this green. It
+/// cannot hide a regression, because a regression is a change of verb, of index, or of which rows the
+/// plan has, and all three are pinned verbatim. And the elision fails safe: a row whose shape the
+/// pattern does not recognise is pinned including its identifier, so an unfamiliar plan reds rather
+/// than slipping through.</para>
+///
+/// <para><b>What this costs, accepted rather than overlooked.</b> Any change to these statements that
+/// moves a plan reds this file and puts a person in front of the difference — a regression, an
+/// improvement, and a SQLite upgrade alike. For a performance contract that is the behaviour worth
+/// having rather than a cost, and this repository pins its SQLite build, so plan churn is a controlled
+/// event and a plan that moved under an engine bump is exactly what somebody should read.</para>
+///
+/// <para>The plan is taken from the statement <see cref="EntryTemporalQueries"/> actually issues, as
+/// the context's own query pipeline renders it, rather than reassembled here. A plan test that
 /// explained SQL of its own would keep passing after the real query quietly lost its index, which is
 /// the whole failure this file exists to catch.</para>
-///
-/// <para><b>The plan is judged row by row, and nothing is keyed on the table's name.</b> An earlier
-/// draft searched the whole plan text for <c>SCAN Entries</c>, and that was blind for two of these
-/// nine reads. Both wrap the table twice — unaliased inside a boundary CTE, and as <c>e</c> in the
-/// outer query — so normalising the outer predicate makes it walk the table under a name that needle
-/// does not contain, while the CTE beside it goes on seeking and satisfies the index assertion by
-/// itself. Both plans were measured in that state: neither contains <c>SCAN Entries</c> and both
-/// contain <c>IX_Entries_SessionId</c>, so that draft passed over both regressions.</para>
-///
-/// <para>So instead: every row that reaches a stored object must be a <c>SEARCH</c> naming the
-/// expected index, whatever alias it wears, and every such row is judged rather than one of them. The
-/// only rows exempt are those reaching an object the plan itself declares derived, through a
-/// <c>MATERIALIZE</c> or <c>CO-ROUTINE</c> row — read out of the plan under judgement rather than
-/// listed here, so a renamed CTE cannot quietly widen the exemption.</para>
-///
-/// <para><c>SCAN … USING COVERING INDEX …</c> fails that rule and is meant to. It walks an index
-/// instead of the table, which is cheaper than a table scan and still a walk of every row: it is
-/// exactly what <c>CountAfterWatermarkThroughTimestampGroup</c> degrades to when its predicate is
-/// normalised, so treating it as an allowance would have been the blind spot rather than a
-/// concession.</para>
 /// </remarks>
 [Collection("Grimoire")]
 public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
@@ -104,203 +110,111 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The per-turn transcript window seeks <c>IX_Entries_SessionId_Sequence</c>.
+    /// Every read in <see cref="EntryTemporalQueries"/> plans exactly as pinned.
     /// </summary>
     /// <remarks>
-    /// The most-recent window is the read the conversation loop makes on every turn, and the one whose
-    /// ordering the same index serves — so both halves are worth proving separately here: the rows are
-    /// found by seek rather than by walk, and they come back in <c>Sequence</c> order without a sort.
-    /// </remarks>
-    [SkippableFact]
-    public async Task The_recent_transcript_window_seeks_its_session_index()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        string plan = await ExplainAsync(
-            db => EntryTemporalQueries.LoadRecentDescending(db, Guid.NewGuid(), 50));
-
-        AssertEveryStoredRowIsReachedBySeek(plan, "IX_Entries_SessionId_Sequence");
-
-        // A sort would mean the index was reached for the filter but not for the order, which is half
-        // the regression and would otherwise pass the assertion above.
-        Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
-
-    }
-
-    /// <summary>
-    /// The single-statement reads seek a <c>SessionId</c>-led index and never sort.
-    /// </summary>
-    /// <remarks>
-    /// Named individually rather than swept, because a theory over a list this file also owns would
-    /// pass by shrinking. Each case is one production entry point with the arguments its caller
-    /// supplies, so a read that regains its rows by losing its index is reported by name.
-    ///
-    /// <para>These five have no subquery and one table reference, so a sort in the plan can only mean
-    /// the index served the filter and not the order — half the regression, and worth refusing here.
-    /// The two watermark reads cannot carry that assertion and have their own case below.
-    /// <c>SequenceOf</c> is absent because it filters on both identity columns and SQLite resolves it
-    /// through the stronger of the two.</para>
+    /// One case per production entry point, named, with the arguments its caller supplies — so a read
+    /// that regains its rows by losing its index is reported by name rather than folded into a sweep.
+    /// <c>LoadRecentDescending</c> is the one the conversation loop makes on every turn and is the
+    /// reason the rest of this family exists.
     /// </remarks>
     [SkippableTheory]
+    [InlineData("LoadRecentDescending")]
     [InlineData("LoadAfterSequence")]
     [InlineData("LoadBeforeSequence")]
     [InlineData("LoadBeforeDeletedKeyset")]
+    [InlineData("SequenceOf")]
     [InlineData("LoadDescendingPaged")]
     [InlineData("CountAfter")]
-    public async Task Every_transcript_read_seeks_a_session_index(string read)
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        string plan = await ExplainAsync(db => Query(db, read));
-
-        AssertEveryStoredRowIsReachedBySeek(plan, "IX_Entries_SessionId");
-
-        Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
-
-    }
-
-    /// <summary>
-    /// The two watermark reads seek their index through the alias they give the table.
-    /// </summary>
-    /// <remarks>
-    /// <b>These are the two the first version of this gate could not see, and they are the reason it
-    /// judges rows rather than text.</b> Both wrap the table twice — once unaliased inside the boundary
-    /// CTE and once as <c>e</c> in the outer query — so a normalised predicate leaves the CTE seeking
-    /// its index while the outer query walks the whole table under a name no <c>SCAN Entries</c> needle
-    /// contains. Measured, the load degrades to <c>SCAN e</c> and the count to
-    /// <c>SCAN e USING COVERING INDEX …</c>, and every assertion the earlier version made was satisfied
-    /// by the CTE beside them.
-    ///
-    /// <para>No sort assertion, and the absence is the decision. Both statements legitimately sort: the
-    /// boundary CTE orders by <c>("CreatedAt", "Id")</c> where the index supplies only the first term,
-    /// and the load's outer query orders the selected window by <c>"Sequence"</c>, which no index over
-    /// a materialised CTE can serve. Asserting no temporary B-tree here would fail on correct code, and
-    /// a sort that has to be permitted proves nothing about the seek — which is what the row-by-row
-    /// rule is for.</para>
-    /// </remarks>
-    [SkippableTheory]
     [InlineData("LoadAfterWatermarkThroughTimestampGroup")]
     [InlineData("CountAfterWatermarkThroughTimestampGroup")]
-    public async Task Every_watermark_read_seeks_its_session_index_under_its_alias(string read)
+    public async Task Every_transcript_read_plans_exactly_as_pinned(string read)
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string plan = await ExplainAsync(db => Query(db, read));
 
-        AssertEveryStoredRowIsReachedBySeek(plan, "IX_Entries_SessionId_CreatedAt");
+        Assert.Equal(Pinned(read), plan);
 
     }
 
     /// <summary>
-    /// The cursor resolution seeks the <c>"Entries"</c> identity index.
+    /// The plan each read is expected to produce, with identifiers elided.
     /// </summary>
     /// <remarks>
-    /// <c>SequenceOf</c> is the one read here that compares <c>"Entries"."Id"</c>, and SQLite resolves
-    /// it through that column's unique index rather than through a <c>SessionId</c> index because a
-    /// unique seek returns at most one row. Normalised, it could use neither: the plan was a scan of
-    /// the table for a single row, and the caller then fell back to a keyset page it did not need.
-    /// </remarks>
-    [SkippableFact]
-    public async Task The_cursor_resolution_seeks_the_entry_identity_index()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        string plan = await ExplainAsync(db => EntryTemporalQueries.SequenceOf(db, Guid.NewGuid(), Guid.NewGuid()));
-
-        AssertEveryStoredRowIsReachedBySeek(plan, "sqlite_autoindex_Entries_1");
-
-    }
-
-    /// <summary>
-    /// Fails unless every row of the plan that reaches a stored object seeks <paramref name="index"/>.
-    /// </summary>
-    /// <remarks>
-    /// The alias-proof half of this gate. A plan row names the object it reaches and the verb it
-    /// reaches it with, and the verb is the whole judgement: <c>SEARCH</c> is a seek into an index,
-    /// <c>SCAN</c> is a walk of every row — including <c>SCAN … USING COVERING INDEX …</c>, which walks
-    /// an index rather than the table and is still a walk. The object's name is read but never
-    /// compared against the table's, so a statement that aliases <c>"Entries"</c> as <c>e</c> is judged
-    /// exactly as one that does not.
+    /// Seven of the nine are one row: a seek into a <c>SessionId</c>-led index, with the ordering
+    /// served by the same index where there is one. <c>SequenceOf</c> seeks the <c>"Entries"</c>
+    /// identity index instead, because it filters on <c>"Id"</c> as well and a unique seek returns at
+    /// most one row — which is the seek only an exact comparison on that column can produce.
     ///
-    /// <para>A row reaching a derived object is exempt, and the exemption is computed from the plan
-    /// under judgement rather than listed here: a name SQLite introduces with <c>MATERIALIZE</c> or
-    /// <c>CO-ROUTINE</c> is a temporary result the outer query is entitled to walk. Reading it out of
-    /// the plan is what stops a renamed or newly added CTE from silently widening the exemption.</para>
-    ///
-    /// <para>Every qualifying row is judged rather than one, which is the other half. A statement here
-    /// can reach the table twice, and the earlier version of this gate was satisfied by whichever of
-    /// the two still seeked. The final count assertion covers the opposite failure: a statement that
-    /// stopped reaching the table at all would otherwise pass with nothing to judge.</para>
+    /// <para>The two watermark reads are the long ones, and two things in them are worth reading off
+    /// the pinned text rather than assumed. Their boundary CTE is materialised and their <c>Selected</c>
+    /// CTE is not: there is exactly one <c>MATERIALIZE</c> row in each plan. And both carry a temporary
+    /// B-tree — the boundary orders by <c>("CreatedAt", "Id")</c> where the index supplies only the
+    /// first term, and the load then orders its window by <c>"Sequence"</c> after the planner has
+    /// chosen the <c>CreatedAt</c> index to serve the range filter. Those sorts are part of what is
+    /// pinned, so they cannot grow or move unremarked either.</para>
     /// </remarks>
-    private static void AssertEveryStoredRowIsReachedBySeek(string plan, string index)
-    {
-
-        string[] rows = plan.Split(
-            '\n',
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        HashSet<string> derived = new(StringComparer.Ordinal);
-
-        foreach (string row in rows)
+    private static string Pinned(string read) =>
+        read switch
         {
+            "LoadRecentDescending" =>
+                "SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=?)\n",
 
-            Match introduced = DerivedObject.Match(row);
+            "LoadAfterSequence" =>
+                "SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>?)\n",
 
-            if (introduced.Success)
-            {
+            "LoadBeforeSequence" =>
+                "SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence<?)\n",
 
-                _ = derived.Add(introduced.Groups["object"].Value);
+            "LoadBeforeDeletedKeyset" =>
+                "SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=?)\n",
 
-            }
+            "SequenceOf" =>
+                "SEARCH <object> USING INDEX sqlite_autoindex_Entries_1 (Id=?)\n",
 
-        }
+            "LoadDescendingPaged" =>
+                "SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=?)\n",
 
-        int seeks = 0;
+            "CountAfter" =>
+                "SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)\n",
 
-        foreach (string row in rows)
-        {
+            "LoadAfterWatermarkThroughTimestampGroup" =>
+                """
+                SEARCH <object> USING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                SCALAR SUBQUERY 2
+                MATERIALIZE <object>
+                SEARCH <object> USING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                USE TEMP B-TREE FOR LAST TERM OF ORDER BY
+                SCAN <object>
+                SCALAR SUBQUERY 3
+                SCAN <object>
+                SCALAR SUBQUERY 5
+                SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                SCALAR SUBQUERY 2
+                SCAN <object>
+                SCALAR SUBQUERY 3
+                SCAN <object>
+                USE TEMP B-TREE FOR ORDER BY
 
-            Match access = ObjectAccess.Match(row);
+                """,
 
-            if (!access.Success || derived.Contains(access.Groups["object"].Value))
-            {
+            "CountAfterWatermarkThroughTimestampGroup" =>
+                """
+                SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                SCALAR SUBQUERY 2
+                MATERIALIZE <object>
+                SEARCH <object> USING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                USE TEMP B-TREE FOR LAST TERM OF ORDER BY
+                SCAN <object>
+                SCALAR SUBQUERY 3
+                SCAN <object>
 
-                continue;
+                """,
 
-            }
-
-            Assert.True(
-                string.Equals(access.Groups["verb"].Value, "SEARCH", StringComparison.Ordinal),
-                $"A plan row walks a stored object instead of seeking it: {row}{Plan(plan)}");
-
-            Assert.True(
-                row.Contains(index, StringComparison.Ordinal),
-                $"A plan row seeks something other than {index}: {row}{Plan(plan)}");
-
-            seeks++;
-
-        }
-
-        Assert.True(
-            seeks > 0,
-            $"No plan row reaches a stored object, so there was nothing to judge.{Plan(plan)}");
-
-    }
-
-    private static string Plan(string plan) =>
-        System.Environment.NewLine + System.Environment.NewLine + "Whole plan:" + System.Environment.NewLine + plan;
-
-    /// <summary>A plan row that reaches an object, whatever the object is called.</summary>
-    private static readonly Regex ObjectAccess =
-        new("^(?<verb>SCAN|SEARCH)\\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\\b");
-
-    /// <summary>A plan row that introduces a derived object the rest of the plan may walk.</summary>
-    private static readonly Regex DerivedObject =
-        new("^(?:MATERIALIZE|CO-ROUTINE)\\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\\b");
+            _ => throw new ArgumentOutOfRangeException(nameof(read), read, "No plan is pinned for that read."),
+        };
 
     private static IQueryable Query(ArcanumDbContext db, string read)
     {
@@ -311,12 +225,16 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 
         return read switch
         {
+            "LoadRecentDescending" => EntryTemporalQueries.LoadRecentDescending(db, sessionId, 50),
+
             "LoadAfterSequence" => EntryTemporalQueries.LoadAfterSequence(db, sessionId, 0, 50),
 
             "LoadBeforeSequence" => EntryTemporalQueries.LoadBeforeSequence(db, sessionId, 100, 50),
 
             "LoadBeforeDeletedKeyset" =>
                 EntryTemporalQueries.LoadBeforeDeletedKeyset(db, sessionId, watermark, Guid.NewGuid(), 50),
+
+            "SequenceOf" => EntryTemporalQueries.SequenceOf(db, sessionId, Guid.NewGuid()),
 
             "LoadDescendingPaged" => EntryTemporalQueries.LoadDescendingPaged(db, sessionId, 50, 0),
 
@@ -334,7 +252,19 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The plan SQLite produces for the statement the query would have executed.
+    /// A plan row that names the object it reaches, introduces, or materialises.
+    /// </summary>
+    /// <remarks>
+    /// The object token is the only part of a plan this file does not pin, so this pattern is the whole
+    /// of what it forgives. It deliberately matches nothing else: a row it does not recognise keeps its
+    /// text unchanged and is compared verbatim, which makes an unfamiliar plan shape red rather than
+    /// pass.
+    /// </remarks>
+    private static readonly Regex NamedObject =
+        new("^(?<head>SCAN|SEARCH|MATERIALIZE|CO-ROUTINE)\\s+(?<object>\\S+)");
+
+    /// <summary>
+    /// The plan SQLite produces for the statement the query would have executed, identifiers elided.
     /// </summary>
     /// <remarks>
     /// The statement and its parameter values are taken from <c>ToQueryString</c>, which renders the
@@ -391,11 +321,29 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
         while (await reader.ReadAsync(Token))
         {
 
-            _ = plan.AppendLine(reader.GetString(reader.FieldCount - 1));
+            _ = plan.Append(Elide(reader.GetString(reader.FieldCount - 1).Trim())).Append('\n');
 
         }
 
         return plan.ToString();
+
+    }
+
+    private static string Elide(string row)
+    {
+
+        Match named = NamedObject.Match(row);
+
+        if (!named.Success)
+        {
+
+            return row;
+
+        }
+
+        Group instance = named.Groups["object"];
+
+        return named.Groups["head"].Value + " <object>" + row[(instance.Index + instance.Length)..];
 
     }
 

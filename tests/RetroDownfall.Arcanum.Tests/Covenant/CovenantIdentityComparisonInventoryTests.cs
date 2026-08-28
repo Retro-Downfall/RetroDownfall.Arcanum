@@ -160,12 +160,11 @@ public sealed class CovenantIdentityComparisonInventoryTests
         // guarded column is the one case where an author can answer the question the statement cannot.
         //
         // Exact is also the whole reason the data was settled. These reads interpolate the Guid into a
-        // FromSql hole, which the SQLite provider binds as uppercase dashed text, so their plans are
-        // SEARCH Entries USING INDEX IX_Entries_SessionId_Sequence and, for the watermark pair,
-        // IX_Entries_SessionId_CreatedAt. Normalised, the three that were measured in that state read
-        // SCAN Entries - the largest table in the database, once per turn, for every user, and then a
-        // sort of what it found. EntryTemporalQueryPlanTests asserts the seek for all nine reads from
-        // the production statements, so the scan cannot return unremarked.
+        // FromSql hole, which the SQLite provider binds as uppercase dashed text, so every one of them
+        // seeks an index. Normalised, the ones measured in that state read SCAN Entries - the largest
+        // table in the database, once per turn, for every user, and then a sort of what it found.
+        // EntryTemporalQueryPlanTests pins the plan of each read and compares it whole, so neither the
+        // scan nor anything else about those plans can move unremarked.
         //
         // Registered rather than removed from SharedSpellingColumns, because "Entries" is still a table
         // several components write and the entries above still name live defects against it.
