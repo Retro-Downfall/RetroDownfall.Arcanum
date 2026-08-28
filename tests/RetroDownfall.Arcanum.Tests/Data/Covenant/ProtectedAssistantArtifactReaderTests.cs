@@ -74,35 +74,33 @@ public sealed class ProtectedAssistantArtifactReaderTests
     }
 
     /// <summary>
-    /// An artifact belonging to an imported Session reads back, in the spelling that import wrote.
+    /// An artifact belonging to an imported Session reads back over the settled spelling.
     /// </summary>
     /// <remarks>
-    /// Every other case here seeds the object-relational writer's uppercase spelling, which is the one
-    /// this reader used to bind explicitly — so the suite agreed with the binding and could not have
-    /// caught it being wrong about the other writer. The protected transfer store writes
-    /// <c>"Entries"."Id"</c> lowercase, and it is the only production writer that does, so a protected
-    /// read of an imported artifact reported "no assistant artifact with that identity" for a row that
-    /// was plainly there.
+    /// <b>The spelling this case was built around no longer exists, and the seed says so.</b> The
+    /// protected transfer store used to write <c>"Entries"."Id"</c> lowercase — it was the only
+    /// production writer that did — and this reader bound the object-relational writer's uppercase form
+    /// explicitly, so a protected read of an imported artifact reported "no assistant artifact with
+    /// that identity" for a row that was plainly there. That writer now renders the canonical form, the
+    /// version-5 sweep settled the stored data on it, and a guard trigger refuses anything else.
     ///
-    /// <para>Asserted on the content rather than on success alone: a read that resolved the row but
-    /// returned someone else's bytes would satisfy a bare success check.</para>
+    /// <para>The precondition is pinned rather than assumed, and it is now the opposite one: what is
+    /// worth pinning is that the row really does hold the canonical spelling the reader compares
+    /// against, because a reader binding some other form would find nothing and say nothing. Asserted
+    /// on the content rather than on success alone: a read that resolved the row but returned someone
+    /// else's bytes would satisfy a bare success check.</para>
     /// </remarks>
     [Fact]
-    public async Task An_artifact_written_by_the_transfer_store_reads_back_over_its_own_spelling()
+    public async Task An_artifact_written_by_the_transfer_store_reads_back_over_the_settled_spelling()
     {
 
-        await using ReaderFixture fixture =
-            await ReaderFixture.CreateAsync(asObjectRelationalWriter: false);
+        await using ReaderFixture fixture = await ReaderFixture.CreateAsync();
 
         Guid entryId = await fixture.SeedEntryAsync("the imported answer");
 
-        // The precondition, pinned rather than assumed. Without it a fixture that drifted back to the
-        // uppercase spelling would leave this case passing while proving nothing.
         string stored = await fixture.StoredEntryIdAsync(entryId);
 
-        Assert.Equal(stored.ToLowerInvariant(), stored);
-
-        Assert.NotEqual(entryId.ToString("D").ToUpperInvariant(), stored);
+        Assert.Equal(entryId.ToString("D").ToUpperInvariant(), stored);
 
         Result<ProtectedAssistantArtifact> read = await fixture.Reader.ReadAsync(
             Session,
@@ -215,14 +213,10 @@ public sealed class ProtectedAssistantArtifactReaderTests
 
         private readonly ArtifactSensitivityLedger _ledger;
 
-        private readonly bool _asObjectRelationalWriter;
-
-        private ReaderFixture(CovenantSchemaScratchDatabase database, bool asObjectRelationalWriter)
+        private ReaderFixture(CovenantSchemaScratchDatabase database)
         {
 
             _database = database;
-
-            _asObjectRelationalWriter = asObjectRelationalWriter;
 
             FixedCovenantConnectionSource connections = new(database.Connection);
 
@@ -242,18 +236,16 @@ public sealed class ProtectedAssistantArtifactReaderTests
         /// How this fixture spells the identities it stores.
         /// </summary>
         /// <remarks>
-        /// Uppercase is the object-relational writer's spelling and is what an installation writes for
-        /// a Session it created itself. Lowercase is what the protected transfer store writes, and it
-        /// is not a spelling this suite invented: <c>ProtectedArtifactTransferStoreTests</c> reads the
-        /// imported rows back and pins it. Both are real, which is the entire point — a fixture that
-        /// offered only one would agree with whichever spelling the reader happened to bind.
+        /// One spelling, and that is the change rather than a simplification. This used to offer two —
+        /// the object-relational writer's uppercase form and the protected transfer store's lowercase
+        /// one — because both were real and a fixture offering only one would have agreed with whichever
+        /// spelling the reader happened to bind. The transfer store now renders the canonical form, the
+        /// version-5 sweep settled the stored data on it, and a guard trigger refuses anything else, so
+        /// a lowercase seed here would describe a database production can no longer produce.
         /// </remarks>
-        internal static string Stored(Guid value, bool asObjectRelationalWriter) =>
-            asObjectRelationalWriter
-                ? value.ToString("D").ToUpperInvariant()
-                : value.ToString("D");
+        internal static string Stored(Guid value) => value.ToString("D").ToUpperInvariant();
 
-        internal static async Task<ReaderFixture> CreateAsync(bool asObjectRelationalWriter = true)
+        internal static async Task<ReaderFixture> CreateAsync()
         {
 
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase
@@ -273,15 +265,13 @@ public sealed class ProtectedAssistantArtifactReaderTests
                     VALUES ($sessionId, 'protected', $now, $now);
                     """;
 
-                _ = seed.Parameters.AddWithValue(
-                    "$sessionId",
-                    Stored(Session, asObjectRelationalWriter));
+                _ = seed.Parameters.AddWithValue("$sessionId", Stored(Session));
 
                 _ = seed.Parameters.AddWithValue("$now", "2026-08-16T00:00:00.0000000+00:00");
 
                 _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
 
-                return new ReaderFixture(database, asObjectRelationalWriter);
+                return new ReaderFixture(database);
 
             }
             catch
@@ -308,11 +298,9 @@ public sealed class ProtectedAssistantArtifactReaderTests
                 VALUES ($id, $sessionId, 'assistant', $content, 'test-model', $now, 1);
                 """;
 
-            _ = command.Parameters.AddWithValue("$id", Stored(entryId, _asObjectRelationalWriter));
+            _ = command.Parameters.AddWithValue("$id", Stored(entryId));
 
-            _ = command.Parameters.AddWithValue(
-                "$sessionId",
-                Stored(Session, _asObjectRelationalWriter));
+            _ = command.Parameters.AddWithValue("$sessionId", Stored(Session));
 
             _ = command.Parameters.AddWithValue("$content", content);
 

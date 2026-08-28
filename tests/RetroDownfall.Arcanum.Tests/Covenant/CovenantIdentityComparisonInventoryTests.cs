@@ -101,11 +101,13 @@ public sealed class CovenantIdentityComparisonInventoryTests
     /// The registered sites, each with the reason it is still here.
     /// </summary>
     /// <remarks>
-    /// Closer to a defect register than an exemption list. Four of these are comparisons that match
-    /// nothing they were meant to match and nobody has fixed; two match today only because writers
-    /// that never agreed to agree happen to render alike. Every entry carries its own reason and
-    /// opens by saying which of the two it is, so an entry appended later cannot inherit a
-    /// justification written for a different site.
+    /// Closer to a defect register than an exemption list, and it now holds three kinds of entry. Four
+    /// are comparisons that match nothing they were meant to match and nobody has fixed. One matches
+    /// by construction against a column whose writers were converted under it. Two are exact on
+    /// purpose, against columns a guard trigger governs, and they are the outcome this work was for
+    /// rather than a debt against it. Every entry carries its own reason and opens by saying which of
+    /// the three it is, so an entry appended later cannot inherit a justification written for a
+    /// different site.
     ///
     /// <para>An entry leaves this list by being fixed, and the test fails if a fixed site is left
     /// registered — so the register cannot outlive what it names. Two entries left it that way when the
@@ -147,6 +149,31 @@ public sealed class CovenantIdentityComparisonInventoryTests
         // an unmatched row reports "Session not found" where the truth is "this Session has no
         // Campaign binding". A wrong answer to an operator, and no data loss.
         "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionCampaignBindingReader.cs | Sessions.Id",
+
+        // Matching, by construction, and deliberately exact — the two entries this rule exists to make
+        // possible rather than to prevent. Both columns are governed identity columns: a BEFORE INSERT
+        // and a BEFORE UPDATE OF guard trigger refuse any spelling but the canonical uppercase dashed
+        // form, and the version-5 sweep counts what is already stored. Which spelling these columns
+        // hold is therefore a property of the schema rather than of whichever writer got there first,
+        // which is the one condition under which a reader may compare exactly. The prose above still
+        // holds - the statement doing the comparing cannot see it - but the schema can be read, and a
+        // guarded column is the one case where an author can answer the question the statement cannot.
+        //
+        // Exact is also the whole reason the data was settled. These reads interpolate the Guid into a
+        // FromSql hole, which the SQLite provider binds as uppercase dashed text, so their plans are
+        // SEARCH Entries USING INDEX IX_Entries_SessionId_Sequence and, for the watermark pair,
+        // IX_Entries_SessionId_CreatedAt. Normalised, the three that were measured in that state read
+        // SCAN Entries - the largest table in the database, once per turn, for every user, and then a
+        // sort of what it found. EntryTemporalQueryPlanTests asserts the seek for all nine reads from
+        // the production statements, so the scan cannot return unremarked.
+        //
+        // Registered rather than removed from SharedSpellingColumns, because "Entries" is still a table
+        // several components write and the entries above still name live defects against it.
+        "src/RetroDownfall.Arcanum.Infrastructure/Repositories/EntryTemporalQueries.cs | Entries.Id",
+
+        // The same site and the same reason; the scan reports the two columns separately because the
+        // reads filter on both.
+        "src/RetroDownfall.Arcanum.Infrastructure/Repositories/EntryTemporalQueries.cs | Entries.SessionId",
     ];
 
     /// <summary>
@@ -292,12 +319,18 @@ public sealed class CovenantIdentityComparisonInventoryTests
         chooses is usually the one the broken statement already matches. A green suite is not evidence
         here.
 
-        What to do. Compare through CovenantIdentitySql.Keyed("<column>", "$key") and bind the
-        parameter through CovenantIdentitySql.Key(identity). That reduces every stored spelling to one
-        and costs a scan of the table instead of an index seek; state what that costs at the call site,
-        as the existing call sites do. Where the comparison satisfies a foreign key rather than a
-        predicate, a predicate cannot help — use CovenantIdentitySql.ResolveStoredSessionIdAsync and
-        agree with the parent row's own text.
+        What to do. First ask which database the statement reads. Reading a backup archive or a staged
+        restore means reading a foreign installation's data at a vintage this build does not control,
+        and the answer there is to normalise: compare through CovenantIdentitySql.Keyed("<column>",
+        "$key") and bind the parameter through CovenantIdentitySql.Key(identity). That reduces every
+        stored spelling to one and costs a scan of the table instead of an index seek; state what that
+        costs at the call site, as the existing call sites do.
+
+        Reading this installation's own database is the other case, and there the answer is to compare
+        exactly against the canonical uppercase dashed form — but only for a column a guard trigger
+        governs, because that guard is the only thing that makes the spelling a property of the schema
+        rather than of whichever writer got there first. The two EntryTemporalQueries entries below are
+        that case, with the reasoning written out.
 
         If the comparison really is correct — you have read every writer of that column and this
         statement spells the identity the way all of them do — then either remove that table from

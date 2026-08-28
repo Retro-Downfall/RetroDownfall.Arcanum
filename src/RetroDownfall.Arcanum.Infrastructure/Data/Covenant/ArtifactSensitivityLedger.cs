@@ -398,22 +398,20 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         command.Transaction = transaction;
 
-        // Normalised because the column no longer holds one spelling. The projection agrees with
-        // "Sessions"."Id" so its foreign key can resolve, and that identity is uppercase for a Session
-        // the object-relational writer created and lowercase for one protected transfer or backup
-        // import created. The cost is this table's primary-key index: SQLite cannot seek a normalised
-        // column, so the read becomes a scan. session_sensitivity_state carries one row per tainted
-        // Session and none at all for a Session that never produced Covenant-derived content, so on
-        // the dispatch gate's per-turn read — the only hot caller — the scan is over a table that is
-        // usually empty. Comparing exactly would be an indexed lookup that silently reports an
-        // imported Session clean, and a taint read that fails open is not worth an index.
-        command.CommandText = $"""
+        // Exact, and indexed. This column agrees with "Sessions"."Id" so its foreign key can resolve,
+        // and for an interval that identity had two spellings — uppercase for a Session the
+        // object-relational writer created, lowercase for one a protected transfer or backup import
+        // created — which made an exact comparison here silently report an imported Session clean. It
+        // was normalised until the data was settled, at the cost of this table's primary-key index.
+        // Both columns are now canonical by guard and by sweep, so the seek is back on what is the
+        // dispatch gate's per-turn read.
+        command.CommandText = """
             SELECT TaintedArtifactCount, MaximumSensitivityCode, GenerationProvenanceDigest, Revision
             FROM session_sensitivity_state
-            WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")};
+            WHERE SessionId = $sessionId;
             """;
 
-        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
+        _ = command.Parameters.AddWithValue("$sessionId", Format(sessionId));
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -559,13 +557,15 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
     /// same Bloom the labels themselves would. The count only ever grows here; retention and erasure
     /// own the decrease, in the transaction that removes the artifacts.
     ///
-    /// <para>The identity written is the one <c>"Sessions"."Id"</c> already holds, not the one this
-    /// ledger spells everywhere else. <c>session_sensitivity_state.SessionId</c> declares
-    /// <c>REFERENCES "Sessions" ("Id")</c>, SQLite resolves that by byte equality, and a Session the
-    /// protected transfer store or the backup importer created holds a lowercase identity — so the
-    /// ledger's uppercase spelling failed the foreign key and no artifact of an imported Session could
-    /// be labelled at all. <c>ON CONFLICT(SessionId)</c> still folds correctly onto an existing row:
-    /// the resolved spelling is what every prior fold for the same Session also wrote.</para>
+    /// <para>The identity written is this ledger's own canonical spelling, and it is the one
+    /// <c>"Sessions"."Id"</c> holds. <c>session_sensitivity_state.SessionId</c> declares
+    /// <c>REFERENCES "Sessions" ("Id")</c> and SQLite resolves that by byte equality, so for an
+    /// interval — while a Session created by the protected transfer store or the backup importer held
+    /// a lowercase identity — this had to read the parent row's own text before it could write a child
+    /// that resolved. Both writers now render the canonical form, a guard trigger refuses any other,
+    /// and the version-5 sweep verifies the stored data, so there is one spelling to agree with and
+    /// nothing left to resolve. <c>ON CONFLICT(SessionId)</c> folds onto an existing row for the same
+    /// reason: every prior fold for the same Session wrote the same text.</para>
     /// </remarks>
     private static async Task AdvanceProjectionAsync(
         SqliteConnection connection,
@@ -596,15 +596,12 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
                 UpdatedAtUtc = excluded.UpdatedAtUtc;
             """;
 
-        // Falls back to this ledger's own spelling when no Session row resolves, so labelling an
-        // artifact of a Session that does not exist still fails the foreign key rather than being
-        // rewritten into a form that would not have resolved either.
-        _ = command.Parameters.AddWithValue(
-            "$sessionId",
-            await CovenantIdentitySql
-                .ResolveStoredSessionIdAsync(connection, transaction, sessionId, cancellationToken)
-                .ConfigureAwait(false)
-                ?? Format(sessionId));
+        // The canonical spelling, which is the only one "Sessions"."Id" is permitted to hold, so this
+        // projection's foreign key resolves against the parent by construction. This used to read the
+        // parent row's own text first and fall back to this spelling, because the parent could hold
+        // either of two; with one spelling that read resolved to its own fallback on every call, and a
+        // per-write scan of "Sessions" went with it.
+        _ = command.Parameters.AddWithValue("$sessionId", Format(sessionId));
 
         _ = command.Parameters.AddWithValue("$sensitivityCode", (long)label.Sensitivity);
 

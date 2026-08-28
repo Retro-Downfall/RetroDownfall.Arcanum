@@ -472,22 +472,21 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         command.Transaction = transaction;
 
-        // The guard is found through the normalised comparison for the same reason the content deletes
-        // are: assistant_entry_finalizations is keyed by the historical Entry identity, and a turn
-        // committed natively and one copied in by a protected transfer spell that identity differently.
-        // The receipt's own key stays the canonical spelling, because it is a value being written here
-        // rather than a row being matched.
-        command.CommandText = $"""
+        // Exact, unlike the content deletes above it, and the difference is the whole point.
+        // assistant_entry_finalizations.AssistantEntryId is a governed identity column: a guard trigger
+        // refuses any spelling but the canonical one and the version-5 sweep verifies what is already
+        // stored, so the turn committed natively and the one copied in by a protected transfer now
+        // spell that identity alike. The content tables the deletes reach include columns outside that
+        // family, which is why they still normalise.
+        command.CommandText = """
             INSERT OR IGNORE INTO assistant_entry_erasure_receipts (
                 AssistantEntryId, SessionId, FinalizationGuardDigest, ErasureReasonCode, OperationId, ErasedAtUtc)
             SELECT $artifactId, SessionId, RequestDigest, 2, $operationId, $now
             FROM assistant_entry_finalizations
-            WHERE {CovenantIdentitySql.Keyed("AssistantEntryId", "$artifactKey")};
+            WHERE AssistantEntryId = $artifactId;
             """;
 
         _ = command.Parameters.AddWithValue("$artifactId", Format(item.ArtifactId));
-
-        _ = command.Parameters.AddWithValue("$artifactKey", CovenantIdentitySql.Key(item.ArtifactId));
 
         _ = command.Parameters.AddWithValue("$operationId", Format(operationId));
 
@@ -520,13 +519,12 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     /// by this path even when the count reaches zero, because taint that has been purged still bars a
     /// cached replay.
     ///
-    /// <para>The two identity comparisons are deliberately different shapes.
-    /// <c>artifact_sensitivity.SessionId</c> carries no foreign key and has exactly one writer, so the
-    /// count it drives stays an exact indexed match. <c>session_sensitivity_state.SessionId</c> agrees
-    /// with <c>"Sessions"."Id"</c> so its foreign key can resolve, which means it holds whichever
-    /// spelling created the Session — so the row this statement updates has to be found by the
-    /// normalised comparison. That forfeits this table's primary-key index, on a background erasure
-    /// path, over one row per tainted Session.</para>
+    /// <para>Both identity comparisons are exact indexed matches against one bound spelling.
+    /// <c>artifact_sensitivity.SessionId</c> and <c>session_sensitivity_state.SessionId</c> are both
+    /// governed identity columns, refused at the write by a guard trigger and verified by the version-5
+    /// sweep, so the second no longer has to be found by a normalised comparison merely because its
+    /// foreign key makes it agree with whichever spelling created the Session. There is one spelling
+    /// for it to agree with.</para>
     /// </remarks>
     private async Task RepairSessionSensitivityAsync(
         SqliteConnection connection,
@@ -539,19 +537,17 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         command.Transaction = transaction;
 
-        command.CommandText = $"""
+        command.CommandText = """
             UPDATE session_sensitivity_state
             SET TaintedArtifactCount = (
                     SELECT COUNT(*) FROM artifact_sensitivity WHERE SessionId = $sessionId
                 ),
                 Revision = Revision + 1,
                 UpdatedAtUtc = $now
-            WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")};
+            WHERE SessionId = $sessionId;
             """;
 
         _ = command.Parameters.AddWithValue("$sessionId", Format(sessionId));
-
-        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         _ = command.Parameters.AddWithValue("$now", Iso(_time.GetUtcNow()));
 

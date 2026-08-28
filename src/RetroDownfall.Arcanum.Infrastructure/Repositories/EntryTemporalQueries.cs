@@ -1,12 +1,8 @@
-using System.Runtime.CompilerServices;
-
 using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
-
-using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -23,44 +19,30 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// filter on <c>CreatedAt</c> because <c>Session.LastSummarizedMessageAt</c> is a timestamp, but
 /// they order by <c>Sequence</c>.
 ///
-/// <para><b>Every identity here compares through <see cref="CovenantIdentitySql"/>.</b> These reads
-/// used to interpolate the <see cref="Guid"/> straight into the query, which EF binds through its
-/// own type mapping as uppercase dashed TEXT — the spelling the object-relational writer stores, and
-/// not the one the protected transfer store writes. A Session imported from a backup therefore had a
-/// history none of these reads could see: no error, no empty-state distinction, just a conversation
-/// that looked like it had never been spoken in. Nothing before now could produce such a Session,
-/// because the selective-import planner refused every archive; making that import work is what made
-/// this reachable, so the two belong together.</para>
+/// <para><b>The identity is interpolated straight into the statement, and that is now correct rather
+/// than merely fast.</b> <c>FromSql</c> turns every hole into a bound parameter, and the SQLite
+/// provider renders a <see cref="Guid"/> as uppercase dashed text — the one form
+/// <c>"Entries"."Id"</c> and <c>"Entries"."SessionId"</c> are permitted to hold. These reads spent an
+/// interval comparing <c>lower(replace(col, '-', ''))</c> instead, because those two columns could
+/// then hold a second spelling and an exact comparison returned a conversation that looked like it
+/// had never been spoken in. Both columns are settled to the canonical form, refused at the write by
+/// a guard trigger, and swept on upgrade, so the reason for normalising them is gone.</para>
 ///
-/// <para><b>The cost, and it is the largest this shape has been asked to pay.</b> A normalised column
-/// cannot use a BINARY-collated index, so these forfeit <c>IX_Entries_SessionId_Sequence</c>,
-/// <c>IX_Entries_SessionId_CreatedAt</c> and <c>IX_Entries_SessionId_IsPinned</c>: each read becomes
-/// a scan of <c>"Entries"</c>, and the ones that order by <c>Sequence</c> additionally sort rather
-/// than walking an index in order. Unlike the erasure and backup call sites, this is the conversation
-/// read path and it runs per turn. It is taken because the alternative is a correct-looking read that
-/// silently returns nothing for an imported Session, and a wrong answer is not a performance
-/// optimisation — but it is the site where an index-preserving answer would be worth building, and
-/// the shape of one is known: resolve the Session's stored spelling once, as
-/// <see cref="CovenantIdentitySql.ResolveStoredSessionIdAsync"/> already does for foreign keys, and
-/// compare exactly against it.</para>
-///
-/// <para><b>Why the shape is composed rather than interpolated.</b> <c>FromSql</c> turns every
-/// interpolation hole into a bound parameter, so SQL text cannot reach it through one — a
-/// <c>$"...{CovenantIdentitySql.Keyed(...)}"</c> would send the predicate itself to SQLite as a
-/// string literal. <see cref="FormattableStringFactory"/> keeps the predicate in the format string
-/// and the identity in the arguments, which is what lets these share the one comparison shape instead
-/// of spelling a twelfth copy of it by hand.</para>
+/// <para><b>What that buys, which is why the settlement was worth doing.</b> A normalised column
+/// cannot use a BINARY-collated index, so every read here forfeited the <c>SessionId</c>-led index it
+/// would otherwise seek. Three of these were measured in that state: the recent window and the
+/// ascending sequence page each planned as <c>SCAN Entries</c> followed by
+/// <c>USE TEMP B-TREE FOR ORDER BY</c> — a walk of the largest table in the database and then a sort
+/// of the result, on the conversation read path that runs once per turn for every user — and the
+/// cursor resolution planned as a bare <c>SCAN Entries</c> to return one row. Exactly is measured for
+/// all nine: seven seek <c>IX_Entries_SessionId_Sequence</c> or
+/// <c>IX_Entries_SessionId_CreatedAt</c> with the ordering served by the same index, and the cursor
+/// resolution seeks the <c>"Entries"</c> identity index. <c>EntryTemporalQueryPlanTests</c> asserts
+/// that from the plan of the statement each entry point actually issues, so the scan cannot come back
+/// unremarked.</para>
 /// </remarks>
 internal static class EntryTemporalQueries
 {
-
-    /// <summary>The one predicate every read here filters a Session by.</summary>
-    private static string SessionKeyed(string parameter) =>
-        CovenantIdentitySql.Keyed("\"SessionId\"", parameter);
-
-    /// <summary>The same predicate against the aliased <c>Entries</c> of a windowed read.</summary>
-    private static string AliasedSessionKeyed(string parameter) =>
-        CovenantIdentitySql.Keyed("e.\"SessionId\"", parameter);
 
     /// <summary>
     /// Most-recent window: <c>ORDER BY "Sequence" DESC LIMIT</c>. Call sites reverse
@@ -71,11 +53,7 @@ internal static class EntryTemporalQueries
         Guid sessionId,
         int limit) =>
         db.Entries.FromSql(
-            FormattableStringFactory.Create(
-                "SELECT * FROM \"Entries\" WHERE " + SessionKeyed("{0}")
-                + " ORDER BY \"Sequence\" DESC LIMIT {1}",
-                CovenantIdentitySql.Key(sessionId),
-                limit));
+            $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "Sequence" DESC LIMIT {limit}""");
 
     /// <summary>
     /// Ascending page after an exclusive <see cref="Entry.Sequence"/> cursor. Pass
@@ -87,12 +65,12 @@ internal static class EntryTemporalQueries
         long afterSequence,
         int limit) =>
         db.Entries.FromSql(
-            FormattableStringFactory.Create(
-                "SELECT * FROM \"Entries\" WHERE " + SessionKeyed("{0}")
-                + " AND \"Sequence\" > {1} ORDER BY \"Sequence\" LIMIT {2}",
-                CovenantIdentitySql.Key(sessionId),
-                afterSequence,
-                limit));
+            $"""
+            SELECT * FROM "Entries"
+            WHERE "SessionId" = {sessionId} AND "Sequence" > {afterSequence}
+            ORDER BY "Sequence"
+            LIMIT {limit}
+            """);
 
     /// <summary>
     /// Descending page before an exclusive <see cref="Entry.Sequence"/> cursor.
@@ -103,22 +81,17 @@ internal static class EntryTemporalQueries
         long beforeSequence,
         int limit) =>
         db.Entries.FromSql(
-            FormattableStringFactory.Create(
-                "SELECT * FROM \"Entries\" WHERE " + SessionKeyed("{0}")
-                + " AND \"Sequence\" < {1} ORDER BY \"Sequence\" DESC LIMIT {2}",
-                CovenantIdentitySql.Key(sessionId),
-                beforeSequence,
-                limit));
+            $"""
+            SELECT * FROM "Entries"
+            WHERE "SessionId" = {sessionId} AND "Sequence" < {beforeSequence}
+            ORDER BY "Sequence" DESC
+            LIMIT {limit}
+            """);
 
     /// <summary>
     /// Descending page before a <c>(CreatedAt, Id)</c> cursor whose entry no longer exists, so its
     /// sequence cannot be resolved. Keeps "load older" working across a deleted cursor entry.
     /// </summary>
-    /// <remarks>
-    /// The cursor's own <c>"Id"</c> is compared with <c>&lt;</c> rather than for equality, so it
-    /// orders text rather than matching a row and the shape does not apply to it. It is a tiebreak
-    /// inside one <c>CreatedAt</c> group and any total order over the stored text serves.
-    /// </remarks>
     public static IQueryable<Entry> LoadBeforeDeletedKeyset(
         ArcanumDbContext db,
         Guid sessionId,
@@ -130,14 +103,13 @@ internal static class EntryTemporalQueries
         DateTimeOffset beforeUtc = beforeCreatedAt.ToUniversalTime();
 
         return db.Entries.FromSql(
-            FormattableStringFactory.Create(
-                "SELECT * FROM \"Entries\" WHERE " + SessionKeyed("{0}")
-                + " AND (\"CreatedAt\" < {1} OR (\"CreatedAt\" = {1} AND \"Id\" < {2}))"
-                + " ORDER BY \"Sequence\" DESC LIMIT {3}",
-                CovenantIdentitySql.Key(sessionId),
-                beforeUtc,
-                beforeId,
-                limit));
+            $"""
+            SELECT * FROM "Entries"
+            WHERE "SessionId" = {sessionId}
+              AND ("CreatedAt" < {beforeUtc} OR ("CreatedAt" = {beforeUtc} AND "Id" < {beforeId}))
+            ORDER BY "Sequence" DESC
+            LIMIT {limit}
+            """);
 
     }
 
@@ -145,22 +117,16 @@ internal static class EntryTemporalQueries
     /// Resolves an entry's <see cref="Entry.Sequence"/>, or <c>null</c> when the entry is not in
     /// the session.
     /// </summary>
-    /// <remarks>
-    /// Both identities are normalised. <c>"Entries"."Id"</c> carries the same two spellings its
-    /// <c>"SessionId"</c> does, so resolving a cursor inside an imported Session would otherwise
-    /// answer "not in this session" for an entry plainly in it, and the caller would fall back to a
-    /// keyset page it did not need.
-    /// </remarks>
     public static IQueryable<long?> SequenceOf(
         ArcanumDbContext db,
         Guid sessionId,
         Guid entryId) =>
         db.Database.SqlQuery<long?>(
-            FormattableStringFactory.Create(
-                "SELECT \"Sequence\" AS \"Value\" FROM \"Entries\" WHERE " + SessionKeyed("{0}")
-                + " AND " + CovenantIdentitySql.Keyed("\"Id\"", "{1}") + " LIMIT 1",
-                CovenantIdentitySql.Key(sessionId),
-                CovenantIdentitySql.Key(entryId)));
+            $"""
+            SELECT "Sequence" AS "Value" FROM "Entries"
+            WHERE "SessionId" = {sessionId} AND "Id" = {entryId}
+            LIMIT 1
+            """);
 
     /// <summary>
     /// Descending offset page without a cursor: <c>ORDER BY "Sequence" DESC</c>.
@@ -171,12 +137,12 @@ internal static class EntryTemporalQueries
         int limit,
         int offset) =>
         db.Entries.FromSql(
-            FormattableStringFactory.Create(
-                "SELECT * FROM \"Entries\" WHERE " + SessionKeyed("{0}")
-                + " ORDER BY \"Sequence\" DESC LIMIT {1} OFFSET {2}",
-                CovenantIdentitySql.Key(sessionId),
-                limit,
-                offset));
+            $"""
+            SELECT * FROM "Entries"
+            WHERE "SessionId" = {sessionId}
+            ORDER BY "Sequence" DESC
+            LIMIT {limit} OFFSET {offset}
+            """);
 
     /// <summary>
     /// Count entries strictly after an exclusive watermark (<c>CreatedAt &gt;</c>).
@@ -186,11 +152,7 @@ internal static class EntryTemporalQueries
         Guid sessionId,
         DateTimeOffset afterExclusive) =>
         db.Database.SqlQuery<int>(
-            FormattableStringFactory.Create(
-                "SELECT COUNT(*) AS \"Value\" FROM \"Entries\" WHERE " + SessionKeyed("{0}")
-                + " AND \"CreatedAt\" > {1}",
-                CovenantIdentitySql.Key(sessionId),
-                afterExclusive));
+            $"""SELECT COUNT(*) AS "Value" FROM "Entries" WHERE "SessionId" = {sessionId} AND "CreatedAt" > {afterExclusive}""");
 
     /// <summary>
     /// Loads an ascending watermark window through the timestamp group containing the
@@ -211,45 +173,34 @@ internal static class EntryTemporalQueries
         int boundaryOffset = Math.Max(0, targetLimit - 1);
 
         return db.Entries.FromSql(
-            FormattableStringFactory.Create(
-                """
-                WITH "Boundary" AS
-                (
-                    SELECT "CreatedAt"
-                    FROM "Entries"
-                    WHERE
-                """
-                + " " + SessionKeyed("{0}")
-                + """
-                      AND "CreatedAt" > {1}
-                    ORDER BY "CreatedAt", "Id"
-                    LIMIT 1 OFFSET {2}
-                ),
-                "Selected" AS
-                (
-                    SELECT e.*
-                    FROM "Entries" AS e
-                    WHERE
-                """
-                + " " + AliasedSessionKeyed("{0}")
-                + """
-                      AND e."CreatedAt" > {1}
-                      AND
-                      (
-                          NOT EXISTS (SELECT 1 FROM "Boundary")
-                          OR e."CreatedAt" <= (SELECT "CreatedAt" FROM "Boundary")
-                      )
-                )
-                SELECT s.*
-                FROM "Selected" AS s
-                WHERE (SELECT COUNT(*) FROM "Selected") <= {3}
-                ORDER BY s."Sequence"
-                LIMIT {3}
-                """,
-                CovenantIdentitySql.Key(sessionId),
-                afterUtc,
-                boundaryOffset,
-                maxRows));
+            $"""
+            WITH "Boundary" AS
+            (
+                SELECT "CreatedAt"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "CreatedAt" > {afterUtc}
+                ORDER BY "CreatedAt", "Id"
+                LIMIT 1 OFFSET {boundaryOffset}
+            ),
+            "Selected" AS
+            (
+                SELECT e.*
+                FROM "Entries" AS e
+                WHERE e."SessionId" = {sessionId}
+                  AND e."CreatedAt" > {afterUtc}
+                  AND
+                  (
+                      NOT EXISTS (SELECT 1 FROM "Boundary")
+                      OR e."CreatedAt" <= (SELECT "CreatedAt" FROM "Boundary")
+                  )
+            )
+            SELECT s.*
+            FROM "Selected" AS s
+            WHERE (SELECT COUNT(*) FROM "Selected") <= {maxRows}
+            ORDER BY s."Sequence"
+            LIMIT {maxRows}
+            """);
 
     }
 
@@ -265,36 +216,26 @@ internal static class EntryTemporalQueries
         int boundaryOffset = Math.Max(0, targetLimit - 1);
 
         return db.Database.SqlQuery<int>(
-            FormattableStringFactory.Create(
-                """
-                WITH "Boundary" AS
-                (
-                    SELECT "CreatedAt"
-                    FROM "Entries"
-                    WHERE
-                """
-                + " " + SessionKeyed("{0}")
-                + """
-                      AND "CreatedAt" > {1}
-                    ORDER BY "CreatedAt", "Id"
-                    LIMIT 1 OFFSET {2}
-                )
-                SELECT COUNT(*) AS "Value"
-                FROM "Entries" AS e
-                WHERE
-                """
-                + " " + AliasedSessionKeyed("{0}")
-                + """
-                  AND e."CreatedAt" > {1}
-                  AND
-                  (
-                      NOT EXISTS (SELECT 1 FROM "Boundary")
-                      OR e."CreatedAt" <= (SELECT "CreatedAt" FROM "Boundary")
-                  )
-                """,
-                CovenantIdentitySql.Key(sessionId),
-                afterUtc,
-                boundaryOffset));
+            $"""
+            WITH "Boundary" AS
+            (
+                SELECT "CreatedAt"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "CreatedAt" > {afterUtc}
+                ORDER BY "CreatedAt", "Id"
+                LIMIT 1 OFFSET {boundaryOffset}
+            )
+            SELECT COUNT(*) AS "Value"
+            FROM "Entries" AS e
+            WHERE e."SessionId" = {sessionId}
+              AND e."CreatedAt" > {afterUtc}
+              AND
+              (
+                  NOT EXISTS (SELECT 1 FROM "Boundary")
+                  OR e."CreatedAt" <= (SELECT "CreatedAt" FROM "Boundary")
+              )
+            """);
 
     }
 

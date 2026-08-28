@@ -108,14 +108,12 @@ internal sealed class SessionDerivedArtifactStore(
         try
         {
 
-            // The identity the Session row actually holds, resolved once and used by every step below.
-            // Falls back to this store's own spelling when no Session resolves, so a replacement for a
-            // Session that does not exist still fails its foreign key rather than being rewritten into
-            // a form that would not have resolved either.
-            string sessionKey = await CovenantIdentitySql
-                .ResolveStoredSessionIdAsync(connection, transaction, plan.SessionId, cancellationToken)
-                .ConfigureAwait(false)
-                ?? Format(plan.SessionId);
+            // The canonical spelling, which is the only one "Sessions"."Id" is permitted to hold, used
+            // by every step below. This used to read the parent row's own text first and fall back to
+            // this spelling, because the parent could hold either of two; with one spelling that read
+            // resolved to its own fallback on every call, and a scan of "Sessions" per replacement
+            // went with it.
+            string sessionKey = Format(plan.SessionId);
 
             (Guid? priorArtifactId, long priorRevision) = await ReadCurrentAsync(
                 connection,
