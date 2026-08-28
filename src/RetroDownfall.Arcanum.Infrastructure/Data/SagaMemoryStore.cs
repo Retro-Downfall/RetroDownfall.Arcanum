@@ -138,10 +138,28 @@ internal sealed partial class SagaMemoryStore(
 
                     suppressionCheckCmd.Transaction = transaction;
 
+                    // Two digests, and the second is a compatibility branch that cannot be dropped.
+                    // The Campaign identity is part of the preimage, because a rejection made inside one
+                    // Campaign is not an opinion about another. Before the binding column was settled,
+                    // the identity a retirement hashed was whichever spelling that Session's binding
+                    // happened to carry, and for every Session created through the turn-begin path that
+                    // was the minority form. A digest cannot be recomputed after the fact - retirement
+                    // deletes the content that is its preimage - so an installation's existing
+                    // suppressions are the only copy, and checking the settled spelling alone would let
+                    // the next extraction pass re-add exactly what an operator retired.
+                    byte[] legacySuppressionDigest = SagaSuppressionDigest.Compute(
+                        suppressionKey,
+                        scopeKind,
+                        scopeCampaignId?.ToLowerInvariant(),
+                        content);
+
                     suppressionCheckCmd.CommandText =
-                        "SELECT 1 FROM saga_retirement_suppressions WHERE SuppressionDigest = @digest";
+                        "SELECT 1 FROM saga_retirement_suppressions"
+                        + " WHERE SuppressionDigest IN (@digest, @legacyDigest)";
 
                     AddParameter(suppressionCheckCmd, "@digest", suppressionDigest);
+
+                    AddParameter(suppressionCheckCmd, "@legacyDigest", legacySuppressionDigest);
 
                     object? hit = await suppressionCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -387,7 +405,10 @@ internal sealed partial class SagaMemoryStore(
 
                         AddParameter(cmd, "@campaignScopeKind", (int)SagaMemoryScopeKind.Campaign);
 
-                        AddParameter(cmd, "@campaignId", campaignId.ToString());
+                        // Canonical, exactly as DivinationService binds it: the listing and retrieval have
+                        // to select the same candidate set, so a spelling that halved one would have to
+                        // halve the other or the promise above this block is false.
+                        AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
 
                     }
                     else

@@ -9,9 +9,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -254,6 +257,161 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// One Campaign, two Sessions bound by the two production writers that disagreed about how to spell
+    /// it, and a Campaign-scoped search that returns both of their memories rather than one.
+    /// </summary>
+    /// <remarks>
+    /// <b>This counts what comes back, and that is the whole design of the case.</b> The defect was not
+    /// that a column held the wrong text - it was that a join silently returned half of a Campaign's
+    /// memories and reported nothing at all about the rest, so an assertion that a column now reads
+    /// uppercase would have been green while recall stayed halved. Reverting either binding writer to a
+    /// bare <c>ToString()</c> makes this case return one memory where it demands two.
+    ///
+    /// <para>Both Sessions are bound through a real writer rather than seeded.
+    /// <c>CreateBoundSessionAsync</c> is the path every Session created since the binding table shipped
+    /// took; the core data initializer's backfill is the path every Session that predates it took. They
+    /// are the two halves, and a fixture stating either spelling itself would prove nothing about which
+    /// half a reader can see.</para>
+    ///
+    /// <para>The embeddings are identical, so nothing about similarity can separate the two results.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_campaign_scoped_search_returns_the_memories_of_both_binding_writers_sessions()
+    {
+
+        await SeedCampaignAsync(CampaignA);
+
+        Guid boundByRepository = await SessionBindingWriters.BoundByTheRepositoryAsync(
+            _db!, CampaignA, CancellationToken.None);
+
+        Guid boundByInitializer = await SessionBindingWriters.BoundByTheInitializerAsync(
+            _db!, CampaignA, CancellationToken.None);
+
+        Assert.NotEqual(boundByRepository, boundByInitializer);
+
+        float[] shared = Vec(1f);
+
+        string fromRepository = await InsertAsync(boundByRepository, "a conclusion from a new session", shared);
+
+        string fromInitializer = await InsertAsync(
+            boundByInitializer, "a conclusion from an upgraded session", shared);
+
+        Assert.Equal(Ordered(fromRepository, fromInitializer), await SearchAsync(CampaignA));
+
+    }
+
+    /// <summary>
+    /// The operator listing draws on the same candidate set the search does, for Sessions bound either
+    /// way.
+    /// </summary>
+    /// <remarks>
+    /// A separate case rather than an extra assertion above, because it is a second reader with its own
+    /// parameter binding: the listing and the search halved independently, and one of them being fixed
+    /// says nothing about the other. "Inspection matches retrieval" is only true if both see both.
+    /// </remarks>
+    [Fact]
+    public async Task A_campaign_scoped_listing_shows_the_memories_of_both_binding_writers_sessions()
+    {
+
+        await SeedCampaignAsync(CampaignA);
+
+        float[] shared = Vec(1f);
+
+        string fromRepository = await InsertAsync(
+            await SessionBindingWriters.BoundByTheRepositoryAsync(_db!, CampaignA, CancellationToken.None),
+            "a listed conclusion",
+            shared);
+
+        string fromInitializer = await InsertAsync(
+            await SessionBindingWriters.BoundByTheInitializerAsync(_db!, CampaignA, CancellationToken.None),
+            "another listed conclusion",
+            shared);
+
+        SagaMemoryDto[] listed = await _store!.ListAsync(
+            query: null,
+            sessionId: null,
+            MemoryScope.Resolve(campaignScopingEnabled: true, CampaignA),
+            limit: 50,
+            offset: 0,
+            CancellationToken.None);
+
+        string[] listedIds = [.. listed.Select(static memory => memory.Id).Order(StringComparer.Ordinal)];
+
+        Assert.Equal(Ordered(fromRepository, fromInitializer), listedIds);
+
+    }
+
+    /// <summary>
+    /// A retirement recorded before the Campaign spelling was settled still refuses the memory it was
+    /// made about.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the one thing settling the column could have broken, and it would have broken it
+    /// silently.</b> The Campaign identity is part of a suppression's preimage, and until version 5 the
+    /// identity a retirement hashed was whichever spelling its Session's binding carried - the minority
+    /// form for every Session created through the turn-begin path. A digest cannot be recomputed
+    /// afterwards, because retirement deletes the content that is its preimage, so those rows are the
+    /// only copy: a write path that asked only about the settled spelling would let the next extraction
+    /// pass re-add exactly what an operator retired, and nothing would say so.
+    ///
+    /// <para>The suppression row is written directly rather than through <c>RetireAsync</c>, because the
+    /// state under test is one no current writer can produce - version 5's guard refuses a memory
+    /// carrying the minority Campaign spelling outright. The digest itself is computed by the production
+    /// function over the value that path really hashed, so what is seeded is the row a shipped
+    /// retirement left behind rather than a shape chosen to satisfy the check.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_retirement_recorded_before_the_campaign_spelling_settled_still_suppresses_its_memory()
+    {
+
+        Guid session = await SeedCampaignSessionAsync(CampaignA);
+
+        // Retiring something establishes the installation's suppression key, which nothing else creates.
+        string retired = await InsertAsync(session, "a conclusion that goes", Vec(1f));
+
+        SagaCurationOutcome outcome = await _store!.RetireAsync(
+            retired,
+            AnnalContentDigest.ForSagaMemory("a conclusion that goes"),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, outcome.Kind);
+
+        const string Legacy = "a conclusion retired before the spelling settled";
+
+        byte[] key = Assert.IsType<byte[]>(
+            await SagaSuppressionKeyStore.ReadAsync(
+                (SqliteConnection)Connection, transaction: null, CancellationToken.None));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO saga_retirement_suppressions (
+                SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+            VALUES ($digest, 2, $campaignId, $now);
+            """,
+            ("$digest", SagaSuppressionDigest.Compute(
+                key,
+                SagaMemoryScopeKind.Campaign,
+                CampaignA.ToString("D").ToLowerInvariant(),
+                Legacy)),
+            ("$campaignId", Canonical(CampaignA)),
+            ("$now", Timestamp));
+
+        SagaMemoryWriteOutcome written = await _store.InsertAsync(
+            Guid.NewGuid().ToString(),
+            Legacy,
+            DateTimeOffset.UtcNow,
+            session,
+            tags: null,
+            source: "test",
+            Vec(1f),
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Suppressed, written);
+
+    }
+
     private sealed record SeededCorpus(
         string GlobalId,
         string CampaignAId,
@@ -376,7 +534,14 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     private async Task<Guid> SeedCampaignSessionAsync(Guid campaignId)
     {
 
-        await ExecuteAsync(
+        await SeedCampaignAsync(campaignId);
+
+        return await SeedSessionAsync(campaignId, bindingKindCode: 2);
+
+    }
+
+    private Task SeedCampaignAsync(Guid campaignId) =>
+        ExecuteAsync(
             """
             INSERT OR IGNORE INTO "Campaigns"
                 ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
@@ -386,10 +551,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             ("$name", campaignId.ToString("N")),
             ("$path", $"/campaigns/{campaignId:N}"),
             ("$now", Timestamp));
-
-        return await SeedSessionAsync(campaignId, bindingKindCode: 2);
-
-    }
 
     private Task<Guid> SeedGlobalOnlySessionAsync() => SeedSessionAsync(null, bindingKindCode: 1);
 
@@ -423,22 +584,17 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             // is declared REFERENCES "Sessions"("Id") and foreign keys are both set and verified on
             // every connection, so this column holds whatever the parent holds - and the parent is
             // written by the object-relational writer, which renders it uppercase.
-            //
-            // This seed once carried the opposite claim, that only the schema initializer could write
-            // this column and that the repository writer and its readers all rendered the minority
-            // form. That was true when it was written and is not any more: both were converted in the
-            // same change that added the guard below, so GrimoireRepository.InsertBindingAsync now
-            // writes exactly what this line does.
             ("$id", Canonical(sessionId)),
             ("$kind", bindingKindCode),
-            // NOT canonical, and the asymmetry with the SessionId above is the point.
-            // session_campaign_bindings.CampaignId is deliberately unconstrained by any foreign key - it
-            // is the historical authority identity, so a Campaign deletion can clear its own row without
-            // rewriting it - and GrimoireRepository.InsertBindingAsync, the writer these cases exercise,
-            // renders it with a bare ToString(). The Saga store copies that spelling into
-            // saga_memories.CampaignId, and DivinationService and DataRetentionService both bind the same
-            // rendering back. The column is outside the governed family and is guarded by nothing.
-            ("$campaignId", bindingKindCode == 2 ? campaignId?.ToString() : null),
+            // Canonical, and the reason is now the same as the SessionId above rather than an asymmetry.
+            // session_campaign_bindings.CampaignId still carries no foreign key - it is the historical
+            // authority identity, so a Campaign deletion can clear its own row without rewriting it - but
+            // its two writers no longer disagree: the core data initializer always canonicalized, and
+            // GrimoireRepository.InsertBindingAsync now does too. The Saga store copies that spelling into
+            // saga_memories.CampaignId, and DivinationService and DataRetentionService bind it back
+            // exactly. This seed once rendered a bare ToString(), which is the spelling that made recall
+            // return half of a Campaign's memories, and the version-5 guard now refuses it outright.
+            ("$campaignId", bindingKindCode == 2 ? Canonical(campaignId!.Value) : null),
             ("$now", Timestamp));
 
         return sessionId;

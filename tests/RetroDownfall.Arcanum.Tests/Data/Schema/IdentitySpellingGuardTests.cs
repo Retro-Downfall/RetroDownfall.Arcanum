@@ -77,6 +77,19 @@ public sealed class IdentitySpellingGuardTests
     /// </summary>
     private const string UnboundSession = "B0000000-0000-4000-8000-0000000000E3";
 
+    /// <summary>
+    /// A fourth Session, whose binding is seeded unresolved so a case can drive the one update
+    /// <c>session_campaign_bindings.CampaignId</c> has: the resolution that gives an unresolved legacy
+    /// row its Campaign for the first time.
+    /// </summary>
+    /// <remarks>
+    /// It has to be its own Session rather than one of the three above. The seeded binding on
+    /// <see cref="Session"/> is global-only and its kind may not change; <see cref="SecondSession"/> is
+    /// the Session the binding insert cases write their own row for, so a seeded row there would collide
+    /// on the primary key; and <see cref="UnboundSession"/> exists precisely to have no binding at all.
+    /// </remarks>
+    private const string ResolvableSession = "B0000000-0000-4000-8000-0000000000E4";
+
     private const string Timestamp = "2026-01-01T00:00:00.0000000+00:00";
 
     /// <summary>A Saga memory identity, which the provenance table keys on.</summary>
@@ -84,6 +97,9 @@ public sealed class IdentitySpellingGuardTests
 
     /// <summary>A second Saga memory, so a case can write a provenance row beside the seeded one.</summary>
     private const string SecondMemory = "11111111-0000-4000-8000-000000000002";
+
+    /// <summary>A third Saga memory, written Campaign-scoped so its Campaign column carries a value.</summary>
+    private const string ScopedMemory = "11111111-0000-4000-8000-000000000003";
 
     /// <summary>
     /// A Lexicon entry identity, deliberately in the dash-free form its own writer renders. It is one of
@@ -117,13 +133,17 @@ public sealed class IdentitySpellingGuardTests
     /// </summary>
     /// <remarks>
     /// Pinned here so a table that later loses its refusal is noticed, and kept per column rather than
-    /// per table because the three entries do not share one reason.
+    /// per table because the four entries below rest on three different reasons - and because one of
+    /// those tables has another governed column that <i>does</i> carry an update guard.
     /// <c>assistant_entry_finalizations_guard_update</c> aborts every update to that table, because a
     /// finalization is terminal; <c>artifact_sensitivity_guard_update</c> does the same, because a label
     /// is immutable evidence about one exact artifact revision. <c>session_campaign_bindings</c> refuses
     /// no update in general - it refuses one that <i>changes</i> <c>SessionId</c>, so the only update a
     /// <c>BEFORE UPDATE OF "SessionId"</c> guard could ever see is one setting the column to the value it
-    /// already holds. In all three cases the guard would be unreachable code in the schema.
+    /// already holds. That is why <c>session_campaign_bindings.CampaignId</c> is absent from this list:
+    /// version 5's spelling exemption admits a write to it, and the one-time resolution of an unresolved
+    /// legacy row writes it for the first time, so an update guard there has real writes to judge. In
+    /// every entry below it would be unreachable code in the schema.
     /// </remarks>
     internal static IReadOnlyList<(string Table, string Column, string Refusal)> ColumnsWithNoUpdateGuard =>
     [
@@ -401,6 +421,130 @@ public sealed class IdentitySpellingGuardTests
     }
 
     /// <summary>
+    /// The one rewrite of a resolved Campaign binding version 5 admits, and four ways of being
+    /// something other than that rewrite.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exemption exists because the sweep could not otherwise repair one row.</b>
+    /// <c>session_campaign_bindings_guard_update</c> aborted every update to a binding whose kind was
+    /// not 3, and every binding carrying a Campaign identity has kind 2 - so settling that column meant
+    /// admitting exactly one write and nothing more. What is asserted here is the "nothing more": this
+    /// table has four columns, the abort above the exemption pins <c>SessionId</c>, the exemption pins
+    /// <c>BindingKindCode</c> and <c>BoundAtUtc</c>, and it pins <c>CampaignId</c> to the single value
+    /// <c>upper(OLD.CampaignId)</c>. There is no degree of freedom left for it to move a Session into
+    /// another Campaign's context, launder one into Global context, or alter the receipt.
+    ///
+    /// <para>The accepting case is the one that makes the refusals mean something: a guard that refused
+    /// everything would satisfy the four refusals on its own while leaving the sweep unable to run.</para>
+    ///
+    /// <para>The fifth way of being something else - a binding that carries no Campaign at all - is the
+    /// case beside this one, split out for the reason its own remarks give.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_resolved_campaign_binding_admits_a_spelling_rewrite_and_nothing_else()
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync("session_campaign_bindings");
+
+        await harness.InsertAsync("session_campaign_bindings", "CampaignId", Canonical(Campaign));
+
+        const string Rewrite = """
+            UPDATE session_campaign_bindings SET {0} WHERE BindingKindCode = 2;
+            """;
+
+        // Without the scope, the same canonicalization is refused for want of authority.
+        SqliteException unauthorized = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.ExecuteAsync(
+                string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    Rewrite,
+                    "CampaignId = upper(CampaignId)")));
+
+        Assert.Contains(
+            "requires the Session binding write scope",
+            unauthorized.Message,
+            StringComparison.Ordinal);
+
+        // A different Campaign, a changed kind and a changed receipt are each refused, with the scope open.
+        foreach (string assignment in new[]
+        {
+            $"CampaignId = '{Canonical(Second)}'",
+            "CampaignId = upper(CampaignId), BindingKindCode = 1",
+            "CampaignId = upper(CampaignId), BoundAtUtc = '2027-01-01T00:00:00.0000000+00:00'",
+        })
+        {
+
+            SqliteException refused = await Assert.ThrowsAsync<SqliteException>(
+                () => harness.AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => harness.ExecuteAsync(
+                        string.Format(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            Rewrite,
+                            assignment))));
+
+            Assert.Contains(
+                "Only an unresolved legacy Session Campaign binding can be resolved.",
+                refused.Message,
+                StringComparison.Ordinal);
+
+        }
+
+        // And the canonicalization itself goes through, which is what lets the sweep settle the column.
+        await harness.AuthorizedAsync(
+            CovenantSqliteAuthorizationKind.SessionBindingWrite,
+            () => harness.ExecuteAsync(
+                string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    Rewrite,
+                    "CampaignId = upper(CampaignId)")));
+
+        Assert.Equal(
+            1L,
+            await harness.RowCountAsync("session_campaign_bindings", "CampaignId", Canonical(Campaign)));
+
+    }
+
+    /// <summary>
+    /// A binding that carries no Campaign cannot be given one by the spelling exemption, which is the
+    /// case three-valued logic would have let through.
+    /// </summary>
+    /// <remarks>
+    /// Both <c>IS NOT NULL</c> tests inside the exemption are load-bearing rather than defensive:
+    /// without them the exemption evaluates to NULL for a global-only or unresolved row, whose
+    /// <c>CampaignId</c> is NULL by this table's own CHECK, and <c>NOT NULL</c> is NULL rather than
+    /// true - so the abort silently does not fire and a scope-holding writer could put a Campaign
+    /// identity on a row that carries no authority at all.
+    ///
+    /// <para>Split from the case above because it is the only one whose refusal the table's own CHECK
+    /// would also produce, and a case that accepted any failure would therefore pass with the guard
+    /// removed. That is why the assertion is on the guard's own sentence rather than on any exception.
+    /// The seeded global-only row is the shape: kind 1, Campaign NULL, and no authority to lend.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_binding_with_no_campaign_cannot_be_given_one_by_the_spelling_exemption()
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync("session_campaign_bindings");
+
+        SqliteException refused = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => harness.ExecuteAsync(
+                    $"""
+                    UPDATE session_campaign_bindings
+                    SET CampaignId = '{Canonical(Campaign)}'
+                    WHERE BindingKindCode = 1;
+                    """)));
+
+        Assert.Contains(
+            "Only an unresolved legacy Session Campaign binding can be resolved.",
+            refused.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
     /// The closed inventory: every column this change governs has an insert guard in the shipped
     /// catalog, and an update guard unless its table refuses every update.
     /// </summary>
@@ -468,7 +612,8 @@ public sealed class IdentitySpellingGuardTests
         Dictionary<string, string> statements = GrimoireSchemaCatalog.TransitionStatements
             .Where(static statement =>
                 statement.TransactionTier == GrimoireSchemaTransactionTier.Core
-                && statement.ToVersion == 5)
+                && statement.ToVersion == 5
+                && statement.Name.Contains("_guard_identity_", StringComparison.Ordinal))
             .ToDictionary(
                 static statement => statement.Name,
                 static statement => statement.Sql,
@@ -493,7 +638,64 @@ public sealed class IdentitySpellingGuardTests
             GrimoireSchemaCatalog.CoreObjects.Count(static definition =>
                 definition.Name.Contains("_guard_identity_", StringComparison.Ordinal)));
 
+        // Version 5 also carries one statement that is not an identity guard, and it cannot be byte
+        // identical to its head object because it has to drop the version-4 trigger it replaces. It is
+        // covered by the case below rather than excluded silently.
+        Assert.Equal(
+            statements.Count + 1,
+            GrimoireSchemaCatalog.TransitionStatements.Count(static statement =>
+                statement.TransactionTier == GrimoireSchemaTransactionTier.Core
+                && statement.ToVersion == 5));
+
     }
+
+    /// <summary>
+    /// The one version-5 statement that is not an identity guard replaces an object version 4 already
+    /// installed, and the trigger it leaves behind is the head tree's own text.
+    /// </summary>
+    /// <remarks>
+    /// Byte identity cannot be asserted here the way it is above, because the statement has to carry a
+    /// <c>DROP TRIGGER</c> the head object does not: a trigger is a whole object, and an evolved
+    /// installation that kept the version-4 text would fail the drift gate on the very version this step
+    /// completes. So the <c>CREATE</c> half is compared instead, which is what actually lands in
+    /// <c>sqlite_master</c> and what the drift gate reads.
+    ///
+    /// <para>The membership assertion is the closed half: a second edited object added to version 5
+    /// without a case of its own would land here rather than being uncovered.</para>
+    /// </remarks>
+    [Fact]
+    public void The_one_edited_object_in_version_five_installs_the_head_tree_text_it_replaces()
+    {
+
+        GrimoireSchemaTransitionStatementResource[] edited =
+        [
+            .. GrimoireSchemaCatalog.TransitionStatements
+                .Where(static statement =>
+                    statement.TransactionTier == GrimoireSchemaTransactionTier.Core
+                    && statement.ToVersion == 5
+                    && !statement.Name.Contains("_guard_identity_", StringComparison.Ordinal)),
+        ];
+
+        GrimoireSchemaTransitionStatementResource statement = Assert.Single(edited);
+
+        Assert.Equal("session_campaign_bindings_guard_update", statement.Name);
+
+        Assert.Contains(
+            "DROP TRIGGER IF EXISTS session_campaign_bindings_guard_update;",
+            statement.Sql,
+            StringComparison.Ordinal);
+
+        GrimoireSchemaObject head = Assert.Single(
+            GrimoireSchemaCatalog.CoreObjects,
+            definition => string.Equals(definition.Name, statement.Name, StringComparison.Ordinal));
+
+        Assert.Equal(CreateHalf(head.Sql), CreateHalf(statement.Sql));
+
+    }
+
+    /// <summary>Everything from the first <c>CREATE</c> onward, which is the object itself.</summary>
+    private static string CreateHalf(string sql) =>
+        sql[sql.IndexOf("CREATE TRIGGER", StringComparison.Ordinal)..];
 
     /// <summary>The message a developer sees, which has to name the column and the form it expects.</summary>
     private static string Message(string table, string column) =>
@@ -832,6 +1034,31 @@ public sealed class IdentitySpellingGuardTests
                         ("$value", value),
                         ("$now", Timestamp))),
 
+                // Kind 2, because this table's own CHECK says a Campaign identity may only sit on a
+                // Campaign binding: a global-only or unresolved row that carried one would be authority
+                // nobody granted.
+                ("session_campaign_bindings", "CampaignId") => AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => ExecuteAsync(
+                        """
+                        INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                        VALUES ($session, 2, $value, $now);
+                        """,
+                        ("$session", Canonical(SecondSession)),
+                        ("$value", value),
+                        ("$now", Timestamp))),
+
+                // Scope kind 2, for the same reason: SagaMemoryScopeKind pairs a Campaign identity with
+                // the Campaign scope alone, and a memory recorded any other way is retrievable nowhere.
+                ("saga_memories", "CampaignId") => ExecuteAsync(
+                    """
+                    INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode, CampaignId)
+                    VALUES ($id, 'scoped', $now, 2, $value);
+                    """,
+                    ("$id", Canonical(ScopedMemory)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
                 ("artifact_sensitivity", "SessionId") => ExecuteAsync(
                     ArtifactSensitivityInsert,
                     ("$label", Canonical(Second)),
@@ -856,9 +1083,30 @@ public sealed class IdentitySpellingGuardTests
         /// the write is refused, and one refused row is enough to refuse the statement.
         /// </remarks>
         internal Task UpdateAsync(string table, string column, string value) =>
-            ExecuteAsync(
-                $"""UPDATE "{table}" SET "{column}" = $value;""",
-                ("$value", value));
+            (table, column) switch
+            {
+
+                // The one write this guard exists to judge, written as production will make it. A bare
+                // rewrite of CampaignId is refused by session_campaign_bindings_guard_update before any
+                // identity guard is reached - for a resolved row because only an unresolved one may be
+                // resolved, and for an unresolved one because the resulting kind would still be 3 - so
+                // the statement resolves the seeded unresolved binding, which is the shape the authority
+                // guard admits and the identity guard is then the only thing left to refuse.
+                ("session_campaign_bindings", "CampaignId") => AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => ExecuteAsync(
+                        """
+                        UPDATE session_campaign_bindings
+                        SET BindingKindCode = 2, CampaignId = $value
+                        WHERE BindingKindCode = 3;
+                        """,
+                        ("$value", value))),
+
+                _ => ExecuteAsync(
+                    $"""UPDATE "{table}" SET "{column}" = $value;""",
+                    ("$value", value)),
+
+            };
 
         /// <summary>
         /// Rewrites one identified row's column, so a refusal cannot come from collapsing two rows onto
@@ -949,6 +1197,17 @@ public sealed class IdentitySpellingGuardTests
                 VALUES ($id, $campaign, 'active', $now, $now);
                 """,
                 ("$id", Canonical(UnboundSession)),
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            // Gets an unresolved binding below, so the CampaignId update cases have a row the authority
+            // guard will let them resolve.
+            await ExecuteAsync(
+                """
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ($id, $campaign, 'active', $now, $now);
+                """,
+                ("$id", Canonical(ResolvableSession)),
                 ("$campaign", Canonical(Campaign)),
                 ("$now", Timestamp));
 
@@ -1081,6 +1340,16 @@ public sealed class IdentitySpellingGuardTests
                     VALUES ($value, 1, NULL, $now);
                     """,
                     ("$value", Canonical(Session)),
+                    ("$now", Timestamp)));
+
+            await AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => ExecuteAsync(
+                    """
+                    INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                    VALUES ($value, 3, NULL, $now);
+                    """,
+                    ("$value", Canonical(ResolvableSession)),
                     ("$now", Timestamp)));
 
             await ExecuteAsync(

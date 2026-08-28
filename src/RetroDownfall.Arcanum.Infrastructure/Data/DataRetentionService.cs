@@ -2237,11 +2237,16 @@ internal sealed partial class DataRetentionService(
 
         }
 
+        // The two sets bind one Campaign under two spellings, because the columns they select against do
+        // not hold one. lexicon_entries.ScopeCampaignId is written by the Lexicon service alone with a
+        // bare ToString() and read back the same way by every one of its own readers, so it is internally
+        // consistent in the minority form. saga_memories.CampaignId and
+        // session_campaign_bindings.CampaignId are settled on the canonical form and compared exactly.
         (string Name, object Value)[] campaignOnly = [("@campaignId", campaign.ToString("D"))];
 
         (string Name, object Value)[] campaignAndKind =
         [
-            ("@campaignId", campaign.ToString("D")),
+            ("@campaignId", campaign.ToString("D").ToUpperInvariant()),
             ("@campaignKind", (int)SagaMemoryScopeKind.Campaign),
         ];
 
@@ -2266,9 +2271,20 @@ internal sealed partial class DataRetentionService(
 
                 // Watermarks are per Session, so this Campaign's Sessions and no others: clearing them
                 // all would make every other Campaign re-extract its whole transcript history.
+                //
+                // The membership test is normalised on both sides, and this is the one predicate in this
+                // method where that is the right answer rather than a defect. The two columns sit on
+                // opposite sides of a governance boundary: session_campaign_bindings.SessionId is bound by
+                // a foreign key to "Sessions"."Id" and therefore holds the canonical spelling, while
+                // saga_extraction_watermarks.SessionId is written by the Saga memory store with a bare
+                // ToString() and read back the same way by its own reader. Comparing them exactly matched
+                // no row at all, for any Session, so a Campaign memory reset deleted the memories and left
+                // every watermark standing - and those Sessions then never re-extracted what was removed.
+                // The Campaign identity beside it is bound exactly, because that column is settled.
                 new(
                     "saga_extraction_watermarks",
-                    "\"SessionId\" IN (SELECT SessionId FROM session_campaign_bindings"
+                    "lower(replace(\"SessionId\", '-', '')) IN ("
+                        + "SELECT lower(replace(SessionId, '-', '')) FROM session_campaign_bindings"
                         + " WHERE CampaignId = @campaignId AND BindingKindCode = @campaignKind)",
                     campaignAndKind),
 

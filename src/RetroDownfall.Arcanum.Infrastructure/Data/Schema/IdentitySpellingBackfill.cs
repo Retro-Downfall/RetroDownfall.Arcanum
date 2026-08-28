@@ -2,6 +2,8 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using Serilog;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -83,6 +85,13 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// is canonical. A hand-edited installation could satisfy the first and fail the second, and the
     /// operator should hear about it from a number rather than from the guard refusing the next write.
     /// </para>
+    ///
+    /// <para><c>session_campaign_bindings.CampaignId</c> and <c>saga_memories.CampaignId</c> are the two
+    /// columns this step both counts and repairs without a target - see
+    /// <see cref="RepairedColumns"/>. Unlike the attachment family, whose counts are non-zero on any
+    /// installation that ever held an attachment, these two are non-zero on any installation that ever
+    /// created a Session through the turn-begin path, which is every installation that has been used.
+    /// </para>
     /// </remarks>
     internal static readonly IReadOnlyList<(string Table, string Column)> VerifiedColumns =
     [
@@ -96,6 +105,8 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         ("assistant_entry_finalizations", "SessionId"),
         ("session_sensitivity_state", "SessionId"),
         ("session_campaign_bindings", "SessionId"),
+        ("session_campaign_bindings", "CampaignId"),
+        ("saga_memories", "CampaignId"),
         ("SessionAttachments", "Id"),
         ("SessionAttachments", "SessionId"),
         ("SessionAttachments", "EntryId"),
@@ -194,6 +205,49 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         new("SessionAttachments", "EntryId", "Entries", "Id"),
     ];
 
+    /// <summary>
+    /// The two columns repaired on their own shape alone, with no identity anywhere for them to be
+    /// qualified against.
+    /// </summary>
+    /// <remarks>
+    /// <b>The absence of a canonical target here is the decision, not an omission.</b> Every other repair
+    /// in this file is qualified by an <c>EXISTS</c> against the identity the column names, because those
+    /// columns join to a stored column and uppercasing one whose target is spelled the minority way would
+    /// break a pairing that works. Neither of these two joins to a stored column at all. Every reader of
+    /// both binds a <c>Guid</c> it rendered itself, so the value they must agree with is the canonical
+    /// rendering of the identity rather than another row's spelling of it, and there is no pairing an
+    /// unqualified repair could break.
+    ///
+    /// <para>Qualifying them anyway would be actively wrong. <c>session_campaign_bindings.CampaignId</c>
+    /// carries no foreign key <i>by design</i> - it is the historical authority identity, so a Campaign
+    /// deletion clears its own row without rewriting the durable fact that this Session was bound to that
+    /// Campaign - so a repair qualified against <c>Campaigns."Id"</c> would decline exactly the rows whose
+    /// Campaign is gone, and leave the table mixed forever on the one class of row nothing else will ever
+    /// touch.</para>
+    ///
+    /// <para><c>saga_memories.CampaignId</c> is the same value copied verbatim by
+    /// <see cref="SagaMemoryScopeClassifier"/>, from the live write path and from the version-two
+    /// classification sweep alike, so it inherits whichever spelling the binding held. The two are
+    /// repaired together and in this order because mixed is the one state that must not survive: repairing
+    /// the binding alone would leave every memory already written pointing at a Campaign spelled the other
+    /// way, which is the halved recall this step exists to end.</para>
+    ///
+    /// <para>Neither column takes part in any unique constraint, so the <c>upper()</c> collision hazard
+    /// the other two lists have to reason about does not arise here: two rows whose Campaign identities
+    /// differ only in case are simply two rows.</para>
+    ///
+    /// <para><c>session_campaign_bindings</c> is the one table in this file whose own guard has an opinion
+    /// about the repair. <c>session_campaign_bindings_guard_update</c> demands the Session binding write
+    /// scope on every update and admits exactly one rewrite of this column, the spelling-only
+    /// canonicalization below; version 5 replaces that guard with the one carrying the exemption, in the
+    /// same step's DDL, before this sweep runs.</para>
+    /// </remarks>
+    internal static readonly IReadOnlyList<RepairedColumn> RepairedColumns =
+    [
+        new("session_campaign_bindings", "CampaignId", RequiresSessionBindingWriteScope: true),
+        new("saga_memories", "CampaignId", RequiresSessionBindingWriteScope: false),
+    ];
+
     /// <summary>Written once the precondition count has been taken, so a resumed pass does not retake it.</summary>
     private const string VerifiedCursor = "verified";
 
@@ -278,6 +332,31 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
             }
 
             int repaired = await RepairAsync(connection, transaction, reference, budget, cancellationToken)
+                .ConfigureAwait(false);
+
+            counted += repaired;
+
+            moved |= repaired > 0;
+
+        }
+
+        // Last, and the order between these two is load-bearing rather than tidy: the binding is the
+        // authority a memory's Campaign was copied from, so repairing the binding first and the memories
+        // that inherited from it second means a batch cut short by its budget leaves the two agreeing on
+        // fewer rows rather than disagreeing on more.
+        foreach (RepairedColumn column in RepairedColumns)
+        {
+
+            int budget = MaxRowsPerBatch - counted;
+
+            if (budget <= 0)
+            {
+
+                break;
+
+            }
+
+            int repaired = await RepairColumnAsync(connection, transaction, column, budget, cancellationToken)
                 .ConfigureAwait(false);
 
             counted += repaired;
@@ -390,14 +469,17 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
 
         }
 
-        // Named rather than merely counted, because on an installation that predates this version the
-        // only thing outside the attachment family that can produce this state is an edit made outside
-        // Arcanum, and an operator who sees a number here needs to know which half of it this step can
-        // act on.
+        // Named rather than merely counted, because an operator who sees a number here needs to know
+        // which half of it this step can act on. Two of the three repairable kinds are expected on an
+        // ordinary installation - the attachment family on any that has held an attachment, and the two
+        // Campaign columns on any that has created a Session through the turn path - so a number here is
+        // not by itself evidence of anything having gone wrong. What is left behind is: outside those,
+        // the only thing that can produce a non-canonical identity is an edit made outside Arcanum.
         Log.Warning(
             "Identity spelling: {Count} stored identities are not canonical. The attachment identity and "
-                + "every column naming it are moved together, and a reference whose canonical target still "
-                + "exists is repaired onto it; an identity a row is known by is otherwise left where it is, "
+                + "every column naming it are moved together; a reference whose canonical target still "
+                + "exists is repaired onto it; and a Campaign identity on a Session binding or a Saga "
+                + "memory is settled on its own. An identity a row is known by is left where it is, "
                 + "because the tables that depend on it refuse the write.",
             total);
 
@@ -587,6 +669,124 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     }
 
     /// <summary>
+    /// Uppercases one bounded page of a column that names no stored identity, opening the authority
+    /// scope its table's own guard demands and only when there is work for it.
+    /// </summary>
+    /// <remarks>
+    /// The count comes first and returns early on zero, so a database with nothing to repair takes no
+    /// authorization at all - the same discipline the Session binding backfill keeps, and for the same
+    /// reason: the Session binding write scope is the narrow permission that lets a writer state a
+    /// Session's Campaign authority, and nothing should be able to read a granted scope as evidence that
+    /// work happened.
+    ///
+    /// <para>It counts what it is about to repair rather than what
+    /// <see cref="CountNonCanonicalAsync"/> reports, so a hand-edited dash-free row - which
+    /// <see cref="CanonicalShapeClause"/> declines and which therefore stays outstanding forever - never
+    /// causes the scope to be opened for an update that would move nothing.</para>
+    /// </remarks>
+    private static async Task<int> RepairColumnAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        RepairedColumn column,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+
+        if (await CountRepairableAsync(connection, transaction, column, cancellationToken)
+            .ConfigureAwait(false) == 0)
+        {
+
+            return 0;
+
+        }
+
+        if (!column.RequiresSessionBindingWriteScope)
+        {
+
+            return await MoveColumnPageAsync(connection, transaction, column, limit, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+        return await MoveColumnPageAsync(connection, transaction, column, limit, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    /// <summary>How many rows of one unqualified column this sweep would move if it ran now.</summary>
+    private static async Task<long> CountRepairableAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        RepairedColumn column,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText =
+            $"""
+            SELECT COUNT(*) FROM "{column.Table}"
+            WHERE "{column.Column}" IS NOT NULL
+              AND "{column.Column}" <> upper("{column.Column}")
+              AND {CanonicalShapeClause(column.Column)};
+            """;
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>Uppercases one bounded page of an unqualified column.</summary>
+    private static async Task<int> MoveColumnPageAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        RepairedColumn column,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText =
+            $"""
+            UPDATE "{column.Table}"
+            SET "{column.Column}" = upper("{column.Column}")
+            WHERE rowid IN (
+                SELECT rowid FROM "{column.Table}"
+                WHERE "{column.Column}" IS NOT NULL
+                  AND "{column.Column}" <> upper("{column.Column}")
+                  AND {CanonicalShapeClause(column.Column)}
+                LIMIT $limit);
+            """;
+
+        _ = command.Parameters.AddWithValue("$limit", limit);
+
+        int moved = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        if (moved > 0)
+        {
+
+            Log.Information(
+                "Identity spelling: settled {Count} {Table}.{Column} Campaign identities on the canonical form.",
+                moved,
+                column.Table,
+                column.Column);
+
+        }
+
+        return moved;
+
+    }
+
+    /// <summary>
     /// The half of canonical an <c>upper()</c> cannot fix, written as the condition a row must already
     /// satisfy before a repair is allowed to move it.
     /// </summary>
@@ -640,6 +840,21 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
 
     /// <summary>One column of one table, named where the table it belongs to is already known.</summary>
     internal sealed record IdentityColumn(string Table, string Column);
+
+    /// <summary>
+    /// One column repaired on its own shape, with whether its table's guard demands the Session binding
+    /// write scope before it will accept the rewrite.
+    /// </summary>
+    /// <remarks>
+    /// The flag is declared per column rather than derived from the table name, because it is a statement
+    /// about what the schema refuses rather than about what this file happens to know. A column added here
+    /// on a table whose guard demands a scope, and flagged <see langword="false"/>, aborts its own batch
+    /// and says which guard turned it back.
+    /// </remarks>
+    internal sealed record RepairedColumn(
+        string Table,
+        string Column,
+        bool RequiresSessionBindingWriteScope);
 
     /// <summary>
     /// An identity that has to be moved in place, and every column that names it and must move with it.

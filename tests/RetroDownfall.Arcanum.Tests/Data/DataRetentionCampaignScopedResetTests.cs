@@ -1,8 +1,16 @@
+using System.Globalization;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -158,6 +166,71 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// A Campaign memory reset clears the extraction watermark of every Session bound to that Campaign,
+    /// however that Session's binding was written, and leaves every other Campaign's alone.
+    /// </summary>
+    /// <remarks>
+    /// <b>The watermark is what makes a reset stick.</b> Deleting a Campaign's memories without clearing
+    /// the watermarks leaves the extraction pass believing it has already read those transcripts, so the
+    /// removed conclusions are never derived again and the Session is left permanently thinner than it
+    /// was - a silent half-erasure nothing surfaces.
+    ///
+    /// <para>Two Sessions bound by the two production writers, because the Campaign identity the
+    /// selection binds against is exactly what they disagreed about. The third, in another Campaign, is
+    /// the negative half: a predicate wide enough to take every watermark on the installation would
+    /// satisfy the first two assertions on its own.</para>
+    ///
+    /// <para>The watermarks are written and read through <see cref="ISagaMemoryStore"/> rather than
+    /// seeded, because <c>saga_extraction_watermarks.SessionId</c> holds the minority spelling that store
+    /// renders and the selection has to reach it across that boundary. A seed choosing the spelling would
+    /// decide the outcome.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task ApplyAsync_ResetMemory_ForOneCampaign_ClearsTheWatermarkOfEverySessionBoundToIt()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCampaignRowAsync(ResetCampaignA);
+
+        await SeedCampaignRowAsync(ResetCampaignB);
+
+        Guid boundByRepository = await SessionBindingWriters.BoundByTheRepositoryAsync(
+            _db!, ResetCampaignA, CancellationToken.None);
+
+        Guid boundByInitializer = await SessionBindingWriters.BoundByTheInitializerAsync(
+            _db!, ResetCampaignA, CancellationToken.None);
+
+        Guid inAnotherCampaign = await SessionBindingWriters.BoundByTheRepositoryAsync(
+            _db!, ResetCampaignB, CancellationToken.None);
+
+        ISagaMemoryStore store = CreateSagaMemoryStore();
+
+        DateTimeOffset extractedAt = DateTimeOffset.Parse(OldTimestamp, CultureInfo.InvariantCulture);
+
+        foreach (Guid session in new[] { boundByRepository, boundByInitializer, inAnotherCampaign })
+        {
+
+            await store.SetWatermarkAsync(session, extractedAt, CancellationToken.None);
+
+            Assert.NotNull(await store.GetWatermarkAsync(session, CancellationToken.None));
+
+        }
+
+        // A reset with no memories to delete still has to clear these, so the Campaign carries one.
+        _ = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        await ApplyCampaignResetAsync(MemoryResetScope.Saga, ResetCampaignA);
+
+        Assert.Null(await store.GetWatermarkAsync(boundByRepository, CancellationToken.None));
+
+        Assert.Null(await store.GetWatermarkAsync(boundByInitializer, CancellationToken.None));
+
+        Assert.NotNull(await store.GetWatermarkAsync(inAnotherCampaign, CancellationToken.None));
+
+    }
+
     private async Task ApplyCampaignResetAsync(MemoryResetScope scope, Guid campaignId)
     {
 
@@ -177,8 +250,36 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// A memory owned by one Campaign, spelled the way <see cref="SagaMemoryScopeClassifier"/> copies it
+    /// out of that Campaign's binding.
+    /// </summary>
+    /// <remarks>
+    /// Canonical since version 5 settled the column. This seed rendered a bare <c>ToString()</c> while
+    /// the binding writers disagreed, which is the spelling that half of every installation's memories
+    /// carried - and the reason the reset predicate looked correct while selecting half of what it named.
+    /// </remarks>
     private Task<string> SeedScopedSagaMemoryAsync(Guid campaignId) =>
-        SeedSagaMemoryAsync(2, campaignId.ToString());
+        SeedSagaMemoryAsync(2, campaignId.ToString("D").ToUpperInvariant());
+
+    /// <summary>The Campaign row the binding writers need before they will bind a Session to it.</summary>
+    private Task SeedCampaignRowAsync(Guid campaignId) =>
+        ExecuteAsync(
+            """
+            INSERT OR IGNORE INTO "Campaigns"
+                ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+            VALUES (@id, @name, @name, @path, 0, '{}', @at, @at)
+            """,
+            ("@id", campaignId.ToString("D").ToUpperInvariant()),
+            ("@name", campaignId.ToString("N")),
+            ("@path", $"/campaigns/{campaignId:N}"),
+            ("@at", OldTimestamp));
+
+    private ISagaMemoryStore CreateSagaMemoryStore() =>
+        new SagaMemoryStore(
+            _db!,
+            new WeaveIndexAvailability(),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
     private Task<string> SeedGlobalSagaMemoryAsync() => SeedSagaMemoryAsync(1, null);
 

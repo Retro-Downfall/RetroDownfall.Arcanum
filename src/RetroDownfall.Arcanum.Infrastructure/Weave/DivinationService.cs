@@ -279,7 +279,12 @@ internal sealed class DivinationService(
 
             AddParameter(cmd, "@campaignScopeKind", scope.CampaignScopeKindCode);
 
-            AddParameter(cmd, "@campaignId", campaignId.ToString());
+            // saga_memories.CampaignId - the only column SagaStorageKeys.CampaignScope ever names here -
+            // holds the canonical uppercase dashed form, copied from session_campaign_bindings.CampaignId
+            // by SagaMemoryScopeClassifier. Under BINARY collation a bare ToString() matched only the half
+            // of that table whose binding came from the turn-begin repository, so Campaign-scoped recall
+            // returned about half of a Campaign's memories and reported nothing about the rest.
+            AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
 
         }
 

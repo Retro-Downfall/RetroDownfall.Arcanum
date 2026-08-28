@@ -57,13 +57,69 @@ internal static class CoreSchemaVersionFourFixture
         "lexicon_fact_attachment_provenance_AttachmentId_guard_identity_update",
         "artifact_sensitivity_SessionId_guard_identity_insert",
         "session_campaign_bindings_SessionId_guard_identity_insert",
+        "session_campaign_bindings_CampaignId_guard_identity_insert",
+        "session_campaign_bindings_CampaignId_guard_identity_update",
+        "saga_memories_CampaignId_guard_identity_insert",
+        "saga_memories_CampaignId_guard_identity_update",
     ];
 
+    /// <summary>
+    /// <c>session_campaign_bindings_guard_update</c> before version 5 gave it the CampaignId
+    /// canonicalization exemption.
+    /// </summary>
+    /// <remarks>
+    /// The one Core object version 5 <i>edits</i> rather than adds, so removal alone no longer
+    /// reconstructs version 4 and this text has to be frozen exactly as the remarks above require. The
+    /// version-4 guard aborts any update to a binding whose kind is not 3, which is every Campaign
+    /// binding there is, so the version-5 sweep could not have repaired one row of
+    /// <c>session_campaign_bindings.CampaignId</c> without this replacement.
+    /// </remarks>
+    private const string SessionCampaignBindingsGuardUpdateSql =
+        """
+        -- The binding is written once and read as authority forever after. Exactly one update exists: the
+        -- authenticated one-time resolution that turns an unresolved legacy row into a final one. Everything
+        -- else is rejected outright, because an editable binding would let a Session be moved into another
+        -- Campaign's context, or laundered into Global context, without leaving the receipt that makes such
+        -- a move reviewable.
+        CREATE TRIGGER IF NOT EXISTS session_campaign_bindings_guard_update
+        BEFORE UPDATE ON session_campaign_bindings
+        BEGIN
+            SELECT RAISE(ABORT, 'A Session Campaign binding resolution requires the Session binding write scope.')
+            WHERE arcanum_session_binding_write_authorized() = 0;
+
+            SELECT RAISE(ABORT, 'A Session Campaign binding cannot change the Session it belongs to.')
+            WHERE NEW.SessionId <> OLD.SessionId;
+
+            SELECT RAISE(ABORT, 'Only an unresolved legacy Session Campaign binding can be resolved.')
+            WHERE OLD.BindingKindCode <> 3;
+
+            SELECT RAISE(ABORT, 'A resolved Session Campaign binding must be final.')
+            WHERE NEW.BindingKindCode NOT IN (1, 2);
+        END;
+
+        """;
+
     /// <summary>Every Core object as version 4 declared it.</summary>
+    /// <remarks>
+    /// Line endings are normalized because the frozen text above is a C# literal and the catalog's text
+    /// is an embedded file. A checkout that handed one of them CRLF would move the fingerprint without
+    /// changing a single character of SQL.
+    /// </remarks>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
         .. GrimoireSchemaCatalog.CoreObjects
-            .Where(static definition => !VersionFiveObjectNames.Contains(definition.Name, StringComparer.Ordinal)),
+            .Where(static definition => !VersionFiveObjectNames.Contains(definition.Name, StringComparer.Ordinal))
+            .Select(static definition => definition.Name switch
+            {
+
+                "session_campaign_bindings_guard_update" => definition with
+                {
+                    Sql = SessionCampaignBindingsGuardUpdateSql.ReplaceLineEndings("\n"),
+                },
+
+                _ => definition,
+
+            }),
     ];
 
     /// <summary>The fingerprint the version-4 tree published, computed from the reconstruction above.</summary>

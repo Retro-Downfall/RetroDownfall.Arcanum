@@ -62,6 +62,20 @@ public sealed class IdentitySpellingEvolutionTests
     /// <summary>A second attachment, so a case can hold one family beside another.</summary>
     private static readonly Guid SecondAttachmentIdentity = new("D0000000-0000-4000-8000-00000000000B");
 
+    /// <summary>A second Session, so both binding writers' spellings can exist at once.</summary>
+    private static readonly Guid SecondSessionIdentity = new("B0000000-0000-4000-8000-00000000000F");
+
+    /// <summary>The memory the canonically bound Session's turn wrote.</summary>
+    private static readonly Guid MemoryIdentity = new("11111111-0000-4000-8000-000000000001");
+
+    /// <summary>The memory the minority-bound Session's turn wrote.</summary>
+    private static readonly Guid SecondMemoryIdentity = new("11111111-0000-4000-8000-000000000002");
+
+    /// <summary>
+    /// A Campaign identity no <c>Campaigns</c> row holds, standing for one an operator has since deleted.
+    /// </summary>
+    private static readonly Guid DeletedCampaignIdentity = new("A0000000-0000-4000-8000-00000000000D");
+
     static IdentitySpellingEvolutionTests() => SqliteNativeRuntime.Instance.Initialize();
 
     /// <summary>
@@ -448,6 +462,92 @@ public sealed class IdentitySpellingEvolutionTests
     }
 
     /// <summary>
+    /// The two spellings one Campaign was written under, and the memories that inherited each of them,
+    /// all settled onto one form by the step - so a recall that binds the canonical rendering finds every
+    /// one of them rather than half.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are seeded because half is the defect. An installation upgraded from before the
+    /// binding table existed got its rows from the core data initializer, which canonicalizes; every
+    /// Session created since got one from the turn-begin repository, which did not. The two are seeded
+    /// against the <i>same</i> Campaign, so what is asserted afterwards is that two rows that named one
+    /// Campaign and did not compare equal now do.
+    ///
+    /// <para>Counted rather than merely read back, because reading one column proves the value moved and
+    /// nothing about whether the pair agrees. The count is the sweep's own predicate, asked of both
+    /// tables.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Both_spellings_of_one_campaign_binding_and_the_memories_that_inherited_them_are_settled()
+    {
+
+        await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
+
+        await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
+
+        await harness.SeedSessionUnderExistingCampaignAsync(
+            SecondSessionIdentity, CampaignIdentity, campaignCanonical: true);
+
+        await harness.SeedBindingAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
+
+        await harness.SeedBindingAsync(SecondSessionIdentity, CampaignIdentity, campaignCanonical: false);
+
+        await harness.SeedScopedMemoryAsync(
+            MemoryIdentity, SessionIdentity, CampaignIdentity, campaignCanonical: true);
+
+        await harness.SeedScopedMemoryAsync(
+            SecondMemoryIdentity, SecondSessionIdentity, CampaignIdentity, campaignCanonical: false);
+
+        await harness.UpgradeAsync();
+
+        Assert.Equal(
+            2,
+            await harness.RowsHoldingAsync(
+                "session_campaign_bindings", "CampaignId", Canonical(CampaignIdentity)));
+
+        Assert.Equal(
+            2,
+            await harness.RowsHoldingAsync("saga_memories", "CampaignId", Canonical(CampaignIdentity)));
+
+        Assert.Equal(0L, await harness.NonCanonicalRowCountAsync());
+
+    }
+
+    /// <summary>
+    /// A binding whose Campaign no longer exists is settled all the same, because there is no target for
+    /// it to be qualified against and leaving it behind would keep the table mixed forever.
+    /// </summary>
+    /// <remarks>
+    /// This is the case a target-qualified repair would decline, and declining it would be wrong.
+    /// <c>session_campaign_bindings.CampaignId</c> carries no foreign key <i>by design</i> - it is the
+    /// historical authority identity, and a Campaign deletion must be able to clear its own row without
+    /// rewriting the durable fact that this Session was bound to that Campaign - so a repair conditioned
+    /// on <c>Campaigns."Id"</c> would leave exactly this class of row in the minority form, permanently,
+    /// on every installation.
+    /// </remarks>
+    [Fact]
+    public async Task A_binding_naming_a_campaign_that_no_longer_exists_is_settled_anyway()
+    {
+
+        await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
+
+        await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
+
+        await harness.SeedBindingAsync(SessionIdentity, DeletedCampaignIdentity, campaignCanonical: false);
+
+        Assert.Equal(
+            0,
+            await harness.RowsHoldingAsync("Campaigns", "Id", Canonical(DeletedCampaignIdentity)));
+
+        await harness.UpgradeAsync();
+
+        Assert.Equal(
+            Canonical(DeletedCampaignIdentity),
+            await harness.ScalarStringAsync("SELECT CampaignId FROM session_campaign_bindings"));
+
+    }
+
+    /// <summary>
     /// The closed statement of what the step answers for - which columns it counts and which references
     /// it may move - pinned by name and proved against the live schema.
     /// </summary>
@@ -459,6 +559,11 @@ public sealed class IdentitySpellingEvolutionTests
     /// case of its own would be covered by nothing. Running each declared name against a freshly
     /// installed schema is what turns a rename or a misspelling into a failure here rather than into a
     /// column that silently counts nothing forever.
+    ///
+    /// <para>The unqualified repairs are pinned with the authority flag each one carries, because that
+    /// flag is a statement about what the schema refuses rather than a detail: a column added on a table
+    /// whose guard demands the Session binding write scope, and declared without it, aborts its own batch
+    /// on every installation that has such a row and on none that does not.</para>
     /// </remarks>
     [Fact]
     public async Task The_verifier_answers_for_exactly_the_declared_identity_columns()
@@ -476,6 +581,8 @@ public sealed class IdentitySpellingEvolutionTests
                 ("assistant_entry_finalizations", "SessionId"),
                 ("session_sensitivity_state", "SessionId"),
                 ("session_campaign_bindings", "SessionId"),
+                ("session_campaign_bindings", "CampaignId"),
+                ("saga_memories", "CampaignId"),
                 ("SessionAttachments", "Id"),
                 ("SessionAttachments", "SessionId"),
                 ("SessionAttachments", "EntryId"),
@@ -497,6 +604,15 @@ public sealed class IdentitySpellingEvolutionTests
             IdentitySpellingBackfill.RepairedReferences.Select(
                 static reference =>
                     (reference.Table, reference.Column, reference.TargetTable, reference.TargetColumn)));
+
+        Assert.Equal(
+            [
+                ("session_campaign_bindings", "CampaignId", true),
+                ("saga_memories", "CampaignId", false),
+            ],
+            IdentitySpellingBackfill.RepairedColumns.Select(
+                static column =>
+                    (column.Table, column.Column, column.RequiresSessionBindingWriteScope)));
 
         IdentitySpellingBackfill.IdentityFamily family = Assert.Single(
             IdentitySpellingBackfill.RepairedFamilies);
@@ -817,7 +933,16 @@ public sealed class IdentitySpellingEvolutionTests
                 ("$id", Canonical(campaign)),
                 ("$now", Timestamp));
 
-            await ExecuteAsync(
+            await SeedSessionUnderExistingCampaignAsync(session, campaign, campaignCanonical);
+
+        }
+
+        /// <summary>A second Session inside a Campaign an earlier seed already created.</summary>
+        internal Task SeedSessionUnderExistingCampaignAsync(
+            Guid session,
+            Guid campaign,
+            bool campaignCanonical) =>
+            ExecuteAsync(
                 """
                 INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
                 VALUES ($id, $campaign, 'active', $now, $now);
@@ -825,8 +950,6 @@ public sealed class IdentitySpellingEvolutionTests
                 ("$id", Canonical(session)),
                 ("$campaign", campaignCanonical ? Canonical(campaign) : Legacy(campaign)),
                 ("$now", Timestamp));
-
-        }
 
         /// <summary>An Entry spelled the way every installation holds one.</summary>
         internal Task SeedEntryAsync(Guid entry, Guid session) =>
@@ -838,6 +961,53 @@ public sealed class IdentitySpellingEvolutionTests
         /// </summary>
         internal Task SeedLegacyEntryAsync(Guid entry, Guid session) =>
             InsertEntryAsync(Legacy(entry), Canonical(session));
+
+        /// <summary>
+        /// One Session's Campaign binding, spelled the way one of the two production writers spells it.
+        /// </summary>
+        /// <remarks>
+        /// The Session identity is always canonical, because a foreign key to <c>"Sessions"("Id")</c>
+        /// leaves it no choice. The Campaign identity is the half that varies, because that column
+        /// carries no foreign key by design and its two writers disagreed: the core data initializer
+        /// canonicalized what it backfilled and the turn-begin repository bound a bare
+        /// <c>ToString()</c>. The scope is the same false-by-default authority both of them borrow.
+        /// </remarks>
+        internal Task SeedBindingAsync(Guid session, Guid campaign, bool campaignCanonical)
+        {
+
+            using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
+                .Authorize(_connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+            return ExecuteAsync(
+                """
+                INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                VALUES ($session, 2, $campaign, $now);
+                """,
+                ("$session", Canonical(session)),
+                ("$campaign", campaignCanonical ? Canonical(campaign) : Legacy(campaign)),
+                ("$now", Timestamp));
+
+        }
+
+        /// <summary>
+        /// A Campaign-scoped Saga memory, holding whatever Campaign spelling the binding it was
+        /// classified from held.
+        /// </summary>
+        /// <remarks>
+        /// <c>SessionId</c> is the minority form on purpose: the Saga memory store writes it with a bare
+        /// <c>ToString()</c>, reads it back the same way, and it is deliberately outside this family.
+        /// Seeding it canonically would be testing a state no installation holds.
+        /// </remarks>
+        internal Task SeedScopedMemoryAsync(Guid memory, Guid session, Guid campaign, bool campaignCanonical) =>
+            ExecuteAsync(
+                """
+                INSERT INTO saga_memories ("Id", "Content", "CreatedAt", "SessionId", ScopeKindCode, CampaignId)
+                VALUES ($id, 'a conclusion', $now, $session, 2, $campaign);
+                """,
+                ("$id", Canonical(memory)),
+                ("$session", Legacy(session)),
+                ("$campaign", campaignCanonical ? Canonical(campaign) : Legacy(campaign)),
+                ("$now", Timestamp));
 
         internal Task SeedEmbeddingAsync(string entryId) =>
             ExecuteAsync(
@@ -1021,6 +1191,22 @@ public sealed class IdentitySpellingEvolutionTests
                 GrimoireSchemaVersionChains.CoreSchemaVersion,
                 await ScalarAsync(
                     "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE TransactionTierCode = 0;"));
+
+        }
+
+        /// <summary>How many rows of one column hold exactly this value, compared the way a reader does.</summary>
+        internal async Task<int> RowsHoldingAsync(string table, string column, string value)
+        {
+
+            await using SqliteCommand command = _connection.CreateCommand();
+
+            command.CommandText = $"""SELECT COUNT(*) FROM "{table}" WHERE "{column}" = $value;""";
+
+            _ = command.Parameters.AddWithValue("$value", value);
+
+            return Convert.ToInt32(
+                await command.ExecuteScalarAsync(CancellationToken.None),
+                CultureInfo.InvariantCulture);
 
         }
 

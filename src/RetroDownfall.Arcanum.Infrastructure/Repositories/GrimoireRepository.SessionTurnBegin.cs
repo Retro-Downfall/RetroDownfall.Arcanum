@@ -374,9 +374,16 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
         _ = command.Parameters.AddWithValue("$kindCode", (long)campaign.Binding.Kind);
 
+        // session_campaign_bindings.CampaignId carries no foreign key by design - it is the historical
+        // authority identity, so a Campaign deletion can clear its own row without rewriting the durable
+        // fact that this Session was bound to that Campaign - and nothing therefore forced this writer to
+        // agree with CoreGrimoireSchemaDataInitializer, which canonicalizes the same column. A bare
+        // ToString() here made the table hold two spellings of one Campaign, and SagaMemoryScopeClassifier
+        // copies whichever it finds straight into saga_memories.CampaignId, so Campaign-scoped recall
+        // returned only the rows whose binding came from this writer.
         _ = command.Parameters.AddWithValue(
             "$campaignId",
-            campaign.CampaignId is { } id ? id.ToString() : DBNull.Value);
+            campaign.CampaignId is { } id ? id.ToString("D").ToUpperInvariant() : DBNull.Value);
 
         _ = command.Parameters.AddWithValue(
             "$boundAtUtc",
