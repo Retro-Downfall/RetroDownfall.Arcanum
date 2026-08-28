@@ -13,27 +13,14 @@
 -- Both an insert guard and an update guard, because saga_memories refuses no update - which is the only
 -- reason this family ever omits the update half.
 --
--- The insert half judges a live write on every turn, and judged it too early once. A schema step's DDL
--- commits with its journal row and the step's sweep runs in later coordinator passes, so this trigger is
--- enforcing while session_campaign_bindings.CampaignId may still hold the minority spelling on rows the
--- sweep has not reached - and the classifier used to copy that value into this column verbatim, which
--- aborted the insert for every Session still waiting. SagaMemoryScopeClassifier now canonicalizes the
--- identity it hands on, so what reaches this column is canonical whatever the binding beside it holds
--- and whatever the sweep has drained.
---
--- What this trigger sees, and what writes the column, are two different counts, and conflating them is
--- how this paragraph has been wrong three times.
---
--- The update half judges exactly one shipped write: MoveColumnPageAsync's
--- UPDATE saga_memories SET CampaignId = upper(CampaignId). It is admitted rather than refused only
--- because the repair selects on shape as well as case, so upper() of what it moves is canonical by
--- construction.
---
--- Two shipped components write the column. The version-two classification sweep writes it on every
--- memory an upgrade classifies, and version 5's own IdentitySpellingBackfill writes it again through
--- the statement above. Only the second is a write this trigger can see: the version-two sweep runs
--- before version 5's DDL exists, and version 5's sweep runs after it, because a step's DDL commits
--- with its journal row and its backfill drains in later coordinator passes.
+-- Version 5 installs this trigger and drains its own sweep afterwards - a step's statements and the
+-- journal row naming its backfill commit together, and the backfill runs in later coordinator passes -
+-- so IdentitySpellingBackfill issues UPDATE saga_memories SET CampaignId = upper(CampaignId) against
+-- this table with this trigger already enforcing. That write is admitted rather than refused because
+-- the repair selects on shape as well as case: it never moves a row that is not already 36 characters
+-- with dashes in the four places checked below, so upper() of what it moves is canonical by
+-- construction. Relax that shape clause - IdentitySpellingBackfill.CanonicalShapeClause - and this
+-- trigger aborts the migration, and every retry of it.
 --
 -- Canonical means uppercase AND dashed AND 36 characters, and each of those is a separate way to be
 -- wrong: a dash-free rendering is already its own uppercase image, so a case-only check would pass
