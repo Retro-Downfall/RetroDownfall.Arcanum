@@ -7118,13 +7118,20 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
-    /// The tables whose rows witness that one memory reset's data mutation did not commit.
+    /// The tables whose rows witness that one untargeted memory reset's data mutation did not commit.
     /// </summary>
     /// <remarks>
     /// What a scope names here is a witness that the reset's data mutation did not commit - not an
     /// inventory of what that reset clears. The mutation is one transaction, so any table it empties
     /// answers for the whole of it, and a witness only has to be readable by a bare count carrying no
     /// predicate.
+    ///
+    /// <para>Emptying the table is what a bare count rests on, and only an untargeted reset does that. A
+    /// Campaign-targeted reset leaves every other Campaign's rows standing in the same tables, so a bare
+    /// count over them reports another Campaign's memories as this reset's unfinished work and the
+    /// operation is recovered as failed for as long as that Campaign has any. Its witness is
+    /// <see cref="BuildMemoryResetSelections"/> instead, which is what
+    /// <see cref="MemoryResetResidueSelections"/> chooses between.</para>
     ///
     /// <para>That is why the Annals tables a memory reset also clears are absent. Their rows belong to
     /// whichever store's claim wrote them, and a count with no predicate cannot tell those apart - so
@@ -7194,6 +7201,95 @@ internal sealed partial class DataRetentionService(
 
         };
 
+    /// <summary>
+    /// The rows whose survival witnesses that one memory reset's data mutation did not commit.
+    /// </summary>
+    /// <remarks>
+    /// A Campaign-targeted reset owns some of the rows in the tables it touches rather than all of them,
+    /// so its witness has to carry the same predicate the reset selected, deleted, and reconciled
+    /// through. <see cref="BuildMemoryResetSelections"/> is that list, and reading it here is what keeps
+    /// recovery from becoming a fifth idea of which rows a reset owns.
+    ///
+    /// <para>Two tables a whole-store Saga reset clears are absent from the targeted list, and their
+    /// absence is what a bare count gets wrong. <c>saga_suppression_key</c> is one row for the
+    /// installation and a targeted reset deliberately leaves it, so counting it would report every
+    /// recovered targeted reset as failed on an installation where anything had ever been retired.
+    /// <c>lexicon_fts</c> is an external-content index with no scope column, and its rows go as the
+    /// entries that own them do.</para>
+    /// </remarks>
+    private static IReadOnlyList<MemoryResetSelection> MemoryResetResidueSelections(
+        MemoryResetScope scope,
+        Guid? campaignId) =>
+        campaignId is null
+            ? [.. MemoryResetResidueTables(scope).Select(Whole)]
+            : BuildMemoryResetSelections(scope, campaignId);
+
+    /// <summary>
+    /// Reads a reset-memory journal target back into the scope and the Campaign that wrote it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PrepareMutationJournalAsync"/> writes the scope, and a Campaign-targeted reset writes
+    /// the Campaign after it behind a colon. A reader that parsed the whole string as the scope accepted
+    /// the untargeted form and rejected the targeted one, and that rejection left recovery throwing on a
+    /// target production had written correctly - which reaches the reconciler as a corrupt checkpoint,
+    /// the one disposition it re-selects forever.
+    ///
+    /// <para>The Campaign comes back as a <see cref="Guid"/> rather than as the text the journal
+    /// carried, because the selections it feeds bind their own spellings: canonical upper case for
+    /// saga_memories and session_campaign_bindings, a bare ToString() for
+    /// lexicon_entries.ScopeCampaignId. The journal's "N" form matches neither.</para>
+    ///
+    /// <para>A Campaign against a scope that records no owner is refused here rather than passed on,
+    /// because <see cref="BuildMemoryResetSelections"/> throws for it and recovery would then report a
+    /// generic failure instead of the invalid target this is.</para>
+    /// </remarks>
+    private static bool TryParseMemoryResetTarget(
+        string target,
+        out MemoryResetScope scope,
+        out Guid? campaignId)
+    {
+
+        scope = default;
+
+        campaignId = null;
+
+        int separator = target.IndexOf(':', StringComparison.Ordinal);
+
+        if (!int.TryParse(
+                separator < 0 ? target : target[..separator],
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out int scopeValue)
+            || !Enum.IsDefined((MemoryResetScope)scopeValue))
+        {
+
+            return false;
+
+        }
+
+        scope = (MemoryResetScope)scopeValue;
+
+        if (separator < 0)
+        {
+
+            return true;
+
+        }
+
+        if (!CampaignTargetedResetIsSupported(scope)
+            || !Guid.TryParseExact(target[(separator + 1)..], "N", out Guid campaign))
+        {
+
+            return false;
+
+        }
+
+        campaignId = campaign;
+
+        return true;
+
+    }
+
     private async Task<bool> MutationTargetExistsAsync(
         RetentionMutationJournal journal,
         CancellationToken cancellationToken)
@@ -7224,21 +7320,22 @@ internal sealed partial class DataRetentionService(
         }
 
         if (journal.Subtype == "reset-memory"
-            && int.TryParse(
+            && TryParseMemoryResetTarget(
                 journal.Target,
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out int scopeValue)
-            && Enum.IsDefined((MemoryResetScope)scopeValue))
+                out MemoryResetScope resetScope,
+                out Guid? resetCampaignId))
         {
 
-            foreach (string table in MemoryResetResidueTables((MemoryResetScope)scopeValue))
+            foreach (MemoryResetSelection selection in MemoryResetResidueSelections(
+                         resetScope,
+                         resetCampaignId))
             {
 
                 if (await CountTableAsync(
-                        table,
-                        null,
-                        cancellationToken).ConfigureAwait(false) > 0)
+                        selection.Table,
+                        selection.Predicate,
+                        cancellationToken,
+                        selection.Parameters).ConfigureAwait(false) > 0)
                 {
 
                     return true;
