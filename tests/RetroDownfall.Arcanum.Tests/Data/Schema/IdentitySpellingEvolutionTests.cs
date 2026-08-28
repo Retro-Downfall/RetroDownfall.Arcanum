@@ -26,14 +26,14 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// records that it found nothing. The repair arm reaches them at all because source can prove no code
 /// path wrote a bad row and cannot prove nobody edited the database by hand.
 ///
-/// <para>The <c>SessionAttachments</c> family is the one genuine data move in this work: reachable
-/// writers filled its columns with the minority spelling, so on any installation that has ever held an
+/// <para>The <c>SessionAttachments</c> family is where an identity itself moves: reachable writers
+/// filled its columns with the minority spelling, so on any installation that has ever held an
 /// attachment the sweep reports a number and rewrites rows. The hazard there is not the count but the
 /// pairing - some of those columns join to the parent with no foreign key at all, so moving the parent
 /// without them converts joins that work today into ones that silently return nothing.</para>
 ///
-/// <para>The Campaign columns are the other place a reachable writer left the minority spelling. They
-/// are repaired too, and on their own shape rather than against a target, because they name no stored
+/// <para>The Campaign columns are another place a reachable writer left the minority spelling. They are
+/// repaired too, and on their own shape rather than against a target, because they name no stored
 /// column an <c>EXISTS</c> could be qualified against.</para>
 ///
 /// <para>What the repair arm may touch is narrower than "every identity column", and the boundary is
@@ -279,9 +279,10 @@ public sealed class IdentitySpellingEvolutionTests
     }
 
     /// <summary>
-    /// The one genuine data move in this work: an attachment identity, its foreign-key children and the
-    /// provenance tables that join to it with no foreign key at all, all moved inside one transaction -
-    /// and every join that worked before the move still resolving after it.
+    /// An identity that moves rather than a reference repaired onto one: an attachment identity, its
+    /// foreign-key children and the provenance tables that join to it with no foreign key at all, all
+    /// moved inside one transaction - and every join that worked before the move still resolving after
+    /// it.
     /// </summary>
     /// <remarks>
     /// <b>Every row here is the exact shape the shipped writers rendered before this change.</b> The

@@ -21,12 +21,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// log line is the evidence the reasoning held in the field, and because source can prove no code path
 /// wrote a bad row while it cannot prove nobody edited the database by hand.
 ///
-/// <para>A reachable writer left the minority spelling in two places, and both are repairs rather than
-/// verifications. The <c>SessionAttachments</c> family is the one whose identity moves: an installation
-/// that has ever held an attachment reports a number for its columns and has rows rewritten. The
-/// Campaign columns are the other, filled by the turn path that binds a Session to a Campaign and copied
-/// onward from there, so an installation that ever bound one reports a number for them too - see
-/// <see cref="RepairedColumns"/>, which is where what they hold is kept.</para>
+/// <para>Where a reachable writer left the minority spelling instead, the step repairs rather than
+/// verifies. The <c>SessionAttachments</c> family is such a place, and there an identity moves rather
+/// than a reference: an installation that has ever held an attachment reports a number for its columns
+/// and has rows rewritten. The Campaign columns are another, filled by the turn path that binds a Session to a
+/// Campaign and copied onward from there, so an installation that ever bound one reports a number for
+/// them too - see <see cref="RepairedColumns"/>, which is where what they hold is kept.</para>
 ///
 /// <para><b>What may be repaired, and why it is narrower than "every identity column".</b> A stored
 /// identity is either an <i>identity</i> - the primary key a row is known by - or a <i>reference</i> to
