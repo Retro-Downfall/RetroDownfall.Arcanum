@@ -508,10 +508,9 @@ internal static class BackupSessionImporter
         // Normalised, for the reason the attachment read below states in full: this is the SOURCE
         // archive, and the spelling of a foreign installation's rows is not this build's to assume. An
         // exact bind of the minority rendering found no row in an archive the object-relational writer
-        // filled canonically, and the failure had no sound - the reader below simply returns before it
-        // writes anything, while the caller counts the Session it never copied. The primary-key seek
-        // this forfeits is taken once per selected Session, on a path that goes on to copy files off
-        // disk.
+        // filled canonically, and the reader below then returns before it writes anything while the
+        // caller counts the Session regardless. The primary-key seek this forfeits is taken once per
+        // selected Session, on a path that goes on to copy files off disk.
         read.CommandText = $"""
             SELECT "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt", "Summary",
                    "LastSummarizedMessageAt", "TotalTokensUsed", "TotalCostUsd",
