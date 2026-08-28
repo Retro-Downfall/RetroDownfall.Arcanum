@@ -2,10 +2,12 @@ using System.Data;
 using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -35,6 +37,17 @@ public sealed class EmbeddingsResetService(
         "workspace_file_chunks",
     ];
 
+    /// <summary>
+    /// The Saga scope's tables, and the one list in this file that names a row something else keeps a
+    /// record of.
+    /// </summary>
+    /// <remarks>
+    /// <c>saga_memories</c> is the subject an Annals claim binds to, and the Annals reach a subject only
+    /// through the row that names it - so truncating this table without taking that store's claims would
+    /// leave records describing memories that are gone, readable by no surface and clearable by no
+    /// reset. <c>ResetAsync</c> takes them in the same transaction for that reason, and a table added
+    /// here whose rows something else records has to be looked at the same way.
+    /// </remarks>
     private static readonly IReadOnlyList<string> SagaTables =
     [
         "saga_memory_embeddings",
@@ -292,7 +305,9 @@ public sealed class EmbeddingsResetService(
             targets.AddRange(WorkspaceFileTables);
         }
 
-        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga)
+        bool clearsSagaMemories = scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga;
+
+        if (clearsSagaMemories)
         {
             targets.AddRange(SagaTables);
         }
@@ -347,6 +362,27 @@ public sealed class EmbeddingsResetService(
                     int rows = await DeleteFromTableAsync(connection, transaction, table, cancellationToken).ConfigureAwait(false);
 
                     deleted[table] = rows;
+
+                }
+
+                if (clearsSagaMemories)
+                {
+
+                    // In this transaction rather than beside it, and ungated for the reason the store's
+                    // own delete gives: a claim written while the Annals was enabled has to stay
+                    // removable after it is disabled, or turning the feature off strands records no
+                    // surface can reach. The order and the predicates come from AnnalsErasurePlan, which
+                    // the store delete and the memory reset both read, so this reset cannot disagree
+                    // with them about which rows one store's erasure owns.
+                    //
+                    // The rows are not reported below. What this result counts is the tables the
+                    // requested scope names, and the Annals rows go because the memories did rather
+                    // than because the scope asked for them.
+                    await AnnalsClaimWriter.DeleteClaimsForStoreAsync(
+                        connection,
+                        transaction,
+                        AnnalSubjectStore.Saga,
+                        cancellationToken).ConfigureAwait(false);
 
                 }
 

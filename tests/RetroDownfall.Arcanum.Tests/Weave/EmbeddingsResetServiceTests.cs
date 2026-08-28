@@ -1,3 +1,7 @@
+using System.Data.Common;
+
+using Microsoft.EntityFrameworkCore;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -77,6 +81,95 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             File.Delete(_dbPath);
 
         }
+
+    }
+
+    /// <summary>
+    /// An embeddings reset that clears the Saga scope takes the claims describing the memories it
+    /// clears, in the same transaction.
+    /// </summary>
+    /// <remarks>
+    /// The Annals reach a subject only through the row that names it, so a claim left behind by a
+    /// truncation of <c>saga_memories</c> is a record no surface can read and no reset can clear. This
+    /// endpoint is an operator verb reachable with no Covenant tier, no label and no error, and it
+    /// truncates that table by a name held in a list rather than by a statement naming it - which is
+    /// why the case enters through the store that writes the claim and the service that clears the
+    /// table, and asserts on what is left rather than on either one's own report.
+    ///
+    /// <para>The second memory is what makes the orphan count mean something: it is present with its
+    /// own claim before the reset, so the count moves only on what the reset did rather than on how
+    /// many memories there were.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task ResetAsync_SagaScope_TakesTheClaimsDescribingTheMemoriesItClears()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SagaMemoryStore claiming = new(
+            _db!,
+            new WeaveIndexAvailability(),
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+                    Features = new FeatureSettings { Annals = true },
+                    Integrations = new IntegrationSettings
+                    {
+                        Embeddings = new EmbeddingIntegrationSettings
+                        {
+                            Dimensions = TestDimensions,
+                        },
+                    },
+                }));
+
+        _ = await claiming.InsertAsync(
+            "mem-claimed-1", "a", DateTimeOffset.UtcNow, Guid.NewGuid(), null, "extraction",
+            Vec(1f), CancellationToken.None);
+
+        _ = await claiming.InsertAsync(
+            "mem-claimed-2", "b", DateTimeOffset.UtcNow, Guid.NewGuid(), null, "extraction",
+            Vec(2f), CancellationToken.None);
+
+        Assert.Equal(2, await ScalarAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 1;"));
+
+        _ = await _resetService!.ResetAsync(EmbeddingsResetScope.Saga, CancellationToken.None);
+
+        Assert.Equal(0, await claiming.CountAsync(CancellationToken.None));
+
+        Assert.Equal(
+            0,
+            await ScalarAsync(
+                """
+                SELECT COUNT(*) FROM annal_claims
+                WHERE SubjectStoreCode = 1
+                  AND SubjectId NOT IN (SELECT "Id" FROM "saga_memories");
+                """));
+
+        // The claim is the identity, and the records keyed to it go with it or they outlive the only
+        // thing that could ever have explained them.
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM annal_heads WHERE SubjectStoreCode = 1;"));
+
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM annal_versions;"));
+
+    }
+
+    private async Task<int> ScalarAsync(string sql)
+    {
+
+        if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+        {
+
+            await _db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = sql;
+
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            System.Globalization.CultureInfo.InvariantCulture);
 
     }
 
