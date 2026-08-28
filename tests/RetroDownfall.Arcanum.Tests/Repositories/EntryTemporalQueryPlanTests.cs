@@ -29,14 +29,14 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 /// normalised shape shipped, and the whole suite was green over it.
 ///
 /// <para><b>The plan is pinned whole and compared whole. Nothing about it is classified, and that is
-/// the entire design.</b> Three earlier versions of this gate each judged the plan by reasoning about
-/// a name in it, and two of the three were defeated by a name that turned out to live in a different
-/// namespace than the version assumed. The first searched the plan text for the table's name and was
+/// the entire design.</b> Two earlier versions of this gate each judged the plan by reasoning about a
+/// name in it, and both were defeated by a name that turned out to live in a different namespace than
+/// the version assumed. The first searched the plan text for the table's name and was
 /// blind to the two reads that alias it. The second read a derived object's name off a
 /// <c>MATERIALIZE</c> row and exempted access rows carrying that name — but SQLite prints the CTE's
 /// name on one row and the alias in scope on the other, so renaming the boundary CTE to <c>e</c>
 /// exempted the aliased full walk of the real table, and the CTE beside it satisfied every remaining
-/// assertion. Both defeats have the same shape, and a fourth naming scheme would have a fourth blind
+/// assertion. Both defeats have the same shape, and a further naming scheme would have a further blind
 /// spot. So this version decides nothing about any row: it asserts that the plan is the pinned plan,
 /// which cannot misclassify a row because it does not classify one.</para>
 ///
@@ -143,18 +143,17 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     /// The plan each read is expected to produce, with identifiers elided.
     /// </summary>
     /// <remarks>
-    /// Seven of the nine are one row: a seek into a <c>SessionId</c>-led index, with the ordering
-    /// served by the same index where there is one. <c>SequenceOf</c> seeks the <c>"Entries"</c>
-    /// identity index instead, because it filters on <c>"Id"</c> as well and a unique seek returns at
-    /// most one row — which is the seek only an exact comparison on that column can produce.
+    /// Most are a single row: a seek into a <c>SessionId</c>-led index, with the ordering served by the
+    /// same index where there is one. <c>SequenceOf</c> seeks the <c>"Entries"</c> identity index
+    /// instead, because it filters on <c>"Id"</c> as well and a unique seek returns at most one row —
+    /// which is the seek only an exact comparison on that column can produce.
     ///
-    /// <para>The two watermark reads are the long ones, and two things in them are worth reading off
-    /// the pinned text rather than assumed. Their boundary CTE is materialised and their <c>Selected</c>
-    /// CTE is not: there is exactly one <c>MATERIALIZE</c> row in each plan. And both carry a temporary
-    /// B-tree — the boundary orders by <c>("CreatedAt", "Id")</c> where the index supplies only the
-    /// first term, and the load then orders its window by <c>"Sequence"</c> after the planner has
-    /// chosen the <c>CreatedAt</c> index to serve the range filter. Those sorts are part of what is
-    /// pinned, so they cannot grow or move unremarked either.</para>
+    /// <para>The two watermark reads are the long ones, and what they show is worth reading off the
+    /// pinned text rather than assumed. Each declares a boundary CTE, each plan materialises it, and
+    /// each carries a temporary B-tree — the boundary orders by <c>("CreatedAt", "Id")</c> where the
+    /// index supplies only the first term, and the load then orders its window by <c>"Sequence"</c>
+    /// after the planner has chosen the <c>CreatedAt</c> index to serve the range filter. Those sorts
+    /// are part of what is pinned, so they cannot grow or move unremarked either.</para>
     /// </remarks>
     private static string Pinned(string read) =>
         read switch
