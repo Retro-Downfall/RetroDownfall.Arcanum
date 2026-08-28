@@ -243,6 +243,23 @@ public sealed record DataRetentionConflict(
     string ResourceId,
     string Message);
 
+/// <summary>
+/// What operator curation of the Saga store means for one plan: how many memories are pinned, and how
+/// many of those this plan would otherwise have selected.
+/// </summary>
+/// <remarks>
+/// <see cref="PinnedRowsExemptFromPlan"/> counts the pinned rows this plan's own cutoff would otherwise
+/// have selected. Reporting it is what keeps a dry-run honest: a preview that silently omitted the
+/// exempted rows would tell an operator their retention rule reaches further than it does.
+///
+/// <para>Retention is the whole of what a pin exempts a memory from today. There is no consolidation
+/// sweep and no decay pass in the installation for it to bind, so this inventory has nothing else to
+/// report. The state is durable, and the sweeps that arrive inherit it.</para>
+/// </remarks>
+public sealed record DataRetentionSagaCurationInventory(
+    long PinnedRows,
+    long PinnedRowsExemptFromPlan);
+
 public sealed record DataRetentionPlan(
     string PlanId,
     DataRetentionRequest Request,
@@ -257,7 +274,9 @@ public sealed record DataRetentionPlan(
     string[] CandidateIds,
     bool RequiresConfirmation,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionCovenantInventory? Covenant = null);
+    DataRetentionCovenantInventory? Covenant = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionSagaCurationInventory? SagaCuration = null);
 
 /// <summary>
 /// A plan and the optional Covenant read lease that protects its response until serialization ends.
