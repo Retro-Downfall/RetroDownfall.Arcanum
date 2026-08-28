@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -520,6 +522,207 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Failed, recovered.State);
+
+    }
+
+    /// <summary>
+    /// A Campaign-targeted Saga reset that committed is recovered as committed, with another Campaign's
+    /// memories and an installation-wide retirement still standing.
+    /// </summary>
+    /// <remarks>
+    /// Two separate things have to hold for this to reach Completed, and neither did. The journal target
+    /// carries the Campaign behind the scope, so a reader that parses the whole string as the scope
+    /// rejects it and throws the invalid-target exception - which the reconciler reads as a corrupt
+    /// checkpoint, the disposition it re-selects forever.
+    ///
+    /// <para>And a targeted reset owns some of the rows in the tables it touches rather than all of
+    /// them, so the count that witnesses it has to carry the reset's own predicate. The rows seeded here
+    /// are what a count without one reads instead: another Campaign's memory and its embedding, and the
+    /// retirement evidence and key that only a whole-store reset clears. Every one of them would report
+    /// this committed reset as unfinished work, on every retry.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task MutationRecovery_ForACommittedCampaignTargetedSagaReset_IgnoresEveryOtherCampaignsRows()
+    {
+
+        RequireSqlCipher();
+
+        string ownedByA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        string ownedByB = await SeedScopedSagaMemoryAsync(ResetCampaignB);
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
+
+        await ApplyCampaignResetAsync(MemoryResetScope.Saga, ResetCampaignA);
+
+        Assert.Equal(0, await CountSagaAsync(ownedByA));
+
+        Assert.Equal(1, await CountSagaAsync(ownedByB));
+
+        Assert.Equal(1, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedMemoryResetJournalAsync(
+            operations,
+            "committed-campaign-reset-recovery-test",
+            CampaignResetTarget(MemoryResetScope.Saga, ResetCampaignA));
+
+        DataRetentionMutationRecoveryHandler handler = new(CreateService());
+
+        LongRunningOperationRecoveryResult recovered = await handler.RecoverAsync(
+            operation,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+    }
+
+    /// <summary>
+    /// A Campaign-targeted Saga reset that was interrupted is still recovered as interrupted.
+    /// </summary>
+    /// <remarks>
+    /// The mutation is one transaction, so an interruption leaves this Campaign's rows exactly where
+    /// they were. Recovery has to see them: reporting the reset complete would close the operation with
+    /// the memories the operator asked to remove still readable and no further attempt ever made. It is
+    /// the other half of the sibling above - one arm says which rows may not answer, this one says the
+    /// rows that must.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task MutationRecovery_ForAnInterruptedCampaignTargetedSagaReset_SeesThatCampaignsMemories()
+    {
+
+        RequireSqlCipher();
+
+        string ownedByA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        Assert.Equal(1, await CountSagaAsync(ownedByA));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedMemoryResetJournalAsync(
+            operations,
+            "interrupted-campaign-reset-recovery-test",
+            CampaignResetTarget(MemoryResetScope.Saga, ResetCampaignA));
+
+        DataRetentionMutationRecoveryHandler handler = new(CreateService());
+
+        LongRunningOperationRecoveryResult recovered = await handler.RecoverAsync(
+            operation,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Failed, recovered.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, recovered.ErrorCode);
+
+    }
+
+    /// <summary>
+    /// The same for the other store that records an owning Campaign, where the target and the predicate
+    /// spell that Campaign differently and one residue table cannot be scoped at all.
+    /// </summary>
+    /// <remarks>
+    /// The journal writes the Campaign in the "N" form and lexicon_entries.ScopeCampaignId holds a bare
+    /// ToString(), so the target has to be read back as an identity rather than carried through as the
+    /// text it arrived as. Text would match no row, and this reset would be recovered as committed
+    /// whether it had committed or not.
+    ///
+    /// <para>lexicon_fts is what a scoped count cannot reach. It is an external-content index with no
+    /// scope column, its rows go as the entries that own them do, and the two terms asserted here are
+    /// the surviving scopes' - so counting it is how a committed Campaign reset reads as unfinished for
+    /// as long as any other scope has an entry.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task MutationRecovery_ForACommittedCampaignTargetedLexiconReset_IgnoresEveryOtherScopesTerms()
+    {
+
+        RequireSqlCipher();
+
+        await SeedScopedLexiconEntryAsync("config", ResetCampaignA.ToString());
+
+        await SeedScopedLexiconEntryAsync("config", ResetCampaignB.ToString());
+
+        await SeedScopedLexiconEntryAsync("config", string.Empty);
+
+        await ApplyCampaignResetAsync(MemoryResetScope.Lexicon, ResetCampaignA);
+
+        Assert.Equal(0, await CountAsync("lexicon_entries", "ScopeCampaignId", ResetCampaignA.ToString()));
+
+        Assert.Equal(2, await CountLexiconFtsMatchesAsync("config"));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await SeedMemoryResetJournalAsync(
+            operations,
+            "committed-campaign-lexicon-recovery-test",
+            CampaignResetTarget(MemoryResetScope.Lexicon, ResetCampaignA));
+
+        DataRetentionMutationRecoveryHandler handler = new(CreateService());
+
+        LongRunningOperationRecoveryResult recovered = await handler.RecoverAsync(
+            operation,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+    }
+
+    /// <summary>
+    /// The target <c>PrepareMutationJournalAsync</c> composes for a Campaign-targeted memory reset.
+    /// </summary>
+    /// <remarks>
+    /// Transcribed from that writer rather than shared with it, so a test seeded here still fails if the
+    /// two ever disagree about what a checkpoint records.
+    /// </remarks>
+    private static string CampaignResetTarget(MemoryResetScope scope, Guid campaignId) =>
+        ((int)scope).ToString(CultureInfo.InvariantCulture) + ":" + campaignId.ToString("N");
+
+    /// <summary>
+    /// The row a dead process leaves behind mid-reset: the version-2 journal it wrote, under a lease it
+    /// no longer holds.
+    /// </summary>
+    private async Task<LongRunningOperation> SeedMemoryResetJournalAsync(
+        LongRunningOperationStore operations,
+        string ownerId,
+        string target)
+    {
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        const string summary = "Interrupted memory reset.";
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionMutation,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                summary,
+                now));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            ownerId,
+            now,
+            now.AddMinutes(5));
+
+        Assert.True(lease.Acquired);
+
+        Assert.True(
+            await operations.SaveCheckpointAsync(
+                operation.Id,
+                ownerId,
+                expectedCheckpointVersion: 0,
+                checkpointVersion: 2,
+                SerializeEmptyMutationCheckpoint("reset-memory", target),
+                checkpointReference: "retention-mutation:" + operation.Id.ToString("N"),
+                summary,
+                now));
+
+        return Assert.IsType<LongRunningOperation>(await operations.GetAsync(operation.Id));
 
     }
 
