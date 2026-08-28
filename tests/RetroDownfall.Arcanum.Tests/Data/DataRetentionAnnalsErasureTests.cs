@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -78,6 +80,48 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountLexiconFtsMatchesAsync("config"));
 
         Assert.Equal(0, await CountLexiconFtsMatchesAsync("other"));
+
+    }
+
+    /// <summary>
+    /// A factory reset clears a claim that carries more than one revision.
+    /// </summary>
+    /// <remarks>
+    /// <c>annal_versions.PredecessorVersionId</c> references its own table <c>ON DELETE CASCADE</c>, and
+    /// SQLite reports only the rows a statement deletes directly. A whole-table delete therefore emptied
+    /// the table while reporting one row too few for every superseded version — and the reset compared
+    /// that report against its own preview, read the shortfall as the data having changed underneath it,
+    /// and aborted as a conflict. On every retry, for as long as one corrected or retired memory existed.
+    ///
+    /// <para>Two revisions is the smallest chain that shows it, and one retirement writes exactly two:
+    /// the assertion it reconstructs at the memory's own timestamp, and the tombstone that ends it. The
+    /// count before the reset is asserted so that a retirement which stopped writing the pair would fail
+    /// here rather than leave this case passing against a chain of one.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task ApplyAsync_FactoryReset_ClearsAClaimThatCarriesMoreThanOneRevision()
+    {
+
+        RequireSqlCipher();
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
+
+        Assert.Equal(2, await CountTableRowsAsync("annal_versions"));
+
+        (LongRunningOperationReconciliationSummary recovery, _) =
+            await ReconcileFactoryResetV0Async(
+                CreateService(),
+                "annals-revision-factory-recovery-test");
+
+        Assert.Equal(1, recovery.Completed);
+
+        Assert.Equal(0, recovery.RequiresAttention);
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_versions"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_heads"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_claims"));
 
     }
 

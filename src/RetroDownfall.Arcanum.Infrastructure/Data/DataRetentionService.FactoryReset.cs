@@ -987,6 +987,16 @@ internal sealed partial class DataRetentionService
         CancellationToken cancellationToken)
     {
 
+        if (string.Equals(table.Table, "annal_versions", StringComparison.Ordinal))
+        {
+
+            return await ClearAnnalVersionsAsync(
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
         using CovenantSqliteAuthorizationScope? retention =
             string.Equals(table.Table, "Sessions", StringComparison.Ordinal)
                 ? CovenantSqliteConnectionInitializer.Instance.Authorize(
@@ -999,6 +1009,64 @@ internal sealed partial class DataRetentionService
             transaction,
             $"DELETE FROM \"{table.Table}\"",
             cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Empties <c>annal_versions</c> a revision chain at a time, from its leaves inward, and returns
+    /// how many rows went.
+    /// </summary>
+    /// <remarks>
+    /// <c>PredecessorVersionId</c> references this same table <c>ON DELETE CASCADE</c>, and SQLite
+    /// counts only the rows a statement deletes directly — never the ones a foreign-key action takes
+    /// with them. One bare <c>DELETE FROM annal_versions</c> therefore empties the table while reporting
+    /// fewer rows than it removed, and the caller compares that report against its own preview and reads
+    /// the shortfall as the data having changed underneath it: the whole factory reset aborts as a
+    /// conflict, on every retry, with nothing anywhere naming the cascade. One claim carrying more than
+    /// one revision is enough, and a retirement or a correction writes exactly that.
+    ///
+    /// <para>Deleting the leaves first — the versions no other version names as its predecessor — means
+    /// the cascade never has anything to take, so each pass's count is the whole truth about that pass.
+    /// The loop is the shape the <c>LongRunningOperations</c> parent-and-child delete above already uses
+    /// against the same hazard. A chain that could not be reduced leaves rows standing rather than
+    /// looping: the caller's post-delete reconciliation is what refuses that, and it refuses it
+    /// safely.</para>
+    ///
+    /// <para><c>PredecessorVersionId IS NOT NULL</c> inside the subquery is load-bearing. <c>NOT IN</c>
+    /// over a set containing a single NULL is never true for any row, so without it the first pass
+    /// deletes nothing and the table survives the reset intact.</para>
+    /// </remarks>
+    private static async Task<int> ClearAnnalVersionsAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+
+        int total = 0;
+
+        int removed;
+
+        do
+        {
+
+            removed = await ExecuteAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM annal_versions
+                WHERE VersionId NOT IN (
+                    SELECT PredecessorVersionId
+                    FROM annal_versions
+                    WHERE PredecessorVersionId IS NOT NULL)
+                """,
+                cancellationToken).ConfigureAwait(false);
+
+            total += removed;
+
+        }
+        while (removed > 0);
+
+        return total;
 
     }
 

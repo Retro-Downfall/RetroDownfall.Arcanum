@@ -3,6 +3,7 @@ using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -289,11 +290,90 @@ public sealed partial class DataRetentionServiceTests
             ("@path", $"/campaigns/{campaignId:N}"),
             ("@at", OldTimestamp));
 
+    /// <summary>
+    /// Matches <see cref="ArcanumSettingClamps.EmbeddingsDimensions"/>'s floor: the smallest configured
+    /// value that is not itself clamped up, so the store's own dimension guard sees exactly this length.
+    /// </summary>
+    private const int SagaEmbeddingDimensions = 64;
+
     private ISagaMemoryStore CreateSagaMemoryStore() =>
         new SagaMemoryStore(
             _db!,
             new WeaveIndexAvailability(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+
+                    Integrations = new IntegrationSettings
+                    {
+
+                        Embeddings = new EmbeddingIntegrationSettings
+                        {
+
+                            Dimensions = SagaEmbeddingDimensions,
+
+                        },
+
+                    },
+
+                }));
+
+    /// <summary>A deterministic vector of the length the store is configured to accept.</summary>
+    private static float[] SagaEmbedding()
+    {
+
+        float[] vector = new float[SagaEmbeddingDimensions];
+
+        for (int i = 0; i < vector.Length; i++)
+        {
+
+            vector[i] = i / (float)SagaEmbeddingDimensions;
+
+        }
+
+        return vector;
+
+    }
+
+    /// <summary>
+    /// One retirement, driven end to end through the store's own writers.
+    /// </summary>
+    /// <remarks>
+    /// The memory is written by <c>InsertAsync</c> and the suppression by <c>RetireAsync</c>, so the
+    /// scope the digest is computed over and the Campaign spelling the row carries are whatever
+    /// production renders rather than whatever this test would have chosen. A seeded suppression row
+    /// would decide the outcome of every predicate asserted against it.
+    /// </remarks>
+    private async Task<string> WriteAndRetireSagaMemoryAsync(Guid? sessionId, string content)
+    {
+
+        ISagaMemoryStore store = CreateSagaMemoryStore();
+
+        string id = Guid.NewGuid().ToString();
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Written,
+            await store.InsertAsync(
+                id,
+                content,
+                DateTimeOffset.UtcNow,
+                sessionId,
+                tags: null,
+                source: "test",
+                SagaEmbedding(),
+                CancellationToken.None));
+
+        SagaCurationOutcome retired = await store.RetireAsync(
+            id,
+            AnnalContentDigest.ForSagaMemory(content),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, retired.Kind);
+
+        return id;
+
+    }
 
     private Task<string> SeedGlobalSagaMemoryAsync() => SeedSagaMemoryAsync(1, null);
 
