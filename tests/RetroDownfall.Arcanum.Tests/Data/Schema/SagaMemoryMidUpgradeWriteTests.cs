@@ -30,11 +30,12 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// <c>session_campaign_bindings.CampaignId</c> still holds whatever an upgrading installation wrote
 /// before it, and the drain can take many batches on a store with attachments in it.
 ///
-/// <para>Every other column version 5 guards has writers that <i>render</i> their value, and those were
-/// converted. <c>saga_memories.CampaignId</c> is the exception: its writer <i>copies</i> a value out of
-/// a column the same step has not repaired yet. Handed on verbatim, that copy aborted the insert on
-/// version 5's own guard - so on an upgrading installation no Saga memory could be written for any
-/// Session the sweep had not reached, on any turn, until the drain finished.
+/// <para>Every other column version 5 guards has writers that <i>render</i> their value from a
+/// <c>Guid</c>, and those were converted. <c>saga_memories.CampaignId</c> is the exception: its writer
+/// <i>reads</i> its value out of a column the same step has not repaired yet. Passing that value on
+/// unchanged aborted the insert on version 5's own guard - so on an upgrading installation no Saga
+/// memory could be written for any Session the sweep had not reached, on any turn, until the drain
+/// finished.
 /// <see cref="SagaMemoryScopeClassifier"/> now canonicalizes the identity it hands on, which makes the
 /// write independent of how far the sweep has got rather than merely shortening the window.</para>
 ///

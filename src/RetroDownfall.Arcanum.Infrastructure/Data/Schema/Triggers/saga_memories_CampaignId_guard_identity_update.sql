@@ -21,13 +21,19 @@
 -- identity it hands on, so what reaches this column is canonical whatever the binding beside it holds
 -- and whatever the sweep has drained.
 --
--- The update half judges two shipped writes, not none. The version-two classification sweep writes this
--- column on every memory an upgrade classifies, and it runs before version 5's DDL exists, so this
--- trigger never sees it. Version 5's own sweep is the other: IdentitySpellingBackfill declares this
--- column in RepairedColumns and MoveColumnPageAsync issues UPDATE saga_memories SET CampaignId =
--- upper(CampaignId) against it - which runs precisely when this trigger exists, because the step's DDL
--- commits before its backfill drains. That write is admitted rather than refused only because the
--- repair selects on shape as well as case, so upper() of what it moves is canonical by construction.
+-- What this trigger sees, and what writes the column, are two different counts, and conflating them is
+-- how this paragraph has been wrong three times.
+--
+-- The update half judges exactly one shipped write: MoveColumnPageAsync's
+-- UPDATE saga_memories SET CampaignId = upper(CampaignId). It is admitted rather than refused only
+-- because the repair selects on shape as well as case, so upper() of what it moves is canonical by
+-- construction.
+--
+-- Two shipped components write the column. The version-two classification sweep writes it on every
+-- memory an upgrade classifies, and version 5's own IdentitySpellingBackfill writes it again through
+-- the statement above. Only the second is a write this trigger can see: the version-two sweep runs
+-- before version 5's DDL exists, and version 5's sweep runs after it, because a step's DDL commits
+-- with its journal row and its backfill drains in later coordinator passes.
 --
 -- Canonical means uppercase AND dashed AND 36 characters, and each of those is a separate way to be
 -- wrong: a dash-free rendering is already its own uppercase image, so a case-only check would pass

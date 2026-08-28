@@ -261,13 +261,17 @@ public sealed partial class DataRetentionServiceTests
     }
 
     /// <summary>
-    /// A memory owned by one Campaign, spelled the way <see cref="SagaMemoryScopeClassifier"/> copies it
-    /// out of that Campaign's binding.
+    /// A memory owned by one Campaign, spelled the way <see cref="SagaMemoryScopeClassifier"/> renders
+    /// the Campaign it reads out of that Session's binding.
     /// </summary>
     /// <remarks>
-    /// Canonical since version 5 settled the column. This seed rendered a bare <c>ToString()</c> while
-    /// the binding writers disagreed, which is the spelling that half of every installation's memories
-    /// carried - and the reason the reset predicate looked correct while selecting half of what it named.
+    /// Canonical because the classifier canonicalizes the identity it hands on, which is true of a
+    /// memory written at any point in an upgrade - not because the version-5 sweep has settled the
+    /// column. The sweep settles the rows written before it; this seed stands for one written after.
+    ///
+    /// <para>It rendered a bare <c>ToString()</c> while the binding writers disagreed and the classifier
+    /// still passed their spelling through, which is what half of every installation's memories carried
+    /// - and the reason the reset predicate looked correct while selecting half of what it named.</para>
     /// </remarks>
     private Task<string> SeedScopedSagaMemoryAsync(Guid campaignId) =>
         SeedSagaMemoryAsync(2, campaignId.ToString("D").ToUpperInvariant());

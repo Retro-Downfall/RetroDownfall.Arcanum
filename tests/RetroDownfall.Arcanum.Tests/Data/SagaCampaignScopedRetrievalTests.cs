@@ -272,7 +272,7 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     /// alone reds this case <i>at the seed</i>, with
     /// <c>session_campaign_bindings.CampaignId must be stored as an uppercase dashed 36-character
     /// identity</c> surfacing as "The session could not be created." - the guard refuses the binding
-    /// before any memory is written, so what comes back is an abort and not a halved count. Measured.
+    /// before any memory is written, so what comes back is an abort and not a halved count. Measured.</para>
     ///
     /// <para>To see the halving itself the guards have to come out too, and then the classifier decides
     /// it: with all four Campaign identity guards removed, reverting that writer alone leaves this case
