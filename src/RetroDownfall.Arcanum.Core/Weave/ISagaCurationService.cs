@@ -13,11 +13,12 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// <see cref="SagaCurationOutcomeKind"/> to typed <see cref="ErrorCodes.Saga"/> codes a caller can act
 /// on where the outcome really is an error, and composing the <see cref="SagaMemoryDetail"/> projection every call reads back.
 ///
-/// <para>Only two of the store's outcome kinds are errors here: no such memory, and content the caller
-/// did not read. The rest are reported through <see cref="SagaCurationResult.Outcome"/> as the
-/// successes they are — an operator who asks for a state a memory is already in has been given what
-/// they asked for, and a tool that answered "no" there would be arguing with them rather than serving
-/// them.</para>
+/// <para>Which outcomes are errors depends on the verb, because what the operator asked for does. An
+/// operator who asks for a state a memory is already in has been given what they asked for, and a tool
+/// that answered "no" there would be arguing with them rather than serving them — so retiring what is
+/// already retired, reinstating what is not retired, and correcting to the stored text are reported
+/// through <see cref="SagaCurationResult.Outcome"/>. Correcting a <i>retired</i> memory is refused: the
+/// operator asked for new text and the retirement is why they did not get it.</para>
 /// </remarks>
 public interface ISagaCurationService
 {

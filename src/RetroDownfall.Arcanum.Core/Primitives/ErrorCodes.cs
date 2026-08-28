@@ -690,6 +690,16 @@ public static class ErrorCodes
         public const string StaleContent = "Saga.StaleContent";
 
         /// <summary>
+        /// A correction was asked for against a retired memory. Reinstate it first.
+        /// </summary>
+        /// <remarks>
+        /// Emitted by correction alone. Retiring a memory that is already retired is not an error — the
+        /// operator asked for a state and has it — but correcting one is: they asked for new text and
+        /// the retirement is why they did not get it.
+        /// </remarks>
+        public const string AlreadyRetired = "Saga.AlreadyRetired";
+
+        /// <summary>
         /// The embedding substrate cannot produce a vector right now, so the write was refused rather
         /// than leaving this memory's text and its vector disagreeing about what it says.
         /// </summary>

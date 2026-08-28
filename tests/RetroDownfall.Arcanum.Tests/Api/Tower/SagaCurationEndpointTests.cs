@@ -136,15 +136,13 @@ public sealed class SagaCurationEndpointTests
     }
 
     /// <summary>
-    /// A retired memory is reinstated before it is corrected, and the route says which of the two
-    /// happened rather than refusing.
+    /// A retired memory is reinstated before it is corrected. This one stays a refusal where retire's
+    /// own already-retired outcome does not, and the difference is what the operator asked for: here
+    /// they asked for new text and the retirement is why they did not get it, so answering 200 would
+    /// tell them a correction landed that did not.
     /// </summary>
-    /// <remarks>
-    /// Nothing is written, so the stored text is asserted unchanged as well as the outcome: the kind
-    /// alone would be satisfied by a route that reported it and corrected the memory anyway.
-    /// </remarks>
     [SkippableFact]
-    public async Task Correcting_a_retired_memory_reports_that_it_is_retired_rather_than_refusing()
+    public async Task Correcting_a_retired_memory_is_refused_because_the_text_does_not_change()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -167,11 +165,14 @@ public sealed class SagaCurationEndpointTests
             "mem-gone",
             new SagaCorrectRequest(Hash(OriginalContent), CorrectedContent));
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
 
-        SagaMemoryDetail detail = await ReadWriteResultAsync(response, SagaCurationOutcomeKind.AlreadyRetired);
+        await AssertRefusalAsync(response, ErrorCodes.Saga.AlreadyRetired);
 
-        Assert.Equal(OriginalContent, detail.Memory.Content);
+        // And the refusal is honest about the store: the text really did not change.
+        using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-gone");
+
+        Assert.Equal(OriginalContent, (await ReadDetailAsync(shown)).Memory.Content);
 
     }
 
@@ -587,11 +588,17 @@ public sealed class SagaCurationEndpointTests
     }
 
     /// <summary>
-    /// A body none of the three body-taking routes could read is refused before the curation service is
-    /// reached, as the request-shape problem it is.
+    /// A body the route can read but cannot use is refused before the curation service is reached, as
+    /// the request-shape problem it is.
     /// </summary>
+    /// <remarks>
+    /// Both shapes are well-formed JSON of the right media type, so they pass the parse and the
+    /// media-type gates and reach the handler's own required-field check. A request carrying no body at
+    /// all carries no <c>Content-Type</c> either and is answered by the media-type gate instead, which
+    /// is asserted alongside the other unreadable bodies.
+    /// </remarks>
     [SkippableFact]
-    public async Task A_write_route_called_with_no_body_is_refused_as_an_invalid_request()
+    public async Task A_write_route_called_with_a_body_it_cannot_use_is_refused_as_an_invalid_request()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -603,13 +610,64 @@ public sealed class SagaCurationEndpointTests
         foreach (string route in new[] { "correct", "retire", "reinstate" })
         {
 
-            using HttpResponseMessage response = await client.PostAsync(
+            foreach (string payload in new[] { "{}", "null" })
+            {
+
+                using HttpResponseMessage response = await client.PostAsync(
+                    $"/api/memory/saga/mem-absent/{route}",
+                    new StringContent(payload, Encoding.UTF8, "application/json"));
+
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+                await AssertRefusalAsync(response, ErrorCodes.Validation.InvalidBody);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Malformed JSON and a wrong media type answer with the envelope, not an empty body.
+    /// </summary>
+    /// <remarks>
+    /// Minimal-API parameter binding answers both with a zero-length response — no code, no traceId —
+    /// so these routes read their bodies through <c>ApiRequestJson</c> instead. An operator who sent
+    /// bad JSON to a curation verb has to be told which thing was wrong.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_write_route_names_what_was_wrong_with_a_body_it_could_not_read()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        foreach (string route in new[] { "correct", "retire", "reinstate" })
+        {
+
+            using HttpResponseMessage malformed = await client.PostAsync(
+                $"/api/memory/saga/mem-absent/{route}",
+                new StringContent("{ not json", Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+
+            await AssertRefusalAsync(malformed, ErrorCodes.Validation.InvalidBody);
+
+            using HttpResponseMessage wrongMedia = await client.PostAsync(
+                $"/api/memory/saga/mem-absent/{route}",
+                new StringContent("{}", Encoding.UTF8, "text/plain"));
+
+            await AssertUnsupportedMediaTypeAsync(wrongMedia);
+
+            // A request with no body at all carries no Content-Type, so the same gate answers it.
+            using HttpResponseMessage bodyless = await client.PostAsync(
                 $"/api/memory/saga/mem-absent/{route}",
                 content: null);
 
-            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
-            await AssertRefusalAsync(response, ErrorCodes.Validation.InvalidBody);
+            await AssertUnsupportedMediaTypeAsync(bodyless);
 
         }
 
@@ -706,6 +764,24 @@ public sealed class SagaCurationEndpointTests
         Assert.Equal(expectedOutcome, body.Data!.Outcome);
 
         return body.Data.Detail;
+
+    }
+
+    /// <summary>The media-type gate's refusal, which the house helper renders in its own envelope.</summary>
+    private static async Task AssertUnsupportedMediaTypeAsync(HttpResponseMessage response)
+    {
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body!.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Validation.UnsupportedMediaType, body.Error?.Code);
 
     }
 

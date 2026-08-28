@@ -96,10 +96,14 @@ public sealed record SagaCurationOutcome(SagaCurationOutcomeKind Kind, SagaMemor
 /// <summary>What one curation verb did, and the memory it left behind.</summary>
 /// <remarks>
 /// The four write verbs report an outcome beside the projection rather than returning the projection
-/// alone, because three of their outcomes write nothing and none of them is an error: asking to retire
-/// a memory that is already retired, to reinstate one that is not retired, or to correct one to the
-/// text it already holds all leave the operator with the state they asked for. Reporting only the
-/// projection would make those indistinguishable from the call that did the work.
+/// alone, because some of their outcomes write nothing and are still not errors: asking to retire a
+/// memory that is already retired, to reinstate one that is not retired, or to correct one to the text
+/// it already holds all leave the operator with the state they asked for. Reporting only the projection
+/// would make those indistinguishable from the call that did the work.
+///
+/// <para>Writing nothing is not by itself what makes an outcome a success — correcting a retired memory
+/// also writes nothing, and is refused, because the operator asked for new text and did not get it.
+/// <c>SagaCurationService.MapOutcome</c> is where that is decided, per verb.</para>
 ///
 /// <para>The distinction is load-bearing in two directions. A caller retrying after a dropped
 /// connection must not be told its first attempt's success was a failure, and a caller that later

@@ -83,7 +83,7 @@ internal sealed class SagaCurationService(
             id, parsedHash.Value, content, embedding.Value, DateTimeOffset.UtcNow, cancellationToken)
             .ConfigureAwait(false);
 
-        return await FinishAsync(id, outcome, cancellationToken).ConfigureAwait(false);
+        return await FinishAsync(id, CurationVerb.Correct, outcome, cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -108,7 +108,7 @@ internal sealed class SagaCurationService(
         SagaCurationOutcome outcome = await store
             .RetireAsync(id, parsedHash.Value, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
 
-        return await FinishAsync(id, outcome, cancellationToken).ConfigureAwait(false);
+        return await FinishAsync(id, CurationVerb.Retire, outcome, cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -151,7 +151,7 @@ internal sealed class SagaCurationService(
             id, parsedHash.Value, embedding.Value, DateTimeOffset.UtcNow, cancellationToken)
             .ConfigureAwait(false);
 
-        return await FinishAsync(id, outcome, cancellationToken).ConfigureAwait(false);
+        return await FinishAsync(id, CurationVerb.Reinstate, outcome, cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -166,7 +166,7 @@ internal sealed class SagaCurationService(
         SagaCurationOutcome outcome = await store
             .SetPinAsync(id, pinned, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
 
-        return await FinishAsync(id, outcome, cancellationToken).ConfigureAwait(false);
+        return await FinishAsync(id, CurationVerb.Pin, outcome, cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -175,19 +175,14 @@ internal sealed class SagaCurationService(
     /// it, so a caller sees both what its call did and the state that call produced.
     /// </summary>
     /// <remarks>
-    /// Two of the store's kinds reach the caller as errors, and the line between them and the rest is
-    /// whether the caller could have known. <see cref="SagaCurationOutcomeKind.NotFound"/> and
-    /// <see cref="SagaCurationOutcomeKind.StaleContent"/> each report something the operator could not
-    /// have seen in the state they were shown — the memory is gone, or its content moved since they read
-    /// it — and acting on either without being told would lose work. Every other kind describes a memory
-    /// that is now in the state the operator asked for, which is what they wanted, so it is reported
-    /// through <see cref="SagaCurationResult.Outcome"/> instead of refused.
+    /// Which outcomes are errors is <see cref="MapOutcome"/>'s decision and depends on the verb; this
+    /// method only carries <paramref name="verb"/> to it and pairs whatever survives with the projection.
     /// </remarks>
     private async Task<Result<SagaCurationResult>> FinishAsync(
-        string id, SagaCurationOutcome outcome, CancellationToken cancellationToken)
+        string id, CurationVerb verb, SagaCurationOutcome outcome, CancellationToken cancellationToken)
     {
 
-        Error? failure = MapOutcome(outcome.Kind);
+        Error? failure = MapOutcome(verb, outcome.Kind);
 
         if (failure is { } error)
         {
@@ -264,27 +259,67 @@ internal sealed class SagaCurationService(
 
     }
 
-    private static Error? MapOutcome(SagaCurationOutcomeKind kind) =>
-        kind switch
+    /// <summary>Which verb a store outcome came back from.</summary>
+    /// <remarks>
+    /// <see cref="MapOutcome"/> needs it because one store kind means different things to different
+    /// verbs, and a verb-blind mapping got that wrong in exactly one place: it reported a correction of
+    /// a retired memory as a success whose content had not changed.
+    /// </remarks>
+    private enum CurationVerb
+    {
+
+        Correct,
+
+        Retire,
+
+        Reinstate,
+
+        Pin,
+
+    }
+
+    /// <summary>
+    /// Decides which store outcomes are errors, per verb.
+    /// </summary>
+    /// <remarks>
+    /// The question each arm answers is whether the operator got what they asked for. Asking to retire
+    /// a memory that is already retired, to reinstate one that is not retired, or to correct one to the
+    /// text it already holds all leave the operator holding exactly the state they named, so they are
+    /// reported through <see cref="SagaCurationResult.Outcome"/> rather than refused.
+    ///
+    /// <para>A correction of a retired memory is the one that does not fit that shape, and it is why
+    /// this mapping takes a verb at all. The operator asked for new text; the text did not change; the
+    /// retirement is the reason. Reporting it as a success would tell them their correction landed when
+    /// it did not — so it keeps <see cref="ErrorCodes.Saga.AlreadyRetired"/>, which is the refusal the
+    /// design's correction table names.</para>
+    ///
+    /// <para>The pairs below are the ones <c>SagaMemoryStore.Curation.cs</c> can actually produce, read
+    /// off its four verbs; an unlisted pair throws rather than being silently mapped to something.</para>
+    /// </remarks>
+    private static Error? MapOutcome(CurationVerb verb, SagaCurationOutcomeKind kind) =>
+        (verb, kind) switch
         {
 
-            // The three kinds that write nothing because the memory is already in the state the caller
-            // asked for. None of them misread anything: the operator asked for a state and has it. The
-            // store rolls each of these back before any write (see SagaMemoryStore.Curation.cs), so the
-            // caller is told which of the two things happened through SagaCurationResult.Outcome rather
-            // than being refused something it already has.
-            SagaCurationOutcomeKind.Applied
-                or SagaCurationOutcomeKind.Unchanged
-                or SagaCurationOutcomeKind.AlreadyRetired
-                or SagaCurationOutcomeKind.NotRetired => null,
+            (_, SagaCurationOutcomeKind.Applied) => null,
 
-            SagaCurationOutcomeKind.NotFound => NotFoundError(),
+            (CurationVerb.Correct, SagaCurationOutcomeKind.Unchanged) => null,
 
-            SagaCurationOutcomeKind.StaleContent => new Error(
+            (CurationVerb.Retire, SagaCurationOutcomeKind.AlreadyRetired) => null,
+
+            (CurationVerb.Reinstate, SagaCurationOutcomeKind.NotRetired) => null,
+
+            (CurationVerb.Correct, SagaCurationOutcomeKind.AlreadyRetired) => new Error(
+                ErrorCodes.Saga.AlreadyRetired,
+                "This memory is retired. Reinstate it before correcting it."),
+
+            (_, SagaCurationOutcomeKind.NotFound) => NotFoundError(),
+
+            (_, SagaCurationOutcomeKind.StaleContent) => new Error(
                 ErrorCodes.Saga.StaleContent,
                 "The content read before this call no longer matches what is stored now."),
 
-            _ => throw new InvalidOperationException($"Unhandled {nameof(SagaCurationOutcomeKind)}: {kind}."),
+            _ => throw new InvalidOperationException(
+                $"Unhandled {nameof(SagaCurationOutcomeKind)} for {verb}: {kind}."),
 
         };
 

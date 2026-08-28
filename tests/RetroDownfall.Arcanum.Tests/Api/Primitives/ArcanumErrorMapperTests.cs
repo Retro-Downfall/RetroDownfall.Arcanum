@@ -91,10 +91,12 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Saga.NotEmpty, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Saga.SearchFailed, StatusCodes.Status500InternalServerError)]
     // The Saga curation refusals. StaleContent is 409 because the caller's view of the store moved, not
-    // because its request was malformed; the embedding one joins the provider-unavailable 503 because
-    // the substrate is what has to be fixed before the write can be asked for again. Already-retired and
-    // not-retired are absent because they are no longer refusals and no longer have codes.
+    // because its request was malformed; AlreadyRetired is 409 for the same reason, and reaches the wire
+    // only from a correction. The embedding one joins the provider-unavailable 503 because the substrate
+    // is what has to be fixed before the write can be asked for again. Not-retired has no row because it
+    // has no code: reinstating a memory that is not retired is a reported success, not a refusal.
     [InlineData(ErrorCodes.Saga.StaleContent, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Saga.AlreadyRetired, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Saga.EmbeddingUnavailable, StatusCodes.Status503ServiceUnavailable)]
     // A malformed expected-content hash is a request-shape problem, and the curation service is the
     // caller that raises it. Unmapped, it reached the operator as a 500 saying Arcanum broke.

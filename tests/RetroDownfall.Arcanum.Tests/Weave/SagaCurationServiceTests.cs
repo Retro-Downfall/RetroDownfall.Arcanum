@@ -183,7 +183,7 @@ public sealed class SagaCurationServiceTests
     }
 
     [SkippableFact]
-    public async Task Correcting_a_retired_memory_reports_that_it_is_retired_rather_than_refusing()
+    public async Task Correcting_a_retired_memory_is_refused_because_the_text_does_not_change()
     {
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -204,13 +204,16 @@ public sealed class SagaCurationServiceTests
             "the operator prefers spaces",
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsFailure);
 
-        Assert.Equal(SagaCurationOutcomeKind.AlreadyRetired, result.Value.Outcome);
+        Assert.Equal(ErrorCodes.Saga.AlreadyRetired, result.Error.Code);
 
-        // Nothing was written: the stored text is still what it was, which is the half of this the
-        // outcome kind alone would not prove.
-        Assert.Equal("the operator prefers tabs", result.Value.Detail.Memory.Content);
+        // The refusal is the honest answer precisely because the text did not change: retiring an
+        // already-retired memory hands the operator what they asked for, correcting one does not.
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
 
     }
 
@@ -516,6 +519,47 @@ public sealed class SagaCurationServiceTests
         Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
 
         Assert.Equal(SagaRetrievalEligibility.Retired, result.Value.Detail.Eligibility);
+
+    }
+
+    /// <summary>
+    /// The verb, not the kind, decides whether an already-retired memory is a refusal.
+    /// </summary>
+    /// <remarks>
+    /// The two halves are asserted in one place because it is their disagreement that is the contract:
+    /// a verb-blind mapping satisfies either half alone and fails this.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_same_already_retired_outcome_is_a_success_for_retire_and_a_refusal_for_correct()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.RetireAsync(
+            "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+
+        string hash = Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs"));
+
+        Result<SagaCurationResult> retired = await service
+            .RetireAsync("m-1", hash, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(retired.IsSuccess);
+
+        Assert.Equal(SagaCurationOutcomeKind.AlreadyRetired, retired.Value.Outcome);
+
+        Result<SagaCurationResult> corrected = await service.CorrectAsync(
+            "m-1", hash, "the operator prefers spaces", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(corrected.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.AlreadyRetired, corrected.Error.Code);
 
     }
 

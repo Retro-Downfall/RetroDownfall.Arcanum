@@ -6,6 +6,8 @@ using Microsoft.AspNetCore.Http;
 
 using Microsoft.AspNetCore.Routing;
 
+using RetroDownfall.Arcanum.Api;
+
 using RetroDownfall.Arcanum.Api.Primitives;
 
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -51,15 +53,14 @@ public sealed record SagaReinstateRequest(string ExpectedContentHash);
 /// <para>The detail route answers <c>ApiResponse&lt;SagaMemoryDetail&gt;</c>; the five write routes answer
 /// <c>ApiResponse&lt;SagaCurationResult&gt;</c>, which carries what the call did beside the memory it
 /// left behind. That extra field is what lets a caller tell "I retired it" from "it was already
-/// retired" — both of which are successes here. Asking for a state a memory is already in is not
-/// refused: <see cref="SagaCurationOutcomeKind.AlreadyRetired"/>,
-/// <see cref="SagaCurationOutcomeKind.NotRetired"/> and <see cref="SagaCurationOutcomeKind.Unchanged"/>
-/// all reach the caller as 200 carrying their own kind.</para>
+/// retired" — both of which are successes on <c>retire</c>.</para>
 ///
-/// <para>What is refused is what the caller could not have seen: no such memory, content that moved
-/// since it was read, an embedding substrate that cannot produce a vector, and a body or hash the route
-/// could not parse. <see cref="ISagaCurationService"/> decides which outcomes are errors and
-/// <see cref="ArcanumErrorMapper"/> decides their status codes; neither decision is restated here.</para>
+/// <para>Whether a state a memory is already in is reported or refused depends on the verb, because
+/// what the operator asked for does. Retiring what is already retired and reinstating what is not
+/// retired hand the operator the state they named, so they answer 200 carrying their own kind;
+/// correcting a retired memory does not — the text does not change — so it is refused. That decision
+/// belongs to <see cref="ISagaCurationService"/> and the status codes to
+/// <see cref="ArcanumErrorMapper"/>; neither is restated here.</para>
 /// </remarks>
 internal static class SagaCurationEndpoints
 {
@@ -90,10 +91,29 @@ internal static class SagaCurationEndpoints
 
         apiGroup.MapPost(
             "/memory/saga/{id}/correct",
-            async (string id, SagaCorrectRequest? request, ISagaCurationService curation, HttpContext ctx) =>
+            async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                // Read through ApiRequestJson rather than a bound parameter: minimal-API binding answers
+                // malformed JSON with an empty 400 and a wrong media type with an empty 415, and an
+                // operator who sent bad JSON to a curation verb learns nothing from either.
+                (SagaCorrectRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.SagaCorrectRequest,
+                    static context => ApiRequestJson.InvalidBodyResult(
+                        context,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseSagaCurationResult),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (bodyError is not null)
+                {
+
+                    return bodyError;
+
+                }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.ExpectedContentHash) || request.Content is null)
                 {
@@ -118,10 +138,29 @@ internal static class SagaCurationEndpoints
 
         apiGroup.MapPost(
             "/memory/saga/{id}/retire",
-            async (string id, SagaRetireRequest? request, ISagaCurationService curation, HttpContext ctx) =>
+            async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                // Read through ApiRequestJson rather than a bound parameter: minimal-API binding answers
+                // malformed JSON with an empty 400 and a wrong media type with an empty 415, and an
+                // operator who sent bad JSON to a curation verb learns nothing from either.
+                (SagaRetireRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.SagaRetireRequest,
+                    static context => ApiRequestJson.InvalidBodyResult(
+                        context,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseSagaCurationResult),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (bodyError is not null)
+                {
+
+                    return bodyError;
+
+                }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.ExpectedContentHash))
                 {
@@ -146,10 +185,29 @@ internal static class SagaCurationEndpoints
 
         apiGroup.MapPost(
             "/memory/saga/{id}/reinstate",
-            async (string id, SagaReinstateRequest? request, ISagaCurationService curation, HttpContext ctx) =>
+            async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                // Read through ApiRequestJson rather than a bound parameter: minimal-API binding answers
+                // malformed JSON with an empty 400 and a wrong media type with an empty 415, and an
+                // operator who sent bad JSON to a curation verb learns nothing from either.
+                (SagaReinstateRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.SagaReinstateRequest,
+                    static context => ApiRequestJson.InvalidBodyResult(
+                        context,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseSagaCurationResult),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (bodyError is not null)
+                {
+
+                    return bodyError;
+
+                }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.ExpectedContentHash))
                 {
