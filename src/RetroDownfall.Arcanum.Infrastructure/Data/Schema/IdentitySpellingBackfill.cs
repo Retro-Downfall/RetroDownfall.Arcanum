@@ -86,12 +86,12 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// operator should hear about it from a number rather than from the guard refusing the next write.
     /// </para>
     ///
-    /// <para><c>session_campaign_bindings.CampaignId</c> and <c>saga_memories.CampaignId</c> are the two
-    /// columns this step both counts and repairs without a target - see
+    /// <para>The Campaign columns of <c>session_campaign_bindings</c>, <c>saga_memories</c> and
+    /// <c>saga_retirement_suppressions</c> are counted and repaired without a target - see
     /// <see cref="RepairedColumns"/>. Unlike the attachment family, whose counts are non-zero on any
-    /// installation that ever held an attachment, these two are non-zero on any installation that ever
-    /// created a Session through the turn-begin path, which is every installation that has been used.
-    /// </para>
+    /// installation that ever held an attachment, the first two are non-zero on any installation that
+    /// ever created a Session through the turn-begin path, which is every installation that has been
+    /// used.</para>
     /// </remarks>
     internal static readonly IReadOnlyList<(string Table, string Column)> VerifiedColumns =
     [
@@ -107,6 +107,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
         ("session_campaign_bindings", "SessionId"),
         ("session_campaign_bindings", "CampaignId"),
         ("saga_memories", "CampaignId"),
+        ("saga_retirement_suppressions", "CampaignId"),
         ("SessionAttachments", "Id"),
         ("SessionAttachments", "SessionId"),
         ("SessionAttachments", "EntryId"),
@@ -206,7 +207,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     ];
 
     /// <summary>
-    /// The two columns repaired on their own shape alone, with no identity anywhere for them to be
+    /// The columns repaired on their own shape alone, with no identity anywhere for them to be
     /// qualified against.
     /// </summary>
     /// <remarks>
@@ -234,8 +235,18 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     /// because the classifier canonicalizes what it hands on - so what this repairs is history, and the
     /// column stays settled without it.</para>
     ///
-    /// <para>Neither column takes part in any unique constraint, so the <c>upper()</c> collision hazard
-    /// the other two lists have to reason about does not arise here: two rows whose Campaign identities
+    /// <para><c>saga_retirement_suppressions.CampaignId</c> is the third, and it is here because this
+    /// slice gave it a comparer. It is a copy of <c>saga_memories.CampaignId</c> taken at the moment a
+    /// retirement was recorded, and a retirement taken during this sweep's own drain copies a row the
+    /// sweep has not reached - so the two disagree on exactly the rows where the memory was repaired
+    /// afterwards, and a Campaign-scoped memory reset comparing this column exactly would walk past its
+    /// own evidence. It was recorded as deliberately unrepaired while nothing compared it, which was
+    /// true when it was written; what changed is that something compares it now. The digest beside it
+    /// stays where it is, because it cannot be recomputed and both paths that ask about it already ask
+    /// for both renderings.</para>
+    ///
+    /// <para>No column here takes part in any unique constraint, so the <c>upper()</c> collision hazard
+    /// the other two lists have to reason about does not arise: two rows whose Campaign identities
     /// differ only in case are simply two rows.</para>
     ///
     /// <para><c>session_campaign_bindings</c> is the one table in this file whose own guard has an opinion
@@ -248,6 +259,7 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
     [
         new("session_campaign_bindings", "CampaignId", RequiresSessionBindingWriteScope: true),
         new("saga_memories", "CampaignId", RequiresSessionBindingWriteScope: false),
+        new("saga_retirement_suppressions", "CampaignId", RequiresSessionBindingWriteScope: false),
     ];
 
     /// <summary>Written once the precondition count has been taken, so a resumed pass does not retake it.</summary>
@@ -299,17 +311,17 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
 
         bool moved = false;
 
-        // The two Campaign columns first, and the order between them is load-bearing rather than tidy:
-        // the binding is the authority a memory's Campaign was taken from, so repairing the binding
-        // first and the memories second means a batch cut short by its budget leaves the two agreeing on
-        // fewer rows rather than disagreeing on more.
+        // The Campaign columns first, and their order is load-bearing rather than tidy: each is copied
+        // from the one above it - the binding is the authority a memory's Campaign was taken from, and a
+        // suppression's is a copy of the memory's - so repairing them in that order means a batch cut
+        // short by its budget leaves them agreeing on fewer rows rather than disagreeing on more.
         //
         // Ahead of the attachment families for a reason that is a courtesy rather than a correctness
-        // requirement. Nothing depends on these two being settled early - the classifier canonicalizes
-        // what it hands on, so a Saga write is correct at any point in the drain - but a Campaign memory
-        // reset selects on both columns exactly, and on an installation holding many attachments the
-        // families would otherwise spend every batch's budget for a long time and leave that one
-        // operator-facing path selecting only the rows the sweep had reached.
+        // requirement. Nothing depends on them being settled early - both writers canonicalize what they
+        // hand on, so a Saga write is correct at any point in the drain - but a Campaign memory reset
+        // selects on all three exactly, and on an installation holding many attachments the families
+        // would otherwise spend every batch's budget for a long time and leave that one operator-facing
+        // path selecting only the rows the sweep had reached.
         foreach (RepairedColumn column in RepairedColumns)
         {
 

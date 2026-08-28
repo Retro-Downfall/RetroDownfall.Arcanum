@@ -62,6 +62,8 @@ internal static class CoreSchemaVersionFourFixture
         "session_campaign_bindings_CampaignId_guard_identity_update",
         "saga_memories_CampaignId_guard_identity_insert",
         "saga_memories_CampaignId_guard_identity_update",
+        "saga_retirement_suppressions_CampaignId_guard_identity_insert",
+        "saga_retirement_suppressions_CampaignId_guard_identity_update",
     ];
 
     /// <summary>

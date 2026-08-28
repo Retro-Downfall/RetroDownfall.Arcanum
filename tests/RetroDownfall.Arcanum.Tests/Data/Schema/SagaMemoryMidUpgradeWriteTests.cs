@@ -4,10 +4,17 @@ using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -276,6 +283,157 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
+    /// <summary>
+    /// A retirement taken before the sweep drains records a suppression the Campaign-scoped memory reset
+    /// can still find afterwards.
+    /// </summary>
+    /// <remarks>
+    /// <b>The column this asserts about was settled because something started comparing it.</b> A
+    /// suppression's Campaign is copied from the memory row, and <c>RetireAsync</c> copied it verbatim -
+    /// which was safe while the column was a projection nothing anywhere read back. The Campaign-scoped
+    /// memory reset compares it exactly, and from that moment a retirement taken mid-drain, off a memory
+    /// row the sweep had not reached, left evidence that reset could not see. Nothing in a build notices
+    /// a divergence documented as safe becoming unsafe.
+    ///
+    /// <para>The window is the one this file exists for: version 5's DDL commits with its journal row
+    /// and the sweep runs in later coordinator passes, so the memory row below still holds the minority
+    /// spelling while the guard on it is already enforcing. The memory is seeded rather than written for
+    /// the reason its sibling above gives - no build since the classifier began canonicalizing can
+    /// produce that row, and it is exactly what the sweep exists to repair.</para>
+    ///
+    /// <para>Everything after the seed is production: the retirement through <c>RetireAsync</c>, the
+    /// drain through the transition coordinator, and the reset through the retention service's own plan
+    /// and apply. Asserting on the stored spelling alone would have passed a reset that then failed to
+    /// select on it.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_retirement_taken_before_the_sweep_drains_is_found_by_the_campaign_reset()
+    {
+
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            CoreSchemaVersionFourFixture.ChainSet(),
+            TestDimensions,
+            CancellationToken.None);
+
+        await SeedBoundSessionAsync(connection);
+
+        const string Content = "a conclusion retired while the sweep was still draining";
+
+        string memoryId = Guid.NewGuid().ToString();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO saga_memories ("Id", "Content", "CreatedAt", "SessionId", ScopeKindCode, CampaignId)
+            VALUES ($id, $content, $now, $session, 2, $campaign);
+            """,
+            ("$id", memoryId),
+            ("$content", Content),
+            ("$session", SessionIdentity.ToString("D")),
+            ("$campaign", CampaignIdentity.ToString("D").ToLowerInvariant()),
+            ("$now", Timestamp));
+
+        ServiceCollection collection = new();
+
+        _ = collection.AddOptions();
+
+        _ = collection.Configure<ArcanumSettings>(static _ => { });
+
+        await using ServiceProvider services = collection.BuildServiceProvider();
+
+        GrimoireSchemaInstaller installer =
+            GrimoireSchemaTestInstaller.Create(GrimoireSchemaVersionChains.Default);
+
+        GrimoireSchemaTransitionCoordinator coordinator = new(
+            new MidUpgradeConnectionSource(connection),
+            GrimoireSchemaVersionChains.Default,
+            installer,
+            new GrimoireSchemaBackfillRunner(installer, TimeProvider.System),
+            services,
+            new CovenantAvailability(new CovenantRuntimeGenerationProvider()),
+            TimeProvider.System);
+
+        // One call, which is what leaves the version-5 DDL committed and the sweep still pending.
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            GrimoireSchemaVersionChains.Default,
+            TestDimensions,
+            CancellationToken.None);
+
+        // The state this case exists for, asserted rather than assumed.
+        Assert.Equal(
+            CampaignIdentity.ToString("D").ToLowerInvariant(),
+            await ScalarStringAsync(
+                connection,
+                $"""SELECT CampaignId FROM saga_memories WHERE "Id" = '{memoryId}';"""));
+
+        await using ArcanumDbContext db = CreateContext(file);
+
+        SagaCurationOutcome retired = await CreateStore(db).RetireAsync(
+            memoryId,
+            AnnalContentDigest.ForSagaMemory(Content),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, retired.Kind);
+
+        while ((await coordinator.RunOnceAsync(CancellationToken.None)).Value.Advanced)
+        {
+        }
+
+        Assert.Equal(1, await CountAsync(connection, "SELECT COUNT(*) FROM saga_retirement_suppressions;"));
+
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-mid-upgrade-reset-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+
+            _ = Directory.CreateDirectory(root);
+
+            DataRetentionService retention = new(
+                db,
+                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+                new LongRunningOperationStore(db),
+                TimeProvider.System,
+                NullLogger<DataRetentionService>.Instance,
+                root,
+                root,
+                root);
+
+            DataRetentionRequest request = new(
+                DataRetentionOperation.ResetMemory,
+                CampaignIdentity,
+                MemoryResetScope.Saga);
+
+            DataRetentionPlan plan = await retention.PlanAsync(request, CancellationToken.None);
+
+            Result<DataRetentionApplyResult> applied = await retention.ApplyAsync(
+                new DataRetentionApplyRequest(request, plan.PlanId),
+                CancellationToken.None);
+
+            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+            Assert.True(applied.Value.Reconciled);
+
+        }
+        finally
+        {
+
+            Directory.Delete(root, recursive: true);
+
+        }
+
+        Assert.Equal(0, await CountAsync(connection, "SELECT COUNT(*) FROM saga_retirement_suppressions;"));
+
+    }
+
     private static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
     {
 
@@ -440,6 +598,18 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         }
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    /// <summary>Hands the coordinator the one open scratch connection this case drives everything on.</summary>
+    private sealed class MidUpgradeConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
+    {
+
+        public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(connection);
+
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(connection);
 
     }
 

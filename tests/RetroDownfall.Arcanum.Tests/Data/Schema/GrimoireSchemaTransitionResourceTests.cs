@@ -198,6 +198,8 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "session_campaign_bindings_CampaignId_guard_identity_update",
                 "saga_memories_CampaignId_guard_identity_insert",
                 "saga_memories_CampaignId_guard_identity_update",
+                "saga_retirement_suppressions_CampaignId_guard_identity_insert",
+                "saga_retirement_suppressions_CampaignId_guard_identity_update",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",

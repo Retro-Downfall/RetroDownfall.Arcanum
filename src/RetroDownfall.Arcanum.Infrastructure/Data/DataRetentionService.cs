@@ -2297,9 +2297,12 @@ internal sealed partial class DataRetentionService(
 
                 // A suppression names a scope rather than a memory, so the deletes above cannot reach
                 // it, and one left standing would go on refusing extraction for an owner that no longer
-                // exists. It is bound exactly, against the same column pair the memory delete above
-                // binds: the suppression's CampaignId is a copy of the memory's, so the two predicates
-                // cannot disagree about which rows this Campaign owns.
+                // exists.
+                //
+                // Bound exactly, which this column is settled for: it is written canonical, guarded on
+                // insert and update, and repaired by the version-5 sweep, exactly as the memory column
+                // above it is. It was none of those while it was a projection nothing compared, and this
+                // predicate is what changed that.
                 //
                 // The key is deliberately absent. This reset clears one Campaign's evidence, not the
                 // installation's, and every Global suppression and every other Campaign's still needs

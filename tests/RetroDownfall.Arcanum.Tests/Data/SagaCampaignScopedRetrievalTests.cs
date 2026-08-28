@@ -410,16 +410,18 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
                 SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
             VALUES ($digest, 2, $campaignId, $now);
             """,
-            // The column and the digest are filled from one string, because a shipped retirement filled
-            // them from one value: the memory's own stored CampaignId. Seeding the column canonical while
-            // hashing the minority form described a row no installation ever held - harmless to the
-            // assertion, which selects on the digest alone, and still a fixture claiming something false.
+            // The digest holds the minority spelling and the column holds the settled one, and that
+            // split is the row an upgraded installation actually carries. A shipped retirement filled
+            // both from the memory's own stored CampaignId, and then exactly one of them was settled:
+            // the column joined the version-5 sweep, while the digest cannot be recomputed and stays as
+            // it was hashed. The guard on that column refuses the other combination outright, which is
+            // what stops this fixture describing a row no installation can hold.
             ("$digest", SagaSuppressionDigest.Compute(
                 key,
                 SagaMemoryScopeKind.Campaign,
                 legacyCampaign,
                 Legacy)),
-            ("$campaignId", legacyCampaign),
+            ("$campaignId", CampaignA.ToString("D").ToUpperInvariant()),
             ("$now", Timestamp));
 
         SagaMemoryWriteOutcome written = await _store.InsertAsync(
@@ -454,9 +456,10 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     ///
     /// <para>The pre-upgrade state is built by replacing the suppression the production retirement just
     /// wrote with the one the same retirement would have written before the spelling settled - same key,
-    /// same production digest function, same content and scope, the Campaign rendered the way the
-    /// turn-begin repository rendered it. The memory row itself stays canonical, because the sweep
-    /// repairs it; that asymmetry is exactly the state an upgraded installation is in.</para>
+    /// same production digest function, same content and scope, the Campaign hashed the way the
+    /// turn-begin repository rendered it. The memory row and the suppression's own scope column both
+    /// stay canonical, because the sweep repairs both; the digest is what it cannot reach, and that
+    /// asymmetry is exactly the state an upgraded installation is in.</para>
     /// </remarks>
     [Fact]
     public async Task A_memory_retired_before_the_campaign_spelling_settled_can_be_reinstated()
@@ -496,7 +499,7 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
                 SagaMemoryScopeKind.Campaign,
                 legacyCampaign,
                 Content)),
-            ("$campaignId", legacyCampaign),
+            ("$campaignId", CampaignA.ToString("D").ToUpperInvariant()),
             ("$now", Timestamp));
 
         SagaCurationOutcome reinstated = await _store.ReinstateAsync(

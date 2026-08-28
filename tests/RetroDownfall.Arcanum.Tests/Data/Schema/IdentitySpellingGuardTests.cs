@@ -1108,6 +1108,18 @@ public sealed class IdentitySpellingGuardTests
                     ("$value", value),
                     ("$now", Timestamp)),
 
+                // Scope kind 2 for the reason above, and a digest distinct from the seeded row's,
+                // because the digest is this table's primary key and a collision would refuse the write
+                // before its Campaign spelling was ever judged.
+                ("saga_retirement_suppressions", "CampaignId") => ExecuteAsync(
+                    """
+                    INSERT INTO saga_retirement_suppressions (
+                        SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+                    VALUES (randomblob(32), 2, $value, $now);
+                    """,
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
                 ("artifact_sensitivity", "SessionId") => ExecuteAsync(
                     ArtifactSensitivityInsert,
                     ("$label", Canonical(Second)),
@@ -1400,6 +1412,15 @@ public sealed class IdentitySpellingGuardTests
                     """,
                     ("$value", Canonical(ResolvableSession)),
                     ("$now", Timestamp)));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO saga_retirement_suppressions (
+                    SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+                VALUES (zeroblob(32), 2, $campaign, $now);
+                """,
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
 
             await ExecuteAsync(
                 ArtifactSensitivityInsert,

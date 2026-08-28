@@ -583,6 +583,7 @@ public sealed class IdentitySpellingEvolutionTests
                 ("session_campaign_bindings", "SessionId"),
                 ("session_campaign_bindings", "CampaignId"),
                 ("saga_memories", "CampaignId"),
+                ("saga_retirement_suppressions", "CampaignId"),
                 ("SessionAttachments", "Id"),
                 ("SessionAttachments", "SessionId"),
                 ("SessionAttachments", "EntryId"),
@@ -609,6 +610,7 @@ public sealed class IdentitySpellingEvolutionTests
             [
                 ("session_campaign_bindings", "CampaignId", true),
                 ("saga_memories", "CampaignId", false),
+                ("saga_retirement_suppressions", "CampaignId", false),
             ],
             IdentitySpellingBackfill.RepairedColumns.Select(
                 static column =>
