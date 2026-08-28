@@ -24,9 +24,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// <para>Where a reachable writer left the minority spelling instead, the step repairs rather than
 /// verifies. The <c>SessionAttachments</c> family is such a place, and there an identity moves rather
 /// than a reference: an installation that has ever held an attachment reports a number for its columns
-/// and has rows rewritten. The Campaign columns are another, filled by the turn path that binds a Session to a
-/// Campaign and copied onward from there, so an installation that ever bound one reports a number for
-/// them too - see <see cref="RepairedColumns"/>, which is where what they hold is kept.</para>
+/// and has rows rewritten. The Campaign columns are another, filled by the turn path that binds a
+/// Session to a Campaign and copied onward from there - so the binding's own column reports a number on
+/// an installation that ever bound one, and the columns copied from it report wherever those rows
+/// exist and nothing at all where they do not. See <see cref="RepairedColumns"/>, which is where what
+/// they hold is kept.</para>
 ///
 /// <para><b>What may be repaired, and why it is narrower than "every identity column".</b> A stored
 /// identity is either an <i>identity</i> - the primary key a row is known by - or a <i>reference</i> to
@@ -494,8 +496,9 @@ internal sealed class IdentitySpellingBackfill : IGrimoireSchemaBackfill
 
         // Named rather than merely counted, because an operator who sees a number here needs to know
         // which half of it this step can act on. Some of what it repairs is expected on an ordinary
-        // installation - the attachment family on any that has held an attachment, and the Campaign
-        // columns on any that bound a Session to a Campaign before this version - so a number here is
+        // installation - the attachment family on any that has held an attachment, and the binding's
+        // Campaign column on any that bound a Session to a Campaign before this version, with the
+        // columns copied from that binding reporting only where those rows exist - so a number here is
         // not by itself evidence of anything having gone wrong. What is left behind is: outside those,
         // the only thing that can produce a non-canonical identity is an edit made outside Arcanum.
         Log.Warning(

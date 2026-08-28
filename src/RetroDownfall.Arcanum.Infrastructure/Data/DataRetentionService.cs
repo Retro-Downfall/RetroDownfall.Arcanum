@@ -7134,11 +7134,18 @@ internal sealed partial class DataRetentionService(
     ///
     /// <para><b>Leaving them out is sound only while no Annals row outlives the durable row it
     /// describes.</b> A claim binds to the row that carries its content, that row is in a table the
-    /// scope clearing it names here, and the heads, versions and dependencies are keyed up to the claim
-    /// - so a store's Annals rows and the rows they explain go in one transaction or neither goes. A
-    /// path that took the durable row and left the claim would not merely strand a record: an
-    /// interrupted reset would then find every table named here empty and report itself complete while
-    /// those rows still stood.</para>
+    /// scope clearing it names here, and the heads, versions and dependencies are keyed up to the
+    /// claim. Every removal that can reach one of those rows today holds it: the claim and the row it
+    /// explains go in one transaction or neither goes.</para>
+    ///
+    /// <para><b>One removal does not hold it, and the omission is conditional on that removal staying
+    /// out of reach.</b> The protected-artifact erasure kernel deletes a Saga memory or a Lexicon entry
+    /// through its own purge plan and takes no claim with it. It runs only against a labelled artifact,
+    /// and nothing produces a label of either kind, so it cannot reach these rows - which is a fact
+    /// about what production labels rather than about this list, and it is pinned as such rather than
+    /// assumed here. The day something labels one, this omission stops being sound: an interrupted
+    /// reset would find every table named here empty and report itself complete while the Annals rows
+    /// for a memory that is already gone still stood.</para>
     /// </remarks>
     internal static string[] MemoryResetResidueTables(MemoryResetScope scope) =>
         scope switch

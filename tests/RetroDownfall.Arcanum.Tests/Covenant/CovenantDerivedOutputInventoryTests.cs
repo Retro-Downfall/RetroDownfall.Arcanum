@@ -1,4 +1,5 @@
 using System.Reflection;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -131,6 +132,47 @@ public sealed class CovenantDerivedOutputInventoryTests
         {
 
             Assert.Contains(
+                CovenantDerivedOutputInventory.Consumers,
+                consumer => consumer.ArtifactKind == kind
+                    && consumer.Policy is DerivedOutputPolicy.PropagateLabel);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Nothing declared here labels a kind whose rows carry an Annals claim, which is the condition a
+    /// memory reset's recovery reads those rows under.
+    /// </summary>
+    /// <remarks>
+    /// A reset interrupted before its commit is recovered by counting the store's own tables and
+    /// inferring from them that the store's claims went too. That inference needs every removal of a
+    /// <c>saga_memories</c> or <c>lexicon_entries</c> row to take the claim describing it, and every
+    /// removal that can reach one does - except the protected-artifact purge, whose plan for these two
+    /// kinds deletes the row and no claim. The purge runs only against a labelled artifact, so the
+    /// inference is sound exactly while nothing labels these kinds, and this is where that condition
+    /// lives rather than in a comment on the list it protects.
+    ///
+    /// <para>Derived from <see cref="AnnalSubjectStore"/> rather than restated, so a third subject
+    /// store arrives here as a failure asking whether its rows can be labelled. What this cannot see is
+    /// a producer that merely calls the ledger: the inventory is closed over types implementing a
+    /// labelled-write contract, not over label-writing call sites. Declaring the producer is the step
+    /// it reds on, which is why the purge plan carries the same statement for a reader who never
+    /// reaches this suite.</para>
+    /// </remarks>
+    [Fact]
+    public void No_declared_producer_labels_a_kind_whose_rows_carry_an_annals_claim()
+    {
+
+        foreach (AnnalSubjectStore store in Enum.GetValues<AnnalSubjectStore>())
+        {
+
+            Assert.True(
+                Enum.TryParse(store.ToString(), ignoreCase: false, out SensitiveArtifactKind kind),
+                $"The Annals subject store '{store}' has no sensitive-artifact kind of the same name, so "
+                    + "whether a purge can reach its rows without their claim is unanswered.");
+
+            Assert.DoesNotContain(
                 CovenantDerivedOutputInventory.Consumers,
                 consumer => consumer.ArtifactKind == kind
                     && consumer.Policy is DerivedOutputPolicy.PropagateLabel);

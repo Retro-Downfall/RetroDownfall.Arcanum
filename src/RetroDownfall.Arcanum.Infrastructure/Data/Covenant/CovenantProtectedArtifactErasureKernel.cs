@@ -86,6 +86,15 @@ internal static class CovenantArtifactPurgePlans
                 + CovenantIdentitySql.Keyed("\"Id\"", "$sessionKey")
                 + ";"),
 
+        // FOLLOW-UP, and its trigger is labelling rather than a date: the Saga and Lexicon plans below
+        // take the durable row and leave the Annals claim describing it. Every other removal of a saga_memories
+        // or lexicon_entries row deletes that store's claim in the same transaction, and a memory
+        // reset's recovery relies on it - it counts only the store's own tables and infers from them
+        // that the Annals went too. These plans are out of reach while nothing labels either kind, so
+        // the reliance holds today and the gap is recorded here rather than closed here: taking a claim
+        // is an erasure ordering over annal_heads, annal_versions and annal_claims, and the policy for
+        // these two kinds would have to say so. Whoever first labels a Saga memory or a Lexicon entry
+        // is the person this is addressed to, and closing it belongs to that change.
         [SensitiveArtifactKind.Saga] = new(
             SensitiveArtifactKind.Saga,
             [
