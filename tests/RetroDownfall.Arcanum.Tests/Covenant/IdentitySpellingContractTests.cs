@@ -20,15 +20,17 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Tests.Data.Schema;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
-/// The behavioural contract that replaces the source-scanning identity register: every stored
+/// The behavioural contract that stands where a source-scanning register used to: every stored
 /// identity these two writers produce holds the canonical spelling the object-relational writer
 /// renders, proven by driving each one through its own outermost production entry point against a
-/// real encrypted database and reading the rows back out.
+/// real encrypted database and reading back every governed identity column of the rows it wrote.
 /// </summary>
 /// <remarks>
 /// <para><b>Why a production entry point, not the store's method directly.</b> A hand-assembled
@@ -119,44 +121,44 @@ public sealed class IdentitySpellingContractTests
 internal readonly record struct NonCanonicalIdentity(string Table, string Column, string Value, string Reason);
 
 /// <summary>
-/// Owns whichever real encrypted database a drive method populates, and can read every identity
-/// column this family covers back out of it afterwards.
+/// Owns whichever real encrypted database a drive method populates, and can read every governed
+/// identity column back out of it afterwards.
 /// </summary>
 /// <remarks>
 /// One harness drives exactly one component per test, so it only ever tracks one destination to
 /// scan: the KDF-sidecar-backed Grimoire a backup import writes into. <see cref="NonCanonicalAsync"/>
-/// reads the same fixed column list from whichever drive method populated it.
+/// asks the same set of columns of whichever drive method populated it, so which columns are examined
+/// does not vary with which writer is under test.
 /// </remarks>
 internal sealed class IdentitySpellingHarness : IAsyncDisposable
 {
 
     /// <summary>
-    /// Every identity column any of the three converted writers can reach, table-qualified. Not the
-    /// full defect-family register — just the columns these three components fill, which is exactly
-    /// what a regression in one of them would corrupt.
+    /// Every identity column the schema governs, table-qualified.
     /// </summary>
-    private static readonly (string Table, string Column)[] IdentityColumns =
-    [
-
-        ("Sessions", "Id"),
-
-        ("Sessions", "CampaignId"),
-
-        ("Entries", "Id"),
-
-        ("Entries", "SessionId"),
-
-        ("SessionAttachments", "Id"),
-
-        ("SessionAttachments", "SessionId"),
-
-        ("SessionAttachments", "EntryId"),
-
-        ("assistant_entry_finalizations", "AssistantEntryId"),
-
-        ("assistant_entry_finalizations", "SessionId"),
-
-    ];
+    /// <remarks>
+    /// Deliberately the whole governed set rather than the columns the drive methods below happen to
+    /// fill. A list of what a writer touches today has to be edited the moment that writer touches one
+    /// more, and until someone edits it the new column is outside what this asserts — which is the one
+    /// place a regression would be able to land unread. Asking the governed set instead means the
+    /// question does not move when a writer does.
+    ///
+    /// <para><b>What that is worth, measured rather than assumed.</b> Every governed table exists in
+    /// the database a drive method leaves behind, so every column here is genuinely queried and none is
+    /// skipped. Most of them are empty when queried: between them the two cases below populate the
+    /// Session, Entry, attachment and finalization columns, and the rest are asked and answer nothing.
+    /// An empty answer is not evidence about a writer nobody drove — it is the assertion being in place
+    /// for one that arrives later.</para>
+    ///
+    /// <para>Taken from <see cref="IdentitySpellingGuardTests.GovernedColumns"/> rather than restated,
+    /// so the guard suite and this one ask about the same columns by construction and a column added to
+    /// the sweep arrives in both. A table the database does not carry is skipped by
+    /// <see cref="NonCanonicalAsync"/>'s own existence probe rather than filtered here, so a schema that
+    /// loses one is reported by that column falling silent rather than by this list disagreeing with
+    /// the schema.</para>
+    /// </remarks>
+    private static IReadOnlyList<(string Table, string Column)> IdentityColumns =>
+        IdentitySpellingGuardTests.GovernedColumns;
 
     private readonly string _root;
 
