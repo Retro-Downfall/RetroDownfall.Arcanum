@@ -227,6 +227,56 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The converse of the pairing above: no claim outlives the memory it describes, whichever removal
+    /// took the memory.
+    /// </summary>
+    /// <remarks>
+    /// A claim is reached through the row that names it, so one left behind is a record no surface can
+    /// read and no reset can clear. It is also what lets a count over this store's own tables answer for
+    /// its Annals rows as well, which a reset interrupted before its commit relies on: that inference is
+    /// sound only while a memory and the claim explaining it go in one transaction or neither goes.
+    ///
+    /// <para>The memory removed singly is retired first, so its claim carries a tombstone beside the
+    /// assertion. A removal that released the head alone would leave the versions behind it standing,
+    /// and against a single-revision claim that is indistinguishable from taking the whole claim.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task No_claim_outlives_the_memory_it_describes()
+    {
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
+
+        const string Retired = "the operator prefers tabs";
+
+        _ = await harness.Store.InsertAsync(
+            "m-retired", Retired, DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.InsertAsync(
+            "m-standing", "the operator prefers spaces", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(1), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.RetireAsync(
+            "m-retired", AnnalContentDigest.ForSagaMemory(Retired),
+            DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(await harness.Store.DeleteAsync("m-retired", CancellationToken.None).ConfigureAwait(false));
+
+        // The memory left standing is what makes this bite. Its own claim belongs where it is, so a
+        // claim count alone would pass whatever the delete did; an orphan is the only thing that moves.
+        Assert.Equal(1, await harness.CountAsync("annal_claims", "SubjectStoreCode = 1").ConfigureAwait(false));
+
+        Assert.Equal(0, await OrphanedSagaClaimsAsync(harness).ConfigureAwait(false));
+
+        await harness.Store.DeleteAllAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.Equal(0, await OrphanedSagaClaimsAsync(harness).ConfigureAwait(false));
+
+        Assert.Equal(0, await harness.CountAsync("annal_claims", "SubjectStoreCode = 1").ConfigureAwait(false));
+
+    }
+
     [SkippableFact]
     public async Task A_retirement_appends_a_tombstone_that_supersedes_the_version_it_ends()
     {
@@ -411,6 +461,12 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
             await harness.CountAsync("annal_versions", $"ClaimId = '{headBefore.ClaimId}'").ConfigureAwait(false));
 
     }
+
+    /// <summary>Saga claims whose subject row is no longer there.</summary>
+    private static Task<int> OrphanedSagaClaimsAsync(SagaStoreHarness harness) =>
+        harness.CountAsync(
+            "annal_claims",
+            """SubjectStoreCode = 1 AND SubjectId NOT IN (SELECT "Id" FROM "saga_memories")""");
 
     private static float[] Vec(params float[] leading)
     {

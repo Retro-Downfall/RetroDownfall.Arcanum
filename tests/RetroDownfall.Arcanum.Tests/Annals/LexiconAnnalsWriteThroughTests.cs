@@ -309,6 +309,70 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// No claim outlives the entity it describes.
+    /// </summary>
+    /// <remarks>
+    /// A claim is reached through the row that names it, so one left behind is a record no surface can
+    /// read and no reset can clear. It is also what lets a count over this store's own tables answer for
+    /// its Annals rows as well, which a reset interrupted before its commit relies on: that inference is
+    /// sound only while an entity and the claim explaining it go in one transaction or neither goes.
+    ///
+    /// <para>The entity that goes is corrected first, so its claim carries a revision beyond the one it
+    /// opened with. A removal that released the head alone would leave those versions standing, and
+    /// against a single-revision claim that is indistinguishable from taking the whole claim.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task No_claim_outlives_the_entity_it_describes()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ILexiconService service = CreateService(annals: true);
+
+        Result<LexiconEntryDto> removed = await service.UpsertAsync(
+            "config",
+            "Project",
+            ["ships on Friday"],
+            LexiconScope.Global,
+            CancellationToken.None);
+
+        Assert.True(removed.IsSuccess);
+
+        Assert.True(
+            (await service.UpsertAsync(
+                "config",
+                "Project",
+                ["ships on Monday"],
+                LexiconScope.Global,
+                CancellationToken.None)).IsSuccess);
+
+        Assert.True(
+            (await service.UpsertAsync(
+                "release",
+                "Project",
+                ["is cut on the first"],
+                LexiconScope.Global,
+                CancellationToken.None)).IsSuccess);
+
+        Assert.True(
+            (await service.DeleteByNameAsync("config", LexiconScope.Global, CancellationToken.None)).Value);
+
+        // The entity left standing is what makes this bite. Its own claim belongs where it is, so a
+        // claim count alone would pass whatever the delete did; an orphan is the only thing that moves.
+        Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 2;"));
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                """
+                SELECT COUNT(*) FROM annal_claims
+                WHERE SubjectStoreCode = 2
+                  AND SubjectId NOT IN (SELECT Id FROM lexicon_entries);
+                """));
+
+    }
+
     private ILexiconService CreateService(bool annals) =>
         new LexiconService(
             _db!,

@@ -422,6 +422,32 @@ public sealed partial class DataRetentionServiceTests
     }
 
     /// <summary>
+    /// Every table an Annals claim can be bound to is named among the residue of the reset that clears
+    /// that store.
+    /// </summary>
+    /// <remarks>
+    /// The other half of what lets a reset's recovery read no Annals table at all. One half is that a
+    /// claim cannot outlive the durable row it describes; this is the rest of it — that the row it
+    /// cannot outlive is one the residue count actually reads. Take the subject table out of a scope and
+    /// nothing witnesses that store's claims any more, whatever its own removals do.
+    /// </remarks>
+    [SkippableFact]
+    public void MemoryResetResidue_NamesTheTableEachStoresClaimsAreBoundTo()
+    {
+
+        RequireSqlCipher();
+
+        Assert.Contains(
+            "saga_memories",
+            DataRetentionService.MemoryResetResidueTables(MemoryResetScope.Saga));
+
+        Assert.Contains(
+            "lexicon_entries",
+            DataRetentionService.MemoryResetResidueTables(MemoryResetScope.Lexicon));
+
+    }
+
+    /// <summary>
     /// An interrupted Saga reset whose only surviving rows are the retirement evidence and its key is
     /// still an interrupted reset.
     /// </summary>

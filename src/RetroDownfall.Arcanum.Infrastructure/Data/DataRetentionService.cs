@@ -7117,6 +7117,73 @@ internal sealed partial class DataRetentionService(
 
     }
 
+    /// <summary>
+    /// The tables whose rows witness that one memory reset's data mutation did not commit.
+    /// </summary>
+    /// <remarks>
+    /// What a scope names here is a witness that the reset's data mutation did not commit - not an
+    /// inventory of what that reset clears. The mutation is one transaction, so any table it empties
+    /// answers for the whole of it, and a witness only has to be readable by a bare count carrying no
+    /// predicate.
+    ///
+    /// <para>That is why the Annals tables a memory reset also clears are absent. Their rows belong to
+    /// whichever store's claim wrote them, and a count with no predicate cannot tell those apart - so
+    /// naming one here would report another store's claims as this reset's unfinished work, and a reset
+    /// that had committed would be recovered as failed for as long as that other store held a claim. On
+    /// every retry, because nothing about it would ever change.</para>
+    ///
+    /// <para><b>Leaving them out is sound only while no Annals row outlives the durable row it
+    /// describes.</b> A claim binds to the row that carries its content, that row is in a table the
+    /// scope clearing it names here, and the heads, versions and dependencies are keyed up to the claim
+    /// - so a store's Annals rows and the rows they explain go in one transaction or neither goes. A
+    /// path that took the durable row and left the claim would not merely strand a record: an
+    /// interrupted reset would then find every table named here empty and report itself complete while
+    /// those rows still stood.</para>
+    /// </remarks>
+    internal static string[] MemoryResetResidueTables(MemoryResetScope scope) =>
+        scope switch
+        {
+
+            MemoryResetScope.Entry =>
+                ["entry_embeddings_vec", "entry_embeddings"],
+
+            MemoryResetScope.Attachments =>
+                [
+                    "session_attachment_embeddings_vec",
+                    "session_attachment_embeddings",
+                    "session_attachment_chunks",
+                    "session_attachment_index_state",
+                ],
+
+            MemoryResetScope.Workspace =>
+                [
+                    "workspace_file_embeddings_vec",
+                    "workspace_file_embeddings",
+                    "workspace_file_chunks",
+                ],
+
+            MemoryResetScope.Saga =>
+                [
+                    "saga_memory_embeddings_vec",
+                    "saga_memory_embeddings",
+                    "saga_memory_attachment_provenance",
+                    "saga_extraction_watermarks",
+                    "saga_memories",
+                    "saga_retirement_suppressions",
+                    "saga_suppression_key",
+                ],
+
+            MemoryResetScope.Lexicon =>
+                [
+                    "lexicon_fact_attachment_provenance",
+                    "lexicon_fts",
+                    "lexicon_entries",
+                ],
+
+            _ => [],
+
+        };
+
     private async Task<bool> MutationTargetExistsAsync(
         RetentionMutationJournal journal,
         CancellationToken cancellationToken)
@@ -7155,60 +7222,7 @@ internal sealed partial class DataRetentionService(
             && Enum.IsDefined((MemoryResetScope)scopeValue))
         {
 
-            // What a scope names below is a witness that the reset's data mutation did not commit - not
-            // an inventory of what that reset clears. The mutation is one transaction, so any table it
-            // empties answers for the whole of it, and a witness only has to be readable by the bare
-            // count further down, which carries no predicate.
-            //
-            // That is why the Annals tables a memory reset also clears are absent. Their rows belong to
-            // whichever store's claim wrote them, and a count with no predicate cannot tell those apart -
-            // so naming one here would report another store's claims as this reset's unfinished work, and
-            // a reset that had committed would be recovered as failed for as long as that other store
-            // held a claim. On every retry, because nothing about it would ever change.
-            string[] tables = (MemoryResetScope)scopeValue switch
-            {
-
-                MemoryResetScope.Entry =>
-                    ["entry_embeddings_vec", "entry_embeddings"],
-
-                MemoryResetScope.Attachments =>
-                    [
-                        "session_attachment_embeddings_vec",
-                        "session_attachment_embeddings",
-                        "session_attachment_chunks",
-                        "session_attachment_index_state",
-                    ],
-
-                MemoryResetScope.Workspace =>
-                    [
-                        "workspace_file_embeddings_vec",
-                        "workspace_file_embeddings",
-                        "workspace_file_chunks",
-                    ],
-
-                MemoryResetScope.Saga =>
-                    [
-                        "saga_memory_embeddings_vec",
-                        "saga_memory_embeddings",
-                        "saga_memory_attachment_provenance",
-                        "saga_extraction_watermarks",
-                        "saga_memories",
-                        "saga_retirement_suppressions",
-                        "saga_suppression_key",
-                    ],
-
-                MemoryResetScope.Lexicon =>
-                    [
-                        "lexicon_fact_attachment_provenance",
-                        "lexicon_fts",
-                        "lexicon_entries",
-                    ],
-
-                _ => [],
-
-            };
-
-            foreach (string table in tables)
+            foreach (string table in MemoryResetResidueTables((MemoryResetScope)scopeValue))
             {
 
                 if (await CountTableAsync(
