@@ -622,6 +622,25 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // A notifications/cancelled whose requestId is not yet in the server's in-flight map is dropped
+    // in silence, and nothing orders the two inbound lines: RunAsync hands every line to its own
+    // Task.Run, so the cancel can be handled before the tools/call has registered its
+    // CancellationTokenSource. A search that is never cancelled still ends -- in its own regex
+    // timeout -- but a timeout is reported as a non-error "timed_out" envelope, so a dropped cancel
+    // surfaces here as IsError false rather than as a hang.
+    //
+    // So this waits for proof of registration instead of sleeping and hoping. A second tools/call
+    // carrying the same id is rejected only when the id is already present in that map, so reading
+    // that rejection establishes that the winner's CancellationTokenSource is registered and the
+    // cancel below cannot be dropped. Both writes carry identical arguments, which is what makes the
+    // handshake indifferent to which of the two wins the id: the winner is the long-running call
+    // either way, and the loser is the rejection.
+    //
+    // The 100_000-'a' file and the 1_000 ms timeout are what hold the winner in flight across the
+    // handshake; they are not being measured. NonBacktracking rejects the lookahead, so the search
+    // falls back to the backtracking engine, which cannot finish this pattern against input with no
+    // 'b' -- it runs until the per-match timeout. Shortening either one shrinks the interval the
+    // cancel has to arrive in.
     [Fact]
     public async Task NotificationsCancelled_cancels_in_flight_search_workspace_regex()
     {
@@ -655,14 +674,21 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             },
             McpJsonSerializerContext.Default.McpToolsCallParams);
 
-        (int requestId, Task<JsonRpcResponse> responseTask) = await session
-            .SendRequestFireAndForgetAsync("tools/call", callParams);
+        const int requestId = 6464;
 
-        await Task.Delay(50);
+        await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
+        await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
+
+        JsonRpcResponse rejected = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.NotNull(rejected.Error);
+        Assert.Equal(-32600, rejected.Error!.Code);
+
         await session.SendCancelNotificationAsync(requestId);
 
-        JsonRpcResponse response = await responseTask.WaitAsync(
-            TimeSpan.FromSeconds(2));
+        JsonRpcResponse response = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Null(response.Error);
 
@@ -671,6 +697,14 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
 
         Assert.True(result.IsError);
+
+        // The two ways this call can end are told apart only by their text: a regex timeout is a
+        // non-error envelope today, and naming the cancellation keeps the test red if that is ever
+        // reclassified as an error, instead of letting the timeout stand in for the cancellation.
+        Assert.Contains(
+            "cancelled",
+            Assert.Single(result.Content).Text,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
