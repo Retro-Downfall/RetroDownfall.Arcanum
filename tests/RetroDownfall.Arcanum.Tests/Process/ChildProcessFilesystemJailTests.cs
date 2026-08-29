@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 
 /// <summary>
 /// Filesystem jail acceptance under macOS-ARM beta posture: Seatbelt outside/symlink denial,
-/// access classes, Linux fail-closed, Windows NoFilesystemJail / Sanctum deny.
+/// access classes, Linux fail-closed, Windows broker-capability fail-closed / Sanctum deny.
 /// Runtime macOS cases require a host where sandbox-exec can apply (not a nested agent sandbox).
 /// </summary>
 [Collection("ProcessEnvironment")]
@@ -289,22 +289,15 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
-    [Fact]
-    public void WindowsFilesystemJail_ReportsNoFilesystemJail_WhenSanctumBoundaryOff()
+    [SkippableFact]
+    public void WindowsFilesystemJail_FailsClosed_WhenTheHostCannotBroker()
     {
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            // Policy unit: ApplyWindows is only reached on Windows; simulate status contract via docs.
-            // On non-Windows hosts, construct the expected status locally for documentation parity.
-            Assert.NotEqual(
-                ChildProcessSandboxApplyStatus.Applied,
-                ChildProcessSandboxApplyStatus.NoFilesystemJail);
-
-            return;
-
-        }
+        // Apply dispatches on the running OS, so ApplyWindows is unreachable anywhere else. Skipping is
+        // visible in the run report; the earlier "assert two enum constants differ" stand-in was not.
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "ApplyWindows is only reached on Windows.");
 
         ProcessStartInfo psi = new()
         {
@@ -334,19 +327,26 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             request,
             NullLogger.Instance);
 
-        Assert.Equal(ChildProcessSandboxApplyStatus.NoFilesystemJail, apply.Status);
+        // The test runner never routes argv through SandboxExecHelper.TryHandle, so it cannot broker and
+        // the jail refuses rather than re-executing it. Without the escape hatch that refusal is
+        // fail-closed, and the untouched FileName shows the refusal came before any rewrite of the target.
+        Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
 
-        Assert.NotEqual(ChildProcessSandboxApplyStatus.Applied, apply.Status);
+        Assert.Equal("cmd.exe", psi.FileName);
 
     }
 
-    [Fact]
+    [SkippableFact]
     public void WindowsFilesystemJail_DeniesWhenSanctumPathBoundaryOn()
     {
 
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "ApplyWindows is only reached on Windows.");
+
         ProcessStartInfo startInfo = new()
         {
-            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/echo",
+            FileName = "cmd.exe",
 
             UseShellExecute = false,
 
@@ -355,42 +355,34 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             RedirectStandardError = true,
         };
 
-        if (OperatingSystem.IsWindows())
-        {
+        startInfo.ArgumentList.Add("/c");
 
-            startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("echo");
 
-            startInfo.ArgumentList.Add("echo");
+        startInfo.ArgumentList.Add("should-not-run");
 
-            startInfo.ArgumentList.Add("should-not-run");
+        ChildProcessSandboxRequest denyRequest = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspace,
+            null,
+            allowUnsandboxed: true, // escape hatch must NOT bypass Sanctum denial
+            windowsPathBoundaryRequired: true);
 
-            ChildProcessSandboxRequest denyRequest = ChildProcessSandboxRoots.ForExecuteCommand(
-                _workspace,
-                null,
-                allowUnsandboxed: true, // escape hatch must NOT bypass Sanctum denial
-                windowsPathBoundaryRequired: true);
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            denyRequest,
+            NullLogger.Instance);
 
-            ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
-                startInfo,
-                denyRequest,
-                NullLogger.Instance);
-
-            Assert.Equal(ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum, apply.Status);
-
-        }
+        Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
 
     }
 
-    [Fact]
-    public async Task Windows_Sanctum_path_boundary_returns_expected_runner_outcome()
+    [SkippableFact]
+    public async Task Windows_path_boundary_required_without_a_broker_refuses_the_child()
     {
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "ApplyWindows is only reached on Windows.");
 
         ProcessStartInfo psi = new()
         {
@@ -428,11 +420,15 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             request,
             NullLogger.Instance);
 
-        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum, result.Outcome);
+        // Sanctum path-boundary enforcement outranks the operator escape hatch: with no jail available the
+        // runner refuses instead of starting the child, and reports it without leaking host internals to
+        // the model. The status is Unavailable, not the retired DeniedByWindowsSanctum.
+        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxUnavailable, result.Outcome);
 
-        Assert.Equal(
-            ChildProcessSandboxMessages.WindowsSanctumPathBoundaryDenied,
-            result.FilesystemSandboxDenialMessage);
+        Assert.Contains(
+            ChildProcessSandboxMessages.NotNetworkIsolationNote,
+            result.FilesystemSandboxDenialMessage ?? "",
+            StringComparison.Ordinal);
 
         Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.Ordinal);
 
@@ -939,29 +935,15 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             ToolName = "execute_command",
         };
 
-        if (OperatingSystem.IsWindows())
-        {
+        // Every platform lands on the same operator escape: macOS and Linux have no jail to apply for empty
+        // roots, and Windows will not re-execute a host that cannot broker. None of them rewrites psi on
+        // the way out, which is what lets the run below reach the real target.
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            psi,
+            request,
+            NullLogger.Instance);
 
-            // Empty roots are not evaluated on Windows; NoFilesystemJail still allows run.
-            ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
-                psi,
-                request,
-                NullLogger.Instance);
-
-            Assert.Equal(ChildProcessSandboxApplyStatus.NoFilesystemJail, apply.Status);
-
-        }
-        else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
-        {
-
-            ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
-                psi,
-                request,
-                NullLogger.Instance);
-
-            Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
-
-        }
+        Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
             psi,
@@ -1021,15 +1003,9 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             request,
             NullLogger.Instance);
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
-
-            return;
-
-        }
-
+        // Windows fails closed here like every other platform: the broker it would have to re-execute does
+        // not exist in this host. It used to reach Completed because the jail launched a broker that died
+        // on startup, which is a started child, not a refused one.
         Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxUnavailable, result.Outcome);
 
         Assert.False(string.IsNullOrWhiteSpace(result.FilesystemSandboxDenialMessage));

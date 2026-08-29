@@ -14,12 +14,26 @@ internal static class SandboxExecHelper
 {
 
     /// <summary>
+    /// Whether this process can be re-executed as the sandbox broker. <see cref="TryHandle"/> is the only
+    /// route from <c>__sandbox-exec</c> argv to the broker, so a host that has called it can broker by
+    /// construction, and a host that has not — a test runner, an embedding host — cannot, however plausible
+    /// its <see cref="Environment.ProcessPath"/> looks. Tests must never call <see cref="TryHandle"/>: the
+    /// call is the declaration, and it is process-wide.
+    /// </summary>
+    internal static bool IsBrokerCapableHost { get; private set; }
+
+    /// <summary>
     /// When <paramref name="args"/> is a <c>__sandbox-exec</c> invocation, runs the helper and never returns
     /// (process image replaced) or exits the process with a non-zero code. Returns <c>false</c> when this
     /// is a normal Arcanum CLI/host launch.
     /// </summary>
     internal static bool TryHandle(string[] args)
     {
+
+        // Whatever this argv turns out to be, reaching this line proves that a re-execution of this same
+        // image with __sandbox-exec argv would arrive here too. That is exactly what the Windows jail needs
+        // to know before it re-executes the host as the broker.
+        IsBrokerCapableHost = true;
 
         if (args.Length < 1
             || !string.Equals(args[0], ChildProcessFilesystemJail.HelperArg, StringComparison.Ordinal))
