@@ -584,7 +584,7 @@ Inspects and deletes long-term associative Saga memory. These commands do not me
 
 Inspect distinct Arcanum memory sources and retention policies.
 
-Provides read-only cross-store inspection plus explicit Lexicon deletion. Search results retain their source scope; there is intentionally no generic delete-all-memory command.
+Provides read-only cross-store inspection, explicit Lexicon deletion, and per-memory curation over one named Saga memory at a time. Search results retain their source scope; there is intentionally no generic delete-all-memory command, and every curation verb names the one store it changes both in what it asks and in what it reports.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -597,6 +597,13 @@ Provides read-only cross-store inspection plus explicit Lexicon deletion. Search
 | `arcanum memory lexicon show <name>` | Show a Lexicon entity by name. | None beyond global or inherited family options. |
 | `arcanum memory lexicon search <query>` | Search Lexicon names, types, and facts. | None beyond global or inherited family options. |
 | `arcanum memory lexicon delete <name>` | Delete one explicitly named Lexicon entity. | None beyond global or inherited family options. |
+| `arcanum memory saga [command]` | Curate one Saga memory: read it, correct it, and decide whether retrieval and retention keep it. Distinct from the top-level `arcanum saga`, which is that store's own read-and-delete surface and answers what is in there rather than what has been decided about one memory. | None beyond global or inherited family options. |
+| `arcanum memory saga show <id>` | Show one Saga memory's provenance, lifecycle, and retrieval eligibility. Prints the memory's text, the content hash the host publishes for that text, whether it is retired and whether it is pinned, and the Annals claim governing it with one line per version — or a line saying no claim is recorded, because silence there would read as "never curated" rather than "claims are not being kept". The hash is the host's own, rendered verbatim: the three verbs below take exactly that value, and a client that recomputed the digest would agree only for as long as both sides hashed the same bytes. | None beyond global or inherited family options. |
+| `arcanum memory saga correct <id> --expected-content-hash <hex>` | Replace the text of one Saga memory, naming the exact content being corrected. Replacement text comes from `--file` or piped standard input — never argv, so a corrected memory never lands in shell history. Content that is empty or only whitespace is refused from either source before any route is reached, because the Annals keeps digests rather than content and a blanked memory is not readable back out of its own history. Correcting a retired memory is refused with `Saga.AlreadyRetired`: a retired memory is reinstated before it is corrected. Correcting to the text already stored succeeds, reporting `Unchanged`. | `--file <path>` — read the replacement text from this file; omit to read from piped standard input. |
+| `arcanum memory saga retire <id> --expected-content-hash <hex>` | Take one Saga memory out of retrieval, keeping it inspectable. Retiring a memory that is already retired succeeds and says so: the operator asked for a state and the memory is in that state, nothing is written, and the reported outcome is what separates that from the call that did the work. | None beyond global or inherited family options. |
+| `arcanum memory saga reinstate <id> --expected-content-hash <hex>` | Put a retired Saga memory back into retrieval. Reinstating a memory that was never retired succeeds on the same terms as an already-retired retirement, and reports which of the two happened. | None beyond global or inherited family options. |
+| `arcanum memory saga pin <id>` | Mark one Saga memory durable, so retention will not prune it. Takes no content hash: a pin is not a statement about what a memory says, and requiring proof of the text would make pinning fail after an unrelated correction. | None beyond global or inherited family options. |
+| `arcanum memory saga unpin <id>` | Release a pin, so retention may prune this memory again. | None beyond global or inherited family options. |
 
 #### Dedicated Covenant management commands (four registered, the rest contract-frozen)
 
