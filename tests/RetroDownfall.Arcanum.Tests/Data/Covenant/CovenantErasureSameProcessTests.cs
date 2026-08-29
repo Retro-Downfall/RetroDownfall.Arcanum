@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -62,7 +63,9 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.True(
             result.IsSuccess,
-            result.IsFailure ? $"{result.Error.Code}: {result.Error.Message}" : null);
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
 
@@ -914,7 +917,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
 
-        Assert.True(reset.IsSuccess, reset.Error.Message);
+        Assert.True(
+            reset.IsSuccess,
+            reset.IsFailure
+                ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.Equal(confirmed.PlanId, reset.Value.PlanId);
 
@@ -1064,7 +1071,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.True(caller.IsCancellationRequested);
 
-        Assert.True(reset.IsSuccess, reset.Error.Message);
+        Assert.True(
+            reset.IsSuccess,
+            reset.IsFailure
+                ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         LongRunningOperation operation = await harness.ReadResetOperationAsync();
 
@@ -1240,7 +1251,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<DataRetentionApplyResult> reset = await harness.ApplyResetAsync(confirmed.PlanId);
 
-        Assert.True(reset.IsSuccess, reset.Error.Message);
+        Assert.True(
+            reset.IsSuccess,
+            reset.IsFailure
+                ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.True(faults.CompletedTransitionAttempts >= 2);
 
@@ -1340,7 +1355,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.True(reset.IsSuccess, reset.Error.Message);
+        Assert.True(
+            reset.IsSuccess,
+            reset.IsFailure
+                ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         LongRunningOperation operation = await harness.ReadResetOperationAsync();
 
@@ -1388,7 +1407,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<CovenantErasureCompletion> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
 
-        Assert.True(reset.IsSuccess, reset.Error.Message);
+        Assert.True(
+            reset.IsSuccess,
+            reset.IsFailure
+                ? $"{reset.Error.Code}: {reset.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, reset.Value.Disposition);
 
@@ -1462,6 +1485,32 @@ public sealed class CovenantErasureSameProcessTests
 
         internal string LogsRoot => Path.Combine(_factory.TempHome, ".config", "arcanum");
 
+        /// <summary>
+        /// The coordinator's own warnings, for an assertion a refused erasure can fail.
+        /// </summary>
+        /// <remarks>
+        /// A refusal reaches the caller as one error code over a message that names no step, and
+        /// <c>Covenant.ErasureIncomplete</c> has seven emitters spread across five phases. The phase is
+        /// written down only in the coordinator's warning, so an assertion that can fail on a refusal
+        /// carries it — two Windows-only investigations of this class stalled for want of exactly that.
+        /// </remarks>
+        internal string CoordinatorDiagnostics()
+        {
+
+            TestCapturingLogger<CovenantErasureCoordinator> captured =
+                Services.GetRequiredService<TestCapturingLogger<CovenantErasureCoordinator>>();
+
+            string[] warnings =
+            [
+                .. captured.Entries
+                    .Where(static entry => entry.Level >= LogLevel.Warning)
+                    .Select(static entry => entry.Message),
+            ];
+
+            return warnings.Length == 0 ? string.Empty : $" [{string.Join("; ", warnings)}]";
+
+        }
+
         internal static async Task<SameProcessHarness> CreateAsync(
             TimeSpan? drainTimeout = null,
             RouteFailure routeFailure = RouteFailure.None,
@@ -1488,6 +1537,15 @@ public sealed class CovenantErasureSameProcessTests
 
             factory.ServiceOverrides = services =>
             {
+
+                // Registered for every harness, not only the ones expected to refuse: the phase a
+                // refused erasure stopped at exists nowhere else, and a run that fails is exactly the
+                // run that cannot be re-armed afterwards.
+                TestCapturingLogger<CovenantErasureCoordinator> coordinatorLog = new();
+
+                services.AddSingleton(coordinatorLog);
+
+                services.AddSingleton<ILogger<CovenantErasureCoordinator>>(coordinatorLog);
 
                 if (storeFaults is not null)
                 {
