@@ -132,6 +132,8 @@ The last one carries the weight. A correction that cannot re-embed would leave `
 
 Refused when there is no such memory, when it is already retired, and when the digest disagrees.
 
+**Revisited.** Retiring a memory that is already retired is not refused. The operator named a state and the memory is in it, and answering no there argues with them rather than serving them — the same reasoning §6.3 was revisited under. It now succeeds: nothing is written at all, the result reports `AlreadyRetired` so a caller can still tell "this call did it" from "it was already so", and the memory's projection comes back exactly as a real retirement's would. Two refusals remain here — no memory with that id, and a digest that disagrees — and the retirement is checked before the digest is compared, so an already-retired memory reports that whatever hash the call carried. `AlreadyRetired` survives as a refusal for correction alone, exactly as §6.3's table states, because correcting a retired memory acts on it not at all rather than leaving the operator with the state they asked for.
+
 ### 7.2 Why exclusion is structural
 
 Deleting the embedding rows is what takes the memory out of retrieval, and it is deliberate rather than incidental. Every path that can surface a Saga memory reaches it through an embedding: the accelerated path reads `saga_memory_embeddings_vec`, the managed path reads `saga_memory_embeddings`, and the Campaign-scoped path inner-joins the blob table to `saga_memories`. A row with no embedding is unreachable from all three without a predicate that four call sites would have to agree about, and a predicate one of them forgot is a retired memory still steering turns.
@@ -174,6 +176,8 @@ The digest binds the scope kind and Campaign, so retiring a memory inside one Ca
 That version is a `Correct`. There is no fourth operation code and there cannot be one — `annal_versions.OperationCode` bakes its vocabulary into a `CHECK` SQLite cannot alter, on a table joined by three composite foreign keys and guarded by an append-only trigger, and adding a member would be a rebuild of the only record of what durable memory has claimed. A reinstatement *is* the claim being restated after a tombstone, which is what `Correct` means; the head moves from a retirement to a restatement at the next revision, which is exactly the one motion the head's validate trigger allows.
 
 Refused when there is no such memory, when it is not retired, and when the embedding substrate is unavailable — a reinstatement that cannot embed would leave a memory the operator believes is back but that nothing can retrieve.
+
+**Revisited.** Reinstating a memory that is not retired is not refused either, on §7.1's reasoning and in its shape: nothing is written, the result reports `NotRetired`, and the projection comes back. There is no `Saga.NotRetired` code anywhere in the vocabulary, because no caller can ever receive one — a code declared for an answer that is never given is a contract inviting a client to handle a case that does not exist. Three refusals remain: no memory with that id, a digest that disagrees, and an embedding substrate that cannot produce a vector.
 
 ## 10. Pin and unpin
 
