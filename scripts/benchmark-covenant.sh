@@ -29,16 +29,20 @@
 # Exit codes come from the host and are the contract: 0 within every stated bound, 1 a breach, 2 the
 # run could not be made. A breach and an unmeasurable run are different answers.
 #
-# Ceiling headroom, and what is not yet known about it. The latency ceilings are set at roughly four
-# times what an Apple-silicon developer machine measures, on the reasoning that a shared CI runner is
-# slower and a gate that failed on a busy one would be turned off. That factor is an estimate. No
-# observed distribution from a shared runner has been recorded anywhere in this repository, so the
-# margin between what the CI lane actually measures and what these ceilings allow is unverified.
+# Ceiling headroom, and where the latency ceilings come from. Each is ten times what a quiet shared CI
+# runner measured for that percentile, rounded up to two significant figures, taken from the second
+# table below. Ten is the multiple the gate's own intent asks for -- it catches an order-of-magnitude
+# regression and nothing smaller -- and it is also what keeps a contended runner from tripping it: the
+# four operations that drift with the host clear the worst figure yet recorded by a further factor of
+# two or more. turn.admission is deliberately outside the rule and keeps the tighter ceilings it has,
+# because it does not drift and its resolution is load-bearing; the workload manifest states why, and
+# states what holding it costs.
 #
-# The CI lane now records its run and uploads it as covenant-benchmark-run.json with ninety days of
-# retention, which is where that evidence comes from. Before any ceiling is tightened, read several of
-# those artifacts, and state the observed p95 and p99 per operation and the date of the runs here, so
-# the next person tightening a ceiling can see how much room they are taking away rather than guessing.
+# The CI lane records its run and uploads it as covenant-benchmark-run.json with ninety days of
+# retention, which is where that evidence comes from. Before any ceiling is moved in either direction,
+# read several of those artifacts, and state the observed p95 and p99 per operation and the date of
+# the runs here, so the next person moving one can see how much room they are taking away or granting
+# rather than guessing.
 #
 # First observations from a shared runner, both macos-26, 2026-08-26, microseconds:
 #
@@ -50,13 +54,32 @@
 #   status.census       50.6 /   76.7        48.3 /   58.0         38.2 /   46.8
 #
 # Run A breached turn.admission p99 and mutation.prepare p95; run B passed everything with room, at
-# the same commit-adjacent tree on the same runner label. So the ceilings are not too tight and were
-# not loosened. What the two runs establish is the size of the noise: turn.admission p99 moved by a
+# the same commit-adjacent tree on the same runner label. The ceilings were left where they were at
+# that point. What the two runs establish is the size of the noise: turn.admission p99 moved by a
 # factor of thirty-seven between them, on an operation whose p50 is two and a half microseconds. At
 # that scale one scheduler preemption is the whole measurement, so the p99 of the microsecond
 # operations reports the runner rather than the code, and a red one is a reason to re-run before it is
 # a reason to investigate. Allocations are the half that holds still -- identical to within sixteen
 # bytes across all three columns -- and are the number to reach for when a regression needs catching.
+#
+# The pair the current latency ceilings are derived from, both macos-26 and both measuring identical
+# code, 2026-08-29, microseconds. The third column is this machine, quiet, measured the same day:
+#
+#                     quiet 33262061371    busy 32943342814     this machine
+#                       p95 /   p99          p95 /   p99         p95 /  p99
+#   turn.plan          327.2 /  652.6       881.0 / 1631.7      152.9 /  318.8
+#   turn.admission       3.5 /   10.0         3.7 /    5.1        1.7 /    2.1
+#   mutation.prepare   142.0 /  241.2       478.2 /  761.7       65.7 /   91.5
+#   mutation.commit   1627.8 / 3363.3      5280.2 / 7476.9      782.9 / 1835.4
+#   status.census       61.2 /   77.7       214.7 /  381.0       32.4 /   35.9
+#
+# The busy run breached three of the five operations against the ceilings in force that day and the
+# quiet one breached none, on the same code, which is the whole case for re-deriving them. The size of
+# the host term is plain in the two CI columns: status.census p95 moved by three and a half and
+# mutation.prepare p95 by three and a third, while allocations moved by at most two per cent. The
+# third column is what the retired four-times factor was measured against, and shows the other half of
+# why it was not enough -- a shared runner is about twice a developer machine before any contention
+# begins, so headroom derived from a developer machine is already halved by the time the gate runs.
 
 set -euo pipefail
 
