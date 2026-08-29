@@ -14,6 +14,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// The central connection owner's drain, which every Covenant maintenance path runs before it takes
 /// an exclusive lock.
 /// </summary>
+[Collection(RetroDownfall.Arcanum.Tests.Collections.SqliteConnectionPoolCollection.Name)]
 public sealed class CovenantConnectionDrainTests
 {
 
@@ -131,23 +132,16 @@ public sealed class CovenantConnectionDrainTests
         // the pooled handle this test disposed a statement ago.
         await database.Connection.CloseAsync();
 
-        // Measured on macOS against the pinned Microsoft.Data.Sqlite, and asserted only where it was
-        // measured. Windows reaches this line with no survivors at all: the sidecars are already gone
-        // while the pooled handle is still in the pool, which is the opposite of what this test was
-        // written to characterise. Why is not established -- it may be that the pool does not retain
-        // the handle there, or that the close path deletes the sidecars anyway -- and asserting the
-        // macOS answer on both platforms is what turned an unexplained divergence into a red lane.
-        //
-        // The half below runs everywhere, because it is the property the drain actually owes: after
-        // DrainAsync returns, nothing survives. That holds on either platform whatever the pool did.
-        if (!OperatingSystem.IsWindows())
-        {
-
-            Assert.Contains(
-                CovenantResidualArtifactClass.WriteAheadLog,
-                CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
-        }
+        // Asserted on every platform again. This was briefly guarded to POSIX after it redded on
+        // Windows, on the reading that the pool behaves differently there -- but the class is also
+        // order-dependent, and the same assertion fails on macOS under a wide filter and passes when
+        // the class runs alone, because ClearAllPools() is process-global and another test's drain
+        // empties the pool this one is measuring. The class is serialized now, which removes that
+        // interference. If Windows still reds here, the platform difference is real and this guard
+        // earns its place; guarding first would have hidden the race behind a plausible story.
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
 
         Result drained = await drain.DrainAsync(Token);
 
