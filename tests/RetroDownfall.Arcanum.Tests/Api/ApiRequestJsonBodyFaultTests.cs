@@ -32,10 +32,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// <c>ArcanumExceptionHandler</c>, which special-cases only <c>JsonException</c>, and a client that
 /// dropped mid-upload was told the server broke: 500 <c>Hub.Unhandled</c> with an Error-level log.
 ///
-/// <para>The routes are driven through the real application because the helper is shared by every route
-/// that reads a JSON body, so this held for all of them rather than for one family. <c>/api/lore</c> is
-/// here deliberately: its use of the helper long predates the Saga curation routes, which is what makes
-/// this a repair of the helper rather than of one caller.</para>
+/// <para>The routes are driven through the real application because the helper is shared by sixteen
+/// call sites, so this held across all of them rather than for one family. <c>/api/lore</c> is here
+/// deliberately: its use of the helper long predates the Saga curation routes, which is what makes this
+/// a repair of the helper rather than of one caller. <c>/api/config/validate</c> is here for the
+/// opposite reason — it reads its body by hand and cannot call the helper at all.</para>
+///
+/// <para>Not every route in the Api reads its body through the helper. The ones that read JSON by hand
+/// and catch only <c>JsonException</c> have the same hole <c>/api/config/validate</c> had, and this
+/// suite does not speak for them; it speaks for the four routes it drives and the call sites the helper
+/// serves.</para>
 /// </remarks>
 [Collection("ApiHost")]
 public sealed class ApiRequestJsonBodyFaultTests
@@ -45,8 +51,12 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
     // Reads its body with JsonDocument.ParseAsync because it needs the raw tree, so it cannot route
-    // through the helper at all -- and kept answering 500 for these faults after every route that
-    // could use the helper was repaired. It is here so "every JSON-reading route" means every one.
+    // through the helper at all, and went on answering 500 for these faults once the helper stopped.
+    // It is here because a reader that cannot call the helper is exactly where a helper-only repair
+    // fails to reach -- so this suite covers one of those beside the ones that do call it. It speaks
+    // for the routes it drives and for the sixteen call sites the helper serves, not for every route
+    // in the Api: others read JSON by hand, and a hand reader catching only JsonException has the
+    // same hole this one had.
     [InlineData("/api/config/validate")]
     public async Task A_body_that_ends_early_is_answered_with_the_envelope_and_not_a_server_error(string route)
     {
@@ -67,8 +77,12 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
     // Reads its body with JsonDocument.ParseAsync because it needs the raw tree, so it cannot route
-    // through the helper at all -- and kept answering 500 for these faults after every route that
-    // could use the helper was repaired. It is here so "every JSON-reading route" means every one.
+    // through the helper at all, and went on answering 500 for these faults once the helper stopped.
+    // It is here because a reader that cannot call the helper is exactly where a helper-only repair
+    // fails to reach -- so this suite covers one of those beside the ones that do call it. It speaks
+    // for the routes it drives and for the sixteen call sites the helper serves, not for every route
+    // in the Api: others read JSON by hand, and a hand reader catching only JsonException has the
+    // same hole this one had.
     [InlineData("/api/config/validate")]
     public async Task A_body_past_the_size_ceiling_keeps_the_status_kestrel_chose(string route)
     {
@@ -102,8 +116,12 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
     // Reads its body with JsonDocument.ParseAsync because it needs the raw tree, so it cannot route
-    // through the helper at all -- and kept answering 500 for these faults after every route that
-    // could use the helper was repaired. It is here so "every JSON-reading route" means every one.
+    // through the helper at all, and went on answering 500 for these faults once the helper stopped.
+    // It is here because a reader that cannot call the helper is exactly where a helper-only repair
+    // fails to reach -- so this suite covers one of those beside the ones that do call it. It speaks
+    // for the routes it drives and for the sixteen call sites the helper serves, not for every route
+    // in the Api: others read JSON by hand, and a hand reader catching only JsonException has the
+    // same hole this one had.
     [InlineData("/api/config/validate")]
     public async Task A_body_arriving_too_slowly_is_a_timeout_rather_than_a_bad_request(string route)
     {
