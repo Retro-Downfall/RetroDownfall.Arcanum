@@ -686,17 +686,28 @@ internal sealed partial class SagaMemoryStore
 
                     embeddingCmd.Transaction = transaction;
 
+                    // An upsert rather than an update, because the row this replaces can be absent. A
+                    // memory in the EmbeddingMissing state -- a saga_memories row whose
+                    // saga_memory_embeddings row is gone, which is what a Grimoire restored from a
+                    // backup taken under a different configured embedding width holds -- is still
+                    // correctable, and an UPDATE matched nothing there and reported Applied anyway. The
+                    // memory kept saying EmbeddingMissing to the operator who had just been told the
+                    // correction landed, while the vec mirror below, an INSERT OR REPLACE, created its
+                    // row regardless and left the two tables disagreeing about the same memory.
+                    // MemoryId is this table's PRIMARY KEY, so OR REPLACE is a true upsert on it:
+                    // publishing the corrected content's embedding is what the verb promised either
+                    // way, and healing the missing row is how it keeps that promise.
                     embeddingCmd.CommandText =
                         """
-                        UPDATE "saga_memory_embeddings" SET "Embedding" = @embedding, "Dim" = @dim
-                        WHERE "MemoryId" = @memoryId
+                        INSERT OR REPLACE INTO "saga_memory_embeddings" ("MemoryId", "Embedding", "Dim")
+                        VALUES (@memoryId, @embedding, @dim)
                         """;
+
+                    AddParameter(embeddingCmd, "@memoryId", id);
 
                     AddParameter(embeddingCmd, "@embedding", blob);
 
                     AddParameter(embeddingCmd, "@dim", embedding.Length);
-
-                    AddParameter(embeddingCmd, "@memoryId", id);
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 

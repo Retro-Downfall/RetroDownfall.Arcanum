@@ -1,8 +1,14 @@
+using System.Data;
+
 using System.Net;
 
 using System.Text;
 
 using System.Text.Json;
+
+using Microsoft.Data.Sqlite;
+
+using Microsoft.EntityFrameworkCore;
 
 using Microsoft.Extensions.AI;
 
@@ -19,6 +25,12 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Weave;
+
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -246,6 +258,91 @@ public sealed class SagaCurationEndpointTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         await AssertRefusalAsync(response, ErrorCodes.Saga.EmbeddingUnavailable);
+
+    }
+
+    /// <summary>
+    /// A memory whose embedding row is gone is corrected, and the correction publishes an embedding for
+    /// the new text rather than reporting a success that left the memory unretrievable.
+    /// </summary>
+    /// <remarks>
+    /// <para>The missing row is not cut by hand here. It is left behind by
+    /// <c>BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync</c>, the production writer of this
+    /// state: a Grimoire restored from a backup taken under a different configured embedding width keeps
+    /// every <c>saga_memories</c> row and drops the base-table vector behind it, to be recomputed on
+    /// demand. It does not touch the vec0 mirror, so what a restore hands the operator is already the
+    /// two tables disagreeing — and a correction is one of the verbs that is supposed to settle it.</para>
+    /// <para>The detail route is read before the correction as well as after, so a failure here is about
+    /// the correction rather than about the arrangement: the first read is what proves the memory
+    /// reached the state this case is about.</para>
+    /// <para>The seeded vector is deliberately not the one <see cref="FakeWeaveService"/> answers, so
+    /// every assertion below can tell the vector the correction published apart from the vector the
+    /// insert wrote. Without that they are the same bytes and a correction that wrote neither table
+    /// would still look right.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Correcting_a_memory_whose_embedding_row_is_gone_publishes_one_rather_than_reporting_a_hollow_success()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        await EnableTheVectorMirrorAsync(factory);
+
+        await SeedMemoryAsync(factory, "mem-unembedded", OriginalContent, Vec(0f, 1f));
+
+        byte[]? extracted = await EmbeddingAsync(factory, "saga_memory_embeddings", "mem-unembedded");
+
+        Assert.NotNull(extracted);
+
+        // The production insert filled the mirror, not this case. An assertion about a table nothing
+        // production wrote to would hold just as well on a build where the mirror write never ran.
+        Assert.Equal(extracted, await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
+
+        await DropEmbeddingsTakenUnderAnotherWidthAsync(factory);
+
+        Assert.Null(await EmbeddingAsync(factory, "saga_memory_embeddings", "mem-unembedded"));
+
+        Assert.Equal(extracted, await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
+
+        using HttpResponseMessage before = await client.GetAsync("/api/memory/saga/mem-unembedded");
+
+        Assert.Equal(
+            SagaRetrievalEligibility.EmbeddingMissing,
+            (await ReadDetailAsync(before)).Eligibility);
+
+        using HttpResponseMessage corrected = await PostCorrectAsync(
+            client,
+            "mem-unembedded",
+            new SagaCorrectRequest(Hash(OriginalContent), CorrectedContent));
+
+        Assert.Equal(HttpStatusCode.OK, corrected.StatusCode);
+
+        SagaMemoryDetail detail = await ReadWriteResultAsync(corrected, SagaCurationOutcomeKind.Applied);
+
+        Assert.Equal(CorrectedContent, detail.Memory.Content);
+
+        Assert.Equal(SagaRetrievalEligibility.Eligible, detail.Eligibility);
+
+        // The same answer through the route an operator reads it through, which is where a correction
+        // that published nothing goes on reporting EmbeddingMissing after reporting success.
+        using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-unembedded");
+
+        Assert.Equal(SagaRetrievalEligibility.Eligible, (await ReadDetailAsync(shown)).Eligibility);
+
+        byte[]? published = await EmbeddingAsync(factory, "saga_memory_embeddings", "mem-unembedded");
+
+        Assert.NotNull(published);
+
+        // The corrected text's vector rather than the one the restore stranded in the mirror.
+        Assert.NotEqual(extracted, published);
+
+        // And both tables hold it. Their disagreeing is the whole of what this defect cost: a
+        // correction that answered Applied while the two described different memories.
+        Assert.Equal(published, await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
 
     }
 
@@ -1024,10 +1121,123 @@ public sealed class SagaCurationEndpointTests
         };
 
     /// <summary>
+    /// Builds the vec0 mirror and tells The Weave it is there, so the store's mirror writes run at all.
+    /// </summary>
+    /// <remarks>
+    /// No schema file installs that table — it exists only where an accelerator built it — and this
+    /// build ships none, so <c>WeaveIndexAvailability.IsVecAvailable</c> is false and every mirror write
+    /// in <c>SagaMemoryStore</c> is skipped. The Covenant erasure and retention suites stand a plain
+    /// table in for it the same way and for the same reason: a case about the two embedding tables
+    /// agreeing cannot be written at all on a build where only one of them is ever written. The flag is
+    /// set after the host is up because the bootstrapper clears it on its way through.
+    /// </remarks>
+    private static async Task EnableTheVectorMirrorAsync(ArcanumWebApplicationFactory factory)
+    {
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        SqliteConnection connection = await OpenGrimoireAsync(
+            scope.ServiceProvider.GetRequiredService<ArcanumDbContext>());
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            CREATE TABLE "saga_memory_embeddings_vec" ("MemoryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)
+            """;
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+        factory.Services.GetRequiredService<WeaveIndexAvailability>()
+            .SetAvailable(true, "Test mirror present.");
+
+    }
+
+    /// <summary>
+    /// Empties the Saga base embedding table the way a restore does, leaving every <c>saga_memories</c>
+    /// row exactly where it was and no vector behind any of them.
+    /// </summary>
+    /// <remarks>
+    /// <c>BackupRestoreService</c> runs this same worker over every restored Grimoire, with the
+    /// installation's own configured width, so an archive written under a different one lands with its
+    /// memories intact and its base-table vectors gone. Passing a width no seeded vector carries
+    /// reproduces that exactly, which is why no case here deletes a row on its own account.
+    /// </remarks>
+    private static async Task DropEmbeddingsTakenUnderAnotherWidthAsync(ArcanumWebApplicationFactory factory)
+    {
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        SqliteConnection connection = await OpenGrimoireAsync(
+            scope.ServiceProvider.GetRequiredService<ArcanumDbContext>());
+
+        long removed = await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
+            connection,
+            TestDimensions + 1,
+            CancellationToken.None);
+
+        // The seeded memory's vector and nothing else: an arrangement that removed no row would leave
+        // every assertion downstream describing a memory that never lost its embedding.
+        Assert.Equal(1L, removed);
+
+    }
+
+    /// <summary>The vector one table holds for one memory, or null where it holds no row for it.</summary>
+    private static async Task<byte[]?> EmbeddingAsync(
+        ArcanumWebApplicationFactory factory,
+        string table,
+        string id)
+    {
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        SqliteConnection connection = await OpenGrimoireAsync(
+            scope.ServiceProvider.GetRequiredService<ArcanumDbContext>());
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"""SELECT "Embedding" FROM "{table}" WHERE "MemoryId" = $id""";
+
+        _ = command.Parameters.AddWithValue("$id", id);
+
+        return await command.ExecuteScalarAsync(CancellationToken.None) as byte[];
+
+    }
+
+    /// <summary>
+    /// The host's own connection into its temporary Grimoire, opened if the context handed it over
+    /// closed. The caller holds the scope: this connection lives exactly as long as that context does.
+    /// </summary>
+    private static async Task<SqliteConnection> OpenGrimoireAsync(ArcanumDbContext db)
+    {
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+
+            await db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        return connection;
+
+    }
+
+    /// <summary>
     /// Writes the memory a case curates through the store's own insert — the production write path —
     /// rather than by putting a row in the table, so nothing a case asserts was seeded by hand.
     /// </summary>
-    private static async Task SeedMemoryAsync(ArcanumWebApplicationFactory factory, string id, string content)
+    /// <remarks>
+    /// <paramref name="embedding"/> defaults to the single vector <see cref="FakeWeaveService"/> answers
+    /// for every text, which is what the retrieval cases need. A case that has to tell the vector a
+    /// correction publishes apart from the vector this insert wrote names a different one.
+    /// </remarks>
+    private static async Task SeedMemoryAsync(
+        ArcanumWebApplicationFactory factory,
+        string id,
+        string content,
+        float[]? embedding = null)
     {
 
         using IServiceScope scope = factory.Services.CreateScope();
@@ -1041,7 +1251,7 @@ public sealed class SagaCurationEndpointTests
             sessionId: null,
             tags: null,
             source: "extraction",
-            Vec(1f),
+            embedding ?? Vec(1f),
             CancellationToken.None);
 
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
