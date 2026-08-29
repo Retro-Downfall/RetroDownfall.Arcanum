@@ -99,10 +99,15 @@ public static class GrimoireDatabaseBootstrapper
 
             string passphrase = passphraseSource.Passphrase;
 
+            // Unpooled, or this checkpoint defeats its own purpose. A pooled handle is not closed by
+            // disposal, and the engine only removes the two sidecars when the last handle closes —
+            // so the connection that truncated the log would leave both files behind it, which is
+            // the state this method exists to prevent.
             string connectionString = new SqliteConnectionStringBuilder
             {
                 DataSource = dbPath,
                 Password = passphrase,
+                Pooling = false,
             }.ToString();
 
             await using SqliteConnection connection = new(connectionString);

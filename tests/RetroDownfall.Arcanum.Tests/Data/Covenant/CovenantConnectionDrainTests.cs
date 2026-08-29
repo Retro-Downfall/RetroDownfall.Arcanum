@@ -177,4 +177,66 @@ public sealed class CovenantConnectionDrainTests
 
     }
 
+    /// <summary>
+    /// Every production file that composes a connection string or constructs a connection either
+    /// turns pooling off or is named here with a reason.
+    /// </summary>
+    /// <remarks>
+    /// A pooled handle a component opened for itself is the one kind this owner cannot close.
+    /// Enrolment covers the handles components hand it, and the pool clear covers the ones they have
+    /// let go of — but disposal does not close a pooled connection, so a component that has already
+    /// returned is still holding the database with nobody left to ask. That is not an abstract
+    /// hazard: it is what a Covenant erasure's proof of absence reads as a live handle and refuses
+    /// on, and the write-ahead log and wal-index it refuses over survive until somebody clears a pool
+    /// they never opened.
+    ///
+    /// <para>The string is inventoried alongside the connection because the string is what decides
+    /// pooling; a component that composes one and hands it to EF has made the same choice as one that
+    /// opens a handle itself. File-level rather than site-level, like the pool-clear inventory above
+    /// it, so a file that already turns pooling off for one connection can add a second without this
+    /// noticing. The rule it does enforce is the one that matters for a new component: an author
+    /// reaching for SQLite in a file that never has before either says <c>Pooling = false</c> or
+    /// comes here and says why not.</para>
+    /// </remarks>
+    [Fact]
+    public void Every_production_opener_is_unpooled_or_named_here()
+    {
+
+        List<string> offenders =
+        [
+            .. ProductionSourceInventory.Sources()
+                .Where(static source => source.Names("new SqliteConnection(")
+                    || source.Names("SqliteConnection connection = new(")
+                    || source.Names("new SqliteConnectionStringBuilder"))
+                .Where(static source => !source.Names("Pooling = false"))
+                .Where(static source => !PooledByDesign(source))
+                .Select(static source => source.RelativePath),
+        ];
+
+        Assert.Empty(offenders);
+
+    }
+
+    /// <summary>
+    /// The three that are deliberately left pooled, and what makes each of them safe.
+    /// </summary>
+    private static bool PooledByDesign(ProductionSource source) =>
+
+        // The one connection string EF composes for the workload. Its handle is the drain's ordinary
+        // case: enrolled while a scope holds it open, released by the pool clear once it is idle. It
+        // is also the path pooling exists for — EF opens and closes per operation, and unpooled that
+        // would repeat SQLCipher key derivation on every read the product performs.
+        source.Is("ArcanumDbContextOptionsConfigurator.cs")
+
+        // The design-time factory. It runs under `dotnet ef` against a scratch file in the temp root
+        // and is never constructed by the shipped host, so no drain will ever be asked about it.
+        || source.Is("ArcanumDbContextFactory.cs")
+
+        // Two per-turn readbacks over the workload's own connection string. Their handles are idle in
+        // a pool by the time any maintenance runs, so the drain's pool clear releases them, and an
+        // overlap with a live proof is what the absence proof's bounded retry covers. Unpooling them
+        // would repeat key derivation on the per-turn path, which is a latency change to measure
+        // rather than to assume.
+        || source.Is("SessionEntryPersistence.cs");
+
 }
