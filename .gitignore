@@ -26,3 +26,6 @@ mcp.db-shm
 mcp.db-wal
 *.db-shm
 *.db-wal
+
+# Agent scratch: task briefs, ledgers, and brainstorm session state.
+.superpowers/
