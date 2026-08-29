@@ -106,6 +106,8 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
         private readonly bool _delayBeforeCapture;
 
+        private int _captured;
+
         public ShutdownPathProbe(bool delayBeforeCapture = false)
         {
 
@@ -130,6 +132,18 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
                 // Make asynchronous teardown observable. The factory must keep its isolated
                 // process environment active until every hosted service finishes stopping.
                 await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+
+            }
+
+            if (Interlocked.Exchange(ref _captured, 1) != 0)
+            {
+
+                // Shutdown runs this hosted service more than once. The factory stops the host, which
+                // releases the DevHost entry point parked in WaitForShutdownAsync — that stops the host
+                // a second time, and Program's finally stops it a third. Only the first pass is awaited
+                // inside the factory's isolated environment; the later ones can still be delaying when
+                // the environment is restored, so they must not overwrite what the first pass observed.
+                return;
 
             }
 
