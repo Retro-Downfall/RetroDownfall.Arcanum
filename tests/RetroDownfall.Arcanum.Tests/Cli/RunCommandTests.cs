@@ -59,6 +59,8 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Secrets.Security;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -852,6 +854,101 @@ public sealed class RunCommandTests
             input.PositionalInstruction);
 
         Assert.NotNull(execution.Request);
+
+    }
+
+    /// <summary>
+    /// Nothing in this file is about the setup gate, so nothing in it may depend on whether this
+    /// machine has ever run <c>arcanum setup</c>.
+    /// </summary>
+    /// <remarks>
+    /// The production startup probe answers "already installed" from two pieces of ambient machine
+    /// state: the operator's own <c>~/.config/arcanum</c>, and the <c>arcanum</c> /
+    /// <c>master-api-key</c> entry in the OS credential store. The credential does not move with
+    /// <c>ARCANUM_TEST_HOME</c>, so a redirected home alone still reads it. This test withholds
+    /// both — an empty home and an empty credential store, which is precisely a machine that never
+    /// completed setup — and asserts the turn still runs. With the harness's probe substitution
+    /// removed it fails the way Windows CI did: exit 2, "Arcanum setup is required."
+    /// </remarks>
+    [Fact]
+
+    public async Task Run_executes_on_a_machine_that_has_never_completed_setup()
+    {
+
+        string pristineHome = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-pristine-home-{Guid.NewGuid():N}");
+
+        _ = Directory.CreateDirectory(pristineHome);
+
+        string? originalTestHome =
+            global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? originalDotnetEnvironment =
+            global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        string? originalAspNetCoreEnvironment =
+            global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", pristineHome);
+
+            FakeRunInputReader input = new(SuccessInput("explain", null));
+
+            FakeRunExecutionDispatcher execution = new();
+
+            ServiceCollection services = ConfigureRunParserServices(
+                input,
+                execution: execution);
+
+            services.RemoveAll<IOsCredentialStore>();
+
+            services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                services,
+                ["run", "explain"]);
+
+            Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+            Assert.NotNull(execution.Request);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(
+                "ARCANUM_TEST_HOME",
+                originalTestHome);
+
+            global::System.Environment.SetEnvironmentVariable(
+                "DOTNET_ENVIRONMENT",
+                originalDotnetEnvironment);
+
+            global::System.Environment.SetEnvironmentVariable(
+                "ASPNETCORE_ENVIRONMENT",
+                originalAspNetCoreEnvironment);
+
+            try
+            {
+
+                Directory.Delete(pristineHome, recursive: true);
+
+            }
+            catch (IOException)
+            {
+
+                // Best-effort cleanup of a temporary profile root.
+
+            }
+
+        }
 
     }
 

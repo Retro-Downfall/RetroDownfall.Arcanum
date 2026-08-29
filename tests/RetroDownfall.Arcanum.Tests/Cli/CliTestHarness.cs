@@ -1,5 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Tests.Support;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -16,6 +19,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// are process-global mutable state, so every test that calls this must run in the
 /// <c>[Collection("GlobalConsole")]</c> collection (see GlobalConsoleCollection) to avoid racing
 /// with other tests that touch the same state.
+///
+/// The installation startup probe is substituted here rather than left to each caller — see
+/// <see cref="ApplyInstalledStartupProbe"/> for why the production one cannot answer for a test.
 /// </summary>
 internal static class CliTestHarness
 {
@@ -28,6 +34,8 @@ internal static class CliTestHarness
         string[] args,
         string? input = null)
     {
+
+        ApplyInstalledStartupProbe(services);
 
         ServiceProvider provider = services.BuildServiceProvider();
 
@@ -46,10 +54,13 @@ internal static class CliTestHarness
         Console.SetOut(outWriter);
 
         Console.SetError(errorWriter);
-        if (input is not null)
-        {
-            Console.SetIn(new StringReader(input));
-        }
+        // Standard input belongs to the harness even when the test supplies none. Left alone, the
+        // command reads whichever stdin the runner happened to attach: /dev/null under CI, where a
+        // read returns end-of-input at once; a terminal, where `run` prompts interactively; or an
+        // open pipe — how an agent or wrapper process launches `dotnet test` — where the read never
+        // returns and the whole suite hangs on it forever. An empty reader is the answer CI gives,
+        // given deterministically.
+        Console.SetIn(input is null ? TextReader.Null : new StringReader(input));
         AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
         {
             Out = new AnsiConsoleOutput(outWriter),
@@ -73,6 +84,47 @@ internal static class CliTestHarness
 
             provider.Dispose();
         }
+
+    }
+
+    /// <summary>
+    /// Gives the command tree an installation probe that answers for this test rather than for this
+    /// machine, unless the caller registered a probe of its own.
+    /// </summary>
+    /// <remarks>
+    /// <c>ConfigureCliServices</c> registers the production probe, which decides whether an
+    /// installation exists by reading the operator's own <c>~/.config/arcanum</c> and the
+    /// <c>arcanum</c> / <c>master-api-key</c> entry in the OS credential store. Neither answer is
+    /// the test's: on a machine that has run <c>arcanum setup</c> the probe says "installed" and
+    /// every command proceeds, while on a machine that never has — a fresh contributor checkout, or
+    /// Windows CI — <c>run</c> stops at its setup gate with exit 2 and twenty-two tests about
+    /// parsing, attachments and reasoning fail for a reason none of them is about. The credential
+    /// does not move with a redirected <c>ARCANUM_TEST_HOME</c> either, so redirecting the home is
+    /// not enough on its own. Substituting the probe here is behaviour-preserving on a machine that
+    /// is set up, because that is exactly the answer the production probe gives there.
+    ///
+    /// A test whose subject <em>is</em> the probe — the factory-reset command tests — registers its
+    /// own double, which is recognised by being a type from this assembly and left in place.
+    /// </remarks>
+    private static void ApplyInstalledStartupProbe(
+        IServiceCollection services)
+    {
+
+        bool callerOwnsTheProbe = services.Any(static descriptor =>
+            descriptor.ServiceType == typeof(IInstallationStartupProbe)
+            && (descriptor.ImplementationInstance?.GetType() ?? descriptor.ImplementationType)
+                ?.Assembly == typeof(CliTestHarness).Assembly);
+
+        if (callerOwnsTheProbe)
+        {
+
+            return;
+
+        }
+
+        services.RemoveAll<IInstallationStartupProbe>();
+
+        services.AddSingleton<IInstallationStartupProbe>(new InstalledStartupProbe());
 
     }
 
