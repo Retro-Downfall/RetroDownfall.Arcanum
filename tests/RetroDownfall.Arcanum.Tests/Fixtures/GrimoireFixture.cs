@@ -412,7 +412,17 @@ public sealed class GrimoireFixture : IDisposable
 
     }
 
-    public ArcanumDbContext CreateContext(string databasePath)
+    /// <summary>
+    /// A context over one database copy, unpooled by default.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="pooled"/> is the shape the host composes in production, where nothing sets
+    /// <c>Pooling</c> and the provider's default therefore applies. A suite asking a question about
+    /// what a connection leaves behind has to be able to ask it of that shape: a pooled handle is not
+    /// closed by disposal, so the sidecars outlive the caller, and a fixture that only ever composed
+    /// the unpooled shape would answer every such question with the reassuring one.
+    /// </remarks>
+    public ArcanumDbContext CreateContext(string databasePath, bool pooled = false)
     {
 
         TestGrimoireDbPassphraseSource passphraseSource = new();
@@ -426,7 +436,7 @@ public sealed class GrimoireFixture : IDisposable
             {
                 DataSource = databasePath,
                 Password = _passphrase,
-                Pooling = false,
+                Pooling = pooled,
             }.ToString())
             .UseModel(ArcanumDbContextModel.Instance)
             .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance)
@@ -434,9 +444,9 @@ public sealed class GrimoireFixture : IDisposable
 
         ArcanumDbContext context = new(options, secretStore, passphraseSource);
 
-        // Keep the non-pooled SQLCipher connection open for the context lifetime. Reopening an
-        // encrypted database for every EF operation is prohibitively slow on Windows because each
-        // open repeats key derivation; disposing the context still releases the file handle.
+        // Keep the SQLCipher connection open for the context lifetime. Reopening an encrypted
+        // database for every EF operation is prohibitively slow on Windows because each open repeats
+        // key derivation; disposing the context still releases the file handle.
         context.Database.OpenConnection();
 
         return context;

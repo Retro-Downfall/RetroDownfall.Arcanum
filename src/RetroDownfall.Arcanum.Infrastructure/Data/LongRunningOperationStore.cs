@@ -36,9 +36,24 @@ internal sealed class LongRunningOperationStore(
         "PublicSummary", "TerminalErrorCode", "Revision"
         """;
 
-    private readonly string? _sqliteConnectionString =
+    /// <summary>
+    /// The scoped ledger connection string with pooling removed, for the heartbeat's own handle.
+    /// </summary>
+    /// <remarks>
+    /// Disposing a pooled <see cref="SqliteConnection"/> does not close the database: the native
+    /// handle goes back into the pool still open, so a heartbeat that has already returned leaves a
+    /// write-ahead log and a wal-index sitting beside the Grimoire until some later caller happens to
+    /// clear the pools. Nothing enrols that handle with <see cref="ICovenantConnectionDrain"/> and
+    /// nothing could — the drain runs inside the erasure whose lease this heartbeat renews, so a
+    /// drain that closed it would cancel the operation it was draining for. Unpooled, the handle is
+    /// really closed when its one UPDATE finishes and the two sidecars go with it, which is what the
+    /// Covenant erasure's proof of absence reads as "no handle is still holding the database". The
+    /// open this repeats costs one key derivation a minute, which is the cadence every heartbeat in
+    /// the repo runs at.
+    /// </remarks>
+    private readonly string? _heartbeatConnectionString =
         db.Database.GetDbConnection() is SqliteConnection sqlite
-            ? sqlite.ConnectionString
+            ? new SqliteConnectionStringBuilder(sqlite.ConnectionString) { Pooling = false }.ToString()
             : null;
 
     private IDisposable? _covenantDrainEnrolment =
@@ -840,7 +855,7 @@ internal sealed class LongRunningOperationStore(
             async () =>
             {
 
-                if (_sqliteConnectionString is null)
+                if (_heartbeatConnectionString is null)
                 {
 
                     return await RenewOverScopedConnectionAsync(
@@ -852,7 +867,7 @@ internal sealed class LongRunningOperationStore(
 
                 }
 
-                await using SqliteConnection connection = new(_sqliteConnectionString);
+                await using SqliteConnection connection = new(_heartbeatConnectionString);
 
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 

@@ -346,6 +346,70 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The heartbeat's own connection is closed when the heartbeat returns, not parked in a pool.
+    /// </summary>
+    /// <remarks>
+    /// Composed over the pooled context the host composes in production, because that is the shape
+    /// the defect needs: disposing a pooled connection does not close the database — the native
+    /// handle goes back into the pool with the file still open — so a heartbeat that has already
+    /// returned leaves a write-ahead log and a wal-index behind it for as long as it takes some
+    /// unrelated caller to clear the pools. Nothing enrols that handle with the Covenant connection
+    /// drain and nothing can: the drain runs inside the erasure whose lease this heartbeat renews, so
+    /// a drain that closed it would cancel the operation it was draining for.
+    ///
+    /// <para>Asserted through the erasure's own inventory and its own live-handle classes rather than
+    /// through a file-existence check, because the claim is about what the erasure refuses on rather
+    /// than about what happens to be on disk, and the two must not be able to drift apart.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task RenewLeaseAsync_LeavesNoLiveHandleArtifactBesideTheGrimoire()
+    {
+
+        RequireSqlCipher();
+
+        string pooledPath = _fixture.CopyDatabase();
+
+        await using ArcanumDbContext pooledDb = _fixture.CreateContext(pooledPath, pooled: true);
+
+        LongRunningOperationStore store = new(pooledDb);
+
+        DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = Assert.IsType<LongRunningOperation>(
+            await store.TryStartSingleFlightAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionPrune,
+                    LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                    "Apply one bounded retention sweep.",
+                    startedAt),
+                "retention-owner",
+                startedAt,
+                startedAt.AddMinutes(5)));
+
+        // The ledger writes above ran on the scoped EF connection, which the drain does reach — by
+        // enrolment while it is open, and by clearing the pools once it is not. Closing and clearing
+        // here is that drain, so what survives it afterwards is the heartbeat's handle and nothing
+        // else.
+        await pooledDb.Database.CloseConnectionAsync();
+
+        SqliteConnection.ClearAllPools();
+
+        Assert.Empty(LiveHandleSurvivors(pooledPath));
+
+        bool renewed = await store.RenewLeaseAsync(
+            operation.Id,
+            "retention-owner",
+            startedAt.AddMinutes(1),
+            startedAt.AddMinutes(6));
+
+        Assert.True(renewed);
+
+        Assert.Empty(LiveHandleSurvivors(pooledPath));
+
+    }
+
+    /// <summary>
     /// The ordinary heartbeat runs on a connection this store owns, never the workload's scoped one.
     /// </summary>
     /// <remarks>
@@ -1100,6 +1164,21 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+    /// <summary>
+    /// The residual classes a Covenant erasure reads as a handle still holding this database.
+    /// </summary>
+    /// <remarks>
+    /// Only the live-handle classes, because the copies share one directory: the staging and replaced
+    /// classes are matched by an engine or primitive prefix rather than against this database's own
+    /// name, so another suite's litter in the same directory would answer a question this test is not
+    /// asking.
+    /// </remarks>
+    private static IReadOnlyList<CovenantResidualArtifactClass> LiveHandleSurvivors(string databasePath) =>
+    [
+        .. CovenantResidualArtifacts.Survivors(databasePath)
+            .Where(CovenantResidualArtifacts.LiveHandleClasses.Contains),
+    ];
 
     private async Task ExecuteAsync(string sql)
     {

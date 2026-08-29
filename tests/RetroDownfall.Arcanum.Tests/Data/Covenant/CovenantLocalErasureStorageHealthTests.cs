@@ -272,6 +272,41 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
     }
 
+    /// <summary>
+    /// The retried proof still refuses on a handle that never lets go, and says how long it waited.
+    /// </summary>
+    /// <remarks>
+    /// The proof is taken more than once so that a handle in the act of closing is not read as one
+    /// that never will. This is the other half of that: a handle held open for the whole of the
+    /// retry window produces the same refusal, at the same code, and the refusal carries the bound
+    /// it exhausted. Without the bound in the message a stranded artifact and a handle nobody closed
+    /// read identically to the next person holding a failed Windows run, which is exactly the
+    /// question two investigations of this refusal have already had to stop and ask.
+    /// </remarks>
+    [Fact]
+    public async Task A_handle_held_across_every_attempt_still_refuses_and_names_the_bound()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await using SqliteConnection survivor = await erased.OpenUnenrolledReaderAsync(Token);
+
+        _ = await Scalar(survivor, "SELECT COUNT(*) FROM covenant_state;", Token);
+
+        Result verified = await erased.Health.VerifySidecarAbsenceAsync(Token);
+
+        Assert.True(verified.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, verified.Error.Code);
+
+        Assert.Contains("write-ahead log", verified.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("after 10 attempts over 225 ms", verified.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(erased.DatabasePath, verified.Error.Message, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task A_drained_installation_passes_the_close()
     {

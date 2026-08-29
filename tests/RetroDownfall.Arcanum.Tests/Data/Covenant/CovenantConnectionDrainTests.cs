@@ -90,6 +90,58 @@ public sealed class CovenantConnectionDrainTests
 
     }
 
+    /// <summary>
+    /// A pooled handle survives its own disposal, and only the pool clear releases the sidecars.
+    /// </summary>
+    /// <remarks>
+    /// The fact the whole ordering here rests on, written down because it is invisible at every call
+    /// site: disposing a pooled connection does not close the database. Its native handle goes back
+    /// into the pool with the file still open, so the write-ahead log and the wal-index stay on disk
+    /// after the caller believes it has let go — and every proof of absence a Covenant erasure makes
+    /// is a statement about exactly those two files. That is why enrolment alone would not be enough
+    /// and why the drain clears the pools after it, rather than instead of it.
+    ///
+    /// <para>It is also the boundary of what the drain can promise. The proof it enables is true at
+    /// the instant it is taken and about nothing later: a caller that opens a pooled connection after
+    /// this returns puts both files straight back.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_disposed_pooled_handle_keeps_the_sidecars_until_the_drain_clears_the_pools()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        CovenantConnectionDrain drain = new();
+
+        SqliteConnection pooled = new(
+            new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
+            {
+                Pooling = true,
+            }.ToString());
+
+        await using (pooled.ConfigureAwait(false))
+        {
+
+            await pooled.OpenAsync(Token);
+
+        }
+
+        // The scratch handle is unpooled and closes for real, so what is left holding the database is
+        // the pooled handle this test disposed a statement ago.
+        await database.Connection.CloseAsync();
+
+        Assert.Contains(
+            CovenantResidualArtifactClass.WriteAheadLog,
+            CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+        Result drained = await drain.DrainAsync(Token);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+    }
+
     [Fact]
     public async Task A_drain_with_nothing_registered_still_clears_the_pools()
     {

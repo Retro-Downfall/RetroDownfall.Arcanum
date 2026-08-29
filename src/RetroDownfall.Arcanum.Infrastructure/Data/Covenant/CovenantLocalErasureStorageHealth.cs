@@ -237,6 +237,27 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// <summary>The Covenant family's row in the shared per-capability cleanup cursor.</summary>
     private const long CovenantFamilyCode = (long)GrimoireSchemaFamily.Covenant;
 
+    /// <summary>How many times a proof of absence is taken before its refusal stands.</summary>
+    /// <remarks>
+    /// A residual sidecar means either a handle that is in the act of closing or a handle that is
+    /// not. The first is a race this proof can lose by microseconds — a lease heartbeat, a pooled
+    /// handle another thread is disposing, an operating system that will not unlink a file until its
+    /// last opener lets go — and asking the same question a few milliseconds later asks it of a
+    /// settled process. The second is untouched: a file nobody is closing is still there on the tenth
+    /// look, and the refusal that follows is the same code, with the same admission left closed, as
+    /// the one the first look produced. Retrying a proof is not tolerating a failed one, and nothing
+    /// here widens what counts as absent.
+    ///
+    /// <para>The drain is inside the retried unit rather than outside it. Closing a pooled connection
+    /// returns its handle to a pool rather than releasing it, so a caller that let go between two
+    /// attempts leaves the sidecars alive until the pools are cleared again — re-proving without
+    /// re-draining would wait for a file whose last holder nothing had asked to close.</para>
+    /// </remarks>
+    private const int AbsenceProofAttempts = 10;
+
+    /// <summary>The pause between two attempts at the same proof.</summary>
+    private static readonly TimeSpan AbsenceProofRetryInterval = TimeSpan.FromMilliseconds(25);
+
     private readonly ICovenantMaintenanceConnectionFactory _connections;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
@@ -269,7 +290,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         return drained.IsFailure
             ? drained
-            : RequireAbsent(CovenantResidualArtifacts.LiveHandleClasses);
+            : await ProveAbsentAsync(CovenantResidualArtifacts.LiveHandleClasses, cancellationToken)
+                .ConfigureAwait(false);
 
     }
 
@@ -329,7 +351,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // handle still holding the database; a surviving replaced original names a previous pass that
         // installed a candidate it could not verify, and rewriting the file underneath that is
         // rewriting a destination whose identity nobody has established.
-        Result residue = RequireAbsent(CovenantResidualArtifacts.Declared);
+        Result residue = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+            .ConfigureAwait(false);
 
         if (residue.IsFailure)
         {
@@ -382,7 +405,10 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         // Every class, not only the ones a live handle produces. A staging or replaced file that
         // survived this far is a copy of protected state the erasure has already reported compacting.
-        return drained.IsFailure ? drained : RequireAbsent(CovenantResidualArtifacts.Declared);
+        return drained.IsFailure
+            ? drained
+            : await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+                .ConfigureAwait(false);
 
     }
 
@@ -402,7 +428,8 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         // Before the handle, not only after it. The sidecar-free handle is opened immutable, which
         // tells the engine the file cannot change underneath it — so a write-ahead log that did exist
         // would be ignored and this verification would answer from superseded pages.
-        Result before = RequireAbsent(CovenantResidualArtifacts.Declared);
+        Result before = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, cancellationToken)
+            .ConfigureAwait(false);
 
         if (before.IsFailure)
         {
@@ -421,6 +448,9 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
 
         }
 
+        // Taken once, unlike the proof above it. This one asks what the reopen itself left behind
+        // rather than whether anything is still holding the database, and a step that waited for its
+        // own artifact to be tidied away by somebody else would be reporting on a different erasure.
         Result after = RequireAbsent(CovenantResidualArtifacts.Declared);
 
         return after.IsFailure ? Result<CovenantVerifiedCandidateState>.Failure(after.Error) : verified;
@@ -1578,9 +1608,55 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             $"A Covenant export could not be verified: {detail}. The original database is left in place.");
 
     /// <summary>
+    /// Takes one proof of absence, re-draining between attempts, and refuses if every attempt fails.
+    /// </summary>
+    /// <remarks>
+    /// The first attempt is the one the erasure has always taken, at the moment it has always taken
+    /// it, so a settled installation is never made to wait. Only a refusal is repeated, and only up
+    /// to <see cref="AbsenceProofAttempts"/> times: a handle that is closing has let go by then, and
+    /// a handle that is not still refuses with the code, the classes, and the closed admission it
+    /// would have refused with on the first look.
+    /// </remarks>
+    private async Task<Result> ProveAbsentAsync(
+        IReadOnlyList<CovenantResidualArtifactClass> classes,
+        CancellationToken cancellationToken)
+    {
+
+        Result absent = RequireAbsent(classes);
+
+        for (int attempt = 2; absent.IsFailure && attempt <= AbsenceProofAttempts; attempt++)
+        {
+
+            await Task.Delay(AbsenceProofRetryInterval, _timeProvider, cancellationToken)
+                .ConfigureAwait(false);
+
+            Result drained = await DrainAsync(cancellationToken).ConfigureAwait(false);
+
+            if (drained.IsFailure)
+            {
+
+                return drained;
+
+            }
+
+            absent = RequireAbsent(classes, attempt);
+
+        }
+
+        return absent;
+
+    }
+
+    /// <summary>
     /// Reports which classes of residual artifact exist, and refuses without naming a file.
     /// </summary>
-    private Result RequireAbsent(IReadOnlyList<CovenantResidualArtifactClass> classes)
+    /// <remarks>
+    /// <paramref name="attempts"/> is carried into the message so a refusal says whether it was ever
+    /// re-taken. Without it a stranded file and a handle that never let go read identically, and the
+    /// next reader of a Windows-only failure has to go and find out whether the proof was retried at
+    /// all — which is the question two investigations of this refusal have already had to ask.
+    /// </remarks>
+    private Result RequireAbsent(IReadOnlyList<CovenantResidualArtifactClass> classes, int attempts = 1)
     {
 
         List<CovenantResidualArtifactClass> survivors =
@@ -1588,12 +1664,22 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             .. CovenantResidualArtifacts.Survivors(_connections.DatabasePath).Where(classes.Contains),
         ];
 
-        return survivors.Count == 0
-            ? Result.Success()
-            : new Error(
-                ErrorCodes.Covenant.ErasureIncomplete,
-                $"A Covenant erasure left {CovenantResidualArtifacts.Describe(survivors)} beside the "
-                + "Grimoire, so local erasure is incomplete.");
+        if (survivors.Count == 0)
+        {
+
+            return Result.Success();
+
+        }
+
+        string persisted = attempts <= 1
+            ? string.Empty
+            : $" after {attempts.ToString(CultureInfo.InvariantCulture)} attempts over "
+                + $"{((attempts - 1) * AbsenceProofRetryInterval.TotalMilliseconds).ToString(CultureInfo.InvariantCulture)} ms";
+
+        return new Error(
+            ErrorCodes.Covenant.ErasureIncomplete,
+            $"A Covenant erasure left {CovenantResidualArtifacts.Describe(survivors)} beside the "
+            + $"Grimoire{persisted}, so local erasure is incomplete.");
 
     }
 
