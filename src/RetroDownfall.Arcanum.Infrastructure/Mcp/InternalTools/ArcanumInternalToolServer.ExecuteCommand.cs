@@ -337,22 +337,22 @@ internal sealed partial class ArcanumInternalToolServer
 
         StringBuilder text = new();
 
-        text.AppendLine("--- stdout ---");
+        text.Append("--- stdout ---").Append('\n');
 
-        text.AppendLine(runResult.Stdout.Text);
+        text.Append(runResult.Stdout.Text).Append('\n');
 
         if (runResult.Stdout.Truncated)
         {
-            text.AppendLine($"[preview ended after {perStreamCapBytes} bytes; complete stdout is available below]");
+            text.Append($"[preview ended after {perStreamCapBytes} bytes; complete stdout is available below]").Append('\n');
         }
 
-        text.AppendLine("--- stderr ---");
+        text.Append("--- stderr ---").Append('\n');
 
-        text.AppendLine(runResult.Stderr.Text);
+        text.Append(runResult.Stderr.Text).Append('\n');
 
         if (runResult.Stderr.Truncated)
         {
-            text.AppendLine($"[preview ended after {perStreamCapBytes} bytes; complete stderr is available below]");
+            text.Append($"[preview ended after {perStreamCapBytes} bytes; complete stderr is available below]").Append('\n');
         }
 
         text.Append("--- exit code ---\n");
@@ -362,15 +362,15 @@ internal sealed partial class ArcanumInternalToolServer
         if (completeOutput is not null)
         {
 
-            text.AppendLine();
+            text.Append('\n');
 
-            text.AppendLine("--- complete output handle ---");
+            text.Append("--- complete output handle ---").Append('\n');
 
-            text.AppendLine(completeOutput.Value.Handle);
+            text.Append(completeOutput.Value.Handle).Append('\n');
 
-            text.AppendLine("--- complete output streams ---");
+            text.Append("--- complete output streams ---").Append('\n');
 
-            text.AppendLine(string.Join(", ", completeOutput.Value.AvailableStreams));
+            text.Append(string.Join(", ", completeOutput.Value.AvailableStreams)).Append('\n');
 
             text.Append(
                 "Use read_command_output with this handle, a listed stream, offset 0, then each returned nextOffset. The handle expires when this connection closes.");

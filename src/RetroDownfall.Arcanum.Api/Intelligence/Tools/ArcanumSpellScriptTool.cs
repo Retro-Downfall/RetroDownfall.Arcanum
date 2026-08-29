@@ -401,25 +401,25 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         var text = new StringBuilder();
 
-        text.AppendLine("--- stdout ---");
+        text.Append("--- stdout ---").Append('\n');
 
-        text.AppendLine(runResult.Stdout.Text);
+        text.Append(runResult.Stdout.Text).Append('\n');
 
         if (runResult.Stdout.Truncated)
         {
 
-            text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
+            text.Append($"[truncated: exceeded {perStreamCap} bytes]").Append('\n');
 
         }
 
-        text.AppendLine("--- stderr ---");
+        text.Append("--- stderr ---").Append('\n');
 
-        text.AppendLine(runResult.Stderr.Text);
+        text.Append(runResult.Stderr.Text).Append('\n');
 
         if (runResult.Stderr.Truncated)
         {
 
-            text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
+            text.Append($"[truncated: exceeded {perStreamCap} bytes]").Append('\n');
 
         }
 
