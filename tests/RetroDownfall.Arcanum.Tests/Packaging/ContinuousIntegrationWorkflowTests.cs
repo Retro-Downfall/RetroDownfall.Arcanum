@@ -544,22 +544,40 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     }
 
+    /// <summary>
+    /// The inverse of the rule that stood here until the operator asked for it. CI used to run on
+    /// every push to main, and this test refused any change that left an integration branch ungated.
+    /// Push-triggering is now off by choice, so the rule that replaces it pins the choice rather than
+    /// the old guarantee -- an unpinned trigger drifts back silently, and a policy nobody wrote down
+    /// gets "restored" by the next person who reads a red lane as a mistake.
+    /// </summary>
+    /// <remarks>
+    /// What was given up is real and is named here so it is not rediscovered: a direct push to main
+    /// runs no gate, so coverage, the Windows suite and the AOT IL closure analysis are only as
+    /// current as the last dispatch or the last pull request. Restoring the trigger means restoring
+    /// this test's opposite as well.
+    /// </remarks>
     [Fact]
-    public void Ci_runs_on_a_push_to_every_branch_the_project_integrates_on()
+    public void Ci_runs_on_demand_and_on_pull_requests_and_not_on_a_push()
     {
 
-        IReadOnlyList<string> branches = PushTriggerBranches(FindRepositoryRoot());
+        IReadOnlySet<string> triggers = TopLevelTriggers(FindRepositoryRoot());
 
-        // main, and whatever else the project integrates on at the time. long-term-memory was named
-        // here for as long as it was the branch every workstream landed on; it was merged into main
-        // and deleted, and a rule that keeps asserting a branch nobody can push to is asserting the
-        // past. Add the next integration branch here when there is one -- the reason has not changed:
-        // a direct push to a branch this list omits runs no gate at all, so coverage, the Windows
-        // suite, and the AOT IL closure analysis would execute only on pull requests.
         Assert.True(
-            branches.Contains("main", StringComparer.Ordinal),
-            "A direct push to main runs no CI at all: .github/workflows/ci.yml lists on.push.branches "
-            + $"as [{string.Join(", ", branches)}].");
+            triggers.Contains("workflow_dispatch"),
+            "CI is dispatch-only by design, so losing workflow_dispatch leaves no way to run it at "
+            + $"all: .github/workflows/ci.yml declares [{string.Join(", ", triggers)}].");
+
+        Assert.True(
+            triggers.Contains("pull_request"),
+            "A pull request is the one automatic gate left: .github/workflows/ci.yml declares "
+            + $"[{string.Join(", ", triggers)}].");
+
+        Assert.False(
+            triggers.Contains("push"),
+            "ci.yml has regained an on.push trigger. That is a policy change, not a fix -- the "
+            + "operator turned it off on purpose. Restore it deliberately, and replace this "
+            + "assertion with the branch-coverage rule it displaced.");
 
     }
 
@@ -607,63 +625,66 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     }
 
-    private static IReadOnlyList<string> PushTriggerBranches(string repositoryRoot)
+    /// <summary>
+    /// The keys directly under <c>on:</c>. Two spaces of indent and a trailing colon, which is the
+    /// shape every trigger in this file uses; a comment line or a nested key is deeper and a
+    /// top-level section such as <c>jobs:</c> has no leading space at all.
+    /// </summary>
+    private static IReadOnlySet<string> TopLevelTriggers(string repositoryRoot)
     {
 
         string[] lines = WorkflowLines(repositoryRoot);
 
-        int push = Array.FindIndex(lines, line => line == "  push:");
+        int on = Array.FindIndex(lines, line => line == "on:");
 
-        Assert.True(push >= 0, "ci.yml has no top-level on.push trigger.");
+        Assert.True(on >= 0, "ci.yml has no top-level on: block.");
 
-        int branches = -1;
+        HashSet<string> triggers = new(StringComparer.Ordinal);
 
-        for (int index = push + 1; index < lines.Length; index++)
+        for (int index = on + 1; index < lines.Length; index++)
         {
 
             string line = lines[index];
 
-            // A line at the `push:` indent or shallower has left the trigger block; anything
-            // deeper is a comment or a sibling key such as `paths-ignore`.
-            if (line.Length > 0 && !line.StartsWith("    ", StringComparison.Ordinal))
+            if (line.Length == 0)
+            {
+
+                continue;
+
+            }
+
+            // A line with no leading space has left the on: block entirely.
+            if (!line.StartsWith(" ", StringComparison.Ordinal))
             {
 
                 break;
 
             }
 
-            if (line.Trim() == "branches:")
+            string trimmed = line.Trim();
+
+            // Comments carry the rationale for what is absent, so they sit inside this block and
+            // must not be read as triggers -- including the commented-out push: this file keeps as
+            // the restoration recipe.
+            if (trimmed.StartsWith("#", StringComparison.Ordinal))
             {
 
-                branches = index;
+                continue;
 
-                break;
+            }
+
+            if (line.StartsWith("  ", StringComparison.Ordinal)
+                && !line.StartsWith("   ", StringComparison.Ordinal)
+                && trimmed.EndsWith(":", StringComparison.Ordinal))
+            {
+
+                _ = triggers.Add(trimmed[..^1]);
 
             }
 
         }
 
-        Assert.True(branches >= 0, "ci.yml's on.push trigger names no branch list.");
-
-        List<string> named = [];
-
-        for (int index = branches + 1; index < lines.Length; index++)
-        {
-
-            string trimmed = lines[index].Trim();
-
-            if (!trimmed.StartsWith("- ", StringComparison.Ordinal))
-            {
-
-                break;
-
-            }
-
-            named.Add(trimmed[2..].Trim());
-
-        }
-
-        return named;
+        return triggers;
 
     }
 

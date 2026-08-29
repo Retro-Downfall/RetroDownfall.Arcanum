@@ -2,14 +2,16 @@ name: CI
 
 on:
   pull_request:
-  # main only. long-term-memory was listed here for as long as it was the integration branch
-  # workstreams landed on before main; it was merged and deleted, and while it existed alongside an
-  # identical main every push ran this workflow twice over the same tree. Add a branch back here
-  # rather than leaving one ungated: a direct push to a branch this list omits runs no gate at all,
-  # and coverage, the Windows suite, and the AOT IL closure analysis would only run on pull requests.
-  push:
-    branches:
-      - main
+  # No push trigger, deliberately. This ran on every push to main and the operator asked for it to
+  # stop: the gates take roughly half an hour on the Windows lane, and a run nobody is waiting on is
+  # a run whose red nobody reads. The cost is real and is accepted rather than hidden -- a direct
+  # push to main now runs no gate at all, so coverage, the Windows suite and the AOT IL closure
+  # analysis are only as current as the last dispatch or the last pull request.
+  #
+  # Restoring it is four lines:
+  #   push:
+  #     branches:
+  #       - main
   workflow_dispatch:
 
 permissions:
