@@ -296,7 +296,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
     }
 
-
     /// <summary>
     /// Which Campaign owns a memory, in one short cell.
     /// </summary>

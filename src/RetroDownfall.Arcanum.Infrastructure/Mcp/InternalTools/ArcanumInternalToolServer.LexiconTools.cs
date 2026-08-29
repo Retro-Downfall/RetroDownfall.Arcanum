@@ -337,7 +337,6 @@ internal sealed partial class ArcanumInternalToolServer
         return low;
     }
 
-
     /// <summary>
     /// The Lexicon tier this tool call belongs to, resolved from the ambient Session's canonical
     /// Campaign binding.

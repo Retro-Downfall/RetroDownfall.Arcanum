@@ -5907,6 +5907,7 @@ internal sealed partial class DataRetentionService(
             total += removed;
 
         }
+
         while (removed > 0);
 
         return total;
