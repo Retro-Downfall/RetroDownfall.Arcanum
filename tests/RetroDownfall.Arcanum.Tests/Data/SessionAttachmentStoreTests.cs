@@ -2100,6 +2100,13 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(orphanFile, "no-row");
 
+        // Backdated so the sweep's verdict does not ride on clock granularity. The threshold is read
+        // from the filesystem's own clock via a probe written after this file, and a probe landing in
+        // the same tick makes this orphan look no older than the threshold -- which the sweep then
+        // spares, correctly, because that is indistinguishable from a write still in flight. An hour
+        // is unambiguous on any filesystem granularity.
+        File.SetLastWriteTimeUtc(orphanFile, DateTime.UtcNow.AddHours(-1));
+
         await _store!.DeleteStalePendingAsync(TimeSpan.FromHours(24));
 
         Assert.False(File.Exists(orphanFile));
