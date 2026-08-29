@@ -139,6 +139,25 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
             await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
 
+            // The verdict is read off the deadline rather than inferred from an exception, because on
+            // one supported platform no exception arrives. A pending Windows pipe read is not
+            // cancelled: the registration above kills the tree, the read ends at EOF instead of
+            // throwing, and WaitForExitAsync then returns without consulting the token because the
+            // child has already gone — so control reaches here holding the killed child's exit code,
+            // and the operator is told the Familiar failed when it in fact ran out of time. That is
+            // the one distinction a deadline exists to draw. Off Windows the same run raises
+            // OperationCanceledException from the read and the arms above answer first; both routes
+            // have to give the same answer, so this one depends on neither.
+            // The caller's own token is asked first: the deadline is linked to it and reads as
+            // cancelled for either cause, and a caller that stopped the turn itself is owed its
+            // cancellation rather than this turn's timeout classification.
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (deadline.IsCancellationRequested)
+            {
+                throw TimedOut(request, standardError);
+            }
+
             if (process.ExitCode != 0)
             {
 
@@ -243,6 +262,17 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
             await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
 
+            // Decided from the deadline's own state, for the reason the streaming path states at
+            // length: the read that ends at EOF instead of cancelling is the ordinary Windows case,
+            // and this path is the one the status probe reads, where a Familiar that never answered
+            // must not be classified as one that answered badly.
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (deadline.IsCancellationRequested)
+            {
+                return TimedOutOutput(standardOutput, standardError);
+            }
+
             return new FamiliarProcessOutput(
                 process.ExitCode == 0 ? FamiliarProcessFailure.None : FamiliarProcessFailure.NonZeroExit,
                 process.ExitCode,
@@ -253,11 +283,7 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
 
-            return new FamiliarProcessOutput(
-                FamiliarProcessFailure.TimedOut,
-                ExitCode: 0,
-                standardOutput.ToString(),
-                ReadTail(standardError));
+            return TimedOutOutput(standardOutput, standardError);
 
         }
         finally
@@ -431,6 +457,19 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             FamiliarProcessFailure.TimedOut,
             $"'{request.FileName}' did not finish within {request.Timeout.TotalSeconds:0} seconds and its process tree was terminated.",
             standardError: ReadTail(standardError));
+
+    /// <summary>
+    /// The buffered path's timeout verdict, in one place because two routes reach it: the deadline
+    /// state the run is judged by, and the cancelled read that only some platforms raise.
+    /// </summary>
+    private static FamiliarProcessOutput TimedOutOutput(
+        StringBuilder standardOutput,
+        StringBuilder standardError) =>
+        new(
+            FamiliarProcessFailure.TimedOut,
+            ExitCode: 0,
+            standardOutput.ToString(),
+            ReadTail(standardError));
 
     private static FamiliarProcessException NonZeroExit(
         FamiliarProcessRequest request,

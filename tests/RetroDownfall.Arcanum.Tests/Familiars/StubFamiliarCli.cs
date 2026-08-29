@@ -120,6 +120,56 @@ internal sealed class StubFamiliarCli : IDisposable
 
     }
 
+    /// <summary>
+    /// Writes a stub that finishes — its frames, then <paramref name="exitCode"/> — while a
+    /// background grandchild holds the stderr pipe open behind it for
+    /// <paramref name="errorStreamHeldOpenFor"/>. That shape reproduces on a POSIX host what Windows
+    /// does to every Familiar it kills: by the time the deadline fires the child has already exited
+    /// and stdout has already ended at EOF, so no read is left pending to observe the cancellation and
+    /// the runner reaches its verdict with a real exit code in hand and nothing thrown. Unix only, and
+    /// only because Windows needs no help producing that sequence.
+    /// </summary>
+    public static StubFamiliarCli CreateExitingBehindAHeldOpenErrorStream(
+        IEnumerable<string> stdoutLines,
+        int exitCode,
+        TimeSpan errorStreamHeldOpenFor)
+    {
+
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-familiar-stub-" + Guid.NewGuid().ToString("N"));
+
+        _ = Directory.CreateDirectory(directory);
+
+        string payloadPath = Path.Combine(directory, "payload.ndjson");
+
+        File.WriteAllText(payloadPath, string.Join('\n', stdoutLines) + "\n");
+
+        string scriptPath = Path.Combine(directory, "familiar-stub");
+
+        // The grandchild inherits stderr and nothing else — its own stdout goes to /dev/null — so the
+        // runner still sees end of stream the moment this script exits, and is left waiting on the
+        // one pipe that has a writer alive past the deadline.
+        File.WriteAllText(
+            scriptPath,
+            "#!/bin/sh\n"
+            + $"cat '{payloadPath}'\n"
+            + $"{{ sleep {errorStreamHeldOpenFor.TotalSeconds:0.###}; }} >/dev/null &\n"
+            + $"exit {exitCode}\n");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            File.SetUnixFileMode(
+                scriptPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+
+        return new StubFamiliarCli(directory, scriptPath, []);
+
+    }
+
     /// <summary>A path that does not exist, for the "operator has not installed it" path.</summary>
     public static string MissingExecutablePath() =>
         Path.Combine(

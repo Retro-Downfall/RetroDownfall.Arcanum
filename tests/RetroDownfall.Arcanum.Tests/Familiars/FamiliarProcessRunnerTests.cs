@@ -409,6 +409,79 @@ public sealed class FamiliarProcessRunnerTests
 
     }
 
+    /// <summary>
+    /// The timeout verdict must not rest on a read having thrown, because on Windows none does: the
+    /// deadline's teardown kills the tree and the pending pipe read ends at EOF, leaving the runner to
+    /// report the killed child's exit code — a Familiar that ran out of time described as one that
+    /// failed. The stub reproduces that sequence here, where a read <em>would</em> observe the token:
+    /// it exits on its own long before the deadline, so stdout has ended and the child is reaped by the
+    /// time the clock runs out, and only the stderr pipe a background grandchild still holds is left
+    /// for the deadline to land on. Nothing throws out of the read path, exactly as on Windows, and the
+    /// answer has to be the same anyway.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_deadline_that_lands_after_the_stream_ended_is_still_a_timeout()
+    {
+
+        SkipWhereTheHostNeedsNoSimulating();
+
+        using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
+            ["one"],
+            exitCode: 3,
+            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+
+        List<string> received = [];
+
+        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+            async () =>
+            {
+
+                await foreach (string line in RunAsync(stub, timeout: TimeSpan.FromMilliseconds(750)))
+                {
+                    received.Add(line);
+                }
+
+            });
+
+        Assert.Equal(["one"], received);
+
+        Assert.Equal(FamiliarProcessFailure.TimedOut, failure.Failure);
+
+    }
+
+    /// <summary>
+    /// The mirror of the case above, and the one that separates the two verdicts: the same run with
+    /// the caller's own token cancelled instead of the deadline expiring owes the caller its
+    /// cancellation, not a timeout. Both are decided from the same two pieces of state, so the caller's
+    /// token is asked first — the deadline is linked to it and reads as cancelled either way.
+    /// </summary>
+    [SkippableFact]
+    public async Task Caller_cancellation_that_lands_after_the_stream_ended_is_never_a_timeout()
+    {
+
+        SkipWhereTheHostNeedsNoSimulating();
+
+        using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
+            ["one"],
+            exitCode: 3,
+            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+
+        using CancellationTokenSource cts = new();
+
+        cts.CancelAfter(TimeSpan.FromMilliseconds(250));
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () =>
+            {
+
+                await foreach (string _ in RunAsync(stub, cancellationToken: cts.Token))
+                {
+                }
+
+            });
+
+    }
+
     [Fact]
     public async Task Run_to_completion_reports_exit_code_and_both_streams_without_throwing()
     {
@@ -439,25 +512,15 @@ public sealed class FamiliarProcessRunnerTests
     /// <summary>
     /// A caller that cancels its own token gets the cancellation, never this turn's timeout
     /// classification — the <c>when</c> filter on the probe's timeout arm deliberately excludes caller
-    /// cancellation, so the read loop's exception propagates instead of being reported as a Familiar that
-    /// never answered. That propagating exit is the one neither explicit await covered before the prompt
-    /// write moved into a <c>finally</c>, so it is pinned here with a prompt large enough that the write
-    /// is genuinely overlapped with the read rather than long finished.
+    /// cancellation, and where the read raises nothing at all the runner asks the caller's own token
+    /// directly, so neither platform reports it as a Familiar that never answered. That propagating
+    /// exit is the one neither explicit await covered before the prompt write moved into a
+    /// <c>finally</c>, so it is pinned here with a prompt large enough that the write is genuinely
+    /// overlapped with the read rather than long finished.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task Run_to_completion_surfaces_caller_cancellation_rather_than_a_timeout()
     {
-
-        // The propagating exit above is unreachable on Windows, for a reason in the platform's pipe
-        // semantics rather than in the runner. Off Windows the redirected stdout is an
-        // AnonymousPipeClientStream whose already-issued ReadAsync observes the token, so the
-        // caller's cancellation leaves the read loop as an OperationCanceledException. On Windows a
-        // pending read on that pipe cannot be cancelled once issued: the deadline registration kills
-        // the child first, the read completes as EOF instead, and WaitForExitAsync then returns
-        // without consulting the token because the child has already exited. RunToCompletionAsync
-        // therefore returns a NonZeroExit output and throws nothing at all. Reaching the exception
-        // there would mean changing how production reads stdout, which is not this test's call.
-        Skip.If(OperatingSystem.IsWindows(), "A pending Windows pipe read ends at the kill as EOF, never as a cancellation.");
 
         using StubFamiliarCli stub = StubFamiliarCli.Create(
             ["one", "two", "three", "four", "five"],
@@ -477,6 +540,78 @@ public sealed class FamiliarProcessRunnerTests
                     Arguments = stub.Arguments,
 
                     StandardInput = new string('p', 512 * 1024),
+
+                    Timeout = TimeSpan.FromMinutes(2),
+
+                },
+                cts.Token));
+
+    }
+
+    /// <summary>
+    /// The buffered path draws the same distinction and has more riding on it: this is what the status
+    /// probe reads, and it treats "did not answer" and "answered badly" as different questions to put
+    /// to the operator. Same construction as the streaming case — the child is gone and its stdout has
+    /// ended before the deadline, so the read returns rather than cancelling, which is what a Windows
+    /// pipe does on every timed-out run.
+    /// </summary>
+    [SkippableFact]
+    public async Task Run_to_completion_reports_a_deadline_that_lands_after_the_read_ended_as_a_timeout()
+    {
+
+        SkipWhereTheHostNeedsNoSimulating();
+
+        using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
+            ["{\"loggedIn\":false}"],
+            exitCode: 3,
+            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+
+        FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
+            new FamiliarProcessRequest
+            {
+
+                FileName = stub.FileName,
+
+                Arguments = stub.Arguments,
+
+                Timeout = TimeSpan.FromMilliseconds(750),
+
+            },
+            CancellationToken.None);
+
+        Assert.Equal(FamiliarProcessFailure.TimedOut, output.Failure);
+
+    }
+
+    /// <summary>
+    /// What <see cref="Run_to_completion_surfaces_caller_cancellation_rather_than_a_timeout"/> looks
+    /// like on Windows, and the reason it was skipped there: a caller cancels, no read throws, and the
+    /// runner used to return a classified NonZeroExit instead of letting the cancellation out — the
+    /// caller told its Familiar had failed, for a turn the caller itself had abandoned.
+    /// </summary>
+    [SkippableFact]
+    public async Task Run_to_completion_surfaces_a_caller_cancellation_that_lands_after_the_read_ended()
+    {
+
+        SkipWhereTheHostNeedsNoSimulating();
+
+        using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
+            ["{\"loggedIn\":false}"],
+            exitCode: 3,
+            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+
+        using CancellationTokenSource cts = new();
+
+        cts.CancelAfter(TimeSpan.FromMilliseconds(250));
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _runner.RunToCompletionAsync(
+                new FamiliarProcessRequest
+                {
+
+                    FileName = stub.FileName,
+
+                    Arguments = stub.Arguments,
 
                     Timeout = TimeSpan.FromMinutes(2),
 
@@ -549,6 +684,20 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Equal(FamiliarProcessFailure.NotInstalled, output.Failure);
 
     }
+
+    /// <summary>
+    /// The four facts above stage, on a POSIX host, the sequence Windows produces by itself: a read
+    /// that ends normally after the deadline or the caller's cancellation has already fired. Staging it
+    /// takes a background grandchild holding a pipe open, which is a <c>/bin/sh</c> construction — and
+    /// on Windows there is nothing to stage, because every timed-out run there takes that route
+    /// natively and <see cref="A_wedged_familiar_is_torn_down_by_its_deadline"/> and
+    /// <see cref="Run_to_completion_surfaces_caller_cancellation_rather_than_a_timeout"/> are these
+    /// same two assertions on it. Skipped for the fixture, never for the behaviour.
+    /// </summary>
+    private static void SkipWhereTheHostNeedsNoSimulating() =>
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows takes this route natively, so the two unstaged facts in this class cover it there.");
 
     private async Task<List<string>> CollectAsync(
         StubFamiliarCli stub,
