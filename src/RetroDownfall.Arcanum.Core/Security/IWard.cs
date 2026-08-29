@@ -91,6 +91,13 @@ public enum WardResolutionOrigin
     [JsonStringEnumMemberName("hostRestarted")]
     HostRestarted,
 
+    /// <summary>
+    /// The tool was not a Ward candidate, so the host recorded the invocation without asking or
+    /// blocking it.
+    /// </summary>
+    [JsonStringEnumMemberName("ungated")]
+    Ungated,
+
 }
 
 public sealed record WardResolution(

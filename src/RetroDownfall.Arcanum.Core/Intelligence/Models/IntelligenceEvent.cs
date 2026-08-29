@@ -44,10 +44,10 @@ public sealed record IntelligenceEvent(
     [property: JsonIgnore]
     bool ToolDenied = false,
     /// <summary>
-    /// Who supplied a <c>warded</c> / <c>wardResolved</c> outcome (issue #53). Additive: omitted when
-    /// null, so clients that ignore it keep their existing behavior. Clients use it to tell an
-    /// operator-resolved ward from one the host resolved on its own — an auto-approved ward must be
-    /// reported, not prompted for.
+    /// How a <c>warded</c> / <c>wardResolved</c> outcome was produced (issues #53 and #216).
+    /// Additive: omitted when null, so clients that ignore it keep their existing behavior. Clients
+    /// use it to tell an operator-resolved Ward from one the host resolved on its own — auto-approved
+    /// and record-only ungated outcomes must be reported, not prompted for.
     /// </summary>
     [property: JsonPropertyName("origin")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

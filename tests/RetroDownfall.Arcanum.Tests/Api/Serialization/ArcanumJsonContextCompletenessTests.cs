@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Wards;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Serialization;
 
@@ -107,6 +109,65 @@ public sealed class ArcanumJsonContextCompletenessTests
         Assert.Equal(original.Type, result.Type);
 
         Assert.Equal(original.Message, result.Message);
+
+    }
+
+    [Fact]
+    public void Ungated_ward_origin_round_trips_through_stream_and_api_contracts()
+    {
+
+        WardResolutionOrigin origin = WardResolutionOrigin.Ungated;
+
+        IntelligenceEvent streamFrame = new(
+            IntelligenceEventType.WardResolved,
+            "read_file_chunk",
+            WardId: "ward-ungated",
+            WardToolName: "read_file_chunk",
+            WardAllowed: true,
+            WardOrigin: origin);
+
+        byte[] streamBytes = JsonSerializer.SerializeToUtf8Bytes(
+            streamFrame,
+            ArcanumJsonContext.Default.IntelligenceEvent);
+
+        IntelligenceEvent? roundTrippedFrame = JsonSerializer.Deserialize(
+            streamBytes,
+            ArcanumJsonContext.Default.IntelligenceEvent);
+
+        Assert.NotNull(roundTrippedFrame);
+
+        Assert.Equal(origin, roundTrippedFrame.WardOrigin);
+
+        Assert.Contains(
+            "\"origin\":\"ungated\"",
+            System.Text.Encoding.UTF8.GetString(streamBytes),
+            StringComparison.Ordinal);
+
+        WardResolutionDto apiResolution = new(
+            "ward-ungated",
+            true,
+            null,
+            DateTimeOffset.UnixEpoch,
+            origin);
+
+        byte[] apiBytes = JsonSerializer.SerializeToUtf8Bytes(
+            apiResolution,
+            ArcanumJsonContext.Default.WardResolutionDto);
+
+        WardResolutionDto? roundTrippedResolution = JsonSerializer.Deserialize(
+            apiBytes,
+            ArcanumJsonContext.Default.WardResolutionDto);
+
+        Assert.NotNull(roundTrippedResolution);
+
+        Assert.Equal(origin, roundTrippedResolution.Origin);
+
+        Assert.Contains(
+            "\"origin\":\"ungated\"",
+            System.Text.Encoding.UTF8.GetString(apiBytes),
+            StringComparison.Ordinal);
+
+        Assert.Equal("ungated", WardResolutionOrigins.ToMetricLabel(origin));
 
     }
 

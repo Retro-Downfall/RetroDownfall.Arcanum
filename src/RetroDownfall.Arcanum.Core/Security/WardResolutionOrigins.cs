@@ -21,6 +21,7 @@ public static class WardResolutionOrigins
             WardResolutionOrigin.TimedOut => "timed_out",
             WardResolutionOrigin.Cancelled => "cancelled",
             WardResolutionOrigin.HostRestarted => "host_restarted",
+            WardResolutionOrigin.Ungated => "ungated",
             _ => "human",
         };
 

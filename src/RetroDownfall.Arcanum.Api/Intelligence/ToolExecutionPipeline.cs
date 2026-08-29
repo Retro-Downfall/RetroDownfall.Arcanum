@@ -441,6 +441,7 @@ public sealed class ToolExecutionPipeline(
                     sessionId,
                     turnContext,
                     argsSnapshot,
+                    metricToolName,
                     wardEvents,
                     cancellationToken,
                     liveWardEmit,
@@ -506,6 +507,7 @@ public sealed class ToolExecutionPipeline(
                     sessionId,
                     turnContext,
                     argsSnapshot,
+                    metricToolName,
                     wardEvents,
                     cancellationToken,
                     liveWardEmit,
@@ -1344,6 +1346,7 @@ public sealed class ToolExecutionPipeline(
         string? sessionId,
         TurnContext turnContext,
         string argsSnapshot,
+        string metricToolName,
         List<IntelligenceEvent> wardEvents,
         CancellationToken cancellationToken,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
@@ -1362,7 +1365,7 @@ public sealed class ToolExecutionPipeline(
             && wardSettings.AutoDenyInUnattendedMode)
         {
 
-            RecordWardDecisionMetric(toolName, WardResolutionOrigin.AutoDenied);
+            RecordWardDecisionMetric(metricToolName, WardResolutionOrigin.AutoDenied);
 
             return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), wardEvents, Denied: true);
 
@@ -1394,6 +1397,54 @@ public sealed class ToolExecutionPipeline(
 
         if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
         {
+
+            string recordWardId = Guid.NewGuid().ToString();
+
+            using JsonDocument? recordArgsDocument = BuildWardArgumentsDocument(
+                toolName,
+                argsSnapshot);
+
+            JsonElement? recordWardArguments = recordArgsDocument?.RootElement.Clone();
+
+            IntelligenceEvent recordWardedEvent = new(
+                IntelligenceEventType.Warded,
+                toolName,
+                null,
+                null,
+                null,
+                recordWardId,
+                toolName,
+                recordWardArguments,
+                null,
+                null,
+                DateTimeOffset.UtcNow,
+                WardOrigin: WardResolutionOrigin.Ungated);
+
+            await EmitWardEventAsync(recordWardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
+
+            WardResolution recordResolution = ward.RecordAutomaticResolution(
+                recordWardId,
+                allowed: true,
+                reason: null,
+                WardResolutionOrigin.Ungated);
+
+            RecordWardDecisionMetric(metricToolName, recordResolution.Origin);
+
+            IntelligenceEvent recordResolvedEvent = new(
+                IntelligenceEventType.WardResolved,
+                toolName,
+                null,
+                null,
+                null,
+                recordWardId,
+                toolName,
+                null,
+                recordResolution.Allowed,
+                recordResolution.Reason,
+                DateTimeOffset.UtcNow,
+                WardOrigin: recordResolution.Origin);
+
+            await EmitWardEventAsync(recordResolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
 
             if (string.Equals(toolName, "ask_human", StringComparison.Ordinal) && observer is not null)
             {
@@ -1483,7 +1534,7 @@ public sealed class ToolExecutionPipeline(
 
         }
 
-        RecordWardDecisionMetric(toolName, resolution.Origin);
+        RecordWardDecisionMetric(metricToolName, resolution.Origin);
 
         if (autoApproved)
         {
