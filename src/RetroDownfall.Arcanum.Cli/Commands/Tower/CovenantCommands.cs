@@ -56,7 +56,7 @@ public sealed class CovenantCommands(
         CancellationToken cancellationToken)
     {
 
-        Result<string> content = await ReadContentAsync(file, cancellationToken).ConfigureAwait(false);
+        Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", cancellationToken).ConfigureAwait(false);
 
         if (content.IsFailure)
         {
@@ -199,7 +199,7 @@ public sealed class CovenantCommands(
         CancellationToken cancellationToken)
     {
 
-        Result<string> content = await ReadContentAsync(file, cancellationToken).ConfigureAwait(false);
+        Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", cancellationToken).ConfigureAwait(false);
 
         if (content.IsFailure)
         {
@@ -718,42 +718,6 @@ public sealed class CovenantCommands(
         return await confirmationPrompt
             .PromptForConfirmationAsync($"{verb} this Covenant entry?", cancellationToken)
             .ConfigureAwait(false);
-
-    }
-
-    /// <summary>
-    /// Reads authored content from a file or standard input, never from an argument.
-    /// </summary>
-    private static async Task<Result<string>> ReadContentAsync(string? file, CancellationToken cancellationToken)
-    {
-
-        if (file is { Length: > 0 })
-        {
-
-            return File.Exists(file)
-                ? Result<string>.Success(await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false))
-                : Result<string>.Failure(new Error(
-                    ErrorCodes.Validation.InvalidBody,
-                    $"No file exists at '{file}'."));
-
-        }
-
-        if (!Console.IsInputRedirected)
-        {
-
-            return Result<string>.Failure(new Error(
-                ErrorCodes.Validation.InvalidBody,
-                "Covenant content comes from --file or piped standard input, not from a command-line argument."));
-
-        }
-
-        string piped = await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-
-        return string.IsNullOrWhiteSpace(piped)
-            ? Result<string>.Failure(new Error(
-                ErrorCodes.Validation.InvalidBody,
-                "Covenant content was empty."))
-            : Result<string>.Success(piped);
 
     }
 

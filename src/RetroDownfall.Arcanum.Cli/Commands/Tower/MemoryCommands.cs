@@ -22,7 +22,7 @@ using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
-public sealed class MemoryCommands(
+public sealed partial class MemoryCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
