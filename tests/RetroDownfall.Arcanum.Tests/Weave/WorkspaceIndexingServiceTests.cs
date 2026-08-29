@@ -810,7 +810,17 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
 
+        // Change detection compares LastWriteTimeUtc for exact equality, and Windows stamps file
+        // times from the coarse system-clock tick, so a rewrite this soon after the indexing run
+        // that recorded the old timestamp can land on that very value — the reconciliation would
+        // then skip the file for a reason that has nothing to do with the overflow under test.
+        // Capturing what was recorded and stamping a distinctly later time keeps "modified after
+        // indexing" unambiguous on every filesystem, including the 2-second-granular ones.
+        DateTime indexedWriteTime = File.GetLastWriteTimeUtc(fullPath);
+
         File.WriteAllText(fullPath, "after overflow");
+
+        File.SetLastWriteTimeUtc(fullPath, indexedWriteTime.AddSeconds(2));
 
         service.RegisterWorkspace(_workspace.Root);
 
