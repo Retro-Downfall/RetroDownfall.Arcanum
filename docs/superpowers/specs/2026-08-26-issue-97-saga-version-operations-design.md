@@ -214,7 +214,7 @@ Six verbs under `arcanum memory saga`, beside `arcanum memory covenant` and `arc
 
 `arcanum saga list | divine | delete | stats` and `/api/saga*` are untouched. Those are the store's own read-and-delete surface; `arcanum memory saga` is the curation surface that names one store, and the two answer different questions. The listing surfaces do gain the lifecycle fields, because a listing that could not tell a retired memory from a live one would make the operator open every row to find out.
 
-**Revisited.** Half of that shipped. `SagaMemoryDto` carries both stamps, so `/api/saga`'s JSON reports them on every row; `arcanum saga list`'s rendered table gained no column for them, and `read_saga` returns a text block that never carried them. The gap is narrower than it reads, because a retired memory cannot appear in a similarity result at all — retirement takes the embedding every ranking path reaches a memory through — so what the two rendered surfaces cannot show is a pin, and `arcanum memory saga show` is where one is read.
+**Revisited.** Half of that shipped, and the half that did not is the listing this promise was written for. `SagaMemoryDto` carries both stamps, so `/api/saga`'s JSON reports them on every row. `arcanum saga list`'s rendered table gained no column for either, and its query — `ListAsync`, a select over `saga_memories` with no embedding join and no predicate over `RetiredAtUtc` — returns retired memories alongside live ones, so an operator reading that table sees them with nothing marking them. The similarity surfaces need no marking, because retirement takes the embedding they rank through and a retired memory simply stops appearing. `arcanum memory saga show` is where a memory's curation state is read.
 
 ## 13. Lifecycle
 

@@ -12,6 +12,8 @@ Give the declarative raw-SQL schema tree a code-owned way to move an already-ins
 
 The engine ships with every shipped tier still at version 1. No production version step and no production backfill exists when this lands; later durable-memory features author the first ones.
 
+**Revisited.** They did. The engine's own version constants and chain declarations are what say which tiers have moved and which of their steps carry a sweep; this paragraph describes the state at the moment the engine landed and no longer describes the installation.
+
 ## 2. The defect this closes
 
 `GrimoireSchemaInstaller.ClassifyExistingAsync` refuses an installed version above the manifest's and a same-version source-fingerprint disagreement. When the installed version is **below** the manifest's it returns `null`, which means proceed. Proceeding runs the head tree's `CREATE ... IF NOT EXISTS` statements — which cannot alter an existing table — and then `WriteMetadataAsync` stamps the manifest's version over the row regardless.

@@ -68,10 +68,15 @@ public interface ISagaMemoryStore
     /// <c>Content</c> and/or an exact <c>SessionId</c> match. Ordered by <c>CreatedAt DESC</c>.
     /// </summary>
     /// <remarks>
-    /// <paramref name="scope"/> narrows the listing to the candidate set retrieval would rank, so an
-    /// operator inspecting Saga sees what the model can reach rather than everything on the
-    /// installation. <see cref="MemoryScope.Installation"/> narrows nothing, which is the whole listing
-    /// this surface has always returned.
+    /// <paramref name="scope"/> narrows the listing by the same ownership retrieval ranks by, so an
+    /// operator inspecting Saga is not shown memories a turn in that scope could never reach.
+    /// <see cref="MemoryScope.Installation"/> narrows nothing, which is the whole listing this surface
+    /// has always returned.
+    ///
+    /// <para>Ownership is all that is shared. A retired memory is listed exactly as a live one is --
+    /// this reads <c>saga_memories</c> and retirement removes only the embeddings retrieval ranks
+    /// through -- so the two surfaces agree about who owns a memory and not about whether a turn can
+    /// recall it. <c>ISagaCurationService.ShowAsync</c> is what reports a memory's retirement.</para>
     /// </remarks>
     Task<SagaMemoryDto[]> ListAsync(
         string? query,

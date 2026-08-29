@@ -379,8 +379,12 @@ internal sealed partial class SagaMemoryStore(
 
                 }
 
-                // The same candidate set retrieval would rank, so a listing never shows an operator a
-                // memory the model cannot reach, or hides one it can.
+                // The same ownership predicate retrieval ranks by, so a listing never hides a memory a
+                // turn in this scope could reach, and never shows one it could not own. It is not the
+                // whole of what retrieval can reach: there is no join to the embeddings and no predicate
+                // over RetiredAtUtc here, so a retired memory lists exactly as a live one does while no
+                // turn can recall it. That is deliberate -- retirement's promise is about retrieval, and
+                // an operator has to be able to see what they took out in order to put it back.
                 if (scope.IsEnforced)
                 {
 

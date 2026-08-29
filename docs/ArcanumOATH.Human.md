@@ -376,7 +376,7 @@ Arcanum's storage layout carries a version number. Moving an existing installati
 
 The version number moves only when the whole upgrade finishes and the result is checked against what the build expects. Until then the affected capability reports itself unavailable, which is the honest answer: the storage says version one, and version two's promises have not been kept yet. An installation the build cannot make sense of — one written by a newer build, one whose layout was changed by something else, or one whose half-finished upgrade this build cannot pick up — is refused and named, rather than upgraded on a guess.
 
-Nothing in the shipped build has moved past version one yet. The machinery runs, finds nothing to do, and says so.
+Some of the shipped storage has moved past version one and some has not, and which is which is what the build itself declares rather than something recorded here. Where nothing has moved, the machinery still runs, finds nothing to do, and says so.
 
 ## 11. What exists now and what comes next
 
