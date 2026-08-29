@@ -24,6 +24,35 @@ internal static class AuthoredContentReader
         CancellationToken cancellationToken)
     {
 
+        Result<string> authored = await ReadSourceAsync(file, subject, cancellationToken).ConfigureAwait(false);
+
+        if (authored.IsFailure)
+        {
+
+            return authored;
+
+        }
+
+        // Both sources meet this, and they must: the same empty payload was refused through the pipe and
+        // accepted through a file, so a mistyped --file path silently replaced a memory with nothing. The
+        // Annals keeps digests rather than content, so what that overwrote could not be read back.
+        return string.IsNullOrWhiteSpace(authored.Value)
+            ? Result<string>.Failure(new Error(
+                ErrorCodes.Validation.InvalidBody,
+                $"{subject} content was empty."))
+            : authored;
+
+    }
+
+    /// <summary>
+    /// The text as its source hands it over, before it is judged.
+    /// </summary>
+    private static async Task<Result<string>> ReadSourceAsync(
+        string? file,
+        string subject,
+        CancellationToken cancellationToken)
+    {
+
         if (file is { Length: > 0 })
         {
 
@@ -44,13 +73,8 @@ internal static class AuthoredContentReader
 
         }
 
-        string piped = await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-
-        return string.IsNullOrWhiteSpace(piped)
-            ? Result<string>.Failure(new Error(
-                ErrorCodes.Validation.InvalidBody,
-                $"{subject} content was empty."))
-            : Result<string>.Success(piped);
+        return Result<string>.Success(
+            await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
 
     }
 

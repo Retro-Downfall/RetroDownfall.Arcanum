@@ -463,6 +463,53 @@ public sealed class SagaCurationEndpointTests
 
     }
 
+    /// <summary>
+    /// The digest the detail route publishes is the one the write verbs accept.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes <c>ContentHash</c> worth carrying rather than leaving each client to
+    /// reproduce <see cref="AnnalContentDigest.ForSagaMemory"/>. Driven with content chosen to break a
+    /// client that guessed at the encoding — an astral surrogate pair, a CRLF, a leading byte-order
+    /// mark, and a trailing newline — and the hash is taken verbatim off the projection rather than
+    /// computed here, so what passes is the round trip and not this test's own arithmetic.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_digest_the_detail_route_publishes_is_the_one_a_write_verb_accepts()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string awkward = "\uFEFFprefers \U0001F600 tabs\r\nand spaces\n";
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedMemoryAsync(factory, "mem-digest", awkward);
+
+        using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-digest");
+
+        Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+
+        SagaMemoryDetail detail = await ReadDetailAsync(shown);
+
+        // The published value is the documented function's output, which is the half a client reads.
+        Assert.Equal(Hash(awkward), detail.ContentHash);
+
+        // And the half that matters: quoting it back is accepted, so a caller never has to hash anything.
+        using HttpResponseMessage retired = await PostRetireAsync(
+            client,
+            "mem-digest",
+            new SagaRetireRequest(detail.ContentHash));
+
+        Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
+
+        SagaMemoryDetail after = await ReadWriteResultAsync(retired, SagaCurationOutcomeKind.Applied);
+
+        Assert.NotNull(after.Lifecycle.RetiredAtUtc);
+
+    }
+
     /// <summary>Reinstating a memory that is not retired succeeds and says so, for the same reason.</summary>
     [SkippableFact]
     public async Task Reinstating_a_memory_that_was_never_retired_succeeds_and_says_it_was_not_retired()

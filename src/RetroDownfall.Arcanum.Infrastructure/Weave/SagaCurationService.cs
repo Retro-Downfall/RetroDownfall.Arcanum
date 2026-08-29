@@ -217,7 +217,11 @@ internal sealed class SagaCurationService(
             ? []
             : await annals.GetVersionsAsync(claim.ClaimId, cancellationToken).ConfigureAwait(false);
 
-        return new SagaMemoryDetail(row.Memory, row.Lifecycle, eligibility, claim, history);
+        // The same function the expected-content-hash is parsed and compared against, so what this hands
+        // back is a value the write verbs accept rather than one a caller has to reconstruct.
+        string contentHash = Convert.ToHexString(AnnalContentDigest.ForSagaMemory(row.Memory.Content));
+
+        return new SagaMemoryDetail(row.Memory, contentHash, row.Lifecycle, eligibility, claim, history);
 
     }
 

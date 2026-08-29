@@ -46,9 +46,16 @@ public sealed class MemorySagaCurationCommandTests
 
     private const string StoredContent = "the operator prefers tabs";
 
-    /// <summary>A well-formed digest, so nothing here is refused for the shape of the flag.</summary>
-    private static string StoredContentHash =>
-        Convert.ToHexString(AnnalContentDigest.ForSagaMemory(StoredContent));
+    /// <summary>
+    /// The digest the host publishes for <see cref="StoredContent"/>, as this fixture's host publishes it.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately <b>not</b> the digest of <see cref="StoredContent"/>. The CLI must render and send
+    /// what the host handed it, and a fixture whose hash happened to equal the one the client could have
+    /// computed would pass either way — which is exactly the drift a client-side digest would hide.
+    /// </remarks>
+    private const string ServerContentHash =
+        "1111111122222222333333334444444455555555666666667777777788888888";
 
     [Fact]
     public async Task Show_renders_the_lifecycle_and_the_eligibility_reason()
@@ -89,7 +96,14 @@ public sealed class MemorySagaCurationCommandTests
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
-        Assert.Contains($"Content hash: {StoredContentHash}", result.Output, StringComparison.Ordinal);
+        // The fixture's published digest differs from the one this content hashes to, so a CLI that
+        // computed its own would print the other value and fail here. Without this the assertion would
+        // be the client's arithmetic compared against itself.
+        Assert.NotEqual(
+            ServerContentHash,
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory(StoredContent)));
+
+        Assert.Contains($"Content hash: {ServerContentHash}", result.Output, StringComparison.Ordinal);
 
     }
 
@@ -123,7 +137,7 @@ public sealed class MemorySagaCurationCommandTests
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "correct", MemoryId, "--expected-content-hash", StoredContentHash, "--yes"],
+            ["memory", "saga", "correct", MemoryId, "--expected-content-hash", ServerContentHash, "--yes"],
             input: "the operator prefers spaces");
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
@@ -136,7 +150,7 @@ public sealed class MemorySagaCurationCommandTests
             StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains(
-            $"\"expectedContentHash\":\"{StoredContentHash}\"",
+            $"\"expectedContentHash\":\"{ServerContentHash}\"",
             handler.Bodies[0],
             StringComparison.OrdinalIgnoreCase);
 
@@ -165,7 +179,7 @@ public sealed class MemorySagaCurationCommandTests
                 "correct",
                 MemoryId,
                 "--expected-content-hash",
-                StoredContentHash,
+                ServerContentHash,
                 "--file",
                 absent,
                 "--yes",
@@ -179,6 +193,34 @@ public sealed class MemorySagaCurationCommandTests
 
     }
 
+    /// <summary>
+    /// A file with nothing in it does not blank a memory.
+    /// </summary>
+    /// <remarks>
+    /// The same payload was refused through the pipe and accepted through a file, so a mistyped
+    /// <c>--file</c> path replaced a memory's text with nothing and reported a correction. The Annals
+    /// keeps digests rather than content, so what that overwrote was not readable back out of the
+    /// history this same verb group prints. Both sources now meet one guard.
+    /// </remarks>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   \n\t  ")]
+    public async Task A_replacement_file_holding_nothing_is_refused_rather_than_blanking_the_memory(
+        string contents)
+    {
+
+        RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
+
+        CliTestResult result = await RunCorrectAsync(handler, contents);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("Saga memory content was empty.", result.Error, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task Correct_reports_the_memory_whose_text_it_replaced()
     {
@@ -188,6 +230,16 @@ public sealed class MemorySagaCurationCommandTests
         CliTestResult result = await RunCorrectAsync(handler, "a better sentence");
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Contains(
+            $"\"expectedContentHash\":\"{ServerContentHash}\"",
+            handler.Bodies[0],
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "\"content\":\"a better sentence\"",
+            handler.Bodies[0],
+            StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains($"Corrected Saga memory '{MemoryId}'.", result.Output, StringComparison.Ordinal);
 
@@ -256,11 +308,18 @@ public sealed class MemorySagaCurationCommandTests
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "retire", MemoryId, "--expected-content-hash", StoredContentHash, "--yes"]);
+            ["memory", "saga", "retire", MemoryId, "--expected-content-hash", ServerContentHash, "--yes"]);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Equal([$"POST /api/memory/saga/{MemoryId}/retire"], handler.Requests);
+
+        // The route string alone would be identical for a client that sent an empty hash, which is the
+        // one field the host compares inside the write transaction.
+        Assert.Contains(
+            $"\"expectedContentHash\":\"{ServerContentHash}\"",
+            handler.Bodies[0],
+            StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains($"Retired Saga memory '{MemoryId}'.", result.Output, StringComparison.Ordinal);
 
@@ -284,7 +343,7 @@ public sealed class MemorySagaCurationCommandTests
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "retire", MemoryId, "--expected-content-hash", StoredContentHash, "--yes"]);
+            ["memory", "saga", "retire", MemoryId, "--expected-content-hash", ServerContentHash, "--yes"]);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
@@ -305,7 +364,7 @@ public sealed class MemorySagaCurationCommandTests
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "retire", MemoryId, "--expected-content-hash", StoredContentHash],
+            ["memory", "saga", "retire", MemoryId, "--expected-content-hash", ServerContentHash],
             confirm: false);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
@@ -351,11 +410,16 @@ public sealed class MemorySagaCurationCommandTests
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "reinstate", MemoryId, "--expected-content-hash", StoredContentHash, "--yes"]);
+            ["memory", "saga", "reinstate", MemoryId, "--expected-content-hash", ServerContentHash, "--yes"]);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Equal([$"POST /api/memory/saga/{MemoryId}/reinstate"], handler.Requests);
+
+        Assert.Contains(
+            $"\"expectedContentHash\":\"{ServerContentHash}\"",
+            handler.Bodies[0],
+            StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains($"Reinstated Saga memory '{MemoryId}'.", result.Output, StringComparison.Ordinal);
 
@@ -374,7 +438,7 @@ public sealed class MemorySagaCurationCommandTests
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "reinstate", MemoryId, "--expected-content-hash", StoredContentHash, "--yes"]);
+            ["memory", "saga", "reinstate", MemoryId, "--expected-content-hash", ServerContentHash, "--yes"]);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
@@ -398,6 +462,9 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Equal([$"POST /api/memory/saga/{MemoryId}/pin"], handler.Requests);
+
+        // The route takes none, and sending one would be a media type the host has to refuse.
+        Assert.Equal(string.Empty, handler.Bodies[0]);
 
         Assert.Contains(
             $"Pinned Saga memory '{MemoryId}'. Retention will not prune it.",
@@ -438,6 +505,8 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Equal([$"POST /api/memory/saga/{MemoryId}/unpin"], handler.Requests);
+
+        Assert.Equal(string.Empty, handler.Bodies[0]);
 
         Assert.Contains(
             $"Unpinned Saga memory '{MemoryId}'. Retention may prune it again.",
@@ -511,7 +580,7 @@ public sealed class MemorySagaCurationCommandTests
                     "correct",
                     MemoryId,
                     "--expected-content-hash",
-                    StoredContentHash,
+                    ServerContentHash,
                     "--file",
                     path,
                     "--yes",
@@ -573,6 +642,7 @@ public sealed class MemorySagaCurationCommandTests
                 SessionId: null,
                 Tags: null,
                 Source: "session"),
+            ServerContentHash,
             new SagaMemoryLifecycle(retiredAtUtc, pinnedAtUtc),
             eligibility,
             Claim: null,

@@ -217,6 +217,44 @@ public sealed class CovenantCommandTests : IDisposable
     }
 
     /// <summary>
+    /// A preference file holding nothing does not blank the preference.
+    /// </summary>
+    /// <remarks>
+    /// The emptiness guard used to sit on the piped branch alone, so the identical payload was refused
+    /// through a pipe and written through a file. Both branches of
+    /// <see cref="AuthoredContentReader"/> now meet it, and this is the Covenant half of that: the hole
+    /// was here first and these verbs are where it was inherited from.
+    /// </remarks>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   \n\t  ")]
+    public async Task A_preference_file_holding_nothing_is_refused_before_any_route(string contents)
+    {
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile(contents),
+            expectedRevision: 0,
+            reactivate: false,
+            Token);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains(
+            "Covenant content was empty.",
+            string.Join("\n", dispatcher.Diagnostics),
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
     /// A write whose expectation cannot match is refused before the operator is asked.
     /// </summary>
     /// <remarks>

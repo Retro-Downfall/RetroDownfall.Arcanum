@@ -39,8 +39,9 @@ public sealed partial class MemoryCommands
     /// </summary>
     /// <remarks>
     /// The content hash is printed because it is the value <c>correct</c>, <c>retire</c>, and
-    /// <c>reinstate</c> require. Without it on this surface those three verbs would be reachable only
-    /// by a caller that had computed the digest some other way.
+    /// <c>reinstate</c> require. It is the host's own digest, carried on the projection and rendered
+    /// verbatim; computing it here would agree with the host only for as long as both sides hashed the
+    /// same bytes, and nothing in this process could notice when they stopped.
     /// </remarks>
     public async Task<int> SagaShow(
         string id,
@@ -347,8 +348,7 @@ public sealed partial class MemoryCommands
         dispatcher.WritePayload(
             $"  Pinned:       {Stamp(detail.Lifecycle.PinnedAtUtc) ?? "not pinned"}");
 
-        dispatcher.WritePayload(
-            $"  Content hash: {Convert.ToHexString(AnnalContentDigest.ForSagaMemory(detail.Memory.Content))}");
+        dispatcher.WritePayload($"  Content hash: {detail.ContentHash}");
 
         dispatcher.WritePayload($"  Created:      {Stamp(detail.Memory.CreatedAt)}");
 

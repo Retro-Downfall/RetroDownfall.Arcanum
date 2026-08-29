@@ -56,11 +56,21 @@ public sealed record SagaMemoryLifecycle(DateTimeOffset? RetiredAtUtc, DateTimeO
 public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifecycle Lifecycle, bool HasEmbedding);
 
 /// <summary>
-/// The full detail view of one memory: its row, its lifecycle, its retrieval eligibility, and — when
-/// the Annals is enabled — the claim that governs it and that claim's version history.
+/// The full detail view of one memory: its row, the digest of the text in that row, its lifecycle, its
+/// retrieval eligibility, and — when the Annals is enabled — the claim that governs it and that claim's
+/// version history.
 /// </summary>
+/// <param name="ContentHash">
+/// The hex rendering of <see cref="Annals.AnnalContentDigest.ForSagaMemory"/> over
+/// <paramref name="Memory"/>'s content, which is exactly what <c>correct</c>, <c>retire</c>, and
+/// <c>reinstate</c> take as their expected content hash. Carried on the projection so a caller proves
+/// what it read by quoting a value the host computed, rather than by reproducing the digest function
+/// and hoping the two agree; a client that computed its own would keep passing right up until this side
+/// changed what it hashes.
+/// </param>
 public sealed record SagaMemoryDetail(
     SagaMemoryDto Memory,
+    string ContentHash,
     SagaMemoryLifecycle Lifecycle,
     SagaRetrievalEligibility Eligibility,
     AnnalClaimHead? Claim,
