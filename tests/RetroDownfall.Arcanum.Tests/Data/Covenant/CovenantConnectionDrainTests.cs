@@ -1,6 +1,7 @@
 using System.Data;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -153,6 +154,60 @@ public sealed class CovenantConnectionDrainTests
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
         Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
+
+    }
+
+    /// <summary>
+    /// A scope that opens the Grimoire through the Covenant connection source is closed by the drain.
+    /// </summary>
+    /// <remarks>
+    /// <c>CovenantConnectionSource</c> opens the scope's connection and never closes it, so it stays
+    /// open for the life of the scope rather than for the life of a statement. That is the shape the
+    /// drain exists for, and it is the shape the erasure cannot survive: a second handle holding this
+    /// database open costs the exclusive maintenance connection one busy timeout per wal-index lock it
+    /// has to take, which is tens of seconds of waiting followed by <c>database is locked</c>.
+    ///
+    /// <para>Driven through the real host rather than a scratch database because enrolment is a
+    /// composition property, not a connection property: what decides whether a held handle is drained
+    /// is which services the scope happens to resolve, and only the production registrations say
+    /// that.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_scope_holding_the_Grimoire_open_for_Covenant_is_closed_by_the_drain()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+
+            SettingsOverride = static settings => settings with
+            {
+
+                Features = settings.Features with { Covenant = true },
+
+            },
+
+        };
+
+        // The maintenance sweeps resolve exactly this and nothing that enrols a handle, so the scope
+        // below is the one the sweep driver builds, minus the sweeps. Reading Services is what starts
+        // the host, so the registrations under test are the ones the server composes.
+        await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+
+        SqliteConnection held = await scope.ServiceProvider
+            .GetRequiredService<ICovenantConnectionSource>()
+            .GetOpenCoreConnectionAsync(Token);
+
+        Assert.Equal(ConnectionState.Open, held.State);
+
+        Result drained = await factory.Services
+            .GetRequiredService<ICovenantConnectionDrain>()
+            .DrainAsync(Token);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(ConnectionState.Closed, held.State);
 
     }
 

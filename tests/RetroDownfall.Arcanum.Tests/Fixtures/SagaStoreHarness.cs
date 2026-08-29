@@ -186,7 +186,7 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         SagaMemoryCurationRow row = (await Store.ReadCurationRowAsync(id.ToString(), CancellationToken.None)
             .ConfigureAwait(false))!;
 
-        ArtifactSensitivityLedger ledger = new(new CovenantConnectionSource(_db));
+        ArtifactSensitivityLedger ledger = new(new CovenantConnectionSource(_db, new CovenantConnectionDrain()));
 
         DerivedArtifactWrite write = new(
             SensitiveArtifactKind.Saga,

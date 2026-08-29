@@ -35,8 +35,47 @@ internal interface ICovenantConnectionSource
 /// <summary>
 /// The ordinary source: the scoped Grimoire context's own connection.
 /// </summary>
-internal sealed class CovenantConnectionSource(ArcanumDbContext db) : ICovenantConnectionSource
+/// <remarks>
+/// This type opens the scope's connection and never closes it, so the handle it hands out is held for
+/// the life of the scope rather than the life of a statement. That is what makes enrolment its
+/// responsibility rather than somebody else's: an open handle nothing enrolled is invisible to the
+/// drain, survives the pool clear because it is in use rather than idle, and costs the exclusive
+/// maintenance connection that follows one busy timeout per wal-index lock — tens of seconds of
+/// waiting ending in <c>database is locked</c>, with no way for that caller to name the holder.
+///
+/// <para>The same connection is also enrolled by <c>LongRunningOperationStore</c>, in the scopes that
+/// resolve one. Enrolling twice is harmless because both are scoped to the connection they enrol and
+/// are disposed with it, and relying on the store's enrolment was the defect: whether a held Covenant
+/// handle was drained depended on which unrelated service the scope happened to resolve.</para>
+/// </remarks>
+internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDisposable
 {
+
+    private readonly ArcanumDbContext _db;
+
+    private IDisposable? _enrolment;
+
+    internal CovenantConnectionSource(ArcanumDbContext db, ICovenantConnectionDrain drain)
+    {
+
+        ArgumentNullException.ThrowIfNull(db);
+
+        ArgumentNullException.ThrowIfNull(drain);
+
+        _db = db;
+
+        // Enrolled before the first open, not on it. A handle enrolled only once somebody asked for it
+        // would leave the window between the context opening its own connection and the first Covenant
+        // read invisible to the drain, and that window is exactly where an erasure runs.
+        _enrolment = db.Database.GetDbConnection() is SqliteConnection sqlite
+            ? drain.Register(sqlite)
+            : null;
+
+    }
+
+    /// <summary>Releases this scope's handle from the process-wide Covenant drain.</summary>
+    public void Dispose() =>
+        Interlocked.Exchange(ref _enrolment, null)?.Dispose();
 
     public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
@@ -52,7 +91,7 @@ internal sealed class CovenantConnectionSource(ArcanumDbContext db) : ICovenantC
     public async ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
     {
 
-        if (db.Database.GetDbConnection() is not SqliteConnection connection)
+        if (_db.Database.GetDbConnection() is not SqliteConnection connection)
         {
 
             throw new InvalidOperationException(

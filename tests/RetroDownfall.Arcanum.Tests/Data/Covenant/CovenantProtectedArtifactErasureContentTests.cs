@@ -220,10 +220,12 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
             _db = db;
 
-            Ledger = new ArtifactSensitivityLedger(new CovenantConnectionSource(db));
+            CovenantConnectionDrain drain = new();
+
+            Ledger = new ArtifactSensitivityLedger(new CovenantConnectionSource(db, drain));
 
             Kernel = new CovenantProtectedArtifactErasureKernel(
-                new CovenantConnectionSource(db),
+                new CovenantConnectionSource(db, drain),
                 CovenantSqliteConnectionInitializer.Instance,
                 TimeProvider.System);
 

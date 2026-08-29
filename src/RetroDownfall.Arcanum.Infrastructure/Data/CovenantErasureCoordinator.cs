@@ -877,12 +877,17 @@ internal sealed class CovenantErasureCoordinator(
         catch (CovenantErasureStepFailedException failed)
         {
 
+            // The refusing step's own sentence travels with the code. One code covers several steps —
+            // MaintenanceFailed alone is emitted by the drain and by three points of the canonical
+            // transaction — so a phase and a code together still leave the reader guessing which one
+            // let go, and this warning is the only place either is written down.
             _logger.LogWarning(
                 "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
-                + "with {ErrorCode}; admission stays closed.",
+                + "with {ErrorCode}: {ErrorMessage}; admission stays closed.",
                 state.Phase,
                 operation.Id,
-                failed.Error.Code);
+                failed.Error.Code,
+                failed.Error.Message);
 
             return progress.EffectAttempted || progress.DurablyMutated
                 ? await CloseAsync(
@@ -1005,10 +1010,11 @@ internal sealed class CovenantErasureCoordinator(
 
             _logger.LogWarning(
                 "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
-                + "with {ErrorCode}; admission stays closed.",
+                + "with {ErrorCode}: {ErrorMessage}; admission stays closed.",
                 state.Phase,
                 operation.Id,
-                failed.Error.Code);
+                failed.Error.Code,
+                failed.Error.Message);
 
             return await CloseAsync(
                 operation,

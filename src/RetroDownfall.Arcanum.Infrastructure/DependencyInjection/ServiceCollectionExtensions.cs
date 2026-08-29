@@ -1653,7 +1653,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(static _ => new CovenantSearchQueryCompiler());
 
         services.AddScoped<ICovenantConnectionSource>(
-            static sp => new CovenantConnectionSource(sp.GetRequiredService<ArcanumDbContext>()));
+            static sp => new CovenantConnectionSource(
+                sp.GetRequiredService<ArcanumDbContext>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>()));
 
         services.AddScoped<ICovenantStore>(
             static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));
