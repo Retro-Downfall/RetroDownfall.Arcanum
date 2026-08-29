@@ -96,6 +96,12 @@ The established §8 contract numbers are retained in this extracted reference so
 | GET | `/api/memory/lexicon` | Lists every Lexicon entity (`ApiResponse<LexiconListDto>`); optional `?q=` searches name, type, and facts without the prompt-time match cap. |
 | GET | `/api/memory/lexicon/{name}` | Exact case-insensitive Lexicon lookup (`ApiResponse<LexiconEntryDto>`; **404** `Lexicon.NotFound`). Optional `?campaignId=` asks as a turn in that Campaign would: that Campaign's tier first, then global. Omitted means the global tier, which is what this route has always read. |
 | DELETE | `/api/memory/lexicon/{name}` | Deletes exactly one named Lexicon entity (**204**; **404** `Lexicon.NotFound`). CLI callers must confirm. Other stores are unchanged. Optional `?campaignId=` targets exactly that tier with no fallback, so a delete aimed at a Campaign holding no such entity removes nothing rather than removing the installation's. |
+| GET | `/api/memory/saga/{id}` | One Saga memory read whole (`ApiResponse<SagaMemoryDetail>`): the row, the host's own `contentHash` over its content, its retirement and pin stamps, its retrieval eligibility as a typed reason, and the Annals claim governing it with its version history when one exists. **404** `Saga.NotFound`; a memory with no claim is a success reporting none (§8.30, DESIGN §21.13). |
+| POST | `/api/memory/saga/{id}/correct` | Replaces one Saga memory's text (`SagaCorrectRequest` → `ApiResponse<SagaCurationResult>`); re-embeds and republishes the vector in the same transaction that rewrites the row (§8.30). |
+| POST | `/api/memory/saga/{id}/retire` | Takes one Saga memory out of retrieval by deleting its embedding rows, keeps the row inspectable, and writes content-free keyed suppression evidence (`SagaRetireRequest` → `ApiResponse<SagaCurationResult>`; §8.30). |
+| POST | `/api/memory/saga/{id}/reinstate` | Puts a retired Saga memory back: re-embeds its stored content and removes that memory's suppression evidence (`SagaReinstateRequest` → `ApiResponse<SagaCurationResult>`; §8.30). |
+| POST | `/api/memory/saga/{id}/pin` | Marks one Saga memory durable so retention will not select it. No body and no content hash (`ApiResponse<SagaCurationResult>`; §8.30). |
+| POST | `/api/memory/saga/{id}/unpin` | Clears that mark, so retention may select the memory again. No body (`ApiResponse<SagaCurationResult>`; §8.30). |
 | GET | `/api/spells` | Compatibility list is still `ApiResponse<SpellSummary[]>`; `paged=true` selects the bounded `ApiResponse<SpellCatalogPage>` contract with `workspace`, `q`, `tag`, `tool`, `source`, and opaque `cursor` (§8.14). |
 | GET | `/api/spells/{name}` | Spell detail (`ApiResponse<SpellDetail>`; optional `workspace` query; **404** when missing). |
 | POST | `/api/spells` | Create workspace spell (`ApiResponse<bool>`; optional `workspace` query; **400** validation). |
@@ -630,7 +636,7 @@ Wire-stable codes live on `ErrorCodes` (Core). General HTTP mapping authority is
 
 | Codes (grouped) | HTTP | Semantics |
 |-----------------|------|-----------|
-| `Validation.InvalidPrompt`, `InvalidBody`, `InvalidQuery`, `InvalidProviderType`, `AttachedFiles` | 400 | Request shape / bounds validation |
+| `Validation.InvalidPrompt`, `Validation.InvalidBody`, `Validation.InvalidQuery`, `Validation.InvalidProviderType`, `Validation.AttachedFiles`, `Validation.InvalidFields` | 400 | Request shape / bounds validation. `Validation.InvalidFields` is the arm for a well-formed body whose field values are not usable — an empty daemon title or body, or an expected content hash that is not a 64-character hexadecimal digest |
 | `Validation.UnsupportedMediaType` | 415 | Missing or non-JSON `Content-Type` on a JSON body route (status set by `ApiRequestJson`, not the mapper; §8.1) |
 | `Hub.Model` | 404 | Model not in any provider `models` |
 | `Hub.Error` | 500 | Generic inference failure (mapper default arm) |
@@ -643,11 +649,14 @@ Wire-stable codes live on `ErrorCodes` (Core). General HTTP mapping authority is
 | `Data.InvalidRequest` / `ConfirmationRequired` | 400 | Invalid data-lifecycle operation, rule, scope, or required factory-reset confirmation |
 | `Data.NotFound` | 404 | Explicit data-lifecycle target not found |
 | `Data.PlanChanged` / `Blocked` / `Conflict` | 409 | Stale preview, retained dependency/hold, or active-work conflict |
+| `Saga.StaleContent`; `Saga.AlreadyRetired` | 409 | Saga curation state refusals (§8.30). `Saga.StaleContent` says the stored content moved out from under the caller's view of it; `Saga.AlreadyRetired` is emitted by correction alone and says the memory must be reinstated before it can be corrected. Retiring a memory that is already retired and reinstating one that is not retired are **not** refusals and have no code: each answers **200** carrying the outcome kind that says so |
 | `Session.TooManyPinned`; `Attachment.LimitExceeded`; `Apprentice.AlreadyRunning` / `Running` / `NotPaused` / `CannotReweave` / `NotEscalated` / `MaxReached` / `ConclaveDisabled`; `Security.IdempotencyConflict`; `Security.IdempotencyInProgress`; `Ward.AlreadyResolved`; `Operation.StateConflict` | 409 | State or idempotency conflict |
 | `Sending.MaxTasksReached`; `RateLimit.TooManyRequests` | 429 | Defensive compatibility/custom-provider mapping or explicit rate limit; the built-in outbound A2A client queues cancellably instead of emitting `Sending.MaxTasksReached` when its concurrency slots are occupied |
-| `Workspace.FileTooLarge`; `Files.TooLarge`; `Scrying.ImageTooLarge`; `Attachment.TooLarge` | 413 | Payload too large |
+| `Workspace.FileTooLarge`; `Files.TooLarge`; `Scrying.ImageTooLarge`; `Attachment.TooLarge`; `Validation.BodyTooLarge` | 413 | Payload too large. `Validation.BodyTooLarge` is written by `ApiRequestJson` for a body larger than this server accepts, and is distinct from `Validation.InvalidBody` because a malformed body is worth resending corrected and an oversized one is not worth resending at all |
+| `Validation.BodyReadTimeout` | 408 | Kestrel enforces a minimum request-body data rate and stops waiting for a body that falls under it. Not a **400**: nothing is wrong with the body, and it is worth resending unchanged on a better connection |
+| `Validation.RequestHeadersTooLarge` | 431 | The request's headers or trailers exceed the total size this server accepts. Reachable while reading a chunked body, because trailers arrive after it and count against the same ceiling |
 | `Sending.AgentUnreachable` / `AgentCardInvalid`; `CommLink.Suppressed` | 502 | Downstream / webhook failure |
-| `Api.TooManyConnections`; `Connection.Unreachable`; `Embeddings.ProviderUnavailable` / `FeatureDisabled`; `Session.RestQueueFull` | 503 | Capacity / provider unavailable, or bounded Campaign Logger queue rejection |
+| `Api.TooManyConnections`; `Connection.Unreachable`; `Embeddings.ProviderUnavailable` / `FeatureDisabled`; `Session.RestQueueFull`; `Saga.EmbeddingUnavailable` | 503 | Capacity / provider unavailable, or bounded Campaign Logger queue rejection. `Saga.EmbeddingUnavailable` refuses a curation write that could not produce a vector before it writes anything, because the operator's action is the same as for a provider outage and the request itself was not wrong (§8.30) |
 | `Mcp.DiagnosticTimeout`; `Connection.Timeout`; `WebBrowsing.Timeout` | 504 | Bounded downstream transport/diagnostic operation timeout |
 | `Workspace.WriteFailed` / `DeleteFailed`; `Spell.WriteFailed`; `ProvingGrounds.InferenceFailed`; `Saga.SearchFailed` | 500 | Explicit infra/search failures (never downgraded by DefaultBadRequest) |
 | `Data.ReconciliationFailed` | 500 | Data-lifecycle apply failed or post-delete reconciliation requires operator review |
@@ -766,6 +775,27 @@ Expires: 0
 with `ETag` and `Last-Modified` removed. `private` survives intermediaries that treat an unqualified `no-store` as advisory; `Pragma` and `Expires` cover HTTP/1.0-era caches that ignore `Cache-Control`. It is applied on response start, so it also covers framework-generated refusals no handler wrote. Streaming responses keep their `Cache-Control: no-cache` default when they are *not* protected and are never downgraded when they are — headers cannot be corrected after the first byte.
 
 **Authority.** A route declares exactly one `CovenantAuthorityRequirement`; the boundary issues a context bound to it and to the current clean authority epoch, and an endpoint filter rechecks — never reissues — that epoch after binding. A missing context is **403** `Covenant.ForbiddenAuthority`; an epoch that moved (host-tools taint, key rotation) is **503** `Covenant.OperatorAuthorityUnavailable`. `ProtectedRead` cannot be declared as an operator requirement, so a context minted for an inspection page can never authorize a mutation.
+
+### 8.30 Saga curation (`/api/memory/saga/`)
+
+Six routes over one Saga memory at a time, mapped onto the same authenticated `/api` group as everything else in this chapter and deliberately not onto `/v1`, which maps its own routes and knows nothing about Saga curation. They sit beside the Covenant's curation surface (§8.28) and the Lexicon's delete rather than under `/api/saga`: `/api/saga` is the store's own read-and-delete surface and answers what is in there, while these answer what one memory is and what the operator has decided about it (DESIGN §21.13).
+
+The detail route answers `ApiResponse<SagaMemoryDetail>`; the five write routes answer `ApiResponse<SagaCurationResult>`, which carries the outcome beside the memory the call left behind. That extra field is load-bearing, because three outcomes write nothing and are still successes.
+
+| Route | Body | Refusals |
+|---|---|---|
+| `GET /api/memory/saga/{id}` | — | **404** `Saga.NotFound` |
+| `POST /api/memory/saga/{id}/correct` | `SagaCorrectRequest` — `expectedContentHash`, `content` | **404** `Saga.NotFound`; **409** `Saga.StaleContent`; **409** `Saga.AlreadyRetired`; **503** `Saga.EmbeddingUnavailable`; **400** `Validation.InvalidFields` for a hash that is not a 64-character hexadecimal digest; **400** `Validation.InvalidBody` for a missing hash or absent content |
+| `POST /api/memory/saga/{id}/retire` | `SagaRetireRequest` — `expectedContentHash` | **404** `Saga.NotFound`; **409** `Saga.StaleContent`; **400** `Validation.InvalidFields` / `Validation.InvalidBody` as above |
+| `POST /api/memory/saga/{id}/reinstate` | `SagaReinstateRequest` — `expectedContentHash` | **404** `Saga.NotFound`; **409** `Saga.StaleContent`; **503** `Saga.EmbeddingUnavailable`; **400** `Validation.InvalidFields` / `Validation.InvalidBody` as above |
+| `POST /api/memory/saga/{id}/pin` | none | **404** `Saga.NotFound` |
+| `POST /api/memory/saga/{id}/unpin` | none | **404** `Saga.NotFound` |
+
+**Three successes write nothing, and each says which it was.** Retiring a memory that is already retired, reinstating one that is not retired, and correcting one to the text it already holds all answer **200** with the outcome kind that names what happened — the operator asked for a state and the memory is in it. Only correction meets `Saga.AlreadyRetired`, and only because a retired memory is reinstated before it is corrected rather than corrected in place; that check runs before any content comparison, so it is the answer whatever text the correction carried. `ArcanumErrorMapper` owns the status codes and `ISagaCurationService` owns which outcomes are errors, per verb; neither decision is restated at the route.
+
+**`expectedContentHash` is proof, not a courtesy.** It is compared inside the write transaction, against the same digest function `SagaMemoryDetail.ContentHash` publishes, so a caller quotes a value the host computed rather than reproducing the function. Pin and unpin take no hash and no body at all: a pin is not a statement about what a memory says, and requiring proof of the text would make pinning fail after an unrelated correction.
+
+Bodies are read through `ApiRequestJson` rather than as bound parameters, so malformed JSON and a wrong media type answer the envelope with a code (§8.1) instead of the empty **400** and **415** minimal-API binding writes. A body that never reached the curation service is refused as `Validation.InvalidBody`, which names the envelope rather than the verb: none of these routes can report a memory, an outcome, or a store from a body it could not read.
 
 ---
 

@@ -29,7 +29,8 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 4 gave <c>saga_memories</c> two nullable lifecycle columns, <c>RetiredAtUtc</c> and
     /// <c>PinnedAtUtc</c>, and added <c>saga_retirement_suppressions</c> and <c>saga_suppression_key</c>:
     /// the storage an operator's curation verbs need to retire or pin a memory, and to keep a retired
-    /// memory from being re-extracted. No verb writes to any of it yet.</para>
+    /// memory from being re-extracted. The step declares no sweep: both columns are nullable and both
+    /// tables start empty, so there is no existing row for one to classify.</para>
     ///
     /// <para>Version 5 settles every stored identity on one spelling, so a comparison can be an exact
     /// indexed equality again. Its sweep counts each identity column it governs before it touches one
