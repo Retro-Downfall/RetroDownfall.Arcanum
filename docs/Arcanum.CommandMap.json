@@ -136,7 +136,8 @@
       "option": "--file",
       "scopes": [
         "memory covenant correct",
-        "memory covenant set"
+        "memory covenant set",
+        "memory saga correct"
       ]
     },
     {
@@ -3308,6 +3309,185 @@
               "options": [],
               "examples": [
                 "arcanum memory lexicon delete 8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "memory saga",
+          "name": "saga",
+          "description": "Curate one Saga memory: read it, correct it, and decide whether retrieval and retention keep it.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "memory saga show",
+              "name": "show",
+              "description": "Show one Saga memory\u0027s provenance, lifecycle, and retrieval eligibility.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [],
+              "examples": [
+                "arcanum memory saga show mem-01j9x8"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory saga correct",
+              "name": "correct",
+              "description": "Replace the text of one Saga memory, naming the exact content being corrected.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-content-hash",
+                  "aliases": [],
+                  "description": "The content hash \u0027memory saga show\u0027 printed for the text you read.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--file",
+                  "aliases": [
+                    "-f"
+                  ],
+                  "description": "Read the replacement text from this file. Omit to read from piped standard input.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory saga correct mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000 --file corrected.txt"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory saga retire",
+              "name": "retire",
+              "description": "Take one Saga memory out of retrieval, keeping it inspectable.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-content-hash",
+                  "aliases": [],
+                  "description": "The content hash \u0027memory saga show\u0027 printed for the text you read.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory saga retire mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory saga reinstate",
+              "name": "reinstate",
+              "description": "Put a retired Saga memory back into retrieval.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-content-hash",
+                  "aliases": [],
+                  "description": "The content hash \u0027memory saga show\u0027 printed for the text you read.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory saga reinstate mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory saga pin",
+              "name": "pin",
+              "description": "Mark one Saga memory durable, so retention will not prune it.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [],
+              "examples": [
+                "arcanum memory saga pin mem-01j9x8"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory saga unpin",
+              "name": "unpin",
+              "description": "Release a pin, so retention may prune this memory again.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [],
+              "examples": [
+                "arcanum memory saga unpin mem-01j9x8"
               ],
               "commands": []
             }
