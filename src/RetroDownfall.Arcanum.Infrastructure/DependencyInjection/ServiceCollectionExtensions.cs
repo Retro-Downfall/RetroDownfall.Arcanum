@@ -310,7 +310,8 @@ public static class ServiceCollectionExtensions
         services.AddDbContext<ArcanumDbContext>((sp, options) =>
             ArcanumDbContextOptionsConfigurator.Configure(
                 options,
-                sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>()));
 
         // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
         // here for the deliberately offline CLI maintenance operations.
@@ -1118,7 +1119,8 @@ public static class ServiceCollectionExtensions
         services.AddDbContextPool<ArcanumDbContext>(
             (sp, options) => ArcanumDbContextOptionsConfigurator.Configure(
                 options,
-                sp.GetRequiredService<IGrimoireDbPassphraseSource>()),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>()),
             poolSize: 32);
 
         services.AddScoped<IUnseenServantWatermarkStore, UnseenServantWatermarkStore>();

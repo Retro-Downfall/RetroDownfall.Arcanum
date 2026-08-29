@@ -50,7 +50,7 @@ public sealed class ArcanumDbContext(
             return;
         }
 
-        ArcanumDbContextOptionsConfigurator.Configure(optionsBuilder, passphraseSource);
+        ArcanumDbContextOptionsConfigurator.Configure(optionsBuilder, passphraseSource, drain: null);
     }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

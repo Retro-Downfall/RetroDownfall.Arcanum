@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -168,11 +169,18 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                     Pooling = true,
                 }.ToString();
 
-                services.AddDbContext<ArcanumDbContext>(options =>
+                // The enrolment interceptor is registered here for the same reason
+                // ArcanumDbContextOptionsConfigurator registers it in the host: this branch replaces
+                // the host's own options, and a suite whose connections were exempt from the Covenant
+                // drain could not observe an erasure failing on a handle nothing closed.
+                services.AddDbContext<ArcanumDbContext>((sp, options) =>
                     options
                         .UseSqlite(connectionString)
                         .UseModel(ArcanumDbContextModel.Instance)
-                        .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance));
+                        .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance)
+                        .AddInterceptors(
+                            new CovenantConnectionEnrolmentInterceptor(
+                                sp.GetRequiredService<ICovenantConnectionDrain>())));
             }
             else
             {

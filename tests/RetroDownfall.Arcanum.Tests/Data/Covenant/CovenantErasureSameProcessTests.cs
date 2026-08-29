@@ -328,6 +328,63 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    /// <summary>
+    /// A factory erasure completes while a scope that opened the Grimoire for something other than
+    /// Covenant is still holding it.
+    /// </summary>
+    /// <remarks>
+    /// The un-enrolled shape, built the way the maintenance sweep driver builds it: a scope resolves
+    /// <see cref="ArcanumDbContext"/>, opens its connection and holds it, resolving neither
+    /// <c>ICovenantConnectionSource</c> nor <c>ILongRunningOperationStore</c> — the only two
+    /// components that were enrolling a held handle with the drain. A handle nothing enrolled
+    /// survives both the drain and the pool clear, because it is in use rather than idle, and the
+    /// exclusive maintenance connection that follows then burns the full busy timeout on every
+    /// wal-index lock its first transaction has to take: tens of seconds of waiting ending in
+    /// <c>database is locked</c>, reported as a maintenance failure at the first reset phase.
+    ///
+    /// <para>Held deliberately rather than raced. On Windows x64 an unrelated scope's lifetime
+    /// overlapped the erasure by scheduling accident, which is why that lane reproduced this on
+    /// about half its runs and arm64 never did. Held open across the apply, the same failure is
+    /// deterministic on every platform, which is what makes it fixable here.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Factory_erasure_completes_while_a_non_Covenant_scope_holds_the_Grimoire_open()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        await using AsyncServiceScope holder = harness.Services.CreateAsyncScope();
+
+        ArcanumDbContext held = holder.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        await held.Database.OpenConnectionAsync();
+
+        Assert.Equal(ConnectionState.Open, held.Database.GetDbConnection().State);
+
+        harness.RouteGate.ResetApplyObservations();
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(confirmed.PlanId);
+
+        Assert.True(
+            result.IsSuccess,
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
+
+        // The drain is what closed it, and asserting that is the difference between an erasure that
+        // survived this handle and one that happened to run before the scope opened it.
+        Assert.Equal(ConnectionState.Closed, held.Database.GetDbConnection().State);
+
+    }
+
     [Fact]
     public async Task Factory_catalog_change_after_planning_refuses_before_exclusive_or_any_effect()
     {

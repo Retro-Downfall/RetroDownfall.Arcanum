@@ -49,13 +49,19 @@ internal interface ICovenantConnectionDrain
 /// first, and only then are the pools cleared. Closing a <i>pooled</i> connection returns its native
 /// handle to the pool rather than releasing it, so a drain that cleared the pools first would leave
 /// every handle it closed afterwards sitting idle in a pool it had already emptied.
+///
+/// <para>Enrolments are counted rather than pooled into a set. The same handle is enrolled by more
+/// than one component — the connection Entity Framework opens is enrolled at the open and again by
+/// the Covenant connection source that hands it out — and with a set the first release would drop
+/// the other component's registration too, leaving an open handle outside the drain until whichever
+/// component still believed it was enrolled let go.</para>
 /// </remarks>
 internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 {
 
     private readonly Lock _gate = new();
 
-    private readonly HashSet<SqliteConnection> _handles = [];
+    private readonly Dictionary<SqliteConnection, int> _handles = [];
 
     public IDisposable Register(SqliteConnection connection)
     {
@@ -65,7 +71,9 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         lock (_gate)
         {
 
-            _ = _handles.Add(connection);
+            _handles[connection] = _handles.TryGetValue(connection, out int enrolments)
+                ? enrolments + 1
+                : 1;
 
         }
 
@@ -153,7 +161,7 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         lock (_gate)
         {
 
-            return [.. _handles];
+            return [.. _handles.Keys];
 
         }
 
@@ -165,6 +173,22 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         lock (_gate)
         {
 
+            if (!_handles.TryGetValue(connection, out int enrolments))
+            {
+
+                return;
+
+            }
+
+            if (enrolments > 1)
+            {
+
+                _handles[connection] = enrolments - 1;
+
+                return;
+
+            }
+
             _ = _handles.Remove(connection);
 
         }
@@ -173,7 +197,8 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
     /// <summary>
     /// One handle's enrolment. Disposal is idempotent so a component with both a <c>using</c> and an
-    /// explicit release cannot remove a second component's later registration of the same handle.
+    /// explicit release pays back one enrolment rather than two, which would otherwise cancel a
+    /// second component's registration of the same handle.
     /// </summary>
     private sealed class Enrolment(CovenantConnectionDrain owner, SqliteConnection connection) : IDisposable
     {

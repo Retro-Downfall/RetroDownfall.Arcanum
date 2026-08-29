@@ -43,10 +43,14 @@ internal interface ICovenantConnectionSource
 /// maintenance connection that follows one busy timeout per wal-index lock — tens of seconds of
 /// waiting ending in <c>database is locked</c>, with no way for that caller to name the holder.
 ///
-/// <para>The same connection is also enrolled by <c>LongRunningOperationStore</c>, in the scopes that
-/// resolve one. Enrolling twice is harmless because both are scoped to the connection they enrol and
-/// are disposed with it, and relying on the store's enrolment was the defect: whether a held Covenant
-/// handle was drained depended on which unrelated service the scope happened to resolve.</para>
+/// <para>It is not the only enrolment on that connection, and it is deliberately kept alongside
+/// <c>CovenantConnectionEnrolmentInterceptor</c> rather than deleted as redundant. The interceptor
+/// enrols on the opens Entity Framework performs; the open below is a raw one against the underlying
+/// handle, which reaches neither <c>RelationalConnection</c> nor any interceptor, so this scope's
+/// enrolment is the only one that covers it. <c>LongRunningOperationStore</c> enrols the same
+/// connection again in the scopes that resolve one. Enrolling several times over is what the drain
+/// counts registrations for: each holder releases its own, and the handle stays the drain's to close
+/// until the last of them has.</para>
 /// </remarks>
 internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDisposable
 {
