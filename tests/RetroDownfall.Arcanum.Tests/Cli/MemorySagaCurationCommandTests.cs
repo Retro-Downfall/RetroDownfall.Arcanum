@@ -142,6 +142,43 @@ public sealed class MemorySagaCurationCommandTests
 
     }
 
+    /// <summary>
+    /// A replacement file that is not there is refused before anything is asked or sent.
+    /// </summary>
+    /// <remarks>
+    /// The refusal names Saga, not the store the shared reader was extracted from: the subject noun
+    /// travels with the call precisely so a corrected memory's failure does not read as a Covenant one.
+    /// </remarks>
+    [Fact]
+    public async Task A_missing_replacement_file_is_refused_before_the_operator_is_asked()
+    {
+
+        RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
+
+        string absent = Path.Combine(Path.GetTempPath(), $"arcanum-saga-absent-{Guid.NewGuid():N}.txt");
+
+        CliTestResult result = await RunAsync(
+            handler,
+            [
+                "memory",
+                "saga",
+                "correct",
+                MemoryId,
+                "--expected-content-hash",
+                StoredContentHash,
+                "--file",
+                absent,
+                "--yes",
+            ]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains(absent, result.Error, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public async Task Correct_reports_the_memory_whose_text_it_replaced()
     {
