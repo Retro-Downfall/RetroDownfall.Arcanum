@@ -38,6 +38,9 @@ jobs:
       # drafts are invisible, the highest existing beta reads as none, and the next push hands out a
       # number some unpublished draft already holds.
       contents: write
+      # The CI report card reads workflow runs. Without this the API answers 403, the step degrades to
+      # "unknown", and a release that had a green CI run would say it could not tell.
+      actions: read
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
@@ -45,6 +48,52 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # A report card, never a gate. CI is dispatch-only, so a commit having no run is the ordinary
+      # case rather than a fault, and refusing to release on it would put the tool in charge of a call
+      # that belongs to the operator. What it prevents is deciding blind: the answer is on the run page
+      # before the first platform starts building, so an unintended ship is a choice rather than a
+      # discovery. Every path writes a summary and exits zero -- a broken report card must never be
+      # the reason a release did not happen.
+      - name: Report the CI status of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          verdict="unknown"
+          detail="The CI status could not be read. Releasing anyway; this step never blocks."
+          count="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" \
+            --jq '.workflow_runs | length' 2>/dev/null || echo "")"
+          if [[ "$count" == "0" ]]; then
+            verdict="never run"
+            detail="No CI run exists for this commit. CI is dispatch-only, so this is expected unless you ran it: \`gh workflow run CI --ref $SHA\`."
+          elif [[ -n "$count" ]]; then
+            run_status="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" --jq '.workflow_runs[0].status' 2>/dev/null || echo "")"
+            run_conclusion="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" --jq '.workflow_runs[0].conclusion // ""' 2>/dev/null || echo "")"
+            url="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" --jq '.workflow_runs[0].html_url' 2>/dev/null || echo "")"
+            if [[ "$run_status" != "completed" ]]; then
+              verdict="still running"
+              detail="CI for this commit is \`$run_status\`. $url"
+            else
+              verdict="$run_conclusion"
+              detail="CI for this commit concluded \`$run_conclusion\`. $url"
+            fi
+          fi
+          {
+            echo "## CI status for \`${SHA:0:8}\`"
+            echo
+            echo "**$verdict** — $detail"
+            echo
+            echo "This is a report card. It does not gate the release; the decision to ship is the operator's."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$verdict" == "success" ]]; then
+            echo "::notice::CI is green for this commit."
+          else
+            echo "::warning::CI status for this commit is '$verdict'. Releasing anyway -- this never blocks."
+          fi
+          echo "ci status: $verdict -- $detail"
 
       # Directory.Build.props is the one place a version is written, and it is what the build already
       # stamps into every assembly, so the release cannot disagree with the binaries it ships.
