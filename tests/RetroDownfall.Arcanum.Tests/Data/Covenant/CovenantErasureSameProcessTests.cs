@@ -89,7 +89,11 @@ public sealed class CovenantErasureSameProcessTests
                 operation.Id,
                 operation.CheckpointPayload!);
 
-        Assert.True(checkpoint.IsSuccess, checkpoint.IsFailure ? checkpoint.Error.Message : null);
+        Assert.True(
+            checkpoint.IsSuccess,
+            checkpoint.IsFailure
+                ? $"{checkpoint.Error.Code}: {checkpoint.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.Equal(identity.EffectDigest, checkpoint.Value.Owner.EffectDigest);
 
@@ -121,7 +125,11 @@ public sealed class CovenantErasureSameProcessTests
             confirmed.PlanId,
             requested);
 
-        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+        Assert.True(
+            first.IsSuccess,
+            first.IsFailure
+                ? $"{first.Error.Code}: {first.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Guid preserved = await harness.SeedOrdinarySessionAsync();
 
@@ -131,7 +139,11 @@ public sealed class CovenantErasureSameProcessTests
             confirmed.PlanId,
             requested);
 
-        Assert.True(replay.IsSuccess, replay.IsFailure ? replay.Error.Message : null);
+        Assert.True(
+            replay.IsSuccess,
+            replay.IsFailure
+                ? $"{replay.Error.Code}: {replay.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.Equal(first.Value.OperationId, replay.Value.OperationId);
 
@@ -167,7 +179,11 @@ public sealed class CovenantErasureSameProcessTests
             confirmed.PlanId,
             requested);
 
-        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+        Assert.True(
+            first.IsSuccess,
+            first.IsFailure
+                ? $"{first.Error.Code}: {first.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Result<DataRetentionApplyResult> conflict = await harness.ApplyFactoryAsync(
             "a-different-confirmed-plan",
@@ -278,7 +294,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(confirmed.PlanId);
 
-        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+        Assert.True(
+            result.IsSuccess,
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.Equal(confirmed.PlanId, result.Value.PlanId);
 
@@ -422,7 +442,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<DataRetentionApplyResult> result = await applying.WaitAsync(TimeSpan.FromSeconds(45));
 
-        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+        Assert.True(
+            result.IsSuccess,
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
     }
 
@@ -485,7 +509,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<DataRetentionApplyResult> applied = await harness.ApplyFactoryAsync(ready.PlanId);
 
-        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+        Assert.True(
+            applied.IsSuccess,
+            applied.IsFailure
+                ? $"{applied.Error.Code}: {applied.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.True(applied.Value.Reconciled);
 
@@ -544,7 +572,11 @@ public sealed class CovenantErasureSameProcessTests
 
         string executionId = await start;
 
-        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+        Assert.True(
+            applied.IsSuccess,
+            applied.IsFailure
+                ? $"{applied.Error.Code}: {applied.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.NotNull(await repository.GetAsync(executionId, CancellationToken.None));
 
@@ -670,7 +702,11 @@ public sealed class CovenantErasureSameProcessTests
 
         Result<DataRetentionApplyResult> result = await reset.WaitAsync(TimeSpan.FromSeconds(45));
 
-        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+        Assert.True(
+            result.IsSuccess,
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.True(result.Value.Reconciled);
 
@@ -731,7 +767,11 @@ public sealed class CovenantErasureSameProcessTests
 
         await publication;
 
-        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+        Assert.True(
+            result.IsSuccess,
+            result.IsFailure
+                ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
 
         Assert.True(result.Value.Reconciled);
 
