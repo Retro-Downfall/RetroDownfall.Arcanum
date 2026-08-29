@@ -61,6 +61,38 @@ public sealed class CovenantConnectionDrainTests
 
     }
 
+    /// <summary>
+    /// A handle two components enrolled stays this owner's to close until the second one releases it.
+    /// </summary>
+    /// <remarks>
+    /// The connection Entity Framework opens is enrolled twice — once at the open itself, and again
+    /// by the Covenant connection source in the scopes that ask for one — and the two are released at
+    /// different moments. Without a count the first release would cancel the second component's
+    /// registration, leaving a handle that is still open and still held outside the drain: the exact
+    /// shape an exclusive erasure fails on and cannot name.
+    /// </remarks>
+    [Fact]
+    public async Task A_handle_two_components_enrolled_is_released_only_by_the_last_of_them()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        CovenantConnectionDrain drain = new();
+
+        IDisposable first = drain.Register(database.Connection);
+
+        using IDisposable second = drain.Register(database.Connection);
+
+        first.Dispose();
+
+        Result drained = await drain.DrainAsync(Token);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(ConnectionState.Closed, database.Connection.State);
+
+    }
+
     [Fact]
     public async Task Every_registered_handle_is_closed_even_when_one_was_closed_already()
     {
