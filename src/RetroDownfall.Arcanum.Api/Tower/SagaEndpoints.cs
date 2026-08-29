@@ -71,9 +71,16 @@ internal static class SagaEndpoints
 
                 int clampedOffset = Math.Max(0, offset ?? 0);
 
-                // Naming a Session asks to see what that Session's turn would draw on; naming none is
-                // an operator inspecting the whole store, and every row reports its own scope either
-                // way, so nothing becomes invisible to the operator who owns it.
+                // Naming a Session resolves that Session's scope, so the listing is bounded by the
+                // ownership a turn there would rank by; naming none is an operator inspecting the whole
+                // store, and every row reports its own scope either way, so nothing becomes invisible to
+                // the operator who owns it.
+                //
+                // Bounded by, not equal to. ListAsync also matches the memory's own SessionId, so this
+                // returns what this Session wrote rather than everything a turn here could recall -- a
+                // sibling Session's memory in the same Campaign is ranked by that turn and is not listed
+                // here. In the other direction the listing is wider: it reads saga_memories with no join
+                // to the embeddings, so a retired memory lists although no turn can rank it.
                 MemoryScope scope = sessionId is null
                     ? MemoryScope.Installation
                     : await scopeResolver

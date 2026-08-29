@@ -314,7 +314,7 @@ A failing pass records a bounded `LastDurableErrorCode` on the journal row, logs
 
 ## 11. What this deliberately does not do
 
-- **No shipped version step and no shipped backfill.** Every tier stays at version 1. The loader and the driver run in production and find nothing, which is the posture this repository already argues for explicitly about the turn-receipt compactor: a sweep introduced alongside the rows it must drain is a sweep nobody has watched run empty.
+- **No shipped version step and no shipped backfill.** Every tier stays at version 1. The loader and the driver run in production and find nothing, which is the posture this repository already argues for explicitly about the turn-receipt compactor: a sweep introduced alongside the rows it must drain is a sweep nobody has watched run empty. **Revisited:** steps and sweeps have shipped since, exactly as §1's own note records; the tier that has not moved still runs the loader and the driver and finds nothing for itself.
 - **No CLI drain.** The CLI bootstrap applies backfill-free steps, because it shares the install path, but it does not drain a backfill; draining would block a CLI verb behind an unbounded sweep. A CLI-only installation therefore sits at `TransitionIncomplete` until a host runs. It is fail-closed throughout and no data is at risk.
 - **No downgrade.** A version above head is still refused. There is no reverse step.
 - **No intermediate-version validation**, for the reason in §8.3.
@@ -342,7 +342,7 @@ The multi-version fixture is a synthetic chain for a real tier: a small object s
 14. **Core mid-transition does not abort startup.** A Core tier at `TransitionIncomplete` returns rather than throwing, and its dependent tiers report `DependencyUnavailable`.
 15. **Chain validation.** Gaps, reordering, a wrong head, a duplicate backfill name, and a duplicate statement ordinal each throw at construction.
 16. **Transition resources are outside every source fingerprint.** All four fingerprints computed with and without a transition resource present are equal.
-17. **The shipped catalog declares no transition today**, and every shipped chain is at version 1 with zero steps.
+17. **The shipped catalog declares no transition today**, and every shipped chain is at version 1 with zero steps. **Revisited:** it declares several now; the chains and version constants are what say which.
 18. **The production driver exists.** A source-scan test pins a production call site for the coordinator and the hosted service, with a needle unique to that call — including its first argument, because a coordinator that names its method after the worker method it drives satisfies a bare-name search from the wrong side.
 
 Before the slice is called green, one production behavior per acceptance criterion is broken in source and the suite is confirmed to fail: collapse the planner's evolve arm to `Converge`; move the cursor write out of the batch transaction; delete the `TargetSourceDefinitionFingerprint` resumability check; and remove the `MixedCatalogVersions` arm. Every row of a table-driven case gets its own mutation, because rows fail independently.
