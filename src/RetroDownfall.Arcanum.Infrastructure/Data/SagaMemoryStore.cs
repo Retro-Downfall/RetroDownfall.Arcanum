@@ -379,12 +379,14 @@ internal sealed partial class SagaMemoryStore(
 
                 }
 
-                // The same ownership predicate retrieval ranks by, so a listing never hides a memory a
-                // turn in this scope could reach, and never shows one it could not own. It is not the
-                // whole of what retrieval can reach: there is no join to the embeddings and no predicate
-                // over RetiredAtUtc here, so a retired memory lists exactly as a live one does while no
-                // turn can recall it. That is deliberate -- retirement's promise is about retrieval, and
-                // an operator has to be able to see what they took out in order to put it back.
+                // The same ownership predicate retrieval ranks by, so this never shows a memory a turn
+                // in this scope could not own. The converse does not follow, in either direction. The
+                // SessionId filter above narrows further, to what one Session wrote, so a sibling
+                // Session's memory in the same Campaign is ranked by that turn and is still not listed
+                // beside it. And there is no join to the embeddings and no predicate over RetiredAtUtc
+                // here, so a retired memory lists exactly as a live one does while no turn can recall
+                // it. That second one is deliberate -- retirement's promise is about retrieval, and an
+                // operator has to be able to see what they took out in order to put it back.
                 if (scope.IsEnforced)
                 {
 
