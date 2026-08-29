@@ -464,6 +464,46 @@ public sealed class SagaCurationEndpointTests
     }
 
     /// <summary>
+    /// A correction carrying blank content is accepted, because a caller that sent it meant it.
+    /// </summary>
+    /// <remarks>
+    /// Pinned deliberately rather than left to chance. <c>arcanum memory saga correct</c> refuses empty
+    /// and whitespace-only content before it builds a request, and that divergence is the point: a
+    /// <c>--file</c> path can lie about what it holds and the command cannot tell a mistyped one from a
+    /// deliberate blank, whereas a request body arrived exactly as its caller wrote it. Hardening this
+    /// route to match the command would take that choice away from the caller who has already made it,
+    /// and <c>retire</c> is the verb for "stop this reaching retrieval" — blanking is not a synonym for
+    /// it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_correction_to_blank_content_is_accepted_because_the_caller_that_sent_it_meant_it()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedMemoryAsync(factory, "mem-blank", OriginalContent);
+
+        using HttpResponseMessage response = await PostCorrectAsync(
+            client,
+            "mem-blank",
+            new SagaCorrectRequest(Hash(OriginalContent), string.Empty));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        SagaMemoryDetail detail = await ReadWriteResultAsync(response, SagaCurationOutcomeKind.Applied);
+
+        Assert.Equal(string.Empty, detail.Memory.Content);
+
+        // Still a live memory rather than a retired one: blanking and retiring are different acts.
+        Assert.Null(detail.Lifecycle.RetiredAtUtc);
+
+    }
+
+    /// <summary>
     /// The digest the detail route publishes is the one the write verbs accept.
     /// </summary>
     /// <remarks>

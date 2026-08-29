@@ -194,18 +194,22 @@ public sealed class MemorySagaCurationCommandTests
     }
 
     /// <summary>
-    /// A file with nothing in it does not blank a memory.
+    /// A file holding nothing is refused, because a path cannot say that nothing was what was meant.
     /// </summary>
     /// <remarks>
-    /// The same payload was refused through the pipe and accepted through a file, so a mistyped
-    /// <c>--file</c> path replaced a memory's text with nothing and reported a correction. The Annals
-    /// keeps digests rather than content, so what that overwrote was not readable back out of the
-    /// history this same verb group prints. Both sources now meet one guard.
+    /// The same payload was refused through the pipe and sent through a file, so which source an
+    /// operator reached for decided whether a mistyped <c>--file</c> path was caught. Both sources now
+    /// meet one guard.
+    ///
+    /// <para>This does not make a Saga memory unable to hold blank text, and the refusal says so: the
+    /// correct route accepts the content it is given, and an operator who meant it is pointed at it.
+    /// The two layers answer different questions — a path can lie about what it holds, and a request
+    /// body cannot.</para>
     /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("   \n\t  ")]
-    public async Task A_replacement_file_holding_nothing_is_refused_rather_than_blanking_the_memory(
+    public async Task A_replacement_file_holding_nothing_is_refused_because_a_path_cannot_say_it_was_meant(
         string contents)
     {
 
@@ -217,7 +221,14 @@ public sealed class MemorySagaCurationCommandTests
 
         Assert.Empty(handler.Requests);
 
-        Assert.Contains("Saga memory content was empty.", result.Error, StringComparison.Ordinal);
+        // The wording has to cover the whitespace row too, which the earlier "was empty." did not.
+        Assert.Contains(
+            "Saga memory content was empty or whitespace-only",
+            result.Error,
+            StringComparison.Ordinal);
+
+        // And an operator who meant blank text is told where it is accepted rather than left guessing.
+        Assert.Contains("/api/memory/saga", result.Error, StringComparison.Ordinal);
 
     }
 

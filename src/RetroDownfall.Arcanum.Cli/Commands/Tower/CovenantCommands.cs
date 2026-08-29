@@ -56,7 +56,7 @@ public sealed class CovenantCommands(
         CancellationToken cancellationToken)
     {
 
-        Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", cancellationToken).ConfigureAwait(false);
+        Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", emptyContentRemedy: null, cancellationToken).ConfigureAwait(false);
 
         if (content.IsFailure)
         {
@@ -199,7 +199,7 @@ public sealed class CovenantCommands(
         CancellationToken cancellationToken)
     {
 
-        Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", cancellationToken).ConfigureAwait(false);
+        Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", emptyContentRemedy: null, cancellationToken).ConfigureAwait(false);
 
         if (content.IsFailure)
         {

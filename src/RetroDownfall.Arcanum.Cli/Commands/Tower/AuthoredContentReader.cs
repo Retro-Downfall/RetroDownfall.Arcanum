@@ -14,6 +14,20 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 ///
 /// <para>The subject noun travels with the call so a refusal names the store the operator was writing
 /// to rather than whichever one this helper was extracted from.</para>
+///
+/// <para>Content that is empty or whitespace-only is refused here, and that is a property of this
+/// surface rather than of the stores behind it. The two layers answer different questions. A path can
+/// lie about what it holds: an operator who mistyped <c>--file</c> did not ask to write nothing, and
+/// nothing reaching this method can tell that apart from a deliberate blank, so it refuses both and
+/// costs the deliberate one a single direct request. A caller that sends empty content to a route sent
+/// it on purpose — there is no path between them and the request to have gone wrong — so the routes
+/// stay permissive, and <b>a Saga memory really can be set to blank text that way</b>. Nothing here
+/// makes a store unable to hold nothing; it makes this verb unwilling to guess.</para>
+///
+/// <para><paramref name="emptyContentRemedy"/> is where a caller says what an operator who meant it
+/// should do instead, because that answer is not the same for every store: Saga's routes accept blank
+/// content and the Covenant's refuse it at their own preflight, so a single shared sentence would be
+/// false for one of them.</para>
 /// </remarks>
 internal static class AuthoredContentReader
 {
@@ -21,6 +35,7 @@ internal static class AuthoredContentReader
     public static async Task<Result<string>> ReadAsync(
         string? file,
         string subject,
+        string? emptyContentRemedy,
         CancellationToken cancellationToken)
     {
 
@@ -33,14 +48,21 @@ internal static class AuthoredContentReader
 
         }
 
-        // Both sources meet this, and they must: the same empty payload was refused through the pipe and
-        // accepted through a file, so a mistyped --file path silently replaced a memory with nothing. The
-        // Annals keeps digests rather than content, so what that overwrote could not be read back.
-        return string.IsNullOrWhiteSpace(authored.Value)
-            ? Result<string>.Failure(new Error(
-                ErrorCodes.Validation.InvalidBody,
-                $"{subject} content was empty."))
-            : authored;
+        // Both sources meet this, and they must: the same payload was refused through the pipe and sent
+        // through a file, so which source an operator reached for decided whether a mistyped path was
+        // caught. The remarks say why this surface refuses what the routes behind it may accept.
+        if (!string.IsNullOrWhiteSpace(authored.Value))
+        {
+
+            return authored;
+
+        }
+
+        string refusal = emptyContentRemedy is { Length: > 0 } remedy
+            ? $"{subject} content was empty or whitespace-only, so nothing was sent. {remedy}"
+            : $"{subject} content was empty or whitespace-only, so nothing was sent.";
+
+        return Result<string>.Failure(new Error(ErrorCodes.Validation.InvalidBody, refusal));
 
     }
 

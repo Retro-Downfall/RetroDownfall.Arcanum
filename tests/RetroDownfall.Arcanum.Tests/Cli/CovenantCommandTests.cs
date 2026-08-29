@@ -217,13 +217,20 @@ public sealed class CovenantCommandTests : IDisposable
     }
 
     /// <summary>
-    /// A preference file holding nothing does not blank the preference.
+    /// A preference file holding nothing is refused here, before the request that would have refused it.
     /// </summary>
     /// <remarks>
     /// The emptiness guard used to sit on the piped branch alone, so the identical payload was refused
-    /// through a pipe and written through a file. Both branches of
-    /// <see cref="AuthoredContentReader"/> now meet it, and this is the Covenant half of that: the hole
-    /// was here first and these verbs are where it was inherited from.
+    /// through a pipe and sent through a file. Both branches of <see cref="AuthoredContentReader"/> now
+    /// meet it, and this is the Covenant half of that: the reader was extracted from these verbs and
+    /// carried the same gap into Saga's.
+    ///
+    /// <para>The gap in the reader was the same; what it cost was not. A Covenant write that reached the
+    /// wire was refused by the server before anything was written —
+    /// <c>CovenantSetPrepareRequest.Validate</c> rejects zero-byte content and
+    /// <c>CovenantCompiler.Compile</c> rejects whitespace-only content, both on the preflight route and
+    /// both before the confirmation question. So the value of catching it here is a spent round trip and
+    /// a clearer sentence, not a preference saved from being blanked.</para>
     /// </remarks>
     [Theory]
     [InlineData("")]
@@ -248,7 +255,7 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.Empty(handler.Requests);
 
         Assert.Contains(
-            "Covenant content was empty.",
+            "Covenant content was empty or whitespace-only",
             string.Join("\n", dispatcher.Diagnostics),
             StringComparison.Ordinal);
 

@@ -79,7 +79,9 @@ public sealed partial class MemoryCommands
     /// </summary>
     /// <remarks>
     /// The replacement text arrives through <c>--file</c> or piped standard input, never as an
-    /// argument, for the reason <see cref="AuthoredContentReader"/> states.
+    /// argument, for the reason <see cref="AuthoredContentReader"/> states — which is also where the
+    /// refusal of empty and whitespace-only content lives, and why the route behind this verb still
+    /// accepts what this verb will not send.
     /// </remarks>
     public async Task<int> SagaCorrect(
         string id,
@@ -89,7 +91,12 @@ public sealed partial class MemoryCommands
     {
 
         Result<string> content = await AuthoredContentReader
-            .ReadAsync(file, "Saga memory", cancellationToken)
+            .ReadAsync(
+                file,
+                "Saga memory",
+                "The correct route under /api/memory/saga takes the content it is given, so send it there "
+                + "if blank text is what you meant; retire this memory instead to stop it reaching retrieval.",
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (content.IsFailure)
