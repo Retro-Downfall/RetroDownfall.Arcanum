@@ -321,9 +321,17 @@ public sealed class FamiliarProbeTests
     /// give a Familiar a private directory to run in is reported as unready — and nothing is
     /// spawned, because running the CLI anywhere else is the thing being refused.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public async Task A_host_that_cannot_provide_a_private_directory_is_reported_not_thrown()
     {
+
+        // TempRootScope makes the host unable to give out a private directory by pointing the temp
+        // root at a path that does not exist. Windows does not stay refused: it creates the absent
+        // root on demand, so Directory.CreateTempSubdirectory succeeds, the probe gets its directory
+        // and spawns — there is no host-refusal to observe. FamiliarWorkingDirectoryTests skips its
+        // sibling fact for the same reason. Making the root genuinely unusable on Windows is an ACL
+        // problem, not an environment-variable one, and would be a different test.
+        Skip.If(OperatingSystem.IsWindows(), "Windows creates an absent TMP root instead of refusing it.");
 
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 

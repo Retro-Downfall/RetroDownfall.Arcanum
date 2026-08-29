@@ -72,11 +72,49 @@ public sealed class FamiliarExecutableResolverTests
     public void An_operator_override_containing_a_separator_resolves_to_that_exact_file()
     {
 
-        using StubFamiliarCli stub = StubFamiliarCli.Create([]);
+        // A path this test builds itself, rather than StubFamiliarCli.FileName. The stub's FileName
+        // is only path-shaped on Unix: on Windows it is the bare name `powershell.exe` with the .ps1
+        // in its arguments, because a script is not directly startable there. So the stub fed this
+        // test the PATH branch on Windows and the separator branch it exists to pin never ran.
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-familiar-override-" + Guid.NewGuid().ToString("N"));
 
-        Assert.True(FamiliarExecutableResolver.TryResolve(stub.FileName, out string? resolved));
+        _ = Directory.CreateDirectory(directory);
 
-        Assert.Equal(Path.GetFullPath(stub.FileName), resolved);
+        try
+        {
+
+            // Existence is the whole of the separator branch's test — it takes the path literally
+            // and never consults PATH or PATHEXT — so the file's contents and mode do not matter.
+            string overridePath = Path.Combine(directory, "claude");
+
+            File.WriteAllText(overridePath, string.Empty);
+
+            Assert.True(FamiliarExecutableResolver.TryResolve(overridePath, out string? resolved));
+
+            Assert.Equal(Path.GetFullPath(overridePath), resolved);
+
+        }
+        finally
+        {
+
+            try
+            {
+
+                Directory.Delete(directory, recursive: true);
+
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+
+                // A leftover temp directory is not worth failing a test over, and on Windows a
+                // scanner holding the file we just wrote is the ordinary way this refuses. The same
+                // guard is on StubFamiliarCli.Dispose.
+
+            }
+
+        }
 
     }
 

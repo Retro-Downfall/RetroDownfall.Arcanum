@@ -167,7 +167,10 @@ public sealed class SessionAttachmentToolInjectionTests
 
             Assert.Contains("hello", text.Text, StringComparison.Ordinal);
 
-            string expectedFence = string.Join(global::System.Environment.NewLine, "```", "hello", "```");
+            // Literal '\n', because SystemPromptBuilder.FormatUntrusted writes the fence with '\n'
+            // on every platform: this text is bytes in a model turn, not console output.
+            // Environment.NewLine would demand CRLF on Windows, against a prompt production keeps LF.
+            string expectedFence = string.Join("\n", "```", "hello", "```");
 
             Assert.Contains(
                 expectedFence,

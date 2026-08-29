@@ -170,10 +170,14 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
+        // Built from Path.DirectorySeparatorChar rather than written with '/': RelativePath is
+        // whatever Path.GetRelativePath produced, so the entry reads container\deeper\match.txt on
+        // Windows. What this test pins is that a non-matching directory was still traversed, and
+        // that is true under either separator.
         Assert.Contains(
             result.Value!.Entries,
             static entry => entry.RelativePath.EndsWith(
-                "container/deeper/match.txt",
+                Path.Combine("container", "deeper", "match.txt"),
                 StringComparison.Ordinal));
 
     }

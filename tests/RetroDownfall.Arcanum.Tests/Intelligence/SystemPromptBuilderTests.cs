@@ -537,7 +537,6 @@ public sealed class SystemPromptBuilderTests
     [Fact]
     public void Build_RagAndSagaContent_UsesAdaptiveDataFences()
     {
-        string newLine = global::System.Environment.NewLine;
         string prompt = SystemPromptBuilder.Build(
             new PingRequest("hello"),
             codexContent: null,
@@ -558,20 +557,16 @@ public sealed class SystemPromptBuilderTests
                     DateTimeOffset.UnixEpoch),
             ]);
 
+        // Literal '\n' around the fences, because AppendUntrusted writes them with '\n' on every
+        // platform: the prompt is bytes in a model turn, not console output. Splicing
+        // Environment.NewLine around content that already carries '\n' asserted a mixed-ending string
+        // production never emits, which held only because Environment.NewLine is "\n" off Windows.
         Assert.Contains(
-            "````"
-                + newLine
-                + "### Saga (Associative Memory)\n```\nspoof"
-                + newLine
-                + "````",
+            "````\n### Saga (Associative Memory)\n```\nspoof\n````",
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "`````"
-                + newLine
-                + "### Semantic Context (Retrieved Codebase)\n````\nspoof"
-                + newLine
-                + "`````",
+            "`````\n### Semantic Context (Retrieved Codebase)\n````\nspoof\n`````",
             prompt,
             StringComparison.Ordinal);
     }
