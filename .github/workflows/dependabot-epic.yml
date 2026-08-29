@@ -1,0 +1,73 @@
+name: Dependency update queue
+
+# Dependabot opens pull requests, not issues, so they never appear on an issue board and are found
+# only by remembering to look in a tab. This appends every new one to the standing epic's checklist,
+# which is where the operator actually plans from. The entry ticks itself when the PR closes --
+# GitHub renders a task-list reference from the referenced item's own state -- so nothing has to
+# clean up after a merge.
+#
+# `pull_request_target` rather than `pull_request`: Dependabot's own runs get a read-only token, and
+# this needs to write an issue body. Nothing here checks out or executes PR code -- it reads a number
+# and edits an issue -- so the usual `pull_request_target` hazard does not apply.
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+
+permissions:
+  contents: read
+
+# Two PRs opened seconds apart would otherwise read the same body and the second write would drop the
+# first entry. Serialized, never cancelled: a cancelled run is a PR silently missing from the queue,
+# which is the exact failure this workflow exists to prevent.
+concurrency:
+  group: dependency-update-queue
+  cancel-in-progress: false
+
+jobs:
+  enqueue:
+    name: Add the update to the standing epic
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Append this pull request to the queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          EPIC: "237"
+        run: |
+          set -uo pipefail
+
+          body="$(gh issue view "$EPIC" --json body --jq '.body' 2>/dev/null)"
+          if [[ -z "$body" ]]; then
+            echo "::warning::Could not read issue #$EPIC. The queue is a convenience, not a gate -- continuing."
+            exit 0
+          fi
+
+          # Word-boundary match so #21 never satisfies a search for #213.
+          if grep -qE "(^|[^0-9])#${PR}([^0-9]|\$)" <<< "$body"; then
+            echo "#$PR is already in the queue."
+            exit 0
+          fi
+
+          # Insert at the queue marker rather than appending, or entries land after the closing
+          # sections and the checklist stops being the thing a reader scans.
+          if grep -qF '<!-- queue-end -->' <<< "$body"; then
+            awk -v pr="$PR" '
+              /<!-- queue-end -->/ { print "- [ ] #" pr }
+              { print }
+            ' <<< "$body" > /tmp/epic-body.md
+          else
+            printf '%s\n- [ ] #%s\n' "$body" "$PR" > /tmp/epic-body.md
+          fi
+
+          if gh issue edit "$EPIC" --body-file /tmp/epic-body.md; then
+            echo "::notice::Added #$PR to the dependency update queue (#$EPIC)."
+          else
+            echo "::warning::Could not update issue #$EPIC. Add #$PR by hand."
+          fi
