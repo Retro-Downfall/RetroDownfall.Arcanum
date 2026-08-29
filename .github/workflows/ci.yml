@@ -36,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       win-x64: ${{ steps.manifest.outputs.win-x64 }}
+      win-arm64: ${{ steps.manifest.outputs.win-arm64 }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -45,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           package=src/RetroDownfall.Arcanum.NativeSqlCipher
-          for rid in win-x64; do
+          for rid in win-x64 win-arm64; do
             status=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].status // "absent"' "$package/native-source-manifest.json")
             path=$(jq -r --arg rid "$rid" '[.assets[] | select(.rid == $rid)][0].path // ""' "$package/native-source-manifest.json")
             if [[ "$status" == "verified" && -n "$path" && -f "$package/$path" ]]; then
@@ -244,12 +245,18 @@ jobs:
     # the Linux and macOS lanes they report green while asserting nothing. Without this job the whole
     # Windows surface -- Credential Manager, Job Objects, AppContainer, PATHEXT resolution, NTFS
     # permissions -- is untested, which is how WindowsOsCredentialStore shipped persisting
-    # uninitialized heap in place of the operator's API key.
+    # uninitialized heap in place of the operator's API key. That surface is the same on both
+    # shipping Windows architectures, so this lane covers x64 and windows-arm64-suite below covers
+    # the other one; what arm64 adds beyond a second copy is written there.
+    #
+    # The bare name is left alone on purpose. This is the lane the Beta release gate names, and any
+    # required-check configuration that refers to a Windows lane refers to it by this string.
     name: Windows test suite
-    # win-x64 has no verified hermetic SQLCipher asset yet, and the targets refuse to build a RID
-    # without one (ARCSQLC002) long before the first test executes. Gate on the manifest so the
-    # lane skips honestly instead of failing at `dotnet build`, and returns by itself once the
-    # asset lands.
+    # The hermetic SQLCipher targets refuse to build a RID whose asset is not verified (ARCSQLC002)
+    # long before the first test executes. Gate on the manifest so a lane in that state skips
+    # honestly instead of failing at `dotnet build`, and returns by itself once the asset lands.
+    # The gate stays now that win-x64's asset is checked in: nothing in the job would run without
+    # it, so the condition is the honest statement of the prerequisite rather than a leftover.
     needs: native-sqlcipher-assets
     if: needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
@@ -299,6 +306,130 @@ jobs:
           # Category!=Perf: ArcanumPerfBaselineTests measures wall clock against absolute budgets on
           # a shared runner. DESIGN 13.8 calls that harness explicitly not a gate, and coverage.sh
           # excludes it for the same reason -- an unfiltered lane reds on scheduling noise instead.
+          dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
+            -c Release --no-build --no-restore --filter "Category!=Perf"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test Compendium
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj `
+            -c Release --no-build --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  windows-arm64-suite:
+    # The release ships win-arm64 alongside win-x64 and osx-arm64: it is built, packaged, signed and
+    # handed to operators. Until this lane, not one test had ever executed on it. Three things it
+    # reaches that windows-suite cannot, none of which x64 coverage can stand in for:
+    #
+    #   - A different binary. runtimes/win-arm64/native/e_sqlcipher.dll is its own hermetic build
+    #     from the pinned sources, so the Grimoire's every P/Invoke into SQLCipher crosses the arm64
+    #     calling convention here for the first time. A marshalling mistake that x64 tolerates --
+    #     a struct layout, a blittable assumption, a pointer width taken for granted -- surfaces on
+    #     this lane and nowhere else in CI.
+    #   - Windows on ARM, not Windows. Credential Manager, Job Objects, AppContainer and the NTFS
+    #     ACL surface are reached through the same P/Invoke declarations, on an OS build that runs
+    #     x64 code under emulation. That emulation is the local failure mode: it lets a tool answer
+    #     confidently about the wrong architecture, which is why build-windows.yml stopped believing
+    #     PROCESSOR_ARCHITECTURE and why the SDK assertion below exists.
+    #   - The RID's own delivery. This is the only lane that runs the suite with the win-arm64 asset
+    #     actually loaded, so the hermetic targets' promise of exactly one library and no fallback is
+    #     observed for this RID here rather than inferred from the manifest saying `verified`.
+    name: Windows test suite (arm64)
+    # Gated on its own RID, not on x64's. The asset statuses are independent -- either can go
+    # pending on its own -- and a lane gated on the other architecture's asset would fail at
+    # `dotnet build` with ARCSQLC002 rather than skip honestly, which is the property the manifest
+    # gate exists to preserve.
+    needs: native-sqlcipher-assets
+    if: needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified'
+    # A whole job rather than a matrix leg of windows-suite, deliberately, for two reasons that both
+    # fail silently. `needs:` names a job id and waits for every leg of that job's matrix, so folding
+    # arm64 into windows-suite would have added it to the Beta release gate below without anyone
+    # choosing that -- and this lane has never run, so its real failure list is unknown. And a
+    # job-level `if:` cannot read the `matrix` context at all, so a matrix could not carry the
+    # per-RID manifest gate above without rebuilding it as a dynamically generated matrix. Please do
+    # not "simplify" the duplication away without answering both.
+    #
+    # Each Windows architecture tests on its own architecture for the reason build-windows.yml
+    # publishes on its own: `windows-11-arm` is free for this repository because it is public.
+    runs-on: windows-11-arm
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      # Both variables carry over from the x64 lane unchanged, and for unchanged reasons. Without
+      # the first, a lane whose Windows-gated tests all skipped reports a clean green while
+      # asserting nothing -- see WindowsCiSurfaceTests, which is architecture-agnostic and holds
+      # here exactly as it does there. The second opts in to the one test that writes to a real OS
+      # secret store; this runner's Credential Manager is as disposable as the x64 runner's, and
+      # arm64 is where the store's P/Invoke surface is least exercised, so opting out here would
+      # skip the round trip on the architecture that most needs it.
+      ARCANUM_REQUIRE_WINDOWS_SUITE: true
+      ARCANUM_TEST_OS_CREDENTIAL_STORE: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0.x"
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+            .config/dotnet-tools.json
+
+      # The SDK's own host RID, because Windows on ARM runs an x64 SDK under emulation without
+      # complaining. That degradation is silent in the one direction that matters here: an emulated
+      # x64 run resolves the win-x64 native asset, passes every test, and reports arm64 coverage this
+      # lane never obtained -- a second copy of windows-suite wearing an arm64 label. Assert it
+      # before anything is built rather than inferring it from the runner label, which can be right
+      # while the toolchain is not. build-windows.yml makes the same assertion before it publishes.
+      - name: Assert the SDK is native to win-arm64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $info = (& dotnet --info) -join "`n"
+
+          Write-Host $info
+
+          $match = [regex]::Match($info, '(?m)^\s*RID:\s*(?<rid>\S+)\s*$')
+
+          if (-not $match.Success) {
+              throw "dotnet --info did not report a host RID, so this lane cannot tell whether it is testing win-arm64 or an emulated win-x64."
+          }
+
+          if ($match.Groups['rid'].Value -ne 'win-arm64') {
+              throw "This lane must run a win-arm64 SDK; this runner's host RID is $($match.Groups['rid'].Value), so the suite would exercise win-x64 a second time under emulation."
+          }
+
+      - name: Restore and build Arcanum + Compendium
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The same two projects the x64 lane builds, for the same reason: The Forge's suite is
+          # platform-agnostic and runs once, on build-test.
+          foreach ($project in @(
+            'tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj',
+            'tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj'
+          )) {
+            dotnet restore $project
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            dotnet build $project -c Release --no-restore
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Test Arcanum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Category!=Perf for the reason the x64 lane excludes it -- ArcanumPerfBaselineTests
+          # measures wall clock against absolute budgets, and DESIGN 13.8 states the harness is not
+          # a gate. It applies with more force here: no arm64 measurement exists to set a budget
+          # from, so those budgets are x64 numbers and this lane would red on the architecture.
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
             -c Release --no-build --no-restore --filter "Category!=Perf"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -448,6 +579,15 @@ jobs:
     # purpose: naming a subset would be choosing which failures are allowed to ship, and a job added
     # later would default to not blocking it. A skipped gate blocks this too, which is the answer we
     # want -- a lane that could not run has not passed.
+    #
+    # windows-arm64-suite is the one deliberate exception, and it is named here so its absence reads
+    # as a decision rather than as the oversight the paragraph above warns about. That suite has
+    # never executed on arm64: nobody has seen its failure list, and a first run is far more likely
+    # to be red for test-side reasons than to have found a shipping defect. Gating every release on
+    # an unknown would stop releases without telling anyone anything. So the lane reports and does
+    # not block. Promoting it into this list is a follow-up decision, to be taken once its real
+    # failure list is known and worked down -- and it is a promotion somebody must make on purpose,
+    # because until then win-arm64 ships on evidence this workflow gathers but does not enforce.
     #
     # No version is passed. The release derives it from Directory.Build.props: a bare channel there
     # means "next beta", and a fully written version means exactly that version. Editing that one

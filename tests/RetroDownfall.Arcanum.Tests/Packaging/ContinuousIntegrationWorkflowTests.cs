@@ -266,16 +266,161 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     /// <summary>
+    /// A shipping runtime identifier that no lane ever tests is a binary the operator receives on
+    /// the strength of a different architecture's evidence. Both Windows RIDs are built, packaged,
+    /// signed and released, and for a long time only <c>win-x64</c> was tested: the arm64 build
+    /// reached operators with the entire Windows-gated surface dark — Credential Manager, Job
+    /// Objects, AppContainer, PATHEXT, NTFS permissions — along with its own hermetic
+    /// <c>e_sqlcipher.dll</c> and every P/Invoke that crosses into it.
+    /// </summary>
+    /// <remarks>
+    /// The lane has to exist in the workflow, not necessarily to be running. A RID whose asset went
+    /// pending is gated off by the manifest check above and that is the honest answer. What this
+    /// refuses is the job's deletion, because nothing else in the repository would report that an
+    /// architecture had stopped being tested.
+    /// </remarks>
+    [Fact]
+    public void Every_shipping_windows_architecture_has_a_test_lane()
+    {
+
+        string repositoryRoot = FindRepositoryRoot();
+
+        string[] windowsRuntimeIdentifiers = ShippingRuntimeIdentifiers(repositoryRoot)
+            .Where(static rid => rid.StartsWith("win-", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.NotEmpty(windowsRuntimeIdentifiers);
+
+        IReadOnlyList<WorkflowJob> jobs = ContinuousIntegrationJobs(repositoryRoot);
+
+        List<string> untested = [];
+
+        foreach (string rid in windowsRuntimeIdentifiers)
+        {
+
+            bool tested = jobs.Any(job =>
+                RuntimeIdentifierFor(job.RunsOn) == rid
+                && job.Body.Contains("dotnet test", StringComparison.Ordinal));
+
+            if (!tested)
+            {
+
+                untested.Add(rid);
+
+            }
+
+        }
+
+        Assert.True(
+            untested.Count == 0,
+            "A Windows runtime identifier that native-source-manifest.json ships has no job in "
+            + ".github/workflows/ci.yml running the suite on a runner for it, so it is released on "
+            + "another architecture's evidence:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, untested));
+
+    }
+
+    /// <summary>
+    /// Both variables are set in exactly one place — <c>.github/workflows/ci.yml</c> — and dropping
+    /// one from a lane costs nothing visible. <c>ARCANUM_REQUIRE_WINDOWS_SUITE</c> is what turns a
+    /// lane whose platform-gated tests all skipped into a red build, and
+    /// <c>ARCANUM_TEST_OS_CREDENTIAL_STORE</c> is what makes the round trip against the real
+    /// Credential Manager execute at all.
+    /// </summary>
+    /// <remarks>
+    /// <c>WindowsCiSurfaceTests</c> pins both, but only from inside a lane that already set the
+    /// first: without it every fact in that class returns early and agrees that nothing was
+    /// required. So the guard cannot guard its own precondition, and a second Windows lane added
+    /// without these two lines would report a confident green having asserted nothing — which is
+    /// the exact failure the first variable was introduced to end. This is the assertion from
+    /// outside the lane.
+    /// </remarks>
+    [Theory]
+
+    [InlineData("ARCANUM_REQUIRE_WINDOWS_SUITE")]
+
+    [InlineData("ARCANUM_TEST_OS_CREDENTIAL_STORE")]
+
+    public void Every_windows_test_lane_opts_in_to_the_windows_surface(string variable)
+    {
+
+        WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
+            .Where(static job => job.RunsOn.StartsWith("windows", StringComparison.Ordinal))
+            .Where(static job => job.Body.Contains("dotnet test", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.NotEmpty(lanes);
+
+        List<string> offenders = [];
+
+        foreach (WorkflowJob lane in lanes)
+        {
+
+            if (!lane.Body.Contains($"{variable}: true", StringComparison.Ordinal))
+            {
+
+                offenders.Add($"{lane.Id} (runs-on: {lane.RunsOn})");
+
+            }
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"A Windows CI lane runs the suite without {variable}=true. Every Windows-only test "
+            + "guards itself with Skip.IfNot(OperatingSystem.IsWindows(), …), so the lane reports "
+            + "green while asserting nothing:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+
+    }
+
+    /// <summary>
     /// The runtime identifier a runner label builds for. Only the RID family matters here: the
-    /// hosted runners are x64 for Windows and Linux and arm64 for macOS.
+    /// hosted macOS runners are arm64 and the Linux ones x64, but Windows is genuinely both —
+    /// <c>windows-11-arm</c> is a real label this repository runs on, and reading it as
+    /// <c>win-x64</c> would check the wrong manifest entry, clearing a lane whose own asset is
+    /// missing and denying that the architecture has a lane at all.
     /// </summary>
     private static string RuntimeIdentifierFor(string runsOn) =>
         runsOn switch
         {
+            _ when runsOn.StartsWith("windows", StringComparison.Ordinal)
+                && runsOn.Contains("arm", StringComparison.Ordinal) => "win-arm64",
             _ when runsOn.StartsWith("windows", StringComparison.Ordinal) => "win-x64",
             _ when runsOn.StartsWith("macos", StringComparison.Ordinal) => "osx-arm64",
             _ => "linux-x64",
         };
+
+    /// <summary>
+    /// Every runtime identifier the hermetic manifest declares, which is the authority on what the
+    /// project ships.
+    /// </summary>
+    private static IReadOnlyList<string> ShippingRuntimeIdentifiers(string repositoryRoot)
+    {
+
+        using JsonDocument manifest = JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(
+                repositoryRoot,
+                "src",
+                "RetroDownfall.Arcanum.NativeSqlCipher",
+                "native-source-manifest.json")));
+
+        List<string> rids = [];
+
+        foreach (JsonElement asset in manifest.RootElement.GetProperty("assets").EnumerateArray())
+        {
+
+            rids.Add(asset.GetProperty("rid").GetString()!);
+
+        }
+
+        Assert.NotEmpty(rids);
+
+        return rids;
+
+    }
 
     private static bool HasVerifiedNativeSqlCipherAsset(string repositoryRoot, string rid)
     {
