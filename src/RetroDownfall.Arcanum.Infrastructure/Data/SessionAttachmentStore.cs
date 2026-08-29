@@ -86,6 +86,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// </summary>
     internal Func<CancellationToken, Task>? AfterOrphanPathSnapshotForTesting { get; set; }
 
+    /// <summary>
+    /// Test seam: stands in for every last-write time the orphan-file sweep reads, its own clock probe
+    /// included. Used to simulate a host that stamps files from a clock running behind the process clock,
+    /// which is the shape of the race the sweep's threshold has to survive.
+    /// </summary>
+    internal Func<string, DateTime>? FileLastWriteTimeUtcForTesting { get; set; }
+
     internal int BoundRecordPageReadCountForTesting =>
         Volatile.Read(ref _boundRecordPageReadCountForTesting);
 
@@ -2250,11 +2257,32 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// from the snapshot but newer than it belongs to a write still in flight, and that also spares
     /// <c>EncryptedBlobStore</c>'s staging temporaries. Second, a file that is about to be unlinked is
     /// re-checked against the live table, so a row committed since the snapshot keeps its bytes.
+    /// The threshold is read from the filesystem's own clock rather than from <see cref="DateTime.UtcNow"/>,
+    /// because those are not the same clock: a host can stamp files from a coarser cached time than the
+    /// process clock reports, and a file created after the snapshot then reads back as older than it and
+    /// loses the only protection it has. Comparing a filesystem stamp against another filesystem stamp
+    /// needs no estimate of how far apart the two clocks run.
     /// </remarks>
     private async Task SweepOrphanAttachmentFilesAsync(CancellationToken cancellationToken)
     {
 
-        DateTime snapshotTakenUtc = DateTime.UtcNow;
+        if (!Directory.Exists(_attachmentsRoot))
+        {
+
+            return;
+
+        }
+
+        if (!TryReadFilesystemClockUtc(out DateTime snapshotTakenUtc))
+        {
+
+            _logger.LogWarning(
+                "Skipping the orphan attachment sweep: the attachments root would not take a probe file, "
+                + "so the filesystem's clock could not be read and no file can be shown to predate the snapshot.");
+
+            return;
+
+        }
 
         HashSet<string> knownPaths = await ListAllRelativePathsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -2262,13 +2290,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         {
 
             await AfterOrphanPathSnapshotForTesting(cancellationToken).ConfigureAwait(false);
-
-        }
-
-        if (!Directory.Exists(_attachmentsRoot))
-        {
-
-            return;
 
         }
 
@@ -2334,13 +2355,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// An unreadable timestamp is reported as "yes", so an unexpected filesystem error can never be the
     /// reason a live attachment's ciphertext is unlinked.
     /// </summary>
-    private static bool IsModifiedAtOrAfter(string absolutePath, DateTime threshold)
+    private bool IsModifiedAtOrAfter(string absolutePath, DateTime threshold)
     {
 
         try
         {
 
-            return File.GetLastWriteTimeUtc(absolutePath) >= threshold;
+            return ReadLastWriteTimeUtc(absolutePath) >= threshold;
 
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -2351,6 +2372,59 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         }
 
     }
+
+    /// <summary>
+    /// Reads the clock the filesystem stamps files with, by creating a file and reading back the time it
+    /// recorded for it. The reading is only ever compared against other stamps from the same volume, so it
+    /// does not matter how coarse it is or how far it sits from the process clock — only that a file
+    /// written after the probe is never stamped before it.
+    /// </summary>
+    /// <remarks>
+    /// The probe is named as a staging temporary, so a pass that cannot remove its own probe leaves one
+    /// the next pass unlinks. Returns <see langword="false"/> when the root will not take the probe: the
+    /// caller then sweeps nothing, which forfeits reclaiming orphans rather than risk unlinking live bytes.
+    /// </remarks>
+    private bool TryReadFilesystemClockUtc(out DateTime nowUtc)
+    {
+
+        string probePath = Path.Combine(_attachmentsRoot, $".sweep-clock.tmp.{Guid.NewGuid():N}");
+
+        try
+        {
+
+            using (FileStream probe = File.Create(probePath))
+            {
+
+                probe.WriteByte(0);
+
+            }
+
+            nowUtc = ReadLastWriteTimeUtc(probePath);
+
+            return true;
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            nowUtc = default;
+
+            return false;
+
+        }
+        finally
+        {
+
+            TryDeleteFile(probePath);
+
+        }
+
+    }
+
+    private DateTime ReadLastWriteTimeUtc(string absolutePath) =>
+        FileLastWriteTimeUtcForTesting is null
+            ? File.GetLastWriteTimeUtc(absolutePath)
+            : FileLastWriteTimeUtcForTesting(absolutePath);
 
     /// <summary>
     /// Re-reads the live table for one relative path, so a row committed since the sweep's snapshot

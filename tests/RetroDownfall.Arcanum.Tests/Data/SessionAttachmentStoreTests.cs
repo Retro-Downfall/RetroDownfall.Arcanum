@@ -2678,6 +2678,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(abandoned, "ciphertext");
 
+        // Stamped well before the sweep starts, because a host with a coarse file clock can stamp this
+        // file and the sweep's own threshold within one tick of each other, and the sweep would then
+        // spare it as in-flight. Ageing it keeps this assertion about the sweep and not about the tick.
+        File.SetLastWriteTimeUtc(abandoned, DateTime.UtcNow - TimeSpan.FromHours(1));
+
         // An attachment write lands its ciphertext before it inserts its row, so a write that starts
         // after the sweep snapshotted the referenced paths owns a file the snapshot cannot name. The
         // seam stays installed because a reconcile runs the orphan sweep more than once, and the point
@@ -2696,6 +2701,69 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         _store.AfterOrphanPathSnapshotForTesting = null;
 
         Assert.True(File.Exists(inFlight), "the sweep unlinked ciphertext for an attachment write still in flight.");
+
+        Assert.False(File.Exists(abandoned), "the sweep left a genuinely unreferenced file behind.");
+
+    }
+
+    [SkippableFact]
+    public async Task ReconcileAsync_spares_an_in_flight_file_when_the_file_clock_lags_the_process_clock()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // The same commit spared this file on one Windows runner and unlinked it on another, so the real
+        // skew between the clock a process reads and the clock a host stamps files with is whatever a
+        // timer tick happened to be. The seam replaces that coin flip with a fixed lag applied to every
+        // stamp the sweep reads, its own threshold included. A minute is far more lag than any host has,
+        // and that is the point: the assertions then turn on which clock the threshold is drawn from and
+        // not on how long the row snapshot took to run.
+        TimeSpan fileClockLag = TimeSpan.FromMinutes(1);
+
+        _store!.FileLastWriteTimeUtcForTesting = path => File.GetLastWriteTimeUtc(path) - fileClockLag;
+
+        string liveDirectory = Path.Combine(_attachmentsRoot, Guid.NewGuid().ToString("N"), "in-flight.txt", "v1");
+
+        string inFlight = Path.Combine(liveDirectory, "in-flight.txt");
+
+        string abandonedDirectory = Path.Combine(_attachmentsRoot, Guid.NewGuid().ToString("N"), "abandoned.txt", "v1");
+
+        Directory.CreateDirectory(abandonedDirectory);
+
+        string abandoned = Path.Combine(abandonedDirectory, "abandoned.txt");
+
+        await File.WriteAllTextAsync(abandoned, "ciphertext");
+
+        File.SetLastWriteTimeUtc(abandoned, DateTime.UtcNow - TimeSpan.FromHours(1));
+
+        _store.AfterOrphanPathSnapshotForTesting = async _ =>
+        {
+
+            Directory.CreateDirectory(liveDirectory);
+
+            await File.WriteAllTextAsync(inFlight, "ciphertext");
+
+        };
+
+        try
+        {
+
+            await _store.ReconcileAsync(TimeSpan.FromDays(365));
+
+        }
+        finally
+        {
+
+            _store.AfterOrphanPathSnapshotForTesting = null;
+
+            _store.FileLastWriteTimeUtcForTesting = null;
+
+        }
+
+        Assert.True(
+            File.Exists(inFlight),
+            "the sweep read this file's stamp as older than a threshold taken from a different clock, and unlinked "
+            + "ciphertext for an attachment write still in flight.");
 
         Assert.False(File.Exists(abandoned), "the sweep left a genuinely unreferenced file behind.");
 
