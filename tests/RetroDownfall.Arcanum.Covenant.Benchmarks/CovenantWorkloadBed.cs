@@ -229,6 +229,7 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             codec,
             new FixedConnectionSource(_connection),
             new CovenantMutationKernel(new CovenantQuotaGuard(CovenantSqliteConnectionInitializer.Instance)),
+            new CovenantCurationKernel(),
             Authority,
             TimeProvider.System);
 
