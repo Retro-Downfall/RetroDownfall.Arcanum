@@ -20,7 +20,7 @@ internal static class Program
     public static async Task<int> Main(string[] args)
     {
 
-        if (SandboxExecHelper.TryHandle(args))
+        if (SandboxExecHelper.TryHandle(args, typeof(Program)))
         {
 
             return 0;

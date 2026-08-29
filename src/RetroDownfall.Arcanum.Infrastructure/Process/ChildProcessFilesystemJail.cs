@@ -229,10 +229,11 @@ internal static class ChildProcessFilesystemJail
         ILogger? logger)
     {
         // This jail does not wrap the child, it replaces it: the real target is handed to a re-execution
-        // of this process in broker mode. A host that never routes argv through SandboxExecHelper.TryHandle
-        // has no broker mode, so re-executing it would run something other than the tool — File.Exists on
-        // Environment.ProcessPath cannot tell the difference. Refuse before touching startInfo, so that an
-        // operator-escaped run still starts the untouched target rather than a half-rewritten one.
+        // of this process in broker mode. A process whose own entry point does not route argv through
+        // SandboxExecHelper.TryHandle has no broker mode, so re-executing it would run something other than
+        // the tool — File.Exists on Environment.ProcessPath cannot tell the difference. Refuse before
+        // touching startInfo, so an operator-escaped run still starts the untouched target rather than a
+        // half-rewritten one.
         if (!SandboxExecHelper.IsBrokerCapableHost)
         {
             return WindowsFailClosedOrEscape(request, logger, "This host process cannot act as the Windows sandbox broker.");

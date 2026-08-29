@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
@@ -13,27 +14,46 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 internal static class SandboxExecHelper
 {
 
+    private static Assembly? _declaredHostEntryPoint;
+
     /// <summary>
-    /// Whether this process can be re-executed as the sandbox broker. <see cref="TryHandle"/> is the only
-    /// route from <c>__sandbox-exec</c> argv to the broker, so a host that has called it can broker by
-    /// construction, and a host that has not — a test runner, an embedding host — cannot, however plausible
-    /// its <see cref="Environment.ProcessPath"/> looks. Tests must never call <see cref="TryHandle"/>: the
-    /// call is the declaration, and it is process-wide.
+    /// Whether re-executing this process with <c>__sandbox-exec</c> argv would actually reach the broker.
+    /// <see cref="TryHandle"/> is the only route from that argv to the broker, but having called it is not
+    /// enough: an embedding host runs another program's entry point inside itself — <c>WebApplicationFactory</c>
+    /// builds its host that way — and re-executing such a process starts the embedder, not the entry point it
+    /// borrowed. So the declaration only counts while the declaring host is this process's own entry assembly.
     /// </summary>
-    internal static bool IsBrokerCapableHost { get; private set; }
+    internal static bool IsBrokerCapableHost => DeclarationBindsToThisProcess(_declaredHostEntryPoint);
+
+    /// <summary>
+    /// The whole broker-capability decision, kept pure so it can be exercised on any platform and so that no
+    /// order of <see cref="TryHandle"/> calls can latch an answer: capability is re-decided on every read.
+    /// A declaration from an assembly that is not the entry assembly is recognisably not authoritative, and
+    /// no declaration at all is not capable, so both unknowns land on the fail-closed side.
+    /// </summary>
+    internal static bool DeclarationBindsToThisProcess(Assembly? declaredHostEntryPoint)
+    {
+
+        return declaredHostEntryPoint is not null
+            && ReferenceEquals(declaredHostEntryPoint, Assembly.GetEntryAssembly());
+
+    }
 
     /// <summary>
     /// When <paramref name="args"/> is a <c>__sandbox-exec</c> invocation, runs the helper and never returns
     /// (process image replaced) or exits the process with a non-zero code. Returns <c>false</c> when this
-    /// is a normal Arcanum CLI/host launch.
+    /// is a normal Arcanum CLI/host launch. <paramref name="hostEntryPoint"/> is the calling host's own
+    /// <c>Program</c> type, which is how <see cref="IsBrokerCapableHost"/> learns which assembly declared.
     /// </summary>
-    internal static bool TryHandle(string[] args)
+    internal static bool TryHandle(string[] args, Type hostEntryPoint)
     {
 
-        // Whatever this argv turns out to be, reaching this line proves that a re-execution of this same
-        // image with __sandbox-exec argv would arrive here too. That is exactly what the Windows jail needs
-        // to know before it re-executes the host as the broker.
-        IsBrokerCapableHost = true;
+        ArgumentNullException.ThrowIfNull(hostEntryPoint);
+
+        // Record who declared rather than that someone did. An embedding host reaches this line while
+        // running an entry point it borrowed, and re-executing that host would start the embedder instead,
+        // so the identity is the part IsBrokerCapableHost needs and the bare fact of the call is not.
+        _declaredHostEntryPoint = hostEntryPoint.Assembly;
 
         if (args.Length < 1
             || !string.Equals(args[0], ChildProcessFilesystemJail.HelperArg, StringComparison.Ordinal))

@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Reflection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
@@ -289,6 +291,61 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     }
 
+    [Fact]
+    public void A_host_that_declared_nothing_cannot_broker()
+    {
+
+        // Apply's Windows branch is unreachable off Windows, but the capability it consults is not: this
+        // case and the two below hold the guard's decision on every platform, so a regression in it cannot
+        // wait for a Windows lane to be noticed — which is how the leak these replace reached CI.
+        Assert.False(SandboxExecHelper.DeclarationBindsToThisProcess(null));
+
+    }
+
+    [Fact]
+    public void A_declaration_from_an_assembly_that_is_not_the_entry_point_cannot_broker()
+    {
+
+        // Loaded in this process, and the very assembly the broker lives in, yet re-executing this process
+        // would not start it — which is the whole difference the guard exists to see.
+        Assert.False(
+            SandboxExecHelper.DeclarationBindsToThisProcess(typeof(ChildProcessFilesystemJail).Assembly));
+
+    }
+
+    [Fact]
+    public void A_declaration_from_the_entry_assembly_can_broker()
+    {
+
+        // The positive direction, proved without declaring anything: whichever assembly owns this process's
+        // entry point is by definition the one a re-execution would start. Calling TryHandle to prove this
+        // would write the process-wide declaration and re-create the leak for every test that follows.
+        Assembly? entryAssembly = Assembly.GetEntryAssembly();
+
+        Assert.NotNull(entryAssembly);
+
+        Assert.True(SandboxExecHelper.DeclarationBindsToThisProcess(entryAssembly));
+
+    }
+
+    [SkippableFact]
+    public async Task Hosting_another_programs_entry_point_leaves_this_process_unable_to_broker()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // WebApplicationFactory builds its host by executing DevHost's entry point, so every web test in
+        // this process calls SandboxExecHelper.TryHandle whether or not any test meant to. The answer must
+        // not depend on whether that happened before or after the jail tests, which is why it is asked here
+        // after deliberately provoking it rather than left to the luck of the run order.
+        await using ArcanumWebApplicationFactory factory = new();
+
+        _ = factory.Services;
+
+        Assert.False(SandboxExecHelper.IsBrokerCapableHost);
+
+    }
+
     [SkippableFact]
     public void WindowsFilesystemJail_FailsClosed_WhenTheHostCannotBroker()
     {
@@ -327,9 +384,10 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             request,
             NullLogger.Instance);
 
-        // The test runner never routes argv through SandboxExecHelper.TryHandle, so it cannot broker and
-        // the jail refuses rather than re-executing it. Without the escape hatch that refusal is
-        // fail-closed, and the untouched FileName shows the refusal came before any rewrite of the target.
+        // Argv does reach SandboxExecHelper.TryHandle in this process — a web test runs DevHost's entry
+        // point inside the runner — but re-executing the runner would start the test platform, so it still
+        // cannot broker and the jail refuses rather than re-executing it. Without the escape hatch that
+        // refusal is fail-closed, and the untouched FileName shows it came before any rewrite of the target.
         Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
 
         Assert.Equal("cmd.exe", psi.FileName);

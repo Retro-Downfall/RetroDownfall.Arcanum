@@ -12,7 +12,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using Serilog;
 
-if (SandboxExecHelper.TryHandle(args))
+if (SandboxExecHelper.TryHandle(args, typeof(Program)))
 {
     return 0;
 }
