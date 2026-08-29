@@ -383,9 +383,17 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Source_replacement_after_open_aborts_without_publishing_an_archive()
     {
+
+        // The seam swaps the source while the codec holds it open with FileShare.Read |
+        // FileShare.Delete and no write sharing. Windows denies the replacement of a file held that
+        // way, so the exception escaping WriteAsync is the test's own File.Move failing rather than
+        // the codec detecting the swap — the substitution never happens for the codec to catch.
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows denies replacing a file the codec holds open without write sharing.");
 
         byte[] original = Enumerable.Repeat((byte)0x11, 4096).ToArray();
 

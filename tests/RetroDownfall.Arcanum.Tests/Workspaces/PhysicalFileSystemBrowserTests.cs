@@ -293,9 +293,18 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReadAsync_rejects_file_that_grows_past_cap_after_open()
     {
+
+        // The growth staged below is impossible on Windows. SecureFileReader opens the file with
+        // FileShare.Read | FileShare.Delete and no write sharing, so the kernel refuses the append
+        // from inside the read and the sharing violation escapes before the cap check under test
+        // runs. Windows enforces at the OS level exactly what this test verifies in code; widening
+        // the share mode to make the append land would trade that exclusion away for coverage.
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows refuses the append: the read handle production holds shares no write access.");
 
         int capLength = checked(
             (int)ArcanumSettingClamps.MaxFileReadSizeBytes(

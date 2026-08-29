@@ -842,6 +842,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         CampaignPathRestoreCleanupPreparationReceipt receipt =
             await PrepareAndCommitAsync(owner, [root.Seed]);
 
+        // The restart being simulated is a process that let go of its roots. Committing above was a
+        // database transaction, not a handle release, so the retained directory handles outlive it
+        // until this call — and on Windows an open child handle blocks the rename below.
+        await _lifecycle.ReleaseRetainedRootsAsync(owner.OperationId);
+
         Directory.Move(root.Directory, root.Directory + "-elsewhere");
 
         Result<CampaignPathMarkerGateCompletion> completed =
@@ -852,9 +857,18 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task The_in_process_path_never_reaches_an_impostor_at_the_recorded_display_path()
     {
+
+        // This is the in-process path, so the retained capability has to stay held — that is what
+        // the test proves reaches its own root and never the name. Windows refuses to rename a
+        // directory while a handle on anything beneath it is open, whatever the share mode, so the
+        // move below fails with access denied and the impostor can never be staged. Releasing the
+        // roots first would make the move work and destroy the scenario.
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows cannot rename a directory whose child handles the retained capability holds open.");
 
         CovenantExclusiveRecoveryOwner owner = Owner();
 

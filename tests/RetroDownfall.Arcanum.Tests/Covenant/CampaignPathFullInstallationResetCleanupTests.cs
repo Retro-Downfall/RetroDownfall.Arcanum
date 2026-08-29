@@ -400,6 +400,12 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         await first.CommitAsync();
 
+        // The replay below is a restarted process, which retains nothing. Committing above was a
+        // database transaction, not a handle release, so this attempt's directory handles outlive
+        // it until this call — and on Windows an open child handle blocks the rename inside
+        // MoveRootAsync.
+        await harness.Lifecycle.ReleaseRetainedRootsAsync(first.OwnerOperationId);
+
         // The same directory under a new name: same inode, same marker, same revision, and a
         // different canonical display path. Only the committed display-path digest separates the
         // authenticated inventory a second attempt builds from the evidence the first committed.
