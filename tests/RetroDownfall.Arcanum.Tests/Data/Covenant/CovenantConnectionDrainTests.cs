@@ -237,6 +237,124 @@ public sealed class CovenantConnectionDrainTests
 
     }
 
+    /// <summary>
+    /// A handle a live component reopens after the drain has closed it does not fail the drain.
+    /// </summary>
+    /// <remarks>
+    /// The condition enrolling every Entity Framework connection introduced. Before that, the
+    /// enrolled set held handles a component opened once and held, and nothing reopened them; it now
+    /// holds the connections a running host opens and closes constantly, and a background
+    /// reconciliation pass or a maintenance sweep can legitimately reopen one between its close here
+    /// and the pass that reads it back.
+    ///
+    /// <para>The reopen is driven rather than waited for. Each handle blocks in its own close until
+    /// this test releases it, so the reopen lands inside the drain's window on every run and on every
+    /// platform, where waiting for a background pass to collide with a drain reproduces on a slow
+    /// machine and never on a fast one. Which handle the drain reaches first is not this test's to
+    /// decide, so it takes them in whichever order they arrive.</para>
+    ///
+    /// <para>What makes this the right answer rather than a weakened one is that the same reopen a
+    /// microsecond after <c>DrainAsync</c> returns is unpreventable and already the exclusive
+    /// acquisition's to meet. A refusal here would buy the erasure nothing and cost it a verdict that
+    /// depends on when a background pass ran.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_handle_reopened_after_its_close_does_not_fail_the_drain()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        await using GatedConnection first = new(database.Connection.ConnectionString);
+
+        await using GatedConnection second = new(database.Connection.ConnectionString);
+
+        await first.OpenAsync(Token);
+
+        await second.OpenAsync(Token);
+
+        CovenantConnectionDrain drain = new();
+
+        using IDisposable firstEnrolment = drain.Register(first);
+
+        using IDisposable secondEnrolment = drain.Register(second);
+
+        Task<Result> draining = Task.Run(() => drain.DrainAsync(Token), Token);
+
+        Task entered = await Task.WhenAny(first.Entered, second.Entered);
+
+        GatedConnection reopened = ReferenceEquals(entered, first.Entered) ? first : second;
+
+        GatedConnection holding = ReferenceEquals(reopened, first) ? second : first;
+
+        reopened.ReleaseClose();
+
+        // The drain has read the first handle back and moved on, so the reopen below is a reopen
+        // rather than a close that never landed.
+        await holding.Entered;
+
+        Assert.Equal(ConnectionState.Closed, reopened.State);
+
+        await reopened.OpenAsync(Token);
+
+        holding.ReleaseClose();
+
+        Result drained = await draining;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        Assert.Equal(ConnectionState.Open, reopened.State);
+
+        Assert.Equal(ConnectionState.Closed, holding.State);
+
+    }
+
+    /// <summary>
+    /// A handle that does not close is still refused, whatever else the drain lets through.
+    /// </summary>
+    /// <remarks>
+    /// The other side of the distinction above, and the guarantee an erasure rests on. A handle
+    /// nothing can close holds the database through the exclusive lock that follows, which costs the
+    /// maintenance connection one busy timeout per wal-index lock and ends in <c>database is
+    /// locked</c> with no way for that caller to name the holder. The drain reports it here, where
+    /// the holder is still known.
+    /// </remarks>
+    [Fact]
+    public async Task A_handle_that_does_not_close_is_still_refused_by_the_drain()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        UnclosableConnection stuck = new(database.Connection.ConnectionString);
+
+        try
+        {
+
+            await stuck.OpenAsync(Token);
+
+            CovenantConnectionDrain drain = new();
+
+            using IDisposable enrolment = drain.Register(stuck);
+
+            Result drained = await drain.DrainAsync(Token);
+
+            Assert.True(drained.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, drained.Error.Code);
+
+            Assert.Contains("did not close", drained.Error.Message);
+
+        }
+        finally
+        {
+
+            stuck.ForceClose();
+
+            await stuck.DisposeAsync();
+
+        }
+
+    }
+
     [Fact]
     public async Task A_drain_with_nothing_registered_still_clears_the_pools()
     {
@@ -333,5 +451,64 @@ public sealed class CovenantConnectionDrainTests
         // would repeat key derivation on the per-turn path, which is a latency change to measure
         // rather than to assume.
         || source.Is("SessionEntryPersistence.cs");
+
+    /// <summary>
+    /// A real handle to the scratch database whose close this test holds open until it says so.
+    /// </summary>
+    /// <remarks>
+    /// A real connection rather than a stand-in for one, because what is under test is the state the
+    /// drain reads back off a handle it has just closed. Only the asynchronous close is gated: the
+    /// drain closes through that one, while disposal closes through the synchronous one and must not
+    /// block on a release nobody is left to give.
+    /// </remarks>
+    private sealed class GatedConnection(string connectionString) : SqliteConnection(connectionString)
+    {
+
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Completes once the drain has entered this handle's close.</summary>
+        internal Task Entered => _entered.Task;
+
+        /// <summary>Lets the close this handle is holding run through.</summary>
+        internal void ReleaseClose() =>
+            _released.TrySetResult();
+
+        public override async Task CloseAsync()
+        {
+
+            _ = _entered.TrySetResult();
+
+            await _released.Task;
+
+            await base.CloseAsync();
+
+        }
+
+    }
+
+    /// <summary>
+    /// A handle that will not close, which is the shape an exclusive erasure cannot survive.
+    /// </summary>
+    /// <remarks>
+    /// Both closes are overridden. The base type's asynchronous close is the synchronous one, so a
+    /// stand-in that refused only one of them would still close through the other and prove nothing.
+    /// </remarks>
+    private sealed class UnclosableConnection(string connectionString) : SqliteConnection(connectionString)
+    {
+
+        public override void Close()
+        {
+        }
+
+        public override Task CloseAsync() =>
+            Task.CompletedTask;
+
+        /// <summary>Closes it for real, so a test that made its point still releases the file.</summary>
+        internal void ForceClose() =>
+            base.Close();
+
+    }
 
 }
