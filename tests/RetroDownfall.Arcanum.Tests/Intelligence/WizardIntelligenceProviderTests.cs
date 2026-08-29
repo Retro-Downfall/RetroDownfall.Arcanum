@@ -53,9 +53,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     private const string ModelName = "wizard-test-model";
 
-    private const string WardTimeoutReason =
-        "The ward held until timeout — action was not allowed";
-
     public Task InitializeAsync() => _workspace.InitializeAsync();
 
     public Task DisposeAsync() => _workspace.DisposeAsync();
@@ -684,264 +681,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal("no tools needed", result.Value!.Text);
 
         Assert.Equal(2, chat.BufferedCallCount);
-    }
-
-    [Fact]
-    public async Task Scenario06_WardGate_Allowed_ExecutesForbiddenArt()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueToolCall("execute_command");
-
-        chat.EnqueueText("done");
-
-        FakeWard ward = new() { NextResolution = new WardResolution(true, null, DateTimeOffset.UtcNow) };
-
-        FakeMcpConnectionManager mcp = new();
-
-        mcp.Tools.Add(CreateMcpTool("execute_command"));
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with
-            {
-                Prompt = "run",
-                SkipSpellRouting = true,
-                UnattendedMode = false,
-            },
-            InvocationContexts.AttendedSession(),
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-
-        Assert.Equal(1, ward.WardCallCount);
-    }
-
-    [Theory]
-    [InlineData(ToolRiskClassifier.ExecuteCommandToolName)]
-    [InlineData(ToolRiskClassifier.ApplyPatchToolName)]
-    [InlineData(ToolRiskClassifier.WorkspaceCheckToolName)]
-    public async Task IntrinsicWardTools_RequireWard_WhenConfiguredListIsEmptyAndCampaignDoesNotRequireIt(
-        string toolName)
-    {
-        ScriptingChatClient chat = new();
-        chat.EnqueueToolCall(toolName);
-        chat.EnqueueText("done");
-        FakeWard ward = new() { NextResolution = new WardResolution(true, null, DateTimeOffset.UtcNow) };
-        FakeMcpConnectionManager mcp = new();
-        mcp.Tools.Add(CreateMcpTool(toolName));
-        ArcanumSettings settings = DefaultSettings() with
-        {
-            Security = DefaultSettings().Security with
-            {
-                Ward = new WardPolicySettings
-                {
-                    Enabled = true,
-                    ForbiddenArts = [],
-                },
-            },
-        };
-        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, ward: ward, mcp: mcp);
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with
-            {
-                Prompt = "run",
-                SkipSpellRouting = true,
-                UnattendedMode = false,
-            },
-            InvocationContexts.AttendedSession(),
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(1, ward.WardCallCount);
-    }
-
-    [Fact]
-    public async Task Scenario07_WardGate_Denied_BlocksForbiddenArt()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueToolCall("execute_command");
-
-        chat.EnqueueText("done");
-
-        FakeWard ward = new()
-        {
-            NextResolution = new WardResolution(false, "operator said no", DateTimeOffset.UtcNow),
-        };
-
-        FakeMcpConnectionManager mcp = new();
-
-        mcp.Tools.Add(CreateMcpTool("execute_command"));
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with { Prompt = "run", SkipSpellRouting = true, UnattendedMode = false },
-            InvocationContexts.AttendedSession(),
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-
-        Assert.Equal(1, ward.WardCallCount);
-    }
-
-    [Fact]
-    public async Task Scenario08_WardGate_Timeout_BlocksForbiddenArt()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueToolCall("execute_command");
-
-        chat.EnqueueText("done");
-
-        FakeWard ward = new()
-        {
-            NextResolution = new WardResolution(false, WardTimeoutReason, DateTimeOffset.UtcNow),
-        };
-
-        FakeMcpConnectionManager mcp = new();
-
-        mcp.Tools.Add(CreateMcpTool("execute_command"));
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with { Prompt = "run", SkipSpellRouting = true, UnattendedMode = false },
-            InvocationContexts.AttendedSession(),
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-
-        Assert.Equal(1, ward.WardCallCount);
-    }
-
-    [Fact]
-    public async Task Scenario09_WardGate_UnattendedMode_AutoDenies()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueToolCall("execute_command");
-
-        chat.EnqueueText("done");
-
-        FakeWard ward = new();
-
-        FakeMcpConnectionManager mcp = new();
-
-        mcp.Tools.Add(CreateMcpTool("execute_command"));
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with
-            {
-                Prompt = "run",
-                SkipSpellRouting = true,
-                UnattendedMode = true,
-            },
-            InvocationContexts.AttendedSession(),
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-
-        Assert.Equal(0, ward.WardCallCount);
-
-        Assert.Equal(2, chat.BufferedCallCount);
-    }
-
-    [Fact]
-    public async Task StreamPromptAsync_UnattendedWardDenial_PreservesStructuredOutcome()
-    {
-        ScriptingChatClient chat = new();
-        chat.EnqueueStreamToolCall("execute_command");
-        chat.EnqueueStreamTokens("done");
-
-        FakeWard ward = new();
-        FakeMcpConnectionManager mcp = new();
-        mcp.Tools.Add(CreateMcpTool("execute_command"));
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
-
-        List<IntelligenceEvent> events = await CollectStreamAsync(
-            wizard,
-            BaseRequest() with
-            {
-                Prompt = "run",
-                SkipSpellRouting = true,
-                UnattendedMode = true,
-            });
-
-        IntelligenceEvent toolResult = Assert.Single(
-            events,
-            static e => e.Type == IntelligenceEventType.ToolResult);
-
-        Assert.True(toolResult.ToolDenied);
-        Assert.Equal("execute_command", toolResult.Message);
-        Assert.Equal(0, ward.WardCallCount);
-    }
-
-    [Fact]
-    public async Task StreamPromptAsync_ForbiddenArt_YieldsWarded_BeforeWardResolves()
-    {
-        ScriptingChatClient chat = new();
-        chat.EnqueueStreamToolCall("execute_command");
-        chat.EnqueueStreamTokens("done");
-
-        TaskCompletionSource wardEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        TaskCompletionSource<WardResolution> wardRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        FakeWard ward = new()
-        {
-            WardHandler = async _ =>
-            {
-                wardEntered.TrySetResult();
-                return await wardRelease.Task;
-            },
-        };
-
-        FakeMcpConnectionManager mcp = new();
-        mcp.Tools.Add(CreateMcpTool("execute_command"));
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
-
-        List<IntelligenceEvent> seen = [];
-        TaskCompletionSource wardedSeen = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        Task streamTask = Task.Run(async () =>
-        {
-            await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(
-                               BaseRequest() with
-                               {
-                                   Prompt = "run",
-                                   SkipSpellRouting = true,
-                                   UnattendedMode = false,
-                               },
-                               InvocationContexts.AttendedSession(),
-                               CancellationToken.None))
-            {
-                seen.Add(evt);
-                if (evt.Type == IntelligenceEventType.Warded)
-                {
-                    wardedSeen.TrySetResult();
-                }
-            }
-        });
-
-        await wardEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-
-        // While the server is blocked in WardAsync, the client must already have the warded frame
-        // (with wardId) so an operator can POST /api/wards/{id}.
-        Task completed = await Task.WhenAny(wardedSeen.Task, Task.Delay(TimeSpan.FromSeconds(2)));
-        Assert.Same(wardedSeen.Task, completed);
-        Assert.Contains(seen, static e => e.Type == IntelligenceEventType.Warded && !string.IsNullOrEmpty(e.WardId));
-
-        wardRelease.SetResult(new WardResolution(true, null, DateTimeOffset.UtcNow));
-        await streamTask.WaitAsync(TimeSpan.FromSeconds(10));
-
-        Assert.Contains(seen, static e => e.Type == IntelligenceEventType.WardResolved);
     }
 
     [Fact]
@@ -2425,6 +2164,139 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task Unattended_write_file_executes_when_campaign_settings_use_the_absence_fallback()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueToolCall(
+            "write_file",
+            "unattended-write-call",
+            new Dictionary<string, object?>
+            {
+                ["relativePath"] = "unattended.txt",
+                ["content"] = "write",
+            });
+
+        chat.EnqueueText("done");
+
+        Campaign campaign = BuildSanctumCampaign(
+            _workspace.Root,
+            enabled: false,
+            SanctumMode.Strict);
+
+        // The former campaign Ward setting treated this deserialized-null value as the warded
+        // default. Keeping the persisted absence fixture here proves that fallback cannot re-gate.
+        campaign.Settings = "null";
+
+        FakeWard ward = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("write_file"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            ward: ward,
+            campaignRepository: new FakeCampaignRepository(campaign),
+            mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "write",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+                UnattendedMode = true,
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Single(result.Value.ToolCalls!);
+
+        Assert.Contains(
+            chat.AllBufferedCalls.SelectMany(static batch => batch),
+            static message => message.Role == ChatRole.Tool
+                && string.Equals(GetMessageText(message), "ok", StringComparison.Ordinal));
+
+        Assert.Equal(0, ward.WardCallCount);
+
+        Assert.Equal([WardResolutionOrigin.Ungated], ward.AutomaticResolutionOrigins);
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_unattended_executes_without_a_ward()
+    {
+
+        const string relativePath = "unattended-production-patch.txt";
+
+        const string replacement = "unattended patch executed";
+
+        ArcanumSettings settings = DefaultSettings();
+
+        settings.Security.Ward.ForbiddenArts = [ToolRiskClassifier.ApplyPatchToolName];
+
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = Guid.NewGuid(),
+            MandatoryAppendOutcome = MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "unattended-patch-call",
+            new Dictionary<string, object?>
+            {
+                ["dryRun"] = false,
+                ["patch"] =
+                    $"--- /dev/null\n+++ b/{relativePath}\n@@ -0,0 +1 @@\n+{replacement}\n",
+            });
+
+        chat.EnqueueText("patched");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateProductionApplyPatchTool(settings));
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire: grimoire,
+            mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "patch",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+                UnattendedMode = true,
+            },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        PromptToolCall toolCall = Assert.Single(result.Value.ToolCalls!);
+
+        Assert.Equal(ToolRiskClassifier.ApplyPatchToolName, toolCall.Name);
+
+        MandatoryToolInteraction persisted = Assert.Single(grimoire.MandatoryInteractions);
+
+        Assert.Equal(ToolRiskClassifier.ApplyPatchToolName, persisted.ToolName);
+
+        Assert.Equal(
+            replacement + "\n",
+            await File.ReadAllTextAsync(Path.Combine(_workspace.Root, relativePath)));
+
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -3368,7 +3240,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario53_NoForbiddenArtsPolicy_ExcludesForbiddenTools()
+    public async Task Scenario53_NoForbiddenArtsPolicy_ExcludesOperatorConfiguredTools()
     {
 
         ScriptingChatClient chat = new();
@@ -3387,7 +3259,16 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp.Tools.Add(CreateMcpTool("search_workspace"));
 
-        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+        ArcanumSettings settings = DefaultSettings();
+
+        settings.Security.Ward.ForbiddenArts =
+        [
+            "execute_command",
+            "apply_patch",
+            "workspace_check",
+        ];
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, mcp: mcp);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with
@@ -3686,7 +3567,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario56_AttunementExecuteCommand_StillAdvertisedAndWardFires()
+    public async Task Scenario56_AttunementExecuteCommand_IsAdvertisedExecutesAndRecordsUngated()
     {
         string? previousAllow = global::System.Environment.GetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar);
 
@@ -3702,11 +3583,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
             ScriptingChatClient chat = new();
 
-            chat.EnqueueToolCall("execute_command");
+            chat.EnqueueStreamToolCall("execute_command");
 
-            chat.EnqueueText("done");
+            chat.EnqueueStreamTokens("done");
 
-            FakeWard ward = new() { NextResolution = new WardResolution(true, null, DateTimeOffset.UtcNow) };
+            FakeWard ward = new();
 
             FakeMcpConnectionManager mcp = new();
 
@@ -3716,7 +3597,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
             WizardIntelligenceProvider wizard = CreateWizard(chat, settings, ward: ward, mcp: mcp);
 
-            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            List<IntelligenceEvent> events = await CollectStreamAsync(
+                wizard,
                 BaseRequest() with
                 {
                     Prompt = "run",
@@ -3724,17 +3606,39 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     OverrideSpellName = "exec-spell",
                     SkipSpellRouting = false,
                     UnattendedMode = false,
-                },
-                InvocationContexts.AttendedSession(),
-                CancellationToken.None);
-
-            Assert.True(result.IsSuccess);
+                });
 
             HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
             Assert.Contains("execute_command", toolNames);
 
-            Assert.Equal(1, ward.WardCallCount);
+            IntelligenceEvent warded = Assert.Single(
+                events,
+                static evt => evt.Type == IntelligenceEventType.Warded);
+
+            IntelligenceEvent resolved = Assert.Single(
+                events,
+                static evt => evt.Type == IntelligenceEventType.WardResolved);
+
+            IntelligenceEvent toolResult = Assert.Single(
+                events,
+                static evt => evt.Type == IntelligenceEventType.ToolResult);
+
+            Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+
+            Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+
+            Assert.Equal(warded.WardId, resolved.WardId);
+
+            Assert.True(resolved.WardAllowed);
+
+            Assert.False(toolResult.ToolDenied);
+
+            Assert.Equal("ok", toolResult.Data);
+
+            Assert.Equal(0, ward.WardCallCount);
+
+            Assert.Equal([WardResolutionOrigin.Ungated], ward.AutomaticResolutionOrigins);
         }
         finally
         {
@@ -8532,8 +8436,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 McpServerProfiles: null,
                 SpellRoots: null,
                 LoreNamespace: null,
-                AllowedTools: null,
-                RequireWardForForbiddenArts: true)),
+                AllowedTools: null)),
             SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(sanctum),
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
@@ -9536,6 +9439,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public int WardCallCount { get; private set; }
 
+        public List<WardResolutionOrigin> AutomaticResolutionOrigins { get; } = [];
+
         public string? LastWardId { get; private set; }
 
         public Task<WardResolution> WardAsync(
@@ -9564,8 +9469,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             string wardId,
             bool allowed,
             string? reason,
-            WardResolutionOrigin origin) =>
-            new(allowed, reason, DateTimeOffset.UtcNow, origin);
+            WardResolutionOrigin origin)
+        {
+            AutomaticResolutionOrigins.Add(origin);
+
+            return new(allowed, reason, DateTimeOffset.UtcNow, origin);
+        }
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
 

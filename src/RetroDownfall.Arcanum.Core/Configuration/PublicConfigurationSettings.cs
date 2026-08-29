@@ -395,10 +395,8 @@ public sealed record WardPolicySettings
 }
 
 /// <summary>
-/// Narrow, opt-in operator consent given in advance for named Ward-gated tools. This substitutes for
-/// the human approval step only: Sanctum, <c>WorkspacePathPolicy</c>, edition and host-process gates,
-/// Artifact Attunement, and <c>workspace_check</c> eligibility are unconditional and still run after
-/// an auto-approval. A hard denial always wins over a matching entry here.
+/// Retained, opt-in operator consent for the separate Covenant retirement Ward. Ordinary tool calls
+/// are record-only and do not consult this policy.
 /// </summary>
 public sealed record WardAutoApprovePolicySettings
 {
@@ -407,8 +405,8 @@ public sealed record WardAutoApprovePolicySettings
     public bool Enabled { get; set; }
 
     /// <summary>
-    /// Exact tool names (matched ordinal-ignore-case, as elsewhere in the tool registry) the host may
-    /// auto-approve. Blank and duplicate entries are rejected at startup.
+    /// Exact tool names (matched ordinal-ignore-case) eligible for retained Covenant auto-approval.
+    /// Blank and duplicate entries are rejected at startup.
     /// </summary>
     public List<string> Tools { get; set; } = [];
 

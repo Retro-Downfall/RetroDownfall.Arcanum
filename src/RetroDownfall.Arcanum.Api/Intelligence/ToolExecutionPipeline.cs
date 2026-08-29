@@ -86,9 +86,6 @@ public sealed class ToolExecutionPipeline(
     public static string PublicToolFailureMessage(string toolName) =>
         $"[Tool error: {toolName} failed with an internal error. The operator has been notified.]";
 
-    private const string WardTimeoutReason =
-        "The ward held until timeout — action was not allowed";
-
     /// <summary>
     /// Code-owned reason attached to a Ward the operator pre-authorized through
     /// <c>Arcanum:Security:Ward:AutoApprove</c>. It is a contract string clients and audit consumers
@@ -116,8 +113,6 @@ public sealed class ToolExecutionPipeline(
         public string? InvocationId { get; init; }
 
         public string? ModelUsed { get; init; }
-
-        public bool CampaignRequiresWard { get; init; }
 
         /// <summary>The invocation this turn runs under, or absent on a surface that has none.</summary>
         /// <remarks>
@@ -360,6 +355,10 @@ public sealed class ToolExecutionPipeline(
 
         string metricToolName = isRegisteredTool ? toolName : UnregisteredToolMetricLabel;
 
+        // Caller-owned so every exit after a provider-issued call can report its record-only
+        // resolution, including apply_patch's persisted-turn prerequisite below.
+        List<IntelligenceEvent> wardEvents = new(2);
+
         bool isApplyPatch = string.Equals(
                 toolName,
                 ToolRiskClassifier.ApplyPatchToolName,
@@ -374,12 +373,21 @@ public sealed class ToolExecutionPipeline(
                 || string.IsNullOrWhiteSpace(turnContext.ModelUsed)
                 || grimoireTurnWriter is null))
         {
+            await RecordUngatedWardResolutionAsync(
+                    toolName,
+                    argsSnapshot,
+                    metricToolName,
+                    wardEvents,
+                    cancellationToken,
+                    liveWardEmit)
+                .ConfigureAwait(false);
+
             return new ProcessedToolCall(
                 callId,
                 toolName,
                 argsSnapshot,
                 ApplyPatchSessionRequiredResult,
-                []);
+                wardEvents);
         }
 
         ApplyPatchInvocationContext? applyPatchContext = null;
@@ -422,10 +430,6 @@ public sealed class ToolExecutionPipeline(
             : ApplyPatchInvocationAmbient.Begin(applyPatchContext);
 
         WardedToolExecutionResult wardedExecution;
-
-        // Owned here rather than inside ExecuteToolCallWithWardAsync so the tolerant catches below
-        // can still report the frames a Ward already produced when the invocation itself throws.
-        List<IntelligenceEvent> wardEvents = new(2);
 
         if (suppressInvocationFailures)
         {
@@ -1335,8 +1339,7 @@ public sealed class ToolExecutionPipeline(
     /// <summary>
     /// <paramref name="wardEvents"/> is caller-owned so that buffered <c>warded</c>/<c>wardResolved</c>
     /// frames survive an exception out of the invocation: the tolerant catches in
-    /// <see cref="ProcessSingleToolCallAsync"/> still have to report that a Ward was raised and how
-    /// the operator resolved it.
+    /// <see cref="ProcessSingleToolCallAsync"/> still have to report the call's record-only resolution.
     /// </summary>
     private async Task<WardedToolExecutionResult> ExecuteToolCallWithWardAsync(
         FunctionCallContent fcc,
@@ -1357,24 +1360,8 @@ public sealed class ToolExecutionPipeline(
 
         WardSettings wardSettings = settings.Value.ResolveWard();
 
-        // Decision order (DESIGN §11.14): classify → hard deny → auto-approve → interactive. Deny
-        // wins, so the unattended auto-deny check runs before the auto-approval allowlist is even
-        // consulted; a tool matching both is denied in attended and unattended modes alike.
-        if (IsWardCandidate(toolName, turnContext.CampaignRequiresWard, wardSettings)
-            && request.UnattendedMode
-            && wardSettings.AutoDenyInUnattendedMode)
-        {
-
-            RecordWardDecisionMetric(metricToolName, WardResolutionOrigin.AutoDenied);
-
-            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), wardEvents, Denied: true);
-
-        }
-
-        // Before the not-a-Forbidden-Art exit, because with Wards switched off that exit sends a
-        // retirement straight to invocation, where the handler refuses it with the wrong answer. The
-        // Covenant policy denies it instead: switching Wards off removes the operator's only chance to
-        // refuse, and silence is not consent to erase their own standing instructions.
+        // Covenant retirement retains its independent authorization path until issue #218. It is not
+        // a ToolRiskClassifier decision and deliberately remains ahead of the ordinary record path.
         if (string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal))
         {
 
@@ -1395,186 +1382,14 @@ public sealed class ToolExecutionPipeline(
 
         }
 
-        if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
-        {
-
-            string recordWardId = Guid.NewGuid().ToString();
-
-            using JsonDocument? recordArgsDocument = BuildWardArgumentsDocument(
+        await RecordUngatedWardResolutionAsync(
                 toolName,
-                argsSnapshot);
-
-            JsonElement? recordWardArguments = recordArgsDocument?.RootElement.Clone();
-
-            IntelligenceEvent recordWardedEvent = new(
-                IntelligenceEventType.Warded,
-                toolName,
-                null,
-                null,
-                null,
-                recordWardId,
-                toolName,
-                recordWardArguments,
-                null,
-                null,
-                DateTimeOffset.UtcNow,
-                WardOrigin: WardResolutionOrigin.Ungated);
-
-            await EmitWardEventAsync(recordWardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
-
-            WardResolution recordResolution = ward.RecordAutomaticResolution(
-                recordWardId,
-                allowed: true,
-                reason: null,
-                WardResolutionOrigin.Ungated);
-
-            RecordWardDecisionMetric(metricToolName, recordResolution.Origin);
-
-            IntelligenceEvent recordResolvedEvent = new(
-                IntelligenceEventType.WardResolved,
-                toolName,
-                null,
-                null,
-                null,
-                recordWardId,
-                toolName,
-                null,
-                recordResolution.Allowed,
-                recordResolution.Reason,
-                DateTimeOffset.UtcNow,
-                WardOrigin: recordResolution.Origin);
-
-            await EmitWardEventAsync(recordResolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
-
-            if (string.Equals(toolName, "ask_human", StringComparison.Ordinal) && observer is not null)
-            {
-                string promptText = TryExtractAskHumanPrompt(argsSnapshot);
-
-                await observer(
-                        new ToolHumanInputRequestedEvent(ResolveCallId(fcc), promptText))
-                    .ConfigureAwait(false);
-            }
-
-            (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
-                fcc,
-                activeSpell,
-                chatOptions,
-                turnContext,
                 argsSnapshot,
-                cancellationToken).ConfigureAwait(false);
-
-            return new WardedToolExecutionResult(directResult, wardEvents, directDenied);
-
-        }
-
-        string wardId = Guid.NewGuid().ToString();
-
-        JsonDocument? argsDocument = BuildWardArgumentsDocument(
-            toolName,
-            argsSnapshot);
-
-        JsonElement? wardArguments = argsDocument?.RootElement.Clone();
-
-        DateTimeOffset wardTimestamp = DateTimeOffset.UtcNow;
-
-        bool autoApproved = ToolRiskClassifier.IsAutoApproved(toolName, wardSettings);
-
-        IntelligenceEvent wardedEvent = new(
-            IntelligenceEventType.Warded,
-            toolName,
-            null,
-            null,
-            null,
-            wardId,
-            toolName,
-            wardArguments,
-            null,
-            null,
-            wardTimestamp,
-            WardOrigin: autoApproved ? WardResolutionOrigin.AutoApproved : null);
-
-        await EmitWardEventAsync(wardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
-
-        // An auto-approved call has nothing to wait for, so it must not raise the blocking approval
-        // request that opens the Command Center Ward modal.
-        if (observer is not null && !autoApproved)
-        {
-            await observer(
-                    new ToolApprovalRequestedEvent(
-                        wardId,
-                        toolName,
-                        wardArguments?.GetRawText() ?? argsSnapshot))
-                .ConfigureAwait(false);
-        }
-
-        int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(wardSettings.TimeoutSeconds);
-
-        TimeSpan timeout = TimeSpan.FromSeconds(timeoutSeconds);
-
-        WardResolution resolution;
-
-        try
-        {
-
-            resolution = autoApproved
-                ? ward.RecordAutomaticResolution(
-                    wardId,
-                    allowed: true,
-                    AutoApprovedReason,
-                    WardResolutionOrigin.AutoApproved)
-                : await ward
-                    .WardAsync(wardId, toolName, argsDocument, sessionId, timeout, cancellationToken)
-                    .ConfigureAwait(false);
-
-        }
-        finally
-        {
-
-            argsDocument?.Dispose();
-
-        }
-
-        RecordWardDecisionMetric(metricToolName, resolution.Origin);
-
-        if (autoApproved)
-        {
-            // Tool name, decision, and the code-owned reason only — never arguments, paths, or any
-            // model-supplied text.
-            logger.LogInformation(
-                "Ward for tool {ToolName} was {WardDecision} by operator auto-approval policy: {WardReason}",
-                toolName,
-                resolution.Allowed ? "allowed" : "denied",
-                resolution.Reason);
-        }
-
-        DateTimeOffset resolvedTimestamp = DateTimeOffset.UtcNow;
-
-        IntelligenceEvent resolvedEvent = new(
-            IntelligenceEventType.WardResolved,
-            toolName,
-            null,
-            null,
-            null,
-            wardId,
-            toolName,
-            null,
-            resolution.Allowed,
-            resolution.Reason,
-            resolvedTimestamp,
-            WardOrigin: resolution.Origin);
-
-        await EmitWardEventAsync(resolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
-
-        if (!resolution.Allowed)
-        {
-
-            string denialMessage = string.Equals(resolution.Reason, WardTimeoutReason, StringComparison.Ordinal)
-                ? TimeoutDenyMessage(resolution.Reason)
-                : OperatorDenyMessage(resolution.Reason);
-
-            return new WardedToolExecutionResult(denialMessage, wardEvents, Denied: true);
-
-        }
+                metricToolName,
+                wardEvents,
+                cancellationToken,
+                liveWardEmit)
+            .ConfigureAwait(false);
 
         if (string.Equals(toolName, "ask_human", StringComparison.Ordinal) && observer is not null)
         {
@@ -1585,7 +1400,7 @@ public sealed class ToolExecutionPipeline(
                 .ConfigureAwait(false);
         }
 
-        (string allowedResult, bool allowedDenied) = await InvokeToolCallWithSanctumAsync(
+        (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
             fcc,
             activeSpell,
             chatOptions,
@@ -1593,8 +1408,65 @@ public sealed class ToolExecutionPipeline(
             argsSnapshot,
             cancellationToken).ConfigureAwait(false);
 
-        return new WardedToolExecutionResult(allowedResult, wardEvents, allowedDenied);
+        return new WardedToolExecutionResult(directResult, wardEvents, directDenied);
 
+    }
+
+    private async Task RecordUngatedWardResolutionAsync(
+        string toolName,
+        string argsSnapshot,
+        string metricToolName,
+        List<IntelligenceEvent> wardEvents,
+        CancellationToken cancellationToken,
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit)
+    {
+        string recordWardId = Guid.NewGuid().ToString();
+
+        using JsonDocument? recordArgsDocument = BuildWardArgumentsDocument(
+            toolName,
+            argsSnapshot);
+
+        JsonElement? recordWardArguments = recordArgsDocument?.RootElement.Clone();
+
+        IntelligenceEvent recordWardedEvent = new(
+            IntelligenceEventType.Warded,
+            toolName,
+            null,
+            null,
+            null,
+            recordWardId,
+            toolName,
+            recordWardArguments,
+            null,
+            null,
+            DateTimeOffset.UtcNow,
+            WardOrigin: WardResolutionOrigin.Ungated);
+
+        await EmitWardEventAsync(recordWardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
+
+        WardResolution recordResolution = ward.RecordAutomaticResolution(
+            recordWardId,
+            allowed: true,
+            reason: null,
+            WardResolutionOrigin.Ungated);
+
+        RecordWardDecisionMetric(metricToolName, recordResolution.Origin);
+
+        IntelligenceEvent recordResolvedEvent = new(
+            IntelligenceEventType.WardResolved,
+            toolName,
+            null,
+            null,
+            null,
+            recordWardId,
+            toolName,
+            null,
+            recordResolution.Allowed,
+            recordResolution.Reason,
+            DateTimeOffset.UtcNow,
+            WardOrigin: recordResolution.Origin);
+
+        await EmitWardEventAsync(recordResolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
     }
 
     private static string TryExtractAskHumanPrompt(string argsSnapshot)
@@ -2764,9 +2636,6 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    private static bool IsWardCandidate(string toolName, bool campaignRequiresWard, WardSettings wardSettings) =>
-        RequiresWardForTool(toolName, campaignRequiresWard, wardSettings);
-
     private static async Task EmitWardEventAsync(
         IntelligenceEvent wardEvent,
         List<IntelligenceEvent> buffered,
@@ -2781,30 +2650,6 @@ public sealed class ToolExecutionPipeline(
 
         buffered.Add(wardEvent);
     }
-
-    private static bool IsForbiddenArt(
-        PingRequest request,
-        string toolName,
-        bool campaignRequiresWard,
-        WardSettings wardSettings) =>
-        RequiresWardForTool(toolName, campaignRequiresWard, wardSettings)
-        && !(request.UnattendedMode && wardSettings.AutoDenyInUnattendedMode);
-
-    private static bool RequiresWardForTool(string toolName, bool campaignRequiresWard, WardSettings wardSettings)
-        => ToolRiskClassifier.RequiresWard(toolName, campaignRequiresWard, wardSettings);
-
-    private static string UnattendedDenyMessage(string toolName) =>
-        $"Forbidden art denied: unattended mode — this action requires an operator to resolve the ward";
-
-    private static string OperatorDenyMessage(string? reason) =>
-        string.IsNullOrWhiteSpace(reason)
-            ? "Operator denied this action."
-            : $"Operator denied this action: {reason}";
-
-    private static string TimeoutDenyMessage(string? reason) =>
-        string.IsNullOrWhiteSpace(reason)
-            ? "Operator denied this action: The ward held until timeout — action was not allowed"
-            : $"Operator denied this action: {reason}";
 
     private static JsonDocument? TryParseToolArgumentsDocument(string argsSnapshot)
     {

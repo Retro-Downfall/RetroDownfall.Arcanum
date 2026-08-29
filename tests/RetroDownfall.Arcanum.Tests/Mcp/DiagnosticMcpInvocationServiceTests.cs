@@ -17,7 +17,7 @@ public sealed class DiagnosticMcpInvocationServiceTests
 {
 
     [Fact]
-    public async Task BlockedTool_ReturnsDiagnosticBlocked_ForEveryForbiddenArt()
+    public async Task Master_pipeline_only_names_are_blocked_from_direct_diagnostic_invocation()
     {
 
         DiagnosticMcpInvocationService service = CreateService();
@@ -29,8 +29,12 @@ public sealed class DiagnosticMcpInvocationServiceTests
                 .InvokeAsync(blocked, default, null, null, CancellationToken.None);
 
             Assert.True(result.IsFailure);
+
             Assert.Equal(ErrorCodes.Mcp.DiagnosticBlocked, result.Error.Code);
-            Assert.Contains("Forbidden Art", result.Error.Message);
+
+            Assert.Equal(
+                "This internal tool requires the Master tool execution pipeline.",
+                result.Error.Message);
 
         }
 
@@ -105,7 +109,7 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Result<DiagnosticMcpInvocationOutcome> result = await service
             .InvokeAsync("execute_command", default, DiagnosticMcpInvocationService.InternalServerName, null, CancellationToken.None);
 
-        // execute_command is a Forbidden Art -> blocked before the server lookup even runs.
+        // execute_command is an internal Master-pipeline tool, so lookup never reaches the server.
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.DiagnosticBlocked, result.Error.Code);
 

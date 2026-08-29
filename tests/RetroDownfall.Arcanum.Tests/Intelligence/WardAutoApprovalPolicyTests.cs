@@ -1,12 +1,12 @@
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 /// <summary>
-/// Issue #53: the operator auto-approval allowlist supplies the human consent step and nothing else.
-/// It must never change Ward classification, never widen the advertised tool set, and stay a no-op
-/// until an operator both enables it and names a tool.
+/// The retained auto-approval policy serves the separate Covenant retirement path only. It must
+/// remain off by default and must not restore ordinary Ward classification or widen advertisement.
 /// </summary>
 public sealed class WardAutoApprovalPolicyTests
 {
@@ -23,7 +23,7 @@ public sealed class WardAutoApprovalPolicyTests
 
         Assert.False(
             ToolRiskClassifier.IsAutoApproved(
-                ToolRiskClassifier.ApplyPatchToolName,
+                CovenantToolNames.RetireCovenant,
                 wards));
 
     }
@@ -40,7 +40,7 @@ public sealed class WardAutoApprovalPolicyTests
 
         Assert.False(
             ToolRiskClassifier.IsAutoApproved(
-                ToolRiskClassifier.ApplyPatchToolName,
+                CovenantToolNames.RetireCovenant,
                 wards));
 
     }
@@ -52,12 +52,12 @@ public sealed class WardAutoApprovalPolicyTests
         WardSettings wards = ArcanumRuntimeDefaults.Ward with
         {
             AutoApproveEnabled = true,
-            AutoApproveTools = [ToolRiskClassifier.ApplyPatchToolName],
+            AutoApproveTools = [CovenantToolNames.RetireCovenant],
         };
 
-        Assert.True(ToolRiskClassifier.IsAutoApproved("apply_patch", wards));
+        Assert.True(ToolRiskClassifier.IsAutoApproved("retire_covenant", wards));
 
-        Assert.True(ToolRiskClassifier.IsAutoApproved("APPLY_PATCH", wards));
+        Assert.True(ToolRiskClassifier.IsAutoApproved("RETIRE_COVENANT", wards));
 
     }
 
@@ -72,7 +72,7 @@ public sealed class WardAutoApprovalPolicyTests
         WardSettings wards = ArcanumRuntimeDefaults.Ward with
         {
             AutoApproveEnabled = true,
-            AutoApproveTools = [ToolRiskClassifier.ApplyPatchToolName],
+            AutoApproveTools = [CovenantToolNames.RetireCovenant],
         };
 
         Assert.False(ToolRiskClassifier.IsAutoApproved(toolName, wards));
@@ -87,46 +87,37 @@ public sealed class WardAutoApprovalPolicyTests
         {
             Enabled = false,
             AutoApproveEnabled = true,
-            AutoApproveTools = [ToolRiskClassifier.ApplyPatchToolName],
+            AutoApproveTools = [CovenantToolNames.RetireCovenant],
         };
 
         Assert.False(
             ToolRiskClassifier.IsAutoApproved(
-                ToolRiskClassifier.ApplyPatchToolName,
+                CovenantToolNames.RetireCovenant,
                 wards));
 
     }
 
     [Fact]
-    public void Auto_approval_does_not_change_ward_classification_or_advertisement()
+    public void Retained_auto_approval_does_not_restore_ordinary_gating_or_widen_advertisement()
     {
 
         WardSettings wards = ArcanumRuntimeDefaults.Ward with
         {
             Enabled = true,
-            ForbiddenArts = [],
+            ForbiddenArts = ["write_file"],
             AutoApproveEnabled = true,
-            AutoApproveTools =
-            [
-                ToolRiskClassifier.ApplyPatchToolName,
-                ToolRiskClassifier.ExecuteCommandToolName,
-                ToolRiskClassifier.WorkspaceCheckToolName,
-            ],
+            AutoApproveTools = [CovenantToolNames.RetireCovenant],
         };
 
-        foreach (string intrinsic in ToolRiskClassifier.IntrinsicWardToolNames)
-        {
+        Assert.False(ToolRiskClassifier.RequiresWard("write_file", campaignRequiresWard: false, wards));
 
-            Assert.True(
-                ToolRiskClassifier.RequiresWard(intrinsic, campaignRequiresWard: false, wards));
+        Assert.False(ToolRiskClassifier.RequiresWard("write_file", campaignRequiresWard: true, wards));
 
-        }
+        HashSet<string> forbidden = ToolRiskClassifier.BuildForbiddenToolNames(wards.ForbiddenArts);
 
-        // An auto-approvable name is still a Forbidden Art for advertisement purposes, and a name
-        // that was never advertised gains nothing by being listed.
-        HashSet<string> forbidden = ToolRiskClassifier.BuildForbiddenToolNames(wards.AutoApproveTools);
+        Assert.Equal(["write_file"], forbidden);
 
-        Assert.Contains(ToolRiskClassifier.ApplyPatchToolName, forbidden);
+        Assert.DoesNotContain(CovenantToolNames.RetireCovenant, forbidden);
 
         Assert.False(
             ToolRiskClassifier.RequiresWard("never_registered_tool", campaignRequiresWard: true, wards));

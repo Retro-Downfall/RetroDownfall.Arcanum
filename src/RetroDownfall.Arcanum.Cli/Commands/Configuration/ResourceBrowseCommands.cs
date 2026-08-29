@@ -318,7 +318,7 @@ public sealed class McpCommands(
         {
 
             return WriteError(
-                "The internal arcanum-internal server is not a diagnostic MCP target. Diagnostic MCP invocation is external-only; use 'arcanum tool invoke' for eligible built-in tools, while Forbidden Arts continue through the Master tool execution pipeline.");
+                "The internal arcanum-internal server is not a diagnostic MCP target. Diagnostic MCP invocation is external-only; use 'arcanum tool invoke' for eligible built-in tools, while reserved internal names continue through the Master tool execution pipeline.");
 
         }
 
@@ -356,7 +356,7 @@ public sealed class McpCommands(
             return blocked.IsFailure
                 ? WriteError(blocked.Error)
                 : WriteError(
-                    "The server unexpectedly allowed a Forbidden Art diagnostic invocation.");
+                    "The server unexpectedly allowed a reserved Master-pipeline tool through diagnostic invocation.");
 
         }
 

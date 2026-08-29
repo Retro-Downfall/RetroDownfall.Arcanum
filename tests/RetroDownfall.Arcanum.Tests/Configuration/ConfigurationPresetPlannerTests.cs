@@ -530,6 +530,33 @@ public sealed class ConfigurationPresetPlannerTests
 
     }
 
+    [Theory]
+
+    [InlineData(true, false)]
+
+    [InlineData(true, true)]
+
+    [InlineData(false, false)]
+
+    public void Completion_summary_never_presents_ordinary_Ward_as_an_approval_gate(
+        bool wardEnabled,
+        bool unattendedMode)
+    {
+        ArcanumSettings settings = ValidSettings();
+
+        settings.Security.Ward.Enabled = wardEnabled;
+
+        settings.Security.Ward.UnattendedMode = unattendedMode;
+
+        ConfigurationPresetInspection inspection = new ConfigurationPresetPlanner().Inspect(
+            Snapshot(settings));
+
+        Assert.Equal(
+            "Ordinary tool calls are Ward-recorded without approval; Covenant retirement keeps its independent authorization policy; Sanctum path boundaries remain active.",
+            inspection.CompletionSummary.ToolPolicy);
+
+    }
+
     [Fact]
 
     public void Plan_tolerates_a_null_cost_section_when_evaluating_the_budget_prerequisite()

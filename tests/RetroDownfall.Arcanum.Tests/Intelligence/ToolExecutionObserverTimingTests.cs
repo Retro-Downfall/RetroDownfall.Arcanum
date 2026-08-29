@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
@@ -17,72 +18,10 @@ public sealed class ToolExecutionObserverTimingTests
 {
 
     [Fact]
-    public async Task ProcessSingleToolCall_EmitsApprovalRequested_BeforeWardWaitCompletes()
-    {
-        List<ToolExecutionEvent> observed = [];
-        TaskCompletionSource wardEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        TaskCompletionSource wardRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        ToolExecutionPipeline pipeline = new(
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
-            {
-                Security = new SecuritySettings
-                {
-                    Ward = new WardPolicySettings
-                    {
-                        Enabled = true,
-                        ForbiddenArts = ["write_file"],
-                    },
-                },
-            }),
-            new GatingWard(wardEntered, wardRelease),
-            new AllowAllSanctumGuard(),
-            new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
-
-        FunctionCallContent fcc = new("call-1", "write_file", new Dictionary<string, object?>
-        {
-            ["path"] = "x.txt",
-            ["content"] = "hi",
-        });
-
-        ChatOptions options = new() { Tools = [] };
-
-        ToolExecutionPipeline.TurnContext turnContext = new()
-        {
-            CampaignRequiresWard = true,
-        };
-
-        Task<ToolExecutionPipeline.ProcessedToolCall> invoke = pipeline.ProcessSingleToolCallAsync(
-            fcc,
-            new PingRequest("hi"),
-            options,
-            activeSpell: null,
-            sessionId: null,
-            turnContext,
-            suppressInvocationFailures: true,
-            CancellationToken.None,
-            observer: evt =>
-            {
-                observed.Add(evt);
-
-                return ValueTask.CompletedTask;
-            });
-
-        await wardEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        Assert.Contains(observed, e => e is ToolApprovalRequestedEvent);
-
-        wardRelease.SetResult();
-
-        _ = await invoke.WaitAsync(TimeSpan.FromSeconds(5));
-    }
-
-    [Fact]
-    public async Task Workspace_check_Ward_receives_host_owned_execution_risk_disclosure()
+    public async Task Workspace_check_emits_a_record_only_Ward_with_host_owned_execution_risk_disclosure()
     {
 
-        CapturingDenyWard ward = new();
+        CapturingWard ward = new();
         ToolExecutionPipeline pipeline = new(
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
             {
@@ -107,72 +46,60 @@ public sealed class ToolExecutionObserverTimingTests
                 ["profile"] = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
             });
 
-        _ = await pipeline.ProcessSingleToolCallAsync(
+        ToolExecutionPipeline.ProcessedToolCall processed = await pipeline.ProcessSingleToolCallAsync(
             call,
             new PingRequest("check"),
             new ChatOptions { Tools = [] },
             activeSpell: null,
             sessionId: null,
-            new ToolExecutionPipeline.TurnContext
-            {
-                CampaignRequiresWard = false,
-            },
+            new ToolExecutionPipeline.TurnContext(),
             suppressInvocationFailures: true,
             CancellationToken.None);
 
+        IntelligenceEvent warded = Assert.Single(
+            processed.WardEvents,
+            static evt => evt.Type == IntelligenceEventType.Warded);
+
+        IntelligenceEvent resolved = Assert.Single(
+            processed.WardEvents,
+            static evt => evt.Type == IntelligenceEventType.WardResolved);
+
+        Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+
+        Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+
+        Assert.NotNull(warded.WardArguments);
+
+        string argumentsJson = warded.WardArguments.Value.GetRawText();
+
         Assert.Contains(
             "workspace-authored code",
-            ward.ArgumentsJson,
+            argumentsJson,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "read-only",
-            ward.ArgumentsJson,
+            argumentsJson,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "writable build",
-            ward.ArgumentsJson,
+            argumentsJson,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "network",
-            ward.ArgumentsJson,
+            argumentsJson,
             StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0, ward.WardAsyncCallCount);
+
+        Assert.Equal(1, ward.RecordAutomaticResolutionCallCount);
     }
 
-    private sealed class GatingWard(TaskCompletionSource entered, TaskCompletionSource release) : IWard
+    private sealed class CapturingWard : IWard
     {
 
-        public async Task<WardResolution> WardAsync(
-            string wardId,
-            string toolName,
-            JsonDocument? arguments,
-            string? sessionId,
-            TimeSpan timeout,
-            CancellationToken cancellationToken)
-        {
-            entered.TrySetResult();
+        public int WardAsyncCallCount { get; private set; }
 
-            await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-            return new WardResolution(Allowed: true, Reason: null, DateTimeOffset.UtcNow);
-        }
-
-        public ResolveStatus Resolve(string wardId, bool allow, string? reason) => ResolveStatus.Success;
-
-        public WardResolution RecordAutomaticResolution(
-            string wardId,
-            bool allowed,
-            string? reason,
-            WardResolutionOrigin origin) =>
-            new(allowed, reason, DateTimeOffset.UtcNow, origin);
-
-        public IReadOnlyList<ActiveWard> GetActiveWards() => [];
-
-    }
-
-    private sealed class CapturingDenyWard : IWard
-    {
-
-        public string ArgumentsJson { get; private set; } = string.Empty;
+        public int RecordAutomaticResolutionCallCount { get; private set; }
 
         public Task<WardResolution> WardAsync(
             string wardId,
@@ -183,14 +110,9 @@ public sealed class ToolExecutionObserverTimingTests
             CancellationToken cancellationToken)
         {
 
-            ArgumentsJson = arguments?.RootElement.GetRawText()
-                ?? string.Empty;
+            WardAsyncCallCount++;
 
-            return Task.FromResult(
-                new WardResolution(
-                    Allowed: false,
-                    Reason: "denied",
-                    DateTimeOffset.UtcNow));
+            return Task.FromResult(new WardResolution(true, null, DateTimeOffset.UtcNow));
         }
 
         public ResolveStatus Resolve(
@@ -203,8 +125,13 @@ public sealed class ToolExecutionObserverTimingTests
             string wardId,
             bool allowed,
             string? reason,
-            WardResolutionOrigin origin) =>
-            new(allowed, reason, DateTimeOffset.UtcNow, origin);
+            WardResolutionOrigin origin)
+        {
+
+            RecordAutomaticResolutionCallCount++;
+
+            return new WardResolution(allowed, reason, DateTimeOffset.UtcNow, origin);
+        }
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
     }

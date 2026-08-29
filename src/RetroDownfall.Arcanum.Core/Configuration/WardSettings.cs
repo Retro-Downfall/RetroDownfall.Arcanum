@@ -1,29 +1,20 @@
-using RetroDownfall.Arcanum.Core.Covenant;
-using RetroDownfall.Arcanum.Core.Intelligence;
-
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Ward runtime projection. Operator policy comes from <c>Arcanum:Security:Ward</c>; timeout and
-/// active-ward capacity are code-owned invariants.
+/// Ward compatibility projection. Ordinary tool calls are record-only; the live-Ward fields remain
+/// for the separate Covenant retirement path and the active-Ward API.
 /// </summary>
 public sealed record WardSettings
 {
 
     public bool Enabled { get; set; } = true;
 
-    private readonly List<string> _forbiddenArts = new()
-    {
-        ToolRiskClassifier.ExecuteCommandToolName,
-        ToolRiskClassifier.ApplyPatchToolName,
-        ToolRiskClassifier.WorkspaceCheckToolName,
-        "write_file",
-        "replace_text_block",
-        "delete_lexicon",
-        "run_spell_script",
-        CovenantToolNames.RetireCovenant,
-    };
+    private readonly List<string> _forbiddenArts = [];
 
+    /// <summary>
+    /// Operator-configured names removed by <c>ToolPolicy.NoForbiddenArts</c>. This list does not
+    /// classify or gate ordinary tool execution.
+    /// </summary>
     public IReadOnlyList<string> ForbiddenArts
     {
 
@@ -37,6 +28,7 @@ public sealed record WardSettings
 
     public int MaxActiveWards { get; set; } = 50;
 
+    /// <summary>Retained compatibility value; ordinary unattended tool calls ignore it.</summary>
     public bool AutoDenyInUnattendedMode { get; set; } = true;
 
     /// <summary>
@@ -47,19 +39,17 @@ public sealed record WardSettings
     public bool UnattendedMode { get; set; }
 
     /// <summary>
-    /// Master opt-in for operator auto-approval (<c>Arcanum:Security:Ward:AutoApprove:Enabled</c>).
-    /// Off by default; on its own it grants nothing, because <see cref="AutoApproveTools"/> is the
-    /// allowlist that names what may skip the prompt.
+    /// Master opt-in for the retained Covenant retirement auto-approval policy
+    /// (<c>Arcanum:Security:Ward:AutoApprove:Enabled</c>). Ordinary tool calls ignore it.
     /// </summary>
     public bool AutoApproveEnabled { get; set; }
 
     private readonly List<string> _autoApproveTools = [];
 
     /// <summary>
-    /// Exact tool names whose Ward the host may resolve on the operator's behalf. Normalized by
-    /// <c>ResolveWard</c> (trimmed, blanks dropped, ordinal-ignore-case deduplicated). Empty is a
-    /// no-op, and a listed name that is unavailable, unadvertised, or excluded by attunement grants
-    /// no capability — auto-approval only supplies the human consent step.
+    /// Exact tool names eligible for the retained Covenant auto-approval policy. Normalized by
+    /// <c>ResolveWard</c> (trimmed, blanks dropped, ordinal-ignore-case deduplicated). Ordinary tool
+    /// calls ignore this list.
     /// </summary>
     public IReadOnlyList<string> AutoApproveTools
     {

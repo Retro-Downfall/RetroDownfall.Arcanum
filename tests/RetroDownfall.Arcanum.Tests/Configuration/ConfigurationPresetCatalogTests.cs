@@ -255,4 +255,38 @@ public sealed class ConfigurationPresetCatalogTests
 
     }
 
+    [Fact]
+
+    public void Ward_disclosures_describe_the_interim_record_only_tool_policy()
+    {
+        ConfigurationPresetGlossaryEntry ward = Assert.Single(
+            ConfigurationPresetCatalog.Glossary,
+            static entry => entry.Term == "Ward");
+
+        Assert.Equal(
+            "A per-tool audit record; Covenant retirement keeps its separate approval policy.",
+            ward.PlainLanguageMeaning);
+
+        ConfigurationPresetDefinition coding = ConfigurationPresetCatalog.Find("coding-workspace")!;
+
+        Assert.Equal(
+            "File changes can modify project data; Ward records each call and Sanctum path boundaries remain active.",
+            coding.Disclosure.SecurityImplications);
+
+        ConfigurationPresetDefinition automation = ConfigurationPresetCatalog.Find("automation")!;
+
+        Assert.Equal(
+            "Enables unattended execution only after an operator supplies a positive explicit budget.",
+            automation.Purpose);
+
+        Assert.Equal(
+            "Unattended ordinary tool execution with per-call Ward records.",
+            automation.Disclosure.Enables);
+
+        Assert.Equal(
+            "Ordinary calls do not pause for approval; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
+            automation.Disclosure.SecurityImplications);
+
+    }
+
 }

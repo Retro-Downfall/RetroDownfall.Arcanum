@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
@@ -235,7 +236,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
     }
 
     [Fact]
-    public async Task Apply_patch_without_persisted_turn_is_rejected_before_Ward_or_workspace_reader()
+    public async Task Apply_patch_without_persisted_turn_records_ungated_resolution_before_rejection()
     {
 
         bool invoked = false;
@@ -304,13 +305,26 @@ public sealed class ToolExecutionPipelinePathPreflightTests
             processed.ResultText,
             StringComparison.Ordinal);
         Assert.False(invoked);
+
         Assert.Equal(0, ward.RequestCount);
+
+        Assert.Equal(1, ward.AutomaticResolutionCount);
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            processed.WardEvents.Select(static evt => evt.Type));
+
+        Assert.All(
+            processed.WardEvents,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
 
     }
 
     private sealed class DenyingWard : IWard
     {
         internal int RequestCount { get; private set; }
+
+        internal int AutomaticResolutionCount { get; private set; }
 
         public Task<WardResolution> WardAsync(
             string wardId,
@@ -341,8 +355,16 @@ public sealed class ToolExecutionPipelinePathPreflightTests
             string wardId,
             bool allowed,
             string? reason,
-            WardResolutionOrigin origin) =>
-            new(allowed, reason, DateTimeOffset.UtcNow, origin);
+            WardResolutionOrigin origin)
+        {
+            AutomaticResolutionCount++;
+
+            return new WardResolution(
+                allowed,
+                reason,
+                DateTimeOffset.UtcNow,
+                origin);
+        }
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
     }

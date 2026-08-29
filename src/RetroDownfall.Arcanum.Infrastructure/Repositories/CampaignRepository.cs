@@ -423,10 +423,6 @@ public sealed class CampaignRepository : ICampaignRepository
         _ = command.ExecuteNonQuery();
     }
 
-    // Both fallbacks are CreateDefault(), never a hand-built record: a stored value that is empty or
-    // will not parse is an absence, and absence has to mean warded (see CampaignSettings). Spelling
-    // the members out here once meant RequireWardForForbiddenArts: false, which put the fail-open
-    // back on precisely the path that runs when the column cannot be trusted.
     public static CampaignSettings DeserializeSettings(string json)
     {
         if (string.IsNullOrWhiteSpace(json))

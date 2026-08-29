@@ -5,8 +5,8 @@ namespace RetroDownfall.Arcanum.Api.Models;
 
 /// <summary>
 /// Request body for <c>POST /api/mcp/tools/invoke</c> — Diagnostic MCP Invocation. Policy-constrained:
-/// external MCP tools only; the internal <c>arcanum-internal</c> server and all Forbidden Arts are
-/// blocked. Requires a running, trusted MCP server. Not model execution; not unauthenticated.
+/// external MCP tools only; the internal <c>arcanum-internal</c> server and reserved Master-pipeline
+/// names are blocked. Requires a running, trusted MCP server. Not model execution; not unauthenticated.
 /// </summary>
 public sealed record McpToolInvokeRequest
 {

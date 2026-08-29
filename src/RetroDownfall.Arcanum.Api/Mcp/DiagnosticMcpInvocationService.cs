@@ -18,10 +18,9 @@ namespace RetroDownfall.Arcanum.Api.Mcp;
 /// Diagnostic MCP Invocation — policy-constrained direct invocation of <strong>external</strong> MCP
 /// tools by an operator. <strong>Not</strong> model execution; <strong>not</strong> unauthenticated
 /// (inherits <c>X-Arcanum-Key</c> from the <c>/api</c> group). The internal <c>arcanum-internal</c>
-/// server and all Forbidden Arts (<c>execute_command</c>, <c>write_file</c>, <c>replace_text_block</c>,
-/// <c>delete_lexicon</c>, <c>run_spell_script</c>, <c>apply_patch</c>, and
-/// <c>workspace_check</c>) are blocked. Workspace-local MCP servers must be trusted. MCP bridge
-/// output and request duration use code-owned physical limits.
+/// server and reserved internal names that require the Master tool execution pipeline are blocked.
+/// Workspace-local MCP servers must be trusted. MCP bridge output and request duration use
+/// code-owned physical limits.
 /// </summary>
 public sealed class DiagnosticMcpInvocationService
 {
@@ -29,7 +28,7 @@ public sealed class DiagnosticMcpInvocationService
     /// <summary>The internal in-process server name; its tools are always blocked from diagnostic invocation.</summary>
     public const string InternalServerName = "arcanum-internal";
 
-    /// <summary>The fixed set of Forbidden Art / high-risk internal tool names that are always blocked.</summary>
+    /// <summary>Reserved internal names that cannot bypass the Master tool execution pipeline.</summary>
     public static readonly IReadOnlySet<string> BlockedToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         ToolRiskClassifier.ExecuteCommandToolName,
@@ -47,8 +46,7 @@ public sealed class DiagnosticMcpInvocationService
     };
 
     public const string BlockedToolMessage =
-        "This tool cannot be invoked from the diagnostic endpoint because it is a Forbidden Art " +
-        "or requires the Master tool execution pipeline.";
+        "This internal tool requires the Master tool execution pipeline.";
 
     private const string TruncationMarker = "[truncated: exceeded";
 
@@ -220,7 +218,8 @@ public sealed class DiagnosticMcpInvocationService
 
         }
 
-        // Defensive: Forbidden Arts must never run via diagnostic even if an external server reuses the name.
+        // Defensive: reserved internal names cannot bypass the Master pipeline through an external
+        // server collision.
         if (BlockedToolNames.Contains(tool.Name))
         {
 

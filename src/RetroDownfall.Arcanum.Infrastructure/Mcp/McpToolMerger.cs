@@ -14,17 +14,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal static class McpToolMerger
 {
 
-    private static readonly HashSet<string> IntrinsicInternalToolNames =
-        new(
-            ToolRiskClassifier.IntrinsicWardToolNames,
-            StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> ReservedInternalToolNames =
+        new(StringComparer.OrdinalIgnoreCase)
         {
+            ToolRiskClassifier.ExecuteCommandToolName,
+
+            ToolRiskClassifier.ApplyPatchToolName,
+
+            ToolRiskClassifier.WorkspaceCheckToolName,
+
             ToolRiskClassifier.SearchWorkspaceToolName,
 
-            // retire_covenant already arrives through the intrinsic set; propose_covenant is listed
-            // explicitly because it is not a Forbidden Art but must still be unshadowable — an
-            // external server that claimed the name would be handed the operator's profile writes.
+            // Covenant tools must remain unshadowable independently of Ward classification: an
+            // external server that claimed either name would be handed the operator's profile writes.
             CovenantToolNames.ProposeCovenant,
+
+            CovenantToolNames.RetireCovenant,
         };
 
     internal readonly record struct GlobalDedupResult(
@@ -48,7 +53,7 @@ internal static class McpToolMerger
         foreach (LoadedMcpToolRow row in globalTagged)
         {
 
-            if (IsIntrinsicInternalName(row.Tool.Name))
+            if (IsReservedInternalName(row.Tool.Name))
             {
 
                 LogExternalCollision(collisionLogger, row.Tool.Name, "global");
@@ -104,7 +109,7 @@ internal static class McpToolMerger
         foreach (KeyValuePair<string, LoadedMcpToolRow> kv in globalFirstByToolName)
         {
 
-            if (IsIntrinsicInternalName(kv.Key))
+            if (IsReservedInternalName(kv.Key))
             {
 
                 LogExternalCollision(bridgeFallbackLogger, kv.Key, "global");
@@ -178,7 +183,7 @@ internal static class McpToolMerger
 
             string name = localRow.Tool.Name;
 
-            if (IsIntrinsicInternalName(name))
+            if (IsReservedInternalName(name))
             {
 
                 LogExternalCollision(bridgeFallbackLogger, name, "workspace");
@@ -233,15 +238,15 @@ internal static class McpToolMerger
 
     }
 
-    private static bool IsIntrinsicInternalName(string name) =>
-        IntrinsicInternalToolNames.Contains(name);
+    private static bool IsReservedInternalName(string name) =>
+        ReservedInternalToolNames.Contains(name);
 
     private static void LogExternalCollision(
         ILogger? logger,
         string toolName,
         string source) =>
         logger?.LogWarning(
-            "Omitting {Source} MCP tool {ToolName} because the name is reserved for an intrinsic Arcanum tool.",
+            "Omitting {Source} MCP tool {ToolName} because the name is reserved for an internal Arcanum tool.",
             source,
             toolName);
 

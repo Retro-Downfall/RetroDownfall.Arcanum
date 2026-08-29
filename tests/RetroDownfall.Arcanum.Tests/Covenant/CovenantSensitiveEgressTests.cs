@@ -34,21 +34,22 @@ public sealed class CovenantSensitiveEgressTests
     }
 
     [Fact]
-    public void An_ordinary_call_keeps_its_public_projection_and_a_forbidden_art_keeps_its_risk()
+    public void Formerly_intrinsic_calls_are_ordinary_while_configured_risk_remains_metadata()
     {
         Result<ProviderToolCallClassification> ordinary = CovenantToolClassifier.Classify(
             "read_saga", Bytes("{\"query\":\"a\"}"),
             Wards());
-        Result<ProviderToolCallClassification> intrinsic = CovenantToolClassifier.Classify(
+        Result<ProviderToolCallClassification> formerlyIntrinsic = CovenantToolClassifier.Classify(
             ToolRiskClassifier.ApplyPatchToolName, Bytes("{\"patch\":\"a\"}"),
             Wards());
         Result<ProviderToolCallClassification> configured = CovenantToolClassifier.Classify(
             "delete_lexicon", Bytes("{\"name\":\"a\"}"),
-            Wards());
+            Wards() with { ForbiddenArts = ["delete_lexicon"] });
 
         Assert.Equal(CovenantToolRiskIdentity.Ordinary, ordinary.Value.RiskIdentity);
         Assert.False(ordinary.Value.ArgumentsArePrivate);
-        Assert.Equal(CovenantToolRiskIdentity.IntrinsicForbiddenArt, intrinsic.Value.RiskIdentity);
+        Assert.Equal(CovenantToolRiskIdentity.Ordinary, formerlyIntrinsic.Value.RiskIdentity);
+        Assert.False(formerlyIntrinsic.Value.ArgumentsArePrivate);
         Assert.Equal(CovenantToolRiskIdentity.ConfiguredForbiddenArt, configured.Value.RiskIdentity);
     }
 

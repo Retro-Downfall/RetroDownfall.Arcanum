@@ -597,8 +597,6 @@ public sealed class ConfigurationPresetPlanner(
 
         SecuritySettings security = settings.Security ?? new SecuritySettings();
 
-        WardPolicySettings ward = security.Ward ?? new WardPolicySettings();
-
         List<string> memorySources = [];
 
         AddWhen(memorySources, features.Lexicon, "Lexicon");
@@ -613,11 +611,8 @@ public sealed class ConfigurationPresetPlanner(
 
         AddWhen(memorySources, features.AttachmentRetrieval, "Attachment retrieval");
 
-        string toolPolicy = ward.Enabled
-            ? ward.UnattendedMode
-                ? "Ward enabled; unattended requests auto-deny actions that need approval; Sanctum path boundaries remain active."
-                : "Ward enabled; actions may request approval; Sanctum path boundaries remain active."
-            : "Ward disabled; Sanctum path boundaries remain active.";
+        const string toolPolicy =
+            "Ordinary tool calls are Ward-recorded without approval; Covenant retirement keeps its independent authorization policy; Sanctum path boundaries remain active.";
 
         string privacy = string.Join(
             "; ",

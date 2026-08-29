@@ -39,7 +39,7 @@ public static class ConfigurationPresetCatalog
     [
         new(
             "Ward",
-            "An approval gate for tool actions."),
+            "A per-tool audit record; Covenant retirement keeps its separate approval policy."),
         new(
             "Sanctum",
             "A workspace sandbox that enforces approved path boundaries."),
@@ -103,9 +103,9 @@ public static class ConfigurationPresetCatalog
                 SafetySetting("security.ward.autoDenyInUnattendedMode", "true"),
                 SafetySetting("security.allowUnsandboxedToolChildren", "false")),
             new ConfigurationPresetDisclosure(
-                "Attachments and normal guarded tool use.",
+                "Attachments and ordinary tool use with per-call Ward records.",
                 "Automatic long-term-memory extraction and destructive memory management.",
-                "Ward remains enabled and unsandboxed child processes remain disabled.",
+                "Ordinary tools do not pause for Ward approval; Covenant retirement remains separately authorized, and unsandboxed child processes remain disabled.",
                 "A configured inference provider and model are required for first success.",
                 "No budget or concurrency limit is changed."),
             Prerequisites(ProviderModel()),
@@ -132,7 +132,7 @@ public static class ConfigurationPresetCatalog
             new ConfigurationPresetDisclosure(
                 "Workspace validation and workspace-scoped file writes.",
                 "Nothing outside the owned values; indexing remains an explicit later choice.",
-                "File changes can modify project data; Ward and Sanctum boundaries remain active.",
+                "File changes can modify project data; Ward records each call and Sanctum path boundaries remain active.",
                 "A configured inference provider/model and a workspace are required.",
                 "No research, apprentice, retry, timeout, or indexing limit is changed."),
             Prerequisites(ProviderModel(), Workspace()),
@@ -192,7 +192,7 @@ public static class ConfigurationPresetCatalog
                 SafetySetting("security.ward.autoDenyInUnattendedMode", "true"),
                 SafetySetting("security.allowUnsandboxedToolChildren", "false")),
             new ConfigurationPresetDisclosure(
-                "Loopback inference with local attachments and guarded tools.",
+                "Loopback inference with local attachments and per-call tool records.",
                 "Built-in external web research, enterprise telemetry, and non-loopback host binding.",
                 "Configured third-party integrations are not erased; inspect them before assuming fully offline operation.",
                 "The selected inference provider endpoint must be loopback.",
@@ -211,16 +211,16 @@ public static class ConfigurationPresetCatalog
             "automation",
             1,
             "Automation",
-            "Enables unattended Ward behavior only after an operator supplies a positive explicit budget.",
+            "Enables unattended execution only after an operator supplies a positive explicit budget.",
             Owned(
                 SafetySetting("security.ward.enabled", "true"),
                 SafetySetting("security.ward.autoDenyInUnattendedMode", "true"),
                 Setting("security.ward.unattendedMode", "true"),
                 SafetySetting("security.allowUnsandboxedToolChildren", "false")),
             new ConfigurationPresetDisclosure(
-                "Unattended execution under Ward auto-denial.",
-                "No forbidden-art bypass, unsandboxed child process, destructive memory action, or untrusted MCP server.",
-                "Actions that require approval are denied while unattended; existing tool permissions still apply.",
+                "Unattended ordinary tool execution with per-call Ward records.",
+                "No unsandboxed child process, destructive memory action, or untrusted MCP server.",
+                "Ordinary calls do not pause for approval; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
                 "A configured inference provider/model is required.",
                 "An already enabled, positive daily budget is required and is never invented or enlarged."),
             Prerequisites(ProviderModel(), PositiveBudget()),

@@ -18,8 +18,8 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 /// <summary>
-/// Issues #53 and #216: the Ward step keeps its classify → hard deny → auto-approve → interactive
-/// decision order, while calls outside that decision path still receive a record-only Ward pair.
+/// Issues #216 and #217: every ordinary tool call receives a record-only Ward pair without entering
+/// the retired classifier, prompt, or auto-denial path.
 ///
 /// The metric test asserts <c>Assert.Single</c> over <c>arcanum_ward_decisions_total</c>, which is a
 /// single process-wide instrument on the shared <c>"Arcanum"</c> meter — every ward decision recorded
@@ -29,94 +29,14 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Collection("Telemetry")]
 public sealed class WardAutoApprovalPipelineTests
 {
-
-    private const string AutoApprovedTool = ToolRiskClassifier.ExecuteCommandToolName;
-
-    [Fact]
-    public async Task An_allowlisted_tool_runs_without_waiting_for_an_operator()
-    {
-
-        RecordingWard ward = new();
-
-        ToolExecutionPipeline pipeline = CreatePipeline(
-            ward,
-            new AllowAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool));
-
-        bool invoked = false;
-
-        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
-            pipeline,
-            AutoApprovedTool,
-            () =>
-            {
-                invoked = true;
-
-                return "ran";
-            });
-
-        Assert.True(invoked);
-
-        Assert.Equal("ran", processed.ResultText);
-
-        Assert.False(processed.Denied);
-
-        Assert.Equal(0, ward.WaitCount);
-
-        Assert.Equal(1, ward.AutomaticCount);
-
-        Assert.Equal(WardResolutionOrigin.AutoApproved, ward.LastAutomaticOrigin);
-
-    }
-
-    [Fact]
-    public async Task An_auto_approved_call_still_emits_warded_and_wardResolved_with_the_automatic_origin()
-    {
-
-        ToolExecutionPipeline pipeline = CreatePipeline(
-            new RecordingWard(),
-            new AllowAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool));
-
-        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
-            pipeline,
-            AutoApprovedTool,
-            static () => "ran");
-
-        Assert.Equal(
-            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
-            processed.WardEvents.Select(static evt => evt.Type));
-
-        IntelligenceEvent warded = Assert.Single(
-            processed.WardEvents,
-            static e => e.Type == IntelligenceEventType.Warded);
-
-        IntelligenceEvent resolved = Assert.Single(
-            processed.WardEvents,
-            static e => e.Type == IntelligenceEventType.WardResolved);
-
-        Assert.False(string.IsNullOrWhiteSpace(warded.WardId));
-
-        Assert.Equal(warded.WardId, resolved.WardId);
-
-        Assert.Equal(WardResolutionOrigin.AutoApproved, warded.WardOrigin);
-
-        Assert.Equal(WardResolutionOrigin.AutoApproved, resolved.WardOrigin);
-
-        Assert.Null(warded.WardAllowed);
-
-        Assert.Null(warded.WardReason);
-
-        Assert.True(resolved.WardAllowed);
-
-    }
-
     [Theory]
     [InlineData("read_file_chunk")]
     [InlineData("read_saga")]
     [InlineData("delegate_task")]
     [InlineData("web_search")]
-    public async Task A_non_candidate_tool_records_an_ungated_ward_pair_without_blocking(string toolName)
+    [InlineData("write_file")]
+    [InlineData("execute_command")]
+    public async Task Every_ordinary_tool_records_an_ungated_ward_pair_without_blocking(string toolName)
     {
 
         List<ToolExecutionEvent> observed = [];
@@ -188,55 +108,50 @@ public sealed class WardAutoApprovalPipelineTests
     }
 
     [Fact]
-    public async Task An_interactive_ward_resolution_is_projected_as_a_human_origin()
+    public async Task An_unattended_write_file_call_executes_under_restrictive_ward_settings()
     {
 
+        RecordingWard ward = new();
+
         ToolExecutionPipeline pipeline = CreatePipeline(
-            new RecordingWard(),
+            ward,
             new AllowAllSanctumGuard(),
-            new WardPolicySettings { Enabled = true, ForbiddenArts = [] });
+            new WardPolicySettings
+            {
+                Enabled = true,
+                ForbiddenArts = ["write_file"],
+                AutoDenyInUnattendedMode = true,
+            });
+
+        bool invoked = false;
 
         ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
             pipeline,
-            AutoApprovedTool,
-            static () => "ran");
-
-        IntelligenceEvent resolved = Assert.Single(
-            processed.WardEvents,
-            static e => e.Type == IntelligenceEventType.WardResolved);
-
-        Assert.Equal(WardResolutionOrigin.Human, resolved.WardOrigin);
-
-    }
-
-    [Fact]
-    public async Task An_auto_approved_call_never_raises_a_blocking_approval_request()
-    {
-
-        List<ToolExecutionEvent> observed = [];
-
-        ToolExecutionPipeline pipeline = CreatePipeline(
-            new RecordingWard(),
-            new AllowAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool));
-
-        _ = await ProcessAsync(
-            pipeline,
-            AutoApprovedTool,
-            static () => "ran",
-            observer: evt =>
+            "write_file",
+            () =>
             {
-                observed.Add(evt);
+                invoked = true;
 
-                return ValueTask.CompletedTask;
-            });
+                return "ran";
+            },
+            request: new PingRequest("hi", WorkingDirectory: "/tmp", UnattendedMode: true));
 
-        Assert.DoesNotContain(observed, static e => e is ToolApprovalRequestedEvent);
+        Assert.True(invoked);
+
+        Assert.Equal("ran", processed.ResultText);
+
+        Assert.False(processed.Denied);
+
+        Assert.Equal(0, ward.WaitCount);
+
+        Assert.Equal(1, ward.AutomaticCount);
+
+        Assert.Equal(WardResolutionOrigin.Ungated, ward.LastAutomaticOrigin);
 
     }
 
     [Fact]
-    public async Task An_auto_approved_call_is_still_blocked_by_Sanctum()
+    public async Task An_ungated_call_is_still_blocked_by_Sanctum()
     {
 
         RecordingWard ward = new();
@@ -244,13 +159,18 @@ public sealed class WardAutoApprovalPipelineTests
         ToolExecutionPipeline pipeline = CreatePipeline(
             ward,
             new DenyAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool));
+            new WardPolicySettings
+            {
+                Enabled = true,
+                ForbiddenArts = ["execute_command"],
+                AutoDenyInUnattendedMode = true,
+            });
 
         bool invoked = false;
 
         ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
             pipeline,
-            AutoApprovedTool,
+            "execute_command",
             () =>
             {
                 invoked = true;
@@ -267,141 +187,21 @@ public sealed class WardAutoApprovalPipelineTests
 
         Assert.Equal(1, ward.AutomaticCount);
 
-    }
-
-    [Fact]
-    public async Task A_tool_outside_the_allowlist_still_waits_for_the_interactive_ward()
-    {
-
-        RecordingWard ward = new();
-
-        ToolExecutionPipeline pipeline = CreatePipeline(
-            ward,
-            new AllowAllSanctumGuard(),
-            AutoApprove(ToolRiskClassifier.WorkspaceCheckToolName));
-
-        _ = await ProcessAsync(
-            pipeline,
-            AutoApprovedTool,
-            static () => "ran");
-
-        Assert.Equal(1, ward.WaitCount);
-
-        Assert.Equal(0, ward.AutomaticCount);
-
-    }
-
-    [Fact]
-    public async Task Unattended_auto_deny_wins_over_a_matching_auto_approve_entry()
-    {
-
-        RecordingWard ward = new();
-
-        ToolExecutionPipeline pipeline = CreatePipeline(
-            ward,
-            new AllowAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool) with { AutoDenyInUnattendedMode = true });
-
-        bool invoked = false;
-
-        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
-            pipeline,
-            AutoApprovedTool,
-            () =>
-            {
-                invoked = true;
-
-                return "ran";
-            },
-            request: new PingRequest("hi", WorkingDirectory: "/tmp", UnattendedMode: true));
-
-        Assert.False(invoked);
-
-        Assert.True(processed.Denied);
-
-        Assert.Equal(0, ward.WaitCount);
-
-        Assert.Equal(0, ward.AutomaticCount);
-
-    }
-
-    [Fact]
-    public async Task Auto_approval_is_permitted_in_unattended_mode_when_auto_deny_is_off()
-    {
-
-        RecordingWard ward = new();
-
-        ToolExecutionPipeline pipeline = CreatePipeline(
-            ward,
-            new AllowAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool) with { AutoDenyInUnattendedMode = false });
-
-        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
-            pipeline,
-            AutoApprovedTool,
-            static () => "ran",
-            request: new PingRequest("hi", WorkingDirectory: "/tmp", UnattendedMode: true));
-
-        Assert.False(processed.Denied);
-
-        Assert.Equal(0, ward.WaitCount);
-
-        Assert.Equal(1, ward.AutomaticCount);
-
-    }
-
-    [Fact]
-    public async Task Auto_approval_records_a_ward_decision_metric_labelled_only_by_tool_name_and_origin()
-    {
-
-        ConcurrentQueue<KeyValuePair<string, object?>[]> measurements = new();
-
-        using MeterListener listener = new()
-        {
-            InstrumentPublished = static (instrument, activeListener) =>
-                activeListener.EnableMeasurementEvents(instrument),
-        };
-
-        listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
-        {
-
-            if (instrument.Name != "arcanum_ward_decisions_total")
-            {
-                return;
-            }
-
-            measurements.Enqueue(tags.ToArray());
-
-        });
-
-        listener.Start();
-
-        ToolExecutionPipeline pipeline = CreatePipeline(
-            new RecordingWard(),
-            new AllowAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool));
-
-        _ = await ProcessAsync(
-            pipeline,
-            AutoApprovedTool,
-            static () => "ran");
-
-        KeyValuePair<string, object?>[] recorded = Assert.Single(measurements);
-
         Assert.Equal(
-            ["tool_name", "origin"],
-            recorded.Select(static tag => tag.Key));
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            processed.WardEvents.Select(static evt => evt.Type));
 
-        Assert.Equal(AutoApprovedTool, recorded[0].Value);
-
-        Assert.Equal("auto_approved", recorded[1].Value);
+        Assert.All(
+            processed.WardEvents,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
 
     }
 
     [Theory]
     [InlineData("web_search", "web_search", true)]
+    [InlineData("execute_command", "execute_command", true)]
     [InlineData("model_supplied_unknown_tool", "unregistered", false)]
-    public async Task A_non_candidate_tool_records_an_ungated_ward_decision_metric(
+    public async Task Every_ordinary_tool_records_an_ungated_ward_decision_metric(
         string toolName,
         string metricToolName,
         bool registerTool)
@@ -452,36 +252,24 @@ public sealed class WardAutoApprovalPipelineTests
 
     }
 
-    private static WardPolicySettings AutoApprove(params string[] tools) =>
-        new()
-        {
-            Enabled = true,
-            ForbiddenArts = [],
-            AutoApprove = new WardAutoApprovePolicySettings
-            {
-                Enabled = true,
-                Tools = [.. tools],
-            },
-        };
-
     /// <summary>
     /// On the buffered path the Ward frames are accumulated rather than emitted live. If the tool
     /// then throws under the tolerant-failure policy — an MCP transport fault, a workspace IO error
-    /// — the client must still learn that the call was gated and how it was resolved, not merely
+    /// — the client must still learn that the call was recorded and how it was resolved, not merely
     /// that something failed.
     /// </summary>
     [Fact]
-    public async Task A_tolerated_invocation_failure_still_reports_the_ward_frames()
+    public async Task A_tolerated_invocation_failure_still_reports_ungated_record_frames()
     {
 
         ToolExecutionPipeline pipeline = CreatePipeline(
             new RecordingWard(),
             new AllowAllSanctumGuard(),
-            AutoApprove(AutoApprovedTool));
+            new WardPolicySettings { Enabled = true, ForbiddenArts = [] });
 
         ToolExecutionPipeline.ProcessedToolCall processed = await pipeline
             .ProcessSingleToolCallAsync(
-                new FunctionCallContent($"call-{AutoApprovedTool}", AutoApprovedTool, new Dictionary<string, object?>()),
+                new FunctionCallContent("call-write_file", "write_file", new Dictionary<string, object?>()),
                 new PingRequest("hi", WorkingDirectory: "/tmp"),
                 new ChatOptions
                 {
@@ -495,7 +283,7 @@ public sealed class WardAutoApprovalPipelineTests
                                 return "unreachable";
 #pragma warning restore CS0162
                             },
-                            AutoApprovedTool),
+                            "write_file"),
                     ],
                 },
                 activeSpell: null,
@@ -509,6 +297,10 @@ public sealed class WardAutoApprovalPipelineTests
         Assert.Equal(
             [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
             processed.WardEvents.Select(static e => e.Type));
+
+        Assert.All(
+            processed.WardEvents,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
 
     }
 
