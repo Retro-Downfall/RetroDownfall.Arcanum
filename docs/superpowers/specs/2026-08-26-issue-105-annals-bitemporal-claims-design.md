@@ -235,7 +235,9 @@ One writer rather than three, because three would be three ideas of what a revis
 
 `SagaMemoryStore.InsertCoreAsync` already opens a transaction and resolves the memory's scope from the owning Session's canonical binding. The Annals append goes inside that transaction, after the `saga_memories` insert and before the embedding writes, and reuses the scope that was just derived rather than re-deriving it.
 
-Origin is `AgentExtracted`: Saga has no operator write path and no `scribe_saga` tool, so every row is a headless extraction's inference from a finished transcript. Operation is `Assert` at revision one — Saga has no update path, so a Saga claim never reaches revision two in this slice. `ValidFromUtc` and `RecordedAtUtc` are both the memory's own `CreatedAt`. `SensitivityCode` is `None`; a labelled Saga artifact is refused deletion by the existing guard rather than carried here.
+Origin is `AgentExtracted`: Saga has no operator write path and no `scribe_saga` tool, so every row is a headless extraction's inference from a finished transcript. Operation is `Assert` at revision one — Saga has no update path, so a Saga claim never reaches revision two in this slice.
+
+**Revisited.** Saga curation gave the store an operator write path after this slice shipped, and the sentences above are the record of what was true when it did. Both still hold of the insert path they describe: a memory arrives there from extraction alone, and its opening claim is still `AgentExtracted` at revision one. What changed is that a Saga claim now does reach revision two — correction, retirement, and reinstatement append `OperatorStated` versions over a memory that already exists, and each opens the claim with this same assertion first when none exists yet, so the history reads as extraction asserting and the operator acting rather than crediting the operator with the original assertion. `ValidFromUtc` and `RecordedAtUtc` are both the memory's own `CreatedAt`. `SensitivityCode` is `None`; a labelled Saga artifact is refused deletion by the existing guard rather than carried here.
 
 ### 7.2 Lexicon
 
@@ -390,7 +392,7 @@ Deliberately absent from this slice, and named so no reader infers otherwise:
 - No deduplication, supersession sweep, decay, or reinforcement.
 - No API route and no CLI verb over claim history.
 - No operator correction, retirement, or pinning surface.
-- No `Retire` producer. The operation is declared and constrained; nothing writes one yet.
+- No `Retire` producer. The operation is declared and constrained; nothing writes one yet. **Revisited:** Saga retirement writes one. The declaration is what it inherited its shape from, which is what this bullet was for.
 - No claims over the Covenant or the Tapestry.
 
 ## 15. Incidental correction

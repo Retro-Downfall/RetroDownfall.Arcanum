@@ -20,7 +20,7 @@ Four framing questions were put to the operator and answered before any code was
 
 - **Delivery shape.** Delivered whole rather than decomposed into children. One branch, one merge, one issue closed. The schema step, the correction, the retirement and its suppression, the pin, and the detail view share one substrate and one protocol; split apart they could not be tested independently.
 - **Where superseded text lives.** Nowhere. A correction rewrites the `saga_memories` row in place, and the immutable version is an Annals claim revision binding a SHA-256 of the content it describes. That is the Annals' own stated principle — a version proves which content it describes without being able to reconstruct it — and it is what lets forgetting a memory leave no residue that still carries what the operator asked to remove. A content-bearing version table would make every correction leave the rejected text durable, and would give the forget promise a second table to reach.
-- **Whether retirement can be undone.** Yes, and it re-embeds. Retirement deletes the memory's embedding rows outright so that exclusion from retrieval is structural; reinstatement lifts the retirement, releases that memory's suppression evidence, and re-embeds, which is an honest provider cost and is refused when the embedding substrate is degraded.
+- **Whether retirement can be undone.** Yes, and it re-embeds. Retirement deletes the memory's embedding rows outright so that exclusion from retrieval is structural; reinstatement lifts the retirement, releases the suppression covering that content in that scope (§9), and re-embeds, which is an honest provider cost and is refused when the embedding substrate is degraded.
 - **Whether curation obeys the Annals feature gate.** No — it is ungated, on the same terms erasure already is. "Editing a memory never edits its provenance" means the record that the operator edited it is evidence rather than retrieval, and with `Arcanum:Features:Annals` off nothing reads a head to decide what a turn recalls, so prompt bytes, token accounting, and ranking are exactly what they were.
 
 Two further boundaries were stated rather than asked, because the tree already answers them.
@@ -171,7 +171,9 @@ The digest binds the scope kind and Campaign, so retiring a memory inside one Ca
 
 ## 9. Reinstatement
 
-`arcanum memory saga reinstate <id>` and `POST /api/memory/saga/{id}/reinstate`. Embed first, then one transaction: clear `RetiredAtUtc`, delete that memory's suppression row, insert the embedding BLOB and the vec0 mirror, and append an Annals version binding the content again.
+`arcanum memory saga reinstate <id>` and `POST /api/memory/saga/{id}/reinstate`. Embed first, then one transaction: clear `RetiredAtUtc`, insert the embedding BLOB and the vec0 mirror, release the suppression, and append an Annals version binding the content again.
+
+**Revisited.** "That memory's suppression row" is not what the release names, and the implementation says so at length where it happens. Nothing records which retirement wrote a given suppression, so the digest is recomputed from the installation's key over the content and scope being reinstated. Two memories holding identical content in one scope therefore share a single suppression, and reinstating either releases it for both — the still-retired twin's content becomes extractable again while the twin itself stays retired. That is deliberate: the evidence says this content in this scope was rejected, not this memory was, and an operator who has put that content back into that scope has withdrawn the rejection the evidence recorded.
 
 That version is a `Correct`. There is no fourth operation code and there cannot be one — `annal_versions.OperationCode` bakes its vocabulary into a `CHECK` SQLite cannot alter, on a table joined by three composite foreign keys and guarded by an append-only trigger, and adding a member would be a rebuild of the only record of what durable memory has claimed. A reinstatement *is* the claim being restated after a tombstone, which is what `Correct` means; the head moves from a retirement to a restatement at the next revision, which is exactly the one motion the head's validate trigger allows.
 
@@ -211,6 +213,8 @@ The plan carries a curation inventory: how many memories are pinned, and how man
 Six verbs under `arcanum memory saga`, beside `arcanum memory covenant` and `arcanum memory lexicon`, each naming exactly one store in its result and each confirming interactively or with `--yes`, matching the existing destructive-command contract. Six routes under `/api/memory/saga/`, authenticated, none on `/v1`.
 
 `arcanum saga list | divine | delete | stats` and `/api/saga*` are untouched. Those are the store's own read-and-delete surface; `arcanum memory saga` is the curation surface that names one store, and the two answer different questions. The listing surfaces do gain the lifecycle fields, because a listing that could not tell a retired memory from a live one would make the operator open every row to find out.
+
+**Revisited.** Half of that shipped. `SagaMemoryDto` carries both stamps, so `/api/saga`'s JSON reports them on every row; `arcanum saga list`'s rendered table gained no column for them, and `read_saga` returns a text block that never carried them. The gap is narrower than it reads, because a retired memory cannot appear in a similarity result at all — retirement takes the embedding every ranking path reaches a memory through — so what the two rendered surfaces cannot show is a pin, and `arcanum memory saga show` is where one is read.
 
 ## 13. Lifecycle
 

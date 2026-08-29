@@ -8,7 +8,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
 /// <summary>
 /// The step that gives Saga curation its storage: two nullable lifecycle columns on
-/// <c>saga_memories</c> and the two keyed retirement-evidence tables. No verb writes to any of it yet.
+/// <c>saga_memories</c> and the two keyed retirement-evidence tables, which the curation verbs write.
 /// </summary>
 /// <remarks>
 /// Version 4 both edits an existing object and adds two new ones, which is the one shape a fresh

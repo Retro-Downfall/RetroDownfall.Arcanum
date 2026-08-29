@@ -23,9 +23,10 @@ public enum AnnalSubjectStore
 /// What one version does to the claim it belongs to.
 /// </summary>
 /// <remarks>
-/// <see cref="Retire"/> is declared and constrained although nothing writes one yet, so the curation
-/// surfaces that will produce it inherit a shape they cannot contradict. A retirement is a tombstone:
-/// it binds to no content, which the table enforces rather than trusting a writer to remember.
+/// <see cref="Retire"/> is what Saga's retirement appends. It was declared and constrained before any
+/// surface produced one, so the surfaces that do inherit a shape they cannot contradict. A retirement is
+/// a tombstone: it binds to no content, which the table enforces rather than trusting a writer to
+/// remember.
 /// </remarks>
 public enum AnnalOperation
 {

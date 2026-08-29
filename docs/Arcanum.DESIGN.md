@@ -3841,7 +3841,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 | **The Weave / Divination / Imprint** | Embedding substrate / cosine search / stored vector (§21). |
 | **Lore** | Legacy operator key-value (`/api/lore`); not model-directed. |
 | **The Lexicon** | Model-writable entity memory (§10.6). |
-| **Saga** | Auto-extracted associative memory (§21.9); operator-delete only. |
+| **Saga** | Auto-extracted associative memory (§21.9); no model writes to it, and an operator curates one memory at a time through §21.13. |
 | **Arcane Resonance** | Spell `dependencies` injection (§10.2.2). |
 | **Spell Routing** | Pre-flight spell selection (`FullGrimoire` / `DirectResonance` / `FilteredDivination`). |
 | **`vec0`** | Historical: an optional sqlite-vec KNN index. Removed — the hermetic runtime omits extension loading, so managed cosine is the only search path (§5.4.4a, §21.2). |
@@ -4228,7 +4228,7 @@ Watchers are latency hints, never a security or correctness boundary. Every `Fil
 
 **Separate from Sanctum.** Memory scoping constrains what a turn may *recall*; Sanctum (§11.15) constrains what a Campaign may *execute*. Neither implies the other, and a Sanctum-isolated Campaign's conclusions were retrievable everywhere until this gate existed.
 
-**Surfaces:** `/api/saga*` (§4.3), MCP `read_saga` (gated), CLI `arcanum saga …`. All three resolve the same scope through `IMemoryScopeResolver`, from the Session named by the request or bound to the tool call, so inspection matches retrieval by construction rather than by four call sites agreeing. `GET /api/saga` with no `sessionId` is an operator listing the whole store and stays unnarrowed; every row reports its own scope either way. `arcanum memory saga` and `/api/memory/saga/` are a second surface answering a different question (§21.13): these three are the store's own read-and-delete surface — what is in there, and take this out — while the curation verbs name one memory and report what has been decided about it. `SagaMemoryDto` carries the retirement and pin stamps, so a caller that reads a row over any of these surfaces reads its curation state with it.
+**Surfaces:** `/api/saga*` (§4.3), MCP `read_saga` (gated), CLI `arcanum saga …`. All three resolve the same scope through `IMemoryScopeResolver`, from the Session named by the request or bound to the tool call, so inspection matches retrieval by construction rather than by four call sites agreeing. `GET /api/saga` with no `sessionId` is an operator listing the whole store and stays unnarrowed; every row reports its own scope either way. `arcanum memory saga` and `/api/memory/saga/` are a second surface answering a different question (§21.13): these three are the store's own read-and-delete surface — what is in there, and take this out — while the curation verbs name one memory and report what has been decided about it. `SagaMemoryDto` carries the retirement and pin stamps, so `/api/saga`'s own JSON reports both on every row it returns. `read_saga` renders a text block of content, similarity, and formation date, and the CLI's table has no such column, so neither shows them — and neither can show a retired memory at all, because retirement takes the embedding every similarity path reaches a memory through. `arcanum memory saga show` is where an operator reads one memory's curation state (§21.13).
 
 ### 21.10 Semantic spell routing
 
@@ -4391,7 +4391,9 @@ Which lifecycle operations clear the evidence is §5.4.7's to state. What is dec
 
 #### 21.13.4 A reinstatement is a restatement, not a fourth operation
 
-Reinstating embeds the memory's surviving content first, then clears `RetiredAtUtc`, deletes that memory's suppression row, writes the embedding BLOB and the vec0 mirror back, and appends a claim binding the content again. It is refused the way a correction is when nothing can embed: a memory the operator believes is back but that no search can reach is worse than a refusal that says so.
+Reinstating embeds the memory's surviving content first, then in one transaction clears `RetiredAtUtc`, writes the embedding BLOB and the vec0 mirror back, releases the suppression, and appends a claim binding the content again. It is refused the way a correction is when nothing can embed: a memory the operator believes is back but that no search can reach is worse than a refusal that says so.
+
+What it releases is the evidence covering that content in that scope, not a row belonging to that memory — the digest is recomputed from the installation's key rather than remembered, because nothing records which retirement wrote a given suppression. So reinstating one of two co-retired memories holding identical content in one scope releases the single suppression covering both, and the twin's content becomes extractable again while the twin itself stays retired. That is deliberate rather than a leak: the evidence says this content in this scope was rejected, not this memory was, and once the operator has put that content back into that scope, extraction writing it again is no longer something they rejected.
 
 That claim is a `Correct`, and there is no fourth operation code to give it. `annal_versions.OperationCode` bakes its vocabulary into a `CHECK` SQLite cannot alter, on a table joined by composite foreign keys and guarded by an append-only trigger, so adding a member would be a rebuild of the only record of what durable memory has claimed. A reinstatement *is* the claim being restated after a tombstone, which is what `Correct` means, and moving a head from a retirement to a restatement at the next revision is exactly the one motion the head's validate trigger allows.
 

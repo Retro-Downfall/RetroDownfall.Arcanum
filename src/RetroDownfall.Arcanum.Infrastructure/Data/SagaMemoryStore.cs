@@ -207,9 +207,12 @@ internal sealed partial class SagaMemoryStore(
                     // derived rather than deriving a second one. Two derivations of one authority
                     // eventually disagree, and the disagreement would land on what a turn may recall.
                     //
-                    // AgentExtracted is the only honest origin here: Saga has no operator write path and
-                    // no scribe tool, so every row is a headless extraction's inference from a finished
-                    // transcript rather than something anyone chose to state.
+                    // AgentExtracted is the only honest origin here: no scribe tool writes to Saga and no
+                    // operator writes a memory into it, so a row arriving on this path is a headless
+                    // extraction's inference from a finished transcript rather than something anyone chose
+                    // to state. The operator's curation verbs append their own OperatorStated versions over
+                    // a memory this path already wrote; they never open a claim as an assertion of their
+                    // own, which is why this origin stays the only one an insert can record.
                     _ = await AnnalsClaimWriter.AppendAssertAsync(
                         connection,
                         transaction,

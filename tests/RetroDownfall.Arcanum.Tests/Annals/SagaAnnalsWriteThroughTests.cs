@@ -94,9 +94,11 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
 
         Assert.Equal(AnnalOperation.Assert, claim.Operation);
 
-        // Saga has no operator write path and no scribe tool, so every row is a headless extraction's
-        // inference from a finished transcript. Any other origin here would be a claim about a warrant
-        // nothing in the product can produce.
+        // No scribe tool writes to Saga and no operator writes a memory into it, so a row arriving on
+        // the insert path is a headless extraction's inference from a finished transcript. Any other
+        // origin on this claim would be a statement about a warrant nothing in the product can produce --
+        // the operator's curation verbs append OperatorStated versions over a memory that already exists,
+        // which is a later revision of this claim rather than the assertion that opened it.
         Assert.Equal(AnnalOrigin.AgentExtracted, claim.Origin);
 
         Assert.Equal(AnnalContentDigest.ForSagaMemory(Content), claim.ContentHash);
