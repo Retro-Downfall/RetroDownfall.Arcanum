@@ -1,3 +1,0 @@
-{"type":"server-started","port":51595,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:51595/?key=5ec372bdf60bfe22cf26e7a204f9fe60e32c6e2fd09d40c856b5b231f1b8d86e","screen_dir":"/Users/mat/Source/apps/RetroDownfall.Arcanum/.superpowers/brainstorm/63055-1784403989/content","state_dir":"/Users/mat/Source/apps/RetroDownfall.Arcanum/.superpowers/brainstorm/63055-1784403989/state","idle_timeout_ms":14400000}
-fs.watch error: EMFILE: too many open files, watch
-{"type":"server-stopped","reason":"owner process exited"}
