@@ -208,6 +208,15 @@ public sealed class CovenantToolStagingMintTests
     private sealed class StubProbe : ICovenantTurnHeadProbe
     {
 
+        /// <summary>Not the seam under test here; a retirement has its own suite.</summary>
+        public ValueTask<Result<CovenantRetirementPreflight>> ResolveRetirementPreflightAsync(
+            CovenantLane lane,
+            string normalizedKey,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CovenantRetirementPreflight>.Failure(new Error(
+                ErrorCodes.Covenant.StaleSnapshot,
+                "This stub resolves no retirement target.")));
+
         public ValueTask<Result<CovenantLaneHeadProbe>> ProbeAsync(
             CovenantLane lane,
             string normalizedKey,

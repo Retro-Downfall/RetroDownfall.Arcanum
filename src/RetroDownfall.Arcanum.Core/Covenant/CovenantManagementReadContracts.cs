@@ -269,6 +269,86 @@ public sealed record CovenantMutationEffectQuery(
     CovenantOperation Operation);
 
 /// <summary>
+/// Everything a Ward has to show before an operator can approve one retirement.
+/// </summary>
+/// <remarks>
+/// The compiled fragment travels because an operator approving a retirement reads the content, not a
+/// hash of it. The pin travels because a pinned head must be refused before a Ward is raised at all:
+/// asking somebody to approve what the write authority will refuse anyway is asking them to authorize
+/// nothing.
+/// </remarks>
+public sealed record CovenantRetirementTarget(
+    Guid EntryId,
+    Guid VersionId,
+    CovenantLane Lane,
+    long LaneRevision,
+    string NormalizedKey,
+    string CompiledContent,
+    CovenantDigest RenderedHash,
+    bool GlobalFallbackApplies,
+    long KeyEpoch,
+    bool IsPinned);
+
+/// <summary>
+/// The subject one curation preflight measures, before its key epoch is known.
+/// </summary>
+/// <remarks>
+/// The epoch is deliberately absent here and present on the snapshot. It is a fact about the
+/// installation, and a query that asserted its own would let a caller prepare against an epoch the
+/// database never had.
+/// </remarks>
+public sealed record CovenantCurationEffectQuery(
+    CovenantOperationScope Scope,
+    string NormalizedKey,
+    CovenantLane Lane,
+    CovenantCurationKind Kind);
+
+/// <summary>
+/// What one curation change would do, and the epochs its preflight token has to bind.
+/// </summary>
+/// <remarks>
+/// The two head facts are what the broader-scope sentence is read off. Retiring or masking a Campaign
+/// entry and masking a Global key are opposite answers to the same question — does anything apply here
+/// afterwards — and an operator has to be told which one they are about to get before they confirm.
+/// </remarks>
+public sealed record CovenantCurationEffectSnapshot(
+    CovenantOperationScope Scope,
+    string NormalizedKey,
+    CovenantLane Lane,
+    CovenantCurationKind Kind,
+    CovenantCurationState Current,
+
+    /// <summary>Whether a live Global Confirmed head exists for this key.</summary>
+    bool GlobalConfirmedHeadExists,
+
+    /// <summary>Whether the named Campaign holds its own live Confirmed head for this key.</summary>
+    bool ScopedConfirmedHeadExists,
+    long KeyEpoch,
+    long KeyReclamationEpoch,
+    Guid DatasetGeneration)
+{
+
+    /// <summary>Whether Global content stops reaching this Campaign, with nothing in its place.</summary>
+    /// <remarks>
+    /// A Campaign that holds its own Confirmed head for the key is already shadowing the Global one,
+    /// so masking changes nothing an operator could observe there and the sentence would be false.
+    /// </remarks>
+    public bool GlobalConfirmedSuppressed =>
+        Kind == CovenantCurationKind.Mask
+        && !Current.IsMasked
+        && GlobalConfirmedHeadExists
+        && !ScopedConfirmedHeadExists;
+
+    /// <summary>Whether Global content starts reaching this Campaign again.</summary>
+    public bool GlobalConfirmedResurfaces =>
+        Kind == CovenantCurationKind.Unmask
+        && Current.IsMasked
+        && GlobalConfirmedHeadExists
+        && !ScopedConfirmedHeadExists;
+
+}
+
+/// <summary>
 /// The exact affected-Campaign count, at most fifty examples, and every epoch the preflight token
 /// has to bind.
 /// </summary>

@@ -398,6 +398,13 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         command.Transaction = transaction;
 
+        // Exact, and indexed. This column agrees with "Sessions"."Id" so its foreign key can resolve,
+        // and for an interval that identity had two spellings — uppercase for a Session the
+        // object-relational writer created, lowercase for one a protected transfer or backup import
+        // created — which made an exact comparison here silently report an imported Session clean. It
+        // was normalised until the data was settled, at the cost of this table's primary-key index.
+        // Both columns are now canonical by guard and by sweep, so the seek is back on what is the
+        // dispatch gate's per-turn read.
         command.CommandText = """
             SELECT TaintedArtifactCount, MaximumSensitivityCode, GenerationProvenanceDigest, Revision
             FROM session_sensitivity_state
@@ -549,6 +556,16 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
     /// what this label adds, so a Session that has seen more than eight generations converges on the
     /// same Bloom the labels themselves would. The count only ever grows here; retention and erasure
     /// own the decrease, in the transaction that removes the artifacts.
+    ///
+    /// <para>The identity written is this ledger's own canonical spelling, and it is the one
+    /// <c>"Sessions"."Id"</c> holds. <c>session_sensitivity_state.SessionId</c> declares
+    /// <c>REFERENCES "Sessions" ("Id")</c> and SQLite resolves that by byte equality, so for an
+    /// interval — while a Session created by the protected transfer store or the backup importer held
+    /// a lowercase identity — this had to read the parent row's own text before it could write a child
+    /// that resolved. Both writers now render the canonical form, a guard trigger refuses any other,
+    /// and the version-5 sweep verifies the stored data, so there is one spelling to agree with and
+    /// nothing left to resolve. <c>ON CONFLICT(SessionId)</c> folds onto an existing row for the same
+    /// reason: every prior fold for the same Session wrote the same text.</para>
     /// </remarks>
     private static async Task AdvanceProjectionAsync(
         SqliteConnection connection,
@@ -579,6 +596,11 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
                 UpdatedAtUtc = excluded.UpdatedAtUtc;
             """;
 
+        // The canonical spelling, which is the only one "Sessions"."Id" is permitted to hold, so this
+        // projection's foreign key resolves against the parent by construction. This used to read the
+        // parent row's own text first and fall back to this spelling, because the parent could hold
+        // either of two; with one spelling that read resolved to its own fallback on every call, and a
+        // per-write scan of "Sessions" went with it.
         _ = command.Parameters.AddWithValue("$sessionId", Format(sessionId));
 
         _ = command.Parameters.AddWithValue("$sensitivityCode", (long)label.Sensitivity);

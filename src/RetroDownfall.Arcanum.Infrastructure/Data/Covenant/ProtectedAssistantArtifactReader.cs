@@ -129,6 +129,22 @@ internal sealed class ProtectedAssistantArtifactReader(ICovenantConnectionSource
 
     }
 
+    /// <summary>
+    /// Reads the artifact over the canonical spelling of its identity.
+    /// </summary>
+    /// <remarks>
+    /// This once bound one writer's spelling and then, for an interval, normalised the column instead.
+    /// Neither is needed now. <c>"Entries"."Id"</c> holds the canonical uppercase dashed form for every
+    /// Entry whatever wrote it — the object-relational writer, a protected transfer, or a backup import
+    /// — because a guard trigger refuses any other and the version-5 sweep verifies the stored data. So
+    /// the comparison is exact again and seeks the <c>"Entries"</c> primary-key index, where the
+    /// normalised shape scanned the table.
+    ///
+    /// <para>The identity is rendered through <see cref="Format"/> rather than handed to the provider
+    /// as a <see cref="Guid"/> to be uppercased by its type mapping. Both produce the same text; only
+    /// one of them says at the call site which spelling this statement means, and an identity spelled
+    /// by inference is how this defect family stayed invisible for as long as it did.</para>
+    /// </remarks>
     private static async Task<(string? Content, Guid? SessionId)> ReadEntryAsync(
         SqliteConnection connection,
         SqliteTransaction snapshot,
@@ -141,10 +157,11 @@ internal sealed class ProtectedAssistantArtifactReader(ICovenantConnectionSource
         command.Transaction = snapshot;
 
         command.CommandText = """
-            SELECT "Content", "SessionId" FROM "Entries" WHERE "Id" = $entryId;
+            SELECT "Content", "SessionId" FROM "Entries"
+            WHERE "Id" = $entryId;
             """;
 
-        _ = command.Parameters.AddWithValue("$entryId", assistantEntryId.ToString().ToUpperInvariant());
+        _ = command.Parameters.AddWithValue("$entryId", Format(assistantEntryId));
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -161,5 +178,8 @@ internal sealed class ProtectedAssistantArtifactReader(ICovenantConnectionSource
             Guid.TryParse(reader.GetString(1), out Guid owner) ? owner : null);
 
     }
+
+    /// <summary>The canonical spelling every governed identity column in the Grimoire holds.</summary>
+    private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 
 }

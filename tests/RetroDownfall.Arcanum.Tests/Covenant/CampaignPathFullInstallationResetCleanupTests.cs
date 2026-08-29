@@ -1239,7 +1239,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         internal async Task DeleteRegistryRowAsync(Guid campaignId) =>
             await ExecuteAsync(
                 "DELETE FROM campaign_path_identities WHERE CampaignId = $campaign;",
-                ("$campaign", campaignId.ToString("D")));
+                ("$campaign", Canonical(campaignId)));
 
         internal async Task UpdateRevisionAsync(Guid campaignId, long revision) =>
             await ExecuteAsync(
@@ -1248,7 +1248,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 WHERE CampaignId = $campaign;
                 """,
                 ("$revision", revision),
-                ("$campaign", campaignId.ToString("D")));
+                ("$campaign", Canonical(campaignId)));
 
         /// <summary>
         /// Renames a registered root's directory and follows it in the registry.
@@ -1271,7 +1271,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 WHERE CampaignId = $campaign;
                 """,
                 ("$path", moved),
-                ("$campaign", root.CampaignId.ToString("D")));
+                ("$campaign", Canonical(root.CampaignId)));
 
             return moved;
 
@@ -1370,7 +1370,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 VALUES ($campaign, $leaf, $leaf, $path, 1, '{}', '{}',
                     '2026-08-22T00:00:00Z', '2026-08-22T00:00:00Z');
                 """,
-                ("$campaign", campaignId.ToString("D")),
+                ("$campaign", Canonical(campaignId)),
                 ("$leaf", leaf),
                 ("$path", directory));
 
@@ -1382,7 +1382,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 VALUES ($campaign, $policy, $revision, $path, 1, $identity,
                     '2026-08-22T00:00:00.0000000+00:00');
                 """,
-                ("$campaign", campaignId.ToString("D")),
+                ("$campaign", Canonical(campaignId)),
                 ("$policy", (long)CampaignPathIdentityPolicy.Version),
                 ("$revision", revision),
                 ("$path", directory),
@@ -1416,6 +1416,19 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             }
 
         }
+
+        /// <summary>
+        /// The spelling both of these columns hold in production: uppercase, dashed, 36 characters.
+        /// </summary>
+        /// <remarks>
+        /// <c>"Campaigns"."Id"</c> is written by the object-relational writer, which the SQLite value
+        /// binder uppercases unconditionally, and <c>campaign_path_identities.CampaignId</c> is declared
+        /// <c>REFERENCES "Campaigns"("Id")</c> and bound as a <c>Guid</c> by
+        /// <c>CampaignPathIdentityReader</c> for exactly that reason. A <c>ToString("D")</c> here rendered
+        /// both lowercase, which is a pairing no installation holds and the version-5 identity guards now
+        /// refuse.
+        /// </remarks>
+        private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
 
         private async Task<long> ScalarAsync(string sql)
         {

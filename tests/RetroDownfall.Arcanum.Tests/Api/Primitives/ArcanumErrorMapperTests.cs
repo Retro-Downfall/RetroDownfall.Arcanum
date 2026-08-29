@@ -90,6 +90,23 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Saga.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Saga.NotEmpty, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Saga.SearchFailed, StatusCodes.Status500InternalServerError)]
+    // The Saga curation refusals. StaleContent is 409 because the caller's view of the store moved, not
+    // because its request was malformed; AlreadyRetired is 409 for the same reason, and reaches the wire
+    // only from a correction. The embedding one joins the provider-unavailable 503 because the substrate
+    // is what has to be fixed before the write can be asked for again. Not-retired has no row because it
+    // has no code: reinstating a memory that is not retired is a reported success, not a refusal.
+    [InlineData(ErrorCodes.Saga.StaleContent, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Saga.AlreadyRetired, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Saga.EmbeddingUnavailable, StatusCodes.Status503ServiceUnavailable)]
+    // A malformed expected-content hash is a request-shape problem, and the curation service is the
+    // caller that raises it. Unmapped, it reached the operator as a 500 saying Arcanum broke.
+    [InlineData(ErrorCodes.Validation.InvalidFields, StatusCodes.Status400BadRequest)]
+    // The two request-body faults that are not the caller's body being wrong. Each is distinct from
+    // Validation.InvalidBody because what the caller should do next differs, which is the same reason
+    // every other code on this installation's 413 is distinct from its family's invalid-request code.
+    [InlineData(ErrorCodes.Validation.BodyTooLarge, StatusCodes.Status413PayloadTooLarge)]
+    [InlineData(ErrorCodes.Validation.BodyReadTimeout, StatusCodes.Status408RequestTimeout)]
+    [InlineData(ErrorCodes.Validation.RequestHeadersTooLarge, StatusCodes.Status431RequestHeaderFieldsTooLarge)]
     // FeatureDisabled means an operator turned a feature off in config, not that the caller lacks
     // permission, so it maps to 503 (retry later) rather than sharing the 403 used by genuine
     // access-control failures (PathNotAllowed, AccessDenied, etc.) above.

@@ -149,7 +149,7 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAsync(
             "Campaigns",
             "Id",
-            graph.TargetCampaignId.ToString()));
+            Canonical(graph.TargetCampaignId)));
 
         Assert.Equal(1, await CountAsync(
             "WorkspaceContexts",
@@ -487,7 +487,9 @@ public sealed partial class DataRetentionServiceTests
             VALUES
                 (@id, @name, @name, @path, 0, '{}', @at, @at)
             """,
-            ("@id", campaignId.ToString()),
+            // The object-relational writer is the only writer of "Campaigns"."Id", and the value binder
+            // uppercases a Guid unconditionally, so this is the spelling every installation holds.
+            ("@id", campaignId.ToString("D").ToUpperInvariant()),
             ("@name", campaignId.ToString("N")),
             ("@path", root),
             ("@at", OldTimestamp));

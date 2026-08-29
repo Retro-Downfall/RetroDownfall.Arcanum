@@ -1370,6 +1370,17 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
 
+        public Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            DivinationCampaignScope scope,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
+
     }
 
     private sealed class NoopWorkspaceIndexingService : IWorkspaceIndexingService
@@ -1391,7 +1402,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     private sealed class NoopSagaMemoryStore : ISagaMemoryStore
     {
 
-        public Task InsertAsync(
+        public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,
             string content,
             DateTimeOffset createdAt,
@@ -1408,10 +1419,38 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 
-        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, int limit, int offset, CancellationToken cancellationToken) =>
+        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaCurationOutcome> RetireAsync(
+            string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaCurationOutcome> ReinstateAsync(
+            string id,
+            byte[] expectedContentDigest,
+            float[] embedding,
+            DateTimeOffset reinstatedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaCurationOutcome> CorrectAsync(
+            string id,
+            byte[] expectedContentDigest,
+            string content,
+            float[] embedding,
+            DateTimeOffset correctedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaCurationOutcome> SetPinAsync(
+            string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
 
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>

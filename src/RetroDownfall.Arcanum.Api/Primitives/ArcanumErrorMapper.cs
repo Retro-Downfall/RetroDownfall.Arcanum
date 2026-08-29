@@ -13,6 +13,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Validation.InvalidPrompt
                 or ErrorCodes.Validation.AttachedFiles
                 or ErrorCodes.Validation.InvalidBody
+                or ErrorCodes.Validation.InvalidFields
                 or ErrorCodes.Validation.InvalidQuery
                 or ErrorCodes.Validation.InvalidProviderType
                 or ErrorCodes.Validation.InvalidReasoningEffort
@@ -30,6 +31,10 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Api.TooManyConnections
                 or ErrorCodes.Embeddings.ProviderUnavailable
                 or ErrorCodes.Embeddings.FeatureDisabled
+                // A curation write refused because nothing could embed is the same answer as the
+                // provider being down, and the operator's action is the same: fix the substrate and
+                // ask again. It is not the caller's request that was wrong.
+                or ErrorCodes.Saga.EmbeddingUnavailable
                 or ErrorCodes.Session.RestQueueFull
                 or ErrorCodes.WebResearch.MissingCredential
                 or ErrorCodes.WebResearch.AuthenticationOrCreditsFailed
@@ -81,6 +86,19 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Campaign.PathIdentityRequired =>
                 StatusCodes.Status409Conflict,
 
+            // Saga curation's two state refusals. StaleContent says the stored content moved out from
+            // under the caller's view of it; AlreadyRetired reaches here only from a correction, and
+            // says the memory is retired and must be reinstated before it can be corrected at all.
+            // Both are 409 because re-reading and deciding again is the action, and 400 would wrongly
+            // blame the request's shape.
+            //
+            // Retiring a memory that is already retired, and reinstating one that is not, are not
+            // refused and have no codes: the operator asked for a state and has it, and
+            // ISagaCurationService reports which of the two happened instead of answering no.
+            ErrorCodes.Saga.StaleContent
+                or ErrorCodes.Saga.AlreadyRetired =>
+                StatusCodes.Status409Conflict,
+
             ErrorCodes.Covenant.Unavailable
                 or ErrorCodes.Covenant.OperatorAuthorityUnavailable
                 or ErrorCodes.Covenant.HostToolsTransitionRequired
@@ -124,8 +142,16 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Spell.PathNotAllowed or ErrorCodes.Campaign.PathNotAllowed or ErrorCodes.Workspace.PathNotAllowed or ErrorCodes.Workspace.FileWriteDisabled or ErrorCodes.Workspace.AccessDenied or ErrorCodes.WebBrowsing.SsrfBlocked or ErrorCodes.WebResearch.SsrfBlocked or ErrorCodes.Mcp.DiagnosticBlocked or ErrorCodes.Mcp.WorkspaceNotTrusted =>
                 StatusCodes.Status403Forbidden,
 
-            ErrorCodes.Workspace.FileTooLarge or ErrorCodes.Scrying.ImageTooLarge or ErrorCodes.Files.TooLarge or ErrorCodes.WebResearch.ResponseTooLarge =>
+            ErrorCodes.Workspace.FileTooLarge or ErrorCodes.Scrying.ImageTooLarge or ErrorCodes.Files.TooLarge or ErrorCodes.WebResearch.ResponseTooLarge or ErrorCodes.Validation.BodyTooLarge =>
                 StatusCodes.Status413PayloadTooLarge,
+
+            // Kestrel answers 408 when a request body arrives under its minimum data rate. The body is
+            // not wrong, so this is not a 400: it is worth resending unchanged on a better connection.
+            ErrorCodes.Validation.BodyReadTimeout =>
+                StatusCodes.Status408RequestTimeout,
+
+            ErrorCodes.Validation.RequestHeadersTooLarge =>
+                StatusCodes.Status431RequestHeaderFieldsTooLarge,
 
             ErrorCodes.Attachment.TooLarge =>
                 StatusCodes.Status413PayloadTooLarge,

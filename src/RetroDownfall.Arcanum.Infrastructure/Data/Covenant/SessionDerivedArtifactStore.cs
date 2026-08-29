@@ -21,6 +21,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// under the replacement authorization. Deleting first would leave a window in which the pointer's
 /// foreign key had nothing to name, and labelling last means a label failure aborts before any
 /// evidence has been destroyed.</para>
+///
+/// <para>Every one of those steps names the Session, and all four comparisons are exact and indexed
+/// against one canonical spelling. Both artifact tables and both pointer tables carry
+/// <c>REFERENCES "Sessions" ("Id")</c>, which SQLite resolves by byte equality, so while a Session
+/// created by protected transfer or backup import held a lowercase identity there the first insert
+/// aborted on that foreign key and no summary or title could be written for it at all. Those writers
+/// were converted, a guard trigger refuses any other spelling, and the parent now holds one form — so
+/// the step that read the parent row's own text before writing a child was removed with the reason for
+/// it.</para>
 /// </remarks>
 internal sealed class SessionDerivedArtifactStore(
     ICovenantConnectionSource connections,
@@ -101,10 +110,18 @@ internal sealed class SessionDerivedArtifactStore(
         try
         {
 
+            // The canonical spelling, which is the only one "Sessions"."Id" is permitted to hold, used
+            // by every step below. This used to read the parent row's own text first and fall back to
+            // this spelling, because the parent could hold either of two; with one spelling that read
+            // resolved to its own fallback on every call, and a scan of "Sessions" per replacement
+            // went with it.
+            string sessionKey = Format(plan.SessionId);
+
             (Guid? priorArtifactId, long priorRevision) = await ReadCurrentAsync(
                 connection,
                 transaction,
                 plan,
+                sessionKey,
                 cancellationToken).ConfigureAwait(false);
 
             Guid artifactId = Guid.NewGuid();
@@ -117,6 +134,7 @@ internal sealed class SessionDerivedArtifactStore(
                 connection,
                 transaction,
                 plan,
+                sessionKey,
                 artifactId,
                 revision,
                 contentDigest,
@@ -126,11 +144,13 @@ internal sealed class SessionDerivedArtifactStore(
                 connection,
                 transaction,
                 plan,
+                sessionKey,
                 artifactId,
                 revision,
                 cancellationToken).ConfigureAwait(false);
 
-            await WriteColumnAsync(connection, transaction, plan, cancellationToken).ConfigureAwait(false);
+            await WriteColumnAsync(connection, transaction, plan, sessionKey, cancellationToken)
+                .ConfigureAwait(false);
 
             Result<LabeledArtifactWriteReceipt> labelled = await ArtifactSensitivityLedger.WriteWithinAsync(
                 connection,
@@ -193,6 +213,7 @@ internal sealed class SessionDerivedArtifactStore(
         SqliteConnection connection,
         SqliteTransaction transaction,
         ReplacementPlan plan,
+        string sessionKey,
         CancellationToken cancellationToken)
     {
 
@@ -203,7 +224,7 @@ internal sealed class SessionDerivedArtifactStore(
         command.CommandText =
             $"SELECT CurrentArtifactId, Revision FROM {plan.StateTable} WHERE SessionId = $sessionId;";
 
-        _ = command.Parameters.AddWithValue("$sessionId", Format(plan.SessionId));
+        _ = command.Parameters.AddWithValue("$sessionId", sessionKey);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -218,6 +239,7 @@ internal sealed class SessionDerivedArtifactStore(
         SqliteConnection connection,
         SqliteTransaction transaction,
         ReplacementPlan plan,
+        string sessionKey,
         Guid artifactId,
         long revision,
         CovenantDigest contentDigest,
@@ -248,7 +270,7 @@ internal sealed class SessionDerivedArtifactStore(
 
         _ = command.Parameters.AddWithValue("$artifactId", Format(artifactId));
 
-        _ = command.Parameters.AddWithValue("$sessionId", Format(plan.SessionId));
+        _ = command.Parameters.AddWithValue("$sessionId", sessionKey);
 
         _ = command.Parameters.AddWithValue("$revision", revision);
 
@@ -281,6 +303,7 @@ internal sealed class SessionDerivedArtifactStore(
         SqliteConnection connection,
         SqliteTransaction transaction,
         ReplacementPlan plan,
+        string sessionKey,
         Guid artifactId,
         long revision,
         CancellationToken cancellationToken)
@@ -299,7 +322,7 @@ internal sealed class SessionDerivedArtifactStore(
                 UpdatedAtUtc = excluded.UpdatedAtUtc;
             """;
 
-        _ = command.Parameters.AddWithValue("$sessionId", Format(plan.SessionId));
+        _ = command.Parameters.AddWithValue("$sessionId", sessionKey);
 
         _ = command.Parameters.AddWithValue("$artifactId", Format(artifactId));
 
@@ -315,6 +338,7 @@ internal sealed class SessionDerivedArtifactStore(
         SqliteConnection connection,
         SqliteTransaction transaction,
         ReplacementPlan plan,
+        string sessionKey,
         CancellationToken cancellationToken)
     {
 
@@ -324,7 +348,7 @@ internal sealed class SessionDerivedArtifactStore(
 
         command.CommandText = plan.ColumnUpdateSql;
 
-        _ = command.Parameters.AddWithValue("$sessionId", Format(plan.SessionId));
+        _ = command.Parameters.AddWithValue("$sessionId", sessionKey);
 
         _ = command.Parameters.AddWithValue("$content", (object?)plan.Content ?? DBNull.Value);
 

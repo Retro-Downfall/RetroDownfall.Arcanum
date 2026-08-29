@@ -153,6 +153,8 @@ internal static partial class CliCommandTree
 
         memory.Add(lexicon);
 
+        memory.Add(BuildMemorySagaCuration(sp));
+
         return memory;
 
     }
@@ -161,6 +163,162 @@ internal static partial class CliCommandTree
     {
         Arity = ArgumentArity.ZeroOrOne,
         Description = "Optional session GUID, exact title, or unique title prefix.",
+    };
+
+    /// <summary>
+    /// The <c>memory saga</c> subgroup: curation over one Saga memory at a time.
+    /// </summary>
+    /// <remarks>
+    /// A subgroup of <c>memory</c> rather than a verb on the top-level <c>saga</c> command, because
+    /// <c>saga</c> is that store's own read-and-delete surface and answers a different question: what is
+    /// in there, and take this out of it. Curation answers what one memory is, and what the operator has
+    /// decided about it — the same split the routes make, and the same place the Covenant's and the
+    /// Lexicon's curation verbs already sit.
+    ///
+    /// <para><c>correct</c> takes no content argument. The replacement text arrives through
+    /// <c>--file</c> or piped standard input, so a corrected memory never lands in shell history or in
+    /// the process list of a shared machine.</para>
+    /// </remarks>
+    private static Command BuildMemorySagaCuration(IServiceProvider sp)
+    {
+
+        MemoryCommands handler = sp.GetRequiredService<MemoryCommands>();
+
+        Command saga = new(
+            "saga",
+            "Curate one Saga memory: read it, correct it, and decide whether retrieval and retention keep it.");
+
+        Command show = new("show", "Show one Saga memory's provenance, lifecycle, and retrieval eligibility.");
+
+        Argument<string> showId = SagaMemoryIdArgument();
+
+        show.Add(showId);
+
+        show.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaShow(
+                    pr.GetValue(showId)!,
+                    ct).ConfigureAwait(false));
+
+        Command correct = new(
+            "correct",
+            "Replace the text of one Saga memory, naming the exact content being corrected.");
+
+        Argument<string> correctId = SagaMemoryIdArgument();
+
+        Option<string> correctHash = ExpectedContentHashOption();
+
+        Option<string?> correctFile = new("--file", "-f")
+        {
+            Description = "Read the replacement text from this file. Omit to read from piped standard input.",
+        };
+
+        correct.Add(correctId);
+
+        correct.Add(correctHash);
+
+        correct.Add(correctFile);
+
+        correct.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaCorrect(
+                    pr.GetValue(correctId)!,
+                    pr.GetValue(correctHash)!,
+                    pr.GetValue(correctFile),
+                    ct).ConfigureAwait(false));
+
+        Command retire = new("retire", "Take one Saga memory out of retrieval, keeping it inspectable.");
+
+        Argument<string> retireId = SagaMemoryIdArgument();
+
+        Option<string> retireHash = ExpectedContentHashOption();
+
+        retire.Add(retireId);
+
+        retire.Add(retireHash);
+
+        retire.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaRetire(
+                    pr.GetValue(retireId)!,
+                    pr.GetValue(retireHash)!,
+                    ct).ConfigureAwait(false));
+
+        Command reinstate = new("reinstate", "Put a retired Saga memory back into retrieval.");
+
+        Argument<string> reinstateId = SagaMemoryIdArgument();
+
+        Option<string> reinstateHash = ExpectedContentHashOption();
+
+        reinstate.Add(reinstateId);
+
+        reinstate.Add(reinstateHash);
+
+        reinstate.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaReinstate(
+                    pr.GetValue(reinstateId)!,
+                    pr.GetValue(reinstateHash)!,
+                    ct).ConfigureAwait(false));
+
+        Command pin = new("pin", "Mark one Saga memory durable, so retention will not prune it.");
+
+        Argument<string> pinId = SagaMemoryIdArgument();
+
+        pin.Add(pinId);
+
+        pin.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaPin(
+                    pr.GetValue(pinId)!,
+                    ct).ConfigureAwait(false));
+
+        Command unpin = new("unpin", "Release a pin, so retention may prune this memory again.");
+
+        Argument<string> unpinId = SagaMemoryIdArgument();
+
+        unpin.Add(unpinId);
+
+        unpin.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaUnpin(
+                    pr.GetValue(unpinId)!,
+                    ct).ConfigureAwait(false));
+
+        saga.Add(show);
+
+        saga.Add(correct);
+
+        saga.Add(retire);
+
+        saga.Add(reinstate);
+
+        saga.Add(pin);
+
+        saga.Add(unpin);
+
+        return saga;
+
+    }
+
+    private static Argument<string> SagaMemoryIdArgument() => new("id")
+    {
+        Description = "Saga memory ID.",
+    };
+
+    /// <summary>
+    /// The digest of the content the operator read before deciding to change it.
+    /// </summary>
+    /// <remarks>
+    /// Required rather than defaulted, because there is no value that means "whatever is there now": the
+    /// point of the flag is that the host compares it inside the write transaction, so an omitted one
+    /// could only be a request to skip the comparison. <c>memory saga show</c> prints the digest to pass
+    /// here.
+    /// </remarks>
+    private static Option<string> ExpectedContentHashOption() => new("--expected-content-hash")
+    {
+        Description = "The content hash 'memory saga show' printed for the text you read.",
+        Required = true,
     };
 
     private static Command BuildSaga(IServiceProvider sp)
@@ -184,10 +342,12 @@ internal static partial class CliCommandTree
         Command divine = new("divine", "Semantic search over Saga memories.");
         Argument<string> query = new("query") { Description = "Search query text." };
         Option<int?> divineLimit = new("--limit") { Description = "Maximum number of results to return." };
-        divine.Add(query); divine.Add(divineLimit);
+        Option<string?> divineSession = new("--session") { Description = "Search as this session, honoring the Campaign scope its turns draw from." };
+        divine.Add(query); divine.Add(divineLimit); divine.Add(divineSession);
         divine.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Divine(
             pr.GetValue(query)!,
             pr.GetValue(divineLimit),
+            ActiveSession(sp, pr.GetValue(divineSession)),
             ct).ConfigureAwait(false));
 
         Command delete = new("delete", "Delete a single Saga memory.");

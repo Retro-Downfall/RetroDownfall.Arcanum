@@ -176,7 +176,9 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         Assert.Equal(28, (int)RetentionDataClass.Covenant);
 
-        Assert.Equal(29, Enum.GetValues<RetentionDataClass>().Length);
+        Assert.Equal(29, (int)RetentionDataClass.Annals);
+
+        Assert.Equal(30, Enum.GetValues<RetentionDataClass>().Length);
 
         Assert.Equal(0, (int)MemoryResetScope.Entry);
 
@@ -1153,9 +1155,10 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                         MaximumSensitivityCode = 0,
                         Revision = Revision + 1,
                         UpdatedAtUtc = '2026-01-02T00:00:00.0000000Z'
-                    WHERE SessionId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e701';
+                    WHERE SessionId = $session;
                     """,
-                    cancellationToken);
+                    cancellationToken,
+                    ("$session", CovenantRetentionSeed.SessionId));
 
                 return;
 

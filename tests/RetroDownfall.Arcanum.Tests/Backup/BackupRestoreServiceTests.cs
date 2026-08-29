@@ -114,6 +114,62 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// An archive carries the Saga store's retirement evidence and the key that binds it, byte for byte.
+    /// </summary>
+    /// <remarks>
+    /// No list in the backup pipeline names either table, and that is the point rather than an omission:
+    /// the database component is a page-level copy of the whole encrypted file, so a table joins a
+    /// backup by existing. This case is what says so, and what would notice if that ever stopped being
+    /// true.
+    ///
+    /// <para>Asserted on the bytes, not on a row count. The failure worth guarding against is a restore
+    /// that converges the schema and leaves both tables present and empty — two tables restored, by any
+    /// count, and every retirement the operator made silently undone. A digest is evidence of nothing
+    /// without the key it was computed under, so the pair has to arrive together and unchanged.</para>
+    ///
+    /// <para>The Campaign the suppression names is asserted too, because the restore rewrites Campaign
+    /// roots for a cross-platform archive and knows nothing about this table.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_full_archive_carries_saga_retirement_evidence_and_the_key_that_binds_it()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("curation.arcbackup");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        await using SqliteConnection connection = await OpenRestoredAsync(fixture.GrimoireSecret);
+
+        Assert.Equal(
+            Fixture.SuppressionKeyMaterialHex,
+            await ScalarAsync(
+                connection,
+                "SELECT upper(hex(KeyMaterial)) FROM saga_suppression_key WHERE KeyId = 1;"));
+
+        Assert.Equal(
+            Fixture.SuppressionDigestHex,
+            await ScalarAsync(
+                connection,
+                "SELECT upper(hex(SuppressionDigest)) FROM saga_retirement_suppressions;"));
+
+        Assert.Equal(
+            Fixture.CampaignId.ToString("D"),
+            await ScalarAsync(
+                connection,
+                "SELECT CampaignId FROM saga_retirement_suppressions;"));
+
+    }
+
     [Fact]
     public async Task Restored_attachment_snapshots_survive_a_workspace_that_no_longer_exists_and_stay_unrefreshable()
     {
@@ -1838,6 +1894,20 @@ public sealed class BackupRestoreServiceTests : IDisposable
         public static readonly Guid LetteredCampaignId =
             Guid.Parse("abcdef12-3456-4789-abcd-ef1234567890");
 
+        /// <summary>
+        /// The installation's suppression key material, and one digest bound by it, as stored hex.
+        /// </summary>
+        /// <remarks>
+        /// Fixed values rather than random ones, because the property under test is that the exact bytes
+        /// arrive. A digest whose key did not travel with it, or a key whose digests did not, is
+        /// evidence of nothing — so the pair is asserted together and by content.
+        /// </remarks>
+        public const string SuppressionKeyMaterialHex =
+            "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20";
+
+        public const string SuppressionDigestHex =
+            "A0A1A2A3A4A5A6A7A8A9AAABACADAEAFB0B1B2B3B4B5B6B7B8B9BABBBCBDBEBF";
+
         public string GrimoireSecret { get; } = Convert.ToBase64String(
             RandomNumberGenerator.GetBytes(32));
 
@@ -1982,6 +2052,21 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 """;
 
             _ = await seed.ExecuteNonQueryAsync();
+
+            await using SqliteCommand curation = connection.CreateCommand();
+
+            // Seeded rather than retired into existence: what this fixture is for is transport, and the
+            // writers that create these two rows are proved against the store's own suite.
+            curation.CommandText = $"""
+                INSERT INTO saga_suppression_key (KeyId, KeyMaterial, CreatedAtUtc)
+                VALUES (1, X'{SuppressionKeyMaterialHex}', '2026-01-01T00:00:00Z');
+
+                INSERT INTO saga_retirement_suppressions
+                    (SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+                VALUES (X'{SuppressionDigestHex}', 2, '{CampaignId:D}', '2026-01-01T00:00:00Z');
+                """;
+
+            _ = await curation.ExecuteNonQueryAsync();
 
         }
 

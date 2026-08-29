@@ -44,6 +44,9 @@ internal static class BackupRestoreProtectedStateInspector
     internal static readonly string[] CanonicalContentTables =
     [
         "covenant_search_outbox",
+        "covenant_curation_receipts",
+        "covenant_curation_heads",
+        "covenant_curation_versions",
         "covenant_heads",
         "covenant_version_attachment_provenance",
         "covenant_versions",

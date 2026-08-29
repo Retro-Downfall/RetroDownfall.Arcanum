@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -173,6 +174,90 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         // Prompt sent to the extraction LLM includes the raw entry content.
         Assert.Contains("I like dark mode.", intelligence.LastStatelessUserContent, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The real chokepoint proof: not a direct call to <c>InsertAsync</c>, but the extraction service
+    /// itself re-reviewing the entries that produced a memory the operator already retired. Nothing
+    /// stands between the two calls to <see cref="SagaExtractionService.ExtractForSessionAsync(IServiceProvider, Guid, EmbeddingSettings, ArcanumSettings, CancellationToken)"/>
+    /// but production code -- the store's own insert transaction is what has to refuse the second write.
+    /// </summary>
+    [SkippableFact]
+    public async Task Extraction_does_not_write_a_memory_the_operator_retired_and_still_advances_the_watermark()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string Conclusion = "The operator prefers dark mode.";
+
+        Guid sessionId = await CreateSessionAsync();
+
+        DateTimeOffset latestEntryCreatedAt = await CreateEntryAsync(sessionId, "I like dark mode.");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": ["The operator prefers dark mode."] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using (AsyncServiceScope firstScope = scopeFactory.CreateAsyncScope())
+        {
+
+            await service.ExtractForSessionAsync(firstScope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None);
+
+        }
+
+        // One call for the first pass, established before the retirement so the later "2" at the end
+        // of the test means one call per pass rather than an uneven split across the two.
+        Assert.Equal(1, intelligence.CallCount);
+
+        Assert.Equal(1, await CountMemoriesAsync());
+
+        SagaMemoryStore store = CreateStore();
+
+        SagaMemoryDto written = Assert.Single(
+            await store.ListAsync(null, sessionId, MemoryScope.Installation, 10, 0, CancellationToken.None));
+
+        SagaCurationOutcome retireOutcome = await store.RetireAsync(
+            written.Id,
+            AnnalContentDigest.ForSagaMemory(Conclusion),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, retireOutcome.Kind);
+
+        // Roll the watermark back to before the source entry so the second pass reviews the same
+        // entries again -- exactly what a re-extraction of that page looks like from the store's side,
+        // without seeding a memory row directly.
+        await store.SetWatermarkAsync(sessionId, DateTimeOffset.MinValue, CancellationToken.None);
+
+        await using (AsyncServiceScope secondScope = scopeFactory.CreateAsyncScope())
+        {
+
+            await service.ExtractForSessionAsync(secondScope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None);
+
+        }
+
+        // The stub was actually invoked a second time over the same entries.
+        Assert.Equal(2, intelligence.CallCount);
+
+        // The row did not come back -- asserted on the store's own count, not a helper's return value.
+        Assert.Equal(1, await CountMemoriesAsync());
+
+        // A deliberate rejection is not a failure: the watermark still advanced past the suppressed
+        // page, to the same place the happy path advances it to -- not merely away from the sentinel
+        // this test parked it on to force the replay.
+        DateTimeOffset? watermark = await GetWatermarkAsync(sessionId);
+
+        Assert.NotNull(watermark);
+
+        Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
 
     }
 
@@ -419,6 +504,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             await CreateStore().ListAsync(
                 null,
                 sessionId,
+                MemoryScope.Installation,
                 10,
                 0,
                 CancellationToken.None));

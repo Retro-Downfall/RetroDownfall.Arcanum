@@ -68,23 +68,21 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task Only_the_tool_this_build_can_deliver_is_advertised_on_a_healthy_tier()
+    public async Task Only_the_tools_this_build_can_deliver_are_advertised_on_a_healthy_tier()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
         McpToolsListResultWire tools = await session.ListToolsAsync();
 
-        // A healthy Covenant tier advertises exactly the tools this build can actually honor.
-        // Proposal is one of them: a granted call stages, and the turn's completed finalization
-        // publishes the batch beside its answer. Retirement is not: minting its capability needs the
-        // preflight disclosure and Ward receipt no production caller builds, so every call would
-        // refuse, and advertising a tool that always fails teaches a model the capability is broken
-        // rather than absent.
+        // A healthy Covenant tier advertises exactly the tools this build can actually honor. A
+        // granted proposal stages, and the turn's completed finalization publishes the batch beside
+        // its answer; a granted retirement is warded, disclosed, and staged the same way, which is why
+        // it is advertised here and withheld on an installation whose Wards are switched off.
         Assert.Contains(tools.Tools, static tool => tool.Name == CovenantToolNames.ProposeCovenant);
-        Assert.DoesNotContain(tools.Tools, static tool => tool.Name == CovenantToolNames.RetireCovenant);
+        Assert.Contains(tools.Tools, static tool => tool.Name == CovenantToolNames.RetireCovenant);
 
-        // Both handlers stay registered regardless, so a stale or direct invocation still fails closed
-        // rather than reaching an unregistered name.
+        // Advertised is not granted. A call arriving with no capability still fails closed, which is
+        // what a stale cached partition or a direct invocation produces.
         McpToolsCallResultWire refusedRetire = await session.CallRetireAsync(
             "campaign.a",
             nameof(CovenantLane.Proposed));
@@ -401,6 +399,39 @@ public sealed class CovenantMutationToolTests
             .Select(static property => property.Name)
             .Order(StringComparer.Ordinal)];
 
+    /// <summary>
+    /// Retirement is advertised only where it can be performed.
+    /// </summary>
+    /// <remarks>
+    /// With Wards switched off the egress policy denies every retirement outright, so the tool could
+    /// only ever refuse — and advertising a tool that always refuses teaches a model the capability is
+    /// broken rather than absent. The handler stays registered either way, so a direct or stale
+    /// invocation still fails closed rather than reaching an unregistered name.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Retirement_is_advertised_only_where_a_Ward_can_be_raised(bool wardsEnabled)
+    {
+
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync(wardsEnabled: wardsEnabled);
+
+        McpToolsListResultWire tools = await session.ListToolsAsync();
+
+        string[] listed = [.. tools.Tools.Select(static tool => tool.Name)];
+
+        // The proposal is advertised either way: it needs no Ward, because the Proposed lane is
+        // review-only beside effective Confirmed content and cannot change it.
+        Assert.Contains(CovenantToolNames.ProposeCovenant, listed);
+
+        Assert.Equal(wardsEnabled, listed.Contains(CovenantToolNames.RetireCovenant));
+
+        Assert.Contains(
+            CovenantToolNames.RetireCovenant,
+            session.RegisteredToolHandlerNames);
+
+    }
+
     private sealed class StubAvailability(CovenantAvailabilitySnapshot snapshot) : ICovenantAvailability
     {
 
@@ -447,8 +478,11 @@ public sealed class CovenantMutationToolTests
             CovenantToolCapabilityRegistry registry,
             CovenantTurnPlan plan,
             CovenantMutationCollector collector,
-            CovenantCapabilityFixtures.StubHeadProbe headProbe)
+            CovenantCapabilityFixtures.StubHeadProbe headProbe,
+            IReadOnlyCollection<string> registeredToolHandlerNames)
         {
+            RegisteredToolHandlerNames = registeredToolHandlerNames;
+
             _transport = transport;
 
             _serverTask = serverTask;
@@ -466,6 +500,9 @@ public sealed class CovenantMutationToolTests
             HeadProbe = headProbe;
         }
 
+        /// <summary>Every handler the server registered, advertised or not.</summary>
+        public IReadOnlyCollection<string> RegisteredToolHandlerNames { get; }
+
         public CovenantToolCapabilityRegistry Registry { get; }
 
         public CovenantTurnPlan Plan { get; }
@@ -476,7 +513,8 @@ public sealed class CovenantMutationToolTests
 
         public static async Task<CovenantToolSession> CreateAsync(
             bool featureEnabled = true,
-            CovenantCapabilityState canonical = CovenantCapabilityState.Healthy)
+            CovenantCapabilityState canonical = CovenantCapabilityState.Healthy,
+            bool wardsEnabled = true)
         {
             ServiceCollection services = [];
 
@@ -488,7 +526,13 @@ public sealed class CovenantMutationToolTests
                 new StubAvailability(Snapshot(featureEnabled, canonical)));
 
             services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
-                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
+                {
+                    Security = new SecuritySettings
+                    {
+                        Ward = new WardPolicySettings { Enabled = wardsEnabled },
+                    },
+                }));
 
             ServiceProvider provider = services.BuildServiceProvider();
 
@@ -535,7 +579,8 @@ public sealed class CovenantMutationToolTests
                 provider.GetRequiredService<CovenantToolCapabilityRegistry>(),
                 plan,
                 new CovenantMutationCollector(Guid.NewGuid(), plan.Digest, CovenantTask6Fixture.BranchId),
-                new CovenantCapabilityFixtures.StubHeadProbe());
+                new CovenantCapabilityFixtures.StubHeadProbe(),
+                [.. server.RegisteredToolHandlerNamesForTests]);
         }
 
         public CovenantToolInvocationContext RegisterProposalCapability(

@@ -169,6 +169,137 @@ internal sealed class DivinationService(
 
     }
 
+    public async Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+        string tableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        DivinationCampaignScope scope,
+        Embedding<float> queryEmbedding,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(scope);
+
+        try
+        {
+
+            DbConnection connection = db.Database.GetDbConnection();
+
+            if (connection.State != ConnectionState.Open)
+            {
+                await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+            // Unconditionally the managed path, and not because vec0 happens to be absent today. The
+            // vec0 table has no per-row ownership column, so an accelerated scoped search could only
+            // rank first and filter afterwards - a different candidate set, reached by whether an
+            // optional native asset shipped. Routing both cases here is what makes the answer one answer.
+            DivinationResult[] results = await SearchManagedCampaignScopedAsync(
+                connection,
+                DeriveBlobTableName(tableName),
+                primaryKeyColumn,
+                embeddingColumn,
+                scope,
+                queryEmbedding.Vector.ToArray(),
+                maxResults,
+                similarityThreshold,
+                cancellationToken).ConfigureAwait(false);
+
+            return Result<DivinationResult[]>.Success(results);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Campaign-scoped divination search against {TableName} failed; treating as no results.",
+                tableName);
+
+            return Result<DivinationResult[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "Semantic search is temporarily unavailable. See server logs for detail."));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Scores only the rows whose owner is installation-scoped or names the resolved Campaign.
+    /// </summary>
+    /// <remarks>
+    /// The Campaign arm is omitted from the SQL entirely when nothing resolved, rather than bound to a
+    /// null that no row could match. A <c>= NULL</c> comparison is never true in SQL, so both spellings
+    /// select the same rows - but only one of them says what it means to a reader, and only one of them
+    /// stays correct if the ownership column ever gains a sentinel.
+    /// </remarks>
+    private async Task<DivinationResult[]> SearchManagedCampaignScopedAsync(
+        DbConnection connection,
+        string blobTableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        DivinationCampaignScope scope,
+        float[] queryVector,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        string ownership = scope.CampaignId is null
+            ? $"""o."{scope.OwnerScopeKindColumn}" = @globalScopeKind"""
+            : $"""
+              o."{scope.OwnerScopeKindColumn}" = @globalScopeKind
+                   OR (o."{scope.OwnerScopeKindColumn}" = @campaignScopeKind
+                       AND o."{scope.OwnerCampaignColumn}" = @campaignId)
+              """;
+
+        cmd.CommandText =
+            $"""
+            SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
+            FROM "{blobTableName}" e
+            INNER JOIN "{scope.OwnerTableName}" o ON e."{primaryKeyColumn}" = o."{scope.OwnerJoinColumn}"
+            WHERE {ownership}
+            """;
+
+        AddParameter(cmd, "@globalScopeKind", scope.GlobalScopeKindCode);
+
+        if (scope.CampaignId is { } campaignId)
+        {
+
+            AddParameter(cmd, "@campaignScopeKind", scope.CampaignScopeKindCode);
+
+            // saga_memories.CampaignId - the only column SagaStorageKeys.CampaignScope ever names here -
+            // holds the canonical uppercase dashed form. SagaMemoryScopeClassifier reads the Campaign out
+            // of session_campaign_bindings.CampaignId and renders it canonically, so this column is
+            // canonical whatever spelling the binding beside it holds; the version-5 sweep settles the
+            // rows written before that was true. Under BINARY collation a bare ToString() here matched
+            // only the half of the table whose binding came from the turn-begin repository, so
+            // Campaign-scoped recall returned about half of a Campaign's memories and reported nothing
+            // about the rest.
+            AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
+
+        }
+
+        return await ScoreManagedRowsAsync(
+            cmd,
+            queryVector,
+            maxResults,
+            similarityThreshold,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
     private async Task<DivinationResult[]> SearchManagedScopedAsync(
         DbConnection connection,
         string blobTableName,

@@ -18,6 +18,27 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// <c>(CreatedAt, Id)</c> order inverts those pairs about half the time. Watermark reads still
 /// filter on <c>CreatedAt</c> because <c>Session.LastSummarizedMessageAt</c> is a timestamp, but
 /// they order by <c>Sequence</c>.
+///
+/// <para><b>The identity is interpolated straight into the statement, and that is now correct rather
+/// than merely fast.</b> <c>FromSql</c> turns every hole into a bound parameter, and the SQLite
+/// provider renders a <see cref="Guid"/> as uppercase dashed text — the one form
+/// <c>"Entries"."Id"</c> and <c>"Entries"."SessionId"</c> are permitted to hold. These reads spent an
+/// interval comparing <c>lower(replace(col, '-', ''))</c> instead, because those two columns could
+/// then hold a second spelling and an exact comparison returned a conversation that looked like it
+/// had never been spoken in. Both columns are settled to the canonical form, refused at the write by
+/// a guard trigger, and swept on upgrade, so the reason for normalising them is gone.</para>
+///
+/// <para><b>What that buys, which is why the settlement was worth doing.</b> A normalised column
+/// cannot use a BINARY-collated index, so every read here forfeited the <c>SessionId</c>-led index it
+/// would otherwise seek. Three of these were measured in that state: the recent window and the
+/// ascending sequence page each planned as <c>SCAN Entries</c> followed by
+/// <c>USE TEMP B-TREE FOR ORDER BY</c> — a walk of the largest table in the database and then a sort
+/// of the result, on the conversation read path that runs once per turn for every user — and the
+/// cursor resolution planned as a bare <c>SCAN Entries</c> to return one row. Exactly, none of the
+/// three walks <c>"Entries"</c> any more. <c>EntryTemporalQueryPlanTests</c> pins the plan of the
+/// statement each entry point actually issues and compares it whole, so what any given read seeks —
+/// and what it still sorts, which is not the same answer for all of them — is recorded there against
+/// the real planner rather than summarised here, and none of it can move unremarked.</para>
 /// </remarks>
 internal static class EntryTemporalQueries
 {

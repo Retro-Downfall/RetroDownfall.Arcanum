@@ -363,6 +363,10 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantSourcePage>> ReadSourcePageAsync(CovenantSourceQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
+        public ValueTask<Result<CovenantRetirementTarget>> ReadRetirementTargetAsync(CanonicalCampaignContext campaign, CovenantLane lane, string normalizedKey, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(CovenantCurationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
         public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
@@ -401,6 +405,10 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantSourcePage>> ReadSourcePageAsync(CovenantSourceQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
+        public ValueTask<Result<CovenantRetirementTarget>> ReadRetirementTargetAsync(CanonicalCampaignContext campaign, CovenantLane lane, string normalizedKey, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(CovenantCurationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
         public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
@@ -434,6 +442,10 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantSourcePage>> ReadSourcePageAsync(CovenantSourceQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();
+
+        public ValueTask<Result<CovenantRetirementTarget>> ReadRetirementTargetAsync(CanonicalCampaignContext campaign, CovenantLane lane, string normalizedKey, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
+
+        public ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(CovenantCurationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
         public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();

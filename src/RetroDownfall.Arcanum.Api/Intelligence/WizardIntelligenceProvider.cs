@@ -2141,7 +2141,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         SemanticContextChunk[]? streamSemanticContext = await RetrieveSemanticContextAsync(request, streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
 
-        SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
+        SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, invocationContext, inferenceToken).ConfigureAwait(false);
 
         SessionAttachmentRetrievedChunk[]? streamAttachmentContext = await RetrieveSessionAttachmentContextAsync(
             request,
@@ -2184,6 +2184,7 @@ public sealed partial class WizardIntelligenceProvider(
             chatClient,
             lease.Provider,
             targetModel,
+            invocationContext,
             inferenceToken).ConfigureAwait(false);
 
         int streamMaxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
@@ -2443,6 +2444,7 @@ public sealed partial class WizardIntelligenceProvider(
             grimoireTurn,
             targetModel,
             streamAttachmentPrep.VisibleAttachmentIds,
+            invocationContext,
             inferenceToken).ConfigureAwait(false);
 
         bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
@@ -4218,6 +4220,7 @@ public sealed partial class WizardIntelligenceProvider(
         GrimoireTurnWriter.TurnHandle grimoireTurn,
         string targetModel,
         IReadOnlySet<Guid>? visibleAttachmentIds,
+        ArcanumInvocationContext? invocation,
         CancellationToken cancellationToken)
     {
         Campaign? campaign = null;
@@ -4280,6 +4283,7 @@ public sealed partial class WizardIntelligenceProvider(
             InvocationId = grimoireTurn.AssistantEntryId?.ToString("D"),
             ModelUsed = targetModel,
             CampaignRequiresWard = campaignRequiresWard,
+            Invocation = invocation,
             SanctumEnabled = sanctumEnabled,
             SanctumMode = sanctumMode,
             InferenceTools = inferenceTools,
@@ -4757,6 +4761,7 @@ public sealed partial class WizardIntelligenceProvider(
         IChatClient chatClient,
         ProviderSettings mainProvider,
         string mainModel,
+        ArcanumInvocationContext invocationContext,
         CancellationToken cancellationToken)
     {
         if (!settings.Value.ResolveIntelligence().EnableLexiconSystem)
@@ -4861,8 +4866,16 @@ public sealed partial class WizardIntelligenceProvider(
         int limit = ArcanumSettingClamps.LexiconMaxMatchedEntries(
             settings.Value.ResolveIntelligence().LexiconMaxMatchedEntries);
 
+        // The tier resolved first is the turn's own Campaign, then the global one. With the gate off
+        // this is the global tier alone, which is every match this surface has ever made.
+        LexiconScope lexiconScope = MemoryScope
+            .Resolve(
+                settings.Value.Features.CampaignScopedMemory,
+                invocationContext.Campaign?.CampaignId)
+            .ToLexiconScope();
+
         Result<IReadOnlyList<LexiconEntryDto>> match = await lexiconService
-            .MatchEntitiesAsync(entities, limit, cancellationToken)
+            .MatchEntitiesAsync(entities, limit, lexiconScope, cancellationToken)
             .ConfigureAwait(false);
 
         if (match.IsFailure)
@@ -5124,7 +5137,10 @@ public sealed partial class WizardIntelligenceProvider(
     /// found above the similarity threshold — in every case the inference turn proceeds with an
     /// unchanged system prompt (<c>docs/Arcanum.DESIGN.md</c> §21.4).
     /// </summary>
-    private async Task<SagaMemory[]?> RetrieveSagaMemoriesAsync(Embedding<float>? queryEmbedding, CancellationToken cancellationToken)
+    private async Task<SagaMemory[]?> RetrieveSagaMemoriesAsync(
+        Embedding<float>? queryEmbedding,
+        ArcanumInvocationContext invocationContext,
+        CancellationToken cancellationToken)
     {
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
@@ -5144,16 +5160,31 @@ public sealed partial class WizardIntelligenceProvider(
 
             float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold);
 
-            Result<DivinationResult[]> searchResult = await divinationService
-                .SearchAsync(
-                    "saga_memory_embeddings_vec",
-                    "MemoryId",
-                    "Embedding",
-                    embedding,
-                    maxResults,
-                    similarityThreshold,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            // The Campaign comes from the context the turn already resolved canonically, never from
+            // anything the request carried: a caller that could name its own Campaign could read another
+            // Campaign's memory by asking for it.
+            Result<DivinationResult[]> searchResult = settings.Value.Features.CampaignScopedMemory
+                ? await divinationService
+                    .SearchCampaignScopedAsync(
+                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingKeyColumn,
+                        SagaStorageKeys.EmbeddingColumn,
+                        SagaStorageKeys.CampaignScope(invocationContext.Campaign?.CampaignId),
+                        embedding,
+                        maxResults,
+                        similarityThreshold,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : await divinationService
+                    .SearchAsync(
+                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingKeyColumn,
+                        SagaStorageKeys.EmbeddingColumn,
+                        embedding,
+                        maxResults,
+                        similarityThreshold,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             if (searchResult.IsFailure || searchResult.Value.Length == 0)
             {

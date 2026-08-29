@@ -26,6 +26,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
+using RetroDownfall.Arcanum.Core.Weave;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -35,6 +37,8 @@ using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -214,27 +218,27 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync(
             "Sessions",
             "Id",
-            sessionId.ToString()));
+            Canonical(sessionId)));
 
         Assert.Equal(0, await CountAsync(
             "Entries",
             "Id",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(0, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(0, await CountAsync(
             "SessionAttachments",
             "Id",
-            attachment.AttachmentId.ToString()));
+            Canonical(attachment.AttachmentId)));
 
         Assert.Equal(0, await CountAsync(
             "session_attachment_chunks",
             "AttachmentId",
-            attachment.AttachmentId.ToString()));
+            Canonical(attachment.AttachmentId)));
 
         Assert.Equal(0, await CountAsync(
             "session_attachment_embeddings",
@@ -244,7 +248,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync(
             "session_attachment_index_state",
             "AttachmentId",
-            attachment.AttachmentId.ToString()));
+            Canonical(attachment.AttachmentId)));
 
         Assert.False(File.Exists(attachment.AbsolutePath));
 
@@ -475,7 +479,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(1, await CountAsync(
                 "SessionAttachments",
                 "Id",
-                attachment.AttachmentId.ToString()));
+                Canonical(attachment.AttachmentId)));
 
         }
         finally
@@ -666,7 +670,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Contains(
-            "entry-embedding:" + entryId.ToString(),
+            "entry-embedding:" + Canonical(entryId),
             plan.CandidateIds);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
@@ -682,7 +686,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(1, await CountAllAsync("SessionContextPins"));
 
@@ -960,7 +964,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Contains(
-            "entry-embedding:" + entryId.ToString(),
+            "entry-embedding:" + Canonical(entryId),
             plan.CandidateIds);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
@@ -976,7 +980,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
     }
 
@@ -1037,7 +1041,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(1, await CountAsync(
             "LongRunningOperations",
@@ -2053,7 +2057,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             """,
             ("@entryId", entryId.ToString("N")),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachment.AttachmentId.ToString()),
+            ("@attachmentId", Canonical(attachment.AttachmentId)),
             ("@at", OldTimestamp));
 
         await ExecuteAsync(
@@ -2810,6 +2814,84 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A whole-store Saga reset clears the retirement evidence and the key that made it.
+    /// </summary>
+    /// <remarks>
+    /// The two go together. Clearing the digests alone would leave a key nothing can use, and clearing
+    /// the key alone would leave rows that can never match again while still reading as evidence — an
+    /// operator asking what this installation still suppresses would be told rows that suppress nothing.
+    ///
+    /// <para>The write that follows the reset is the half a row count cannot see: a reset that emptied
+    /// <c>saga_memories</c> and left the evidence standing would report every table it named as clear,
+    /// and the next extraction pass would still refuse the conclusion the operator had just asked to be
+    /// forgotten, with nothing anywhere saying why.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task ApplyAsync_ResetMemory_Saga_ClearsItsSuppressionsAndTheKeyThatMadeThem()
+    {
+
+        RequireSqlCipher();
+
+        const string retired = "the operator prefers tabs";
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, retired);
+
+        Assert.Equal(1, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
+
+        await ApplyUntargetedResetAsync(MemoryResetScope.Saga);
+
+        Assert.Equal(0, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(0, await CountAllAsync("saga_suppression_key"));
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Written,
+            await CreateSagaMemoryStore().InsertAsync(
+                Guid.NewGuid().ToString(), retired, DateTimeOffset.UtcNow, sessionId: null,
+                tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A factory reset leaves neither curation table behind.
+    /// </summary>
+    /// <remarks>
+    /// Both are durable rows an operator's own action created, so a factory reset that returned the
+    /// installation to its shipped state while keeping them would hand the next owner keyed evidence of
+    /// what the last one had rejected, and a store that silently refused to record it again.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task ApplyAsync_FactoryReset_LeavesNeitherCurationTableBehind()
+    {
+
+        RequireSqlCipher();
+
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
+
+        Assert.Equal(1, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(1, await CountAllAsync("saga_suppression_key"));
+
+        (LongRunningOperationReconciliationSummary recovery, _) =
+            await ReconcileFactoryResetV0Async(
+                CreateService(),
+                "curation-factory-recovery-test");
+
+        Assert.Equal(1, recovery.Completed);
+
+        Assert.Equal(0, recovery.RequiresAttention);
+
+        Assert.Equal(0, await CountAllAsync("saga_retirement_suppressions"));
+
+        Assert.Equal(0, await CountAllAsync("saga_suppression_key"));
+
+    }
+
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_ErasesTapestrySummariesOfDeletedCorpora()
@@ -3546,6 +3628,163 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A pin has to reach both halves of retention. Planning stops selecting the memory, and the apply
+    /// that follows leaves it where it is: a planner and an executor that disagree is how a pinned
+    /// memory gets deleted with nothing to show for it.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task PlanAndApplyAsync_Prune_WhenAMemoryIsPinned_LeavesItAndReportsWhatThePinExempted()
+    {
+
+        RequireSqlCipher();
+
+        string pinnedId = await SeedAgedSagaMemoryAsync("pinned, and old");
+
+        string prunableId = await SeedAgedSagaMemoryAsync("unpinned, and old");
+
+        // Through the store rather than through a statement the test composed itself: what retention
+        // has to honour is the column the production pin writes.
+        SagaCurationOutcome outcome = await CreateSagaMemoryStore().SetPinAsync(
+            pinnedId,
+            pinned: true,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, outcome.Kind);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SagaMemories = EnabledRule();
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.DoesNotContain("saga:" + pinnedId, plan.CandidateIds);
+
+        Assert.Equal("saga:" + prunableId, Assert.Single(plan.CandidateIds));
+
+        // A dry-run that silently omitted the exempted row would tell an operator their rule reaches
+        // further than it does.
+        Assert.NotNull(plan.SagaCuration);
+
+        Assert.Equal(1, plan.SagaCuration.PinnedRows);
+
+        Assert.Equal(1, plan.SagaCuration.PinnedRowsExemptFromPlan);
+
+        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Equal(1, await CountAsync("saga_memories", "Id", pinnedId));
+
+        Assert.Equal(1, await CountAsync("saga_memory_embeddings", "MemoryId", pinnedId));
+
+        Assert.Equal(0, await CountAsync("saga_memories", "Id", prunableId));
+
+        Assert.Equal(0, await CountAsync("saga_memory_embeddings", "MemoryId", prunableId));
+
+    }
+
+    /// <summary>
+    /// The window a pin has to survive is inside apply itself, which rebuilds the plan before it starts
+    /// deleting. A pin taken before that rebuild changes the plan's identity and is refused as a stale
+    /// preview, which proves nothing about the delete — so this one lands from a trigger on the
+    /// operation row apply writes for itself, the first moment after the rebuild.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenAPinLandsAfterTheApplyPlanIsBuilt_PreservesTheMemory()
+    {
+
+        RequireSqlCipher();
+
+        string memoryId = await SeedAgedSagaMemoryAsync("old, pinned between plan and apply");
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER pin_saga_memory_after_prune_start
+            AFTER INSERT ON LongRunningOperations
+            WHEN NEW.Kind = '{LongRunningOperationKinds.DataRetentionPrune}'
+            BEGIN
+                UPDATE saga_memories
+                SET PinnedAtUtc = '{OldTimestamp}'
+                WHERE Id = '{memoryId}';
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SagaMemories = EnabledRule();
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal("saga:" + memoryId, Assert.Single(plan.CandidateIds));
+
+        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Equal(1, await CountAsync("saga_memories", "Id", memoryId));
+
+        // The delete removes the embedding before it reaches the memory row, so the embedding surviving
+        // is what says the refusal rolled the whole transaction back rather than half of it.
+        Assert.Equal(1, await CountAsync("saga_memory_embeddings", "MemoryId", memoryId));
+
+        Assert.Equal(0, applied.Value.RowsDeleted);
+
+        Assert.Contains(
+            applied.Value.Conflicts,
+            conflict => conflict.Code == ErrorCodes.Data.PlanChanged
+                && conflict.ResourceId == "saga:" + memoryId);
+
+    }
+
+    /// <summary>
+    /// One Saga memory older than an enabled rule's cutoff, with the embedding a prune takes with it.
+    /// </summary>
+    private async Task<string> SeedAgedSagaMemoryAsync(string content)
+    {
+
+        string memoryId = "curation-" + Guid.NewGuid().ToString("N");
+
+        await ExecuteAsync(
+            """
+            INSERT INTO saga_memories (Id, Content, CreatedAt, SessionId, Tags, Source)
+            VALUES (@id, @content, @at, NULL, NULL, 'test')
+            """,
+            ("@id", memoryId),
+            ("@content", content),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO saga_memory_embeddings (MemoryId, Embedding, Dim)
+            VALUES (@id, @embedding, 1)
+            """,
+            ("@id", memoryId),
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+        return memoryId;
+
+    }
+
     private DataRetentionService CreateService(
         ArcanumSettings? settings = null,
         IDataRetentionPolicyStore? policyStore = null,
@@ -3985,7 +4224,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             INSERT INTO entry_embeddings (EntryId, Embedding, Dim)
             VALUES (@entryId, @embedding, 1)
             """,
-            ("@entryId", entryId.ToString()),
+            ("@entryId", Canonical(entryId)),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
 
     /// <summary>
@@ -4118,6 +4357,18 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The spelling every writer of these identity columns renders: uppercase, dashed, 36 characters.
+    /// </summary>
+    /// <remarks>
+    /// The Session and the Entry are written by the object-relational writer, and the attachment family
+    /// by the attachment store and its index repository - all of which render the canonical form, and the
+    /// SQLite value binder uppercases a raw Guid unconditionally. A bare <c>ToString()</c> here seeded a
+    /// pairing no installation holds: an embedding that its own Entry's join would miss, and an
+    /// attachment whose Session no session-scoped sweep would find.
+    /// </remarks>
+    private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
+
     private async Task<SeededAttachment> SeedAttachmentAsync(
         Guid sessionId,
         Guid entryId)
@@ -4151,9 +4402,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 (@id, @sessionId, @entryId, NULL, 'Bound', 'evidence', 'evidence.txt', 1,
                  @relativePath, 'ATTACHMENT-HASH', 'text/plain', @byteLength, 'Text', @createdAt)
             """,
-            ("@id", attachmentId.ToString()),
-            ("@sessionId", sessionId.ToString()),
-            ("@entryId", entryId.ToString()),
+            ("@id", Canonical(attachmentId)),
+            ("@sessionId", Canonical(sessionId)),
+            ("@entryId", Canonical(entryId)),
             ("@relativePath", relativePath),
             ("@byteLength", bytes.Length),
             ("@createdAt", "2000-01-01T00:00:00.0000000+00:00"));
@@ -4169,8 +4420,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  'ATTACHMENT-HASH', 0, 0, 8, 1, 1, 'evidence', 1, @at, @at, 'Latest')
             """,
             ("@chunkId", chunkId),
+            // Not Canonical, and that is the one deliberate exception in this seed:
+            // session_attachment_chunks.SessionId is ruled to stay in the minority spelling, because the
+            // tapestry reads it as its live scope-id set and moving it would orphan every
+            // attachment-scoped generation. Its AttachmentId does move, under a foreign key to the
+            // parent this seed just wrote.
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
         await ExecuteAsync(
@@ -4188,7 +4444,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             VALUES
                 (@attachmentId, 'Indexed', 'ATTACHMENT-HASH', 1, @at)
             """,
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
         return new SeededAttachment(
@@ -4229,7 +4485,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  @at, 'WorkspaceFile')
             """,
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
         await ExecuteAsync(
@@ -4252,7 +4508,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  'evidence', 1, 'ATTACHMENT-HASH', @at, 'WorkspaceFile')
             """,
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
 
     }

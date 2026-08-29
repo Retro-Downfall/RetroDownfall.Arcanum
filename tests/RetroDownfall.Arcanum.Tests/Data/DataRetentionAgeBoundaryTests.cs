@@ -451,7 +451,7 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionPlan plan = await service.PlanAsync(request);
 
-        string candidateId = "entry-embedding:" + entryId.ToString("D");
+        string candidateId = "entry-embedding:" + Canonical(entryId);
 
         Assert.Equal(candidateId, Assert.Single(plan.CandidateIds));
 
@@ -782,7 +782,11 @@ public sealed partial class DataRetentionServiceTests
             case "sanctum":
             {
 
-                string campaignId = Guid.NewGuid().ToString("N");
+                Guid campaign = Guid.NewGuid();
+
+                string campaignId = Canonical(campaign);
+
+                string campaignName = campaign.ToString("N");
 
                 Guid breachId = Guid.NewGuid();
 
@@ -791,7 +795,7 @@ public sealed partial class DataRetentionServiceTests
                     INSERT INTO "Campaigns"
                         ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
                     VALUES
-                        (@campaignId, @campaignId, @campaignId, @path, 0, '{}', @at, @at);
+                        (@campaignId, @campaignName, @campaignName, @path, 0, '{}', @at, @at);
 
                     INSERT INTO "SanctumBreaches"
                         ("Id", "CampaignId", "OccurredAt", "ToolName", "BreachType", "Description")
@@ -799,7 +803,8 @@ public sealed partial class DataRetentionServiceTests
                         (@id, @campaignId, @at, 'test', 'test', 'test');
                     """,
                     ("@campaignId", campaignId),
-                    ("@path", "/tmp/" + campaignId),
+                    ("@campaignName", campaignName),
+                    ("@path", "/tmp/" + campaignName),
                     ("@id", breachId.ToString()),
                     ("@at", OldTimestamp));
 

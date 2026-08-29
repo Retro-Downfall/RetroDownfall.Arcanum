@@ -151,14 +151,14 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             INSERT INTO SessionAttachments
                 (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
             VALUES
-                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-                 '{{targetSession:D}}',
+                ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                 '{{Canonical(targetSession)}}',
                  'target/attachment.bin',
                  'Bound',
                  0,
                  NULL),
-                ('dddddddd-dddd-dddd-dddd-dddddddddddd',
-                 '{{otherSession:D}}',
+                ('DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD',
+                 '{{Canonical(otherSession)}}',
                  'other/attachment.bin',
                  'Bound',
                  0,
@@ -240,8 +240,8 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             INSERT INTO SessionAttachments
                 (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
             VALUES
-                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-                 '{{targetSession:D}}',
+                ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                 '{{Canonical(targetSession)}}',
                  'target/attachment.bin',
                  'Bound',
                  1,
@@ -359,8 +359,8 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             INSERT INTO SessionAttachments
                 (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
             VALUES
-                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',
                  'malformed/attachment.bin',
                  'Bound',
                  1,
@@ -404,8 +404,8 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             INSERT INTO SessionAttachments
                 (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
             VALUES
-                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',
                  'wrong-purpose/attachment.bin',
                  'Bound',
                  1,
@@ -465,8 +465,8 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             INSERT INTO SessionAttachments
                 (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
             VALUES
-                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',
                  'linked/attachment.bin',
                  'Bound',
                  1,
@@ -856,8 +856,8 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             INSERT INTO SessionAttachments
                 (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
             VALUES
-                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',
                  'encrypted/attachment.bin',
                  'Bound',
                  1,
@@ -984,8 +984,8 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             INSERT INTO SessionAttachments
                 (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
             VALUES
-                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',
                  'missing/attachment.bin',
                  'Bound',
                  0,
@@ -1067,6 +1067,22 @@ public sealed class BackupInventoryPlannerTests : IDisposable
         await File.WriteAllTextAsync(path, content);
 
     }
+
+    /// <summary>
+    /// The spelling <c>SessionAttachments</c> actually holds: uppercase, dashed, 36 characters, as the
+    /// attachment store renders it.
+    /// </summary>
+    /// <remarks>
+    /// Every seed in this file used to render <c>{identity:D}</c>, which is lowercase, and the planner
+    /// bound its <c>$sessionId</c> the same way - so both sides of the session-scoped predicate were the
+    /// minority form and the case passed while proving nothing about the spelling the database really
+    /// holds. When the attachment family moved to the canonical form the planner's predicate matched no
+    /// row, and because the reader simply stopped iterating rather than failing, a session-scoped
+    /// archive reported no missing path and no failure while omitting every attachment blob. This suite
+    /// was the one instrument that should have caught that, and it did not, because its fixture agreed
+    /// with the defect. Seeding what production writes is what makes the case load-bearing.
+    /// </remarks>
+    private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)
     {

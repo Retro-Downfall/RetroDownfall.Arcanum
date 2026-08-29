@@ -102,3 +102,39 @@ internal sealed record GrimoireSchemaObject(
     string Name,
     string ResourcePath,
     string Sql);
+
+/// <summary>
+/// The family, tier, target version, ordinal, and step name decoded from one embedded transition
+/// resource path.
+/// </summary>
+/// <remarks>
+/// A transition resource has no <see cref="GrimoireSchemaCategory"/>: it is one statement in an
+/// ordered version step, not an object anything converges. Sharing
+/// <see cref="GrimoireSchemaResourcePath"/> would let a step be mistaken for an object in the one
+/// place that mistake cannot be recovered from - the startup-blocking Core install transaction.
+/// </remarks>
+internal sealed record GrimoireSchemaTransitionResourcePath(
+    GrimoireSchemaFamily Family,
+    GrimoireSchemaTransactionTier TransactionTier,
+    int ToVersion,
+    int Ordinal,
+    string Name);
+
+/// <summary>
+/// One transition statement, loaded from exactly one embedded <c>.sql</c> file under a
+/// <c>Transitions/V&lt;n&gt;/</c> folder.
+/// </summary>
+/// <remarks>
+/// Unlike a head object this need not be <c>CREATE ... IF NOT EXISTS</c>. A step's statements commit
+/// in one transaction with the journal write that records the step, so a step either fully applies or
+/// leaves nothing behind, and nothing re-runs a committed step. <c>ALTER TABLE ... ADD COLUMN</c>,
+/// which has no idempotent form, is therefore legal here and is not legal in the head tree.
+/// </remarks>
+internal sealed record GrimoireSchemaTransitionStatementResource(
+    GrimoireSchemaFamily Family,
+    GrimoireSchemaTransactionTier TransactionTier,
+    int ToVersion,
+    int Ordinal,
+    string Name,
+    string ResourcePath,
+    string Sql);

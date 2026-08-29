@@ -1,0 +1,1460 @@
+using Microsoft.Data.Sqlite;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+
+namespace RetroDownfall.Arcanum.Tests.Data.Schema;
+
+/// <summary>
+/// The write-time refusal that keeps every stored identity on one spelling: a guard per governed
+/// column, refusing a value that is not uppercase <i>and</i> dashed <i>and</i> 36 characters, whatever
+/// produced it.
+/// </summary>
+/// <remarks>
+/// <b>Every write below is a raw command rather than a production writer, and that is a statement about
+/// the code rather than a convenience.</b> Every writer of every column in this family now renders a
+/// <see cref="Guid"/> through the house helper or hands the provider a raw <c>Guid</c>, which the
+/// SQLite value binder uppercases unconditionally - the conversions that made that true landed before
+/// these guards did, which is the whole reason the data could be settled at all. So there is no
+/// production path left that can produce a non-canonical identity for any of these columns, and a test
+/// that claimed to drive one would be dressing up a raw insert. The guard exists for the writer nobody
+/// has written yet: an interpolation, a string copied out of a foreign archive, a hand edit, or SQL a
+/// later change adds without knowing this family exists. What each case proves is that such a write is
+/// refused at the row rather than at the writer.
+///
+/// <para>Both wrong spellings are exercised for every column, because a case-only check passes one of
+/// them in silence. <c>Guid.ToString("N")</c> renders 32 uppercase hex characters, which is already its
+/// own <c>upper()</c> image; the register this family retires and an earlier contract test both shipped
+/// a case-only predicate and both were inadequate for exactly that reason. A canonical write is asserted
+/// to be accepted for every column too, so a guard that simply aborted everything could not pass this
+/// suite.</para>
+///
+/// <para><b>The two shapes this family settled on.</b> One trigger per column rather than one per table:
+/// <c>RAISE(ABORT, …)</c> takes a string literal, so a trigger covering several columns cannot name the
+/// one that failed, and a guarded table can carry identity-shaped columns that are deliberately outside
+/// this family - a table-level name would claim a coverage the trigger does not have. And <c>BEFORE INSERT</c> always, plus <c>BEFORE UPDATE OF</c> that column wherever the table
+/// does not already refuse every update: <c>assistant_entry_finalizations</c> and
+/// <c>artifact_sensitivity</c> both abort every update whatever it changes, so an update-time identity
+/// check on either could never be reached. See <c>Sessions_Id_guard_identity_insert</c> and its update
+/// sibling, which carry the full reasoning.</para>
+/// </remarks>
+public sealed class IdentitySpellingGuardTests
+{
+
+    /// <summary>A Campaign, spelled the way the object-relational writer spells one.</summary>
+    private const string Campaign = "A0000000-0000-4000-8000-0000000000C1";
+
+    /// <summary>The Session every seeded row hangs from.</summary>
+    private const string Session = "B0000000-0000-4000-8000-0000000000E1";
+
+    /// <summary>The Entry every seeded row hangs from.</summary>
+    private const string Entry = "C0000000-0000-4000-8000-000000000011";
+
+    /// <summary>The attachment every provenance row names.</summary>
+    private const string Attachment = "D0000000-0000-4000-8000-0000000000A1";
+
+    /// <summary>A second identity, used wherever a case has to write a row beside the seeded one.</summary>
+    private const string Second = "E0000000-0000-4000-8000-0000000000F1";
+
+    /// <summary>
+    /// A third identity, canonical, used only to attempt a rewrite the schema is expected to refuse for
+    /// a reason that has nothing to do with spelling.
+    /// </summary>
+    private const string Rewrite = "E0000000-0000-4000-8000-0000000000F2";
+
+    /// <summary>A second Session, so a case can write a row that references one the seed did not use.</summary>
+    private const string SecondSession = "B0000000-0000-4000-8000-0000000000E2";
+
+    /// <summary>A second attachment, so a foreign-key child can be written beside the seeded one.</summary>
+    private const string SecondAttachment = "D0000000-0000-4000-8000-0000000000A2";
+
+    /// <summary>
+    /// A third Session that exists but is deliberately given no <c>session_campaign_bindings</c> row, so
+    /// a case can rewrite a binding onto it without colliding with that table's primary key.
+    /// </summary>
+    private const string UnboundSession = "B0000000-0000-4000-8000-0000000000E3";
+
+    /// <summary>
+    /// A fourth Session, whose binding is seeded unresolved so a case can drive the one update
+    /// <c>session_campaign_bindings.CampaignId</c> has: the resolution that gives an unresolved legacy
+    /// row its Campaign for the first time.
+    /// </summary>
+    /// <remarks>
+    /// It has to be its own Session rather than one of the three above. The seeded binding on
+    /// <see cref="Session"/> is global-only and its kind may not change; <see cref="SecondSession"/> is
+    /// the Session the binding insert cases write their own row for, so a seeded row there would collide
+    /// on the primary key; and <see cref="UnboundSession"/> exists precisely to have no binding at all.
+    /// </remarks>
+    private const string ResolvableSession = "B0000000-0000-4000-8000-0000000000E4";
+
+    private const string Timestamp = "2026-01-01T00:00:00.0000000+00:00";
+
+    /// <summary>A Saga memory identity, which the provenance table keys on.</summary>
+    private const string Memory = "11111111-0000-4000-8000-000000000001";
+
+    /// <summary>A second Saga memory, so a case can write a provenance row beside the seeded one.</summary>
+    private const string SecondMemory = "11111111-0000-4000-8000-000000000002";
+
+    /// <summary>A third Saga memory, written Campaign-scoped so its Campaign column carries a value.</summary>
+    private const string ScopedMemory = "11111111-0000-4000-8000-000000000003";
+
+    /// <summary>
+    /// A Lexicon entry identity, deliberately in the dash-free form its own writer renders. It is one of
+    /// the two columns excluded from this family by design, and seeding it any other way would
+    /// misrepresent what that table holds.
+    /// </summary>
+    private const string LexiconEntry = "22222222000040008000000000000001";
+
+    static IdentitySpellingGuardTests() => SqliteNativeRuntime.Instance.Initialize();
+
+    /// <summary>
+    /// Every identity column this change governs: the columns the version-5 sweep declares, plus
+    /// <c>artifact_sensitivity.SessionId</c>, which is left to its guard rather than to a count taken
+    /// once.
+    /// </summary>
+    /// <remarks>
+    /// Derived from <see cref="IdentitySpellingBackfill.VerifiedColumns"/> rather than restated, so a
+    /// column added to the sweep without a guard fails
+    /// <see cref="Every_governed_identity_column_carries_the_guards_its_table_can_hold"/> rather than
+    /// being quietly uncovered.
+    /// </remarks>
+    internal static IReadOnlyList<(string Table, string Column)> GovernedColumns =>
+    [
+        .. IdentitySpellingBackfill.VerifiedColumns,
+        ("artifact_sensitivity", "SessionId"),
+    ];
+
+    /// <summary>
+    /// The governed columns that carry no update-time identity guard, because the schema already refuses
+    /// every update such a guard could judge.
+    /// </summary>
+    /// <remarks>
+    /// Pinned here so a table that later loses its refusal is noticed, and kept per column rather than
+    /// per table because the four entries below rest on three different reasons - and because one of
+    /// those tables has another governed column that <i>does</i> carry an update guard.
+    /// <c>assistant_entry_finalizations_guard_update</c> aborts every update to that table, because a
+    /// finalization is terminal; <c>artifact_sensitivity_guard_update</c> does the same, because a label
+    /// is immutable evidence about one exact artifact revision. <c>session_campaign_bindings</c> refuses
+    /// no update in general - it refuses one that <i>changes</i> <c>SessionId</c>, so the only update a
+    /// <c>BEFORE UPDATE OF "SessionId"</c> guard could ever see is one setting the column to the value it
+    /// already holds. That is why <c>session_campaign_bindings.CampaignId</c> is absent from this list:
+    /// version 5's spelling exemption admits a write to it, and the one-time resolution of an unresolved
+    /// legacy row writes it for the first time, so an update guard there has real writes to judge. In
+    /// every entry below it would be unreachable code in the schema.
+    /// </remarks>
+    internal static IReadOnlyList<(string Table, string Column, string Refusal)> ColumnsWithNoUpdateGuard =>
+    [
+        ("assistant_entry_finalizations", "AssistantEntryId",
+            "assistant_entry_finalizations rows are terminal and cannot be updated."),
+        ("assistant_entry_finalizations", "SessionId",
+            "assistant_entry_finalizations rows are terminal and cannot be updated."),
+        ("artifact_sensitivity", "SessionId",
+            "artifact_sensitivity rows are immutable; a new artifact revision needs a new label."),
+        ("session_campaign_bindings", "SessionId",
+            "A Session Campaign binding cannot change the Session it belongs to."),
+    ];
+
+    public static TheoryData<string, string> GuardedInsertColumns
+    {
+
+        get
+        {
+
+            TheoryData<string, string> data = [];
+
+            foreach ((string table, string column) in GovernedColumns)
+            {
+
+                data.Add(table, column);
+
+            }
+
+            return data;
+
+        }
+
+    }
+
+    public static TheoryData<string, string> GuardedUpdateColumns
+    {
+
+        get
+        {
+
+            TheoryData<string, string> data = [];
+
+            foreach ((string table, string column) in GovernedColumns)
+            {
+
+                if (ColumnsWithNoUpdateGuard.Any(entry =>
+                    string.Equals(entry.Table, table, StringComparison.Ordinal)
+                    && string.Equals(entry.Column, column, StringComparison.Ordinal)))
+                {
+
+                    continue;
+
+                }
+
+                data.Add(table, column);
+
+            }
+
+            return data;
+
+        }
+
+    }
+
+    /// <summary>
+    /// The lowercase dashed form - the spelling six shipped writers once rendered, and the one every
+    /// normalised comparison in this repository was added to tolerate.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(GuardedInsertColumns))]
+    public async Task A_lowercase_identity_is_refused_at_the_insert(string table, string column)
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync(table);
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.InsertAsync(table, column, Lowercase(SecondFor(table, column))));
+
+        Assert.Contains(Message(table, column), failure.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The dash-free form, which is the one that matters: <c>Guid.ToString("N")</c> renders 32 uppercase
+    /// hex characters, so it is already its own <c>upper()</c> image and a case-only guard would accept
+    /// it in silence. Two columns in this schema legitimately hold that form, so it is not hypothetical.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(GuardedInsertColumns))]
+    public async Task A_dash_free_identity_is_refused_at_the_insert(string table, string column)
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync(table);
+
+        string dashFree = DashFree(SecondFor(table, column));
+
+        Assert.Equal(dashFree, dashFree.ToUpperInvariant());
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.InsertAsync(table, column, dashFree));
+
+        Assert.Contains(Message(table, column), failure.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A guard that aborted every write would satisfy every case above while refusing the writes
+    /// production actually makes, so the canonical spelling is asserted to pass through the same path.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(GuardedInsertColumns))]
+    public async Task A_canonical_identity_is_accepted_at_the_insert(string table, string column)
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync(table);
+
+        await harness.InsertAsync(table, column, SecondFor(table, column));
+
+        // The row is counted before its spelling is judged. A non-canonical count of zero is also what
+        // an empty table reports, so on its own it would have accepted a guard that silently swallowed
+        // the write - which is the same shape of vacuous pass this family keeps producing.
+        Assert.Equal(
+            1L,
+            await harness.RowCountAsync(table, column, SecondFor(table, column)));
+
+        Assert.Equal(0L, await harness.NonCanonicalCountAsync(table, column));
+
+    }
+
+    /// <summary>
+    /// The update half, on every table that does not already refuse every update. The row being written
+    /// is the seeded one, so what the guard refuses is a rewrite of an identity that was canonical a
+    /// statement ago.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(GuardedUpdateColumns))]
+    public async Task A_lowercase_identity_is_refused_at_the_update(string table, string column)
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync(table);
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.UpdateAsync(table, column, Lowercase(SecondFor(table, column))));
+
+        Assert.Contains(Message(table, column), failure.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>The dash-free half of the update guard, for the reason the insert case gives.</summary>
+    [Theory]
+    [MemberData(nameof(GuardedUpdateColumns))]
+    public async Task A_dash_free_identity_is_refused_at_the_update(string table, string column)
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync(table);
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.UpdateAsync(table, column, DashFree(SecondFor(table, column))));
+
+        Assert.Contains(Message(table, column), failure.Message, StringComparison.Ordinal);
+
+    }
+
+    public static TheoryData<string, string, string> ColumnsWhoseUpdateIsAlreadyRefused
+    {
+
+        get
+        {
+
+            TheoryData<string, string, string> data = [];
+
+            foreach ((string table, string column, string refusal) in ColumnsWithNoUpdateGuard)
+            {
+
+                data.Add(table, column, refusal);
+
+            }
+
+            return data;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Every column this family deliberately leaves without an update guard is a column the schema
+    /// already refuses to let an update reach.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the pin the omission rests on, and without it the omission is only an assertion.</b>
+    /// <see cref="Every_governed_identity_column_carries_the_guards_its_table_can_hold"/> checks that the
+    /// trigger is absent, which is the inverse claim: it would stay green if a table quietly lost the
+    /// refusal that made the absence safe, leaving the column with no update-time protection at all from
+    /// either direction. This case drives the write instead and asserts the schema still turns it back.
+    ///
+    /// <para><b>The refusal is asserted positively, by its own text, and that is the whole mechanism.</b>
+    /// An earlier version of this case asserted only that <i>something</i> threw and that the message was
+    /// not this family's - and two of the four cases then passed for reasons that had nothing to do with
+    /// the guard. <c>assistant_entry_finalizations.SessionId</c> is a foreign key into
+    /// <c>"Sessions"("Id")</c>, so rewriting it to an unseeded identity threw
+    /// <c>FOREIGN KEY constraint failed</c>; <c>session_campaign_bindings.SessionId</c> is that table's
+    /// primary key and the update carried no <c>WHERE</c>, so collapsing two rows onto one value threw
+    /// <c>UNIQUE constraint failed</c>. Either table could have lost its blanket refusal entirely and
+    /// this case would have stayed green - which is exactly the failure it exists to prevent. A positive
+    /// assertion on the guard's own sentence cannot be satisfied by a constraint violation.</para>
+    ///
+    /// <para>So each case writes a value chosen to satisfy every constraint <i>except</i> the one under
+    /// test - see <see cref="RewriteTargetFor"/> - and updates exactly one row. What is left to refuse
+    /// the write is the table's own rule and nothing else. The value is also canonical, so an identity
+    /// guard would not have fired on it even if one existed.</para>
+    /// </remarks>
+    [Theory]
+    [MemberData(nameof(ColumnsWhoseUpdateIsAlreadyRefused))]
+    public async Task A_column_with_no_update_guard_is_one_the_schema_already_refuses_to_update(
+        string table,
+        string column,
+        string refusal)
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync(table);
+
+        string seeded = SecondFor(table, column);
+
+        await harness.InsertAsync(table, column, seeded);
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.UpdateOneAsync(table, column, seeded, RewriteTargetFor(table, column)));
+
+        Assert.Contains(refusal, failure.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(Message(table, column), failure.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The value each case rewrites its column to, chosen so that every constraint on that column is
+    /// satisfied and the table's own update rule is the only thing left to refuse the write.
+    /// </summary>
+    /// <remarks>
+    /// Two of these are load-bearing rather than arbitrary. <c>assistant_entry_finalizations.SessionId</c>
+    /// declares <c>REFERENCES "Sessions" ("Id")</c>, so it is rewritten to a Session the seed created;
+    /// an unseeded identity would be turned back by the foreign key before the guard was reached.
+    /// <c>session_campaign_bindings.SessionId</c> is both a foreign key and that table's primary key, so
+    /// it is rewritten to a third seeded Session that deliberately has no binding row of its own - a
+    /// Session that already had one would collide on the key instead.
+    /// </remarks>
+    private static string RewriteTargetFor(string table, string column) =>
+        (table, column) switch
+        {
+
+            ("assistant_entry_finalizations", "SessionId") => Canonical(Session),
+
+            ("session_campaign_bindings", "SessionId") => Canonical(UnboundSession),
+
+            _ => Canonical(Rewrite),
+
+        };
+
+    /// <summary>
+    /// A guarded column that is NULL is not judged, because there is no identity there to be spelled
+    /// wrongly - and a Campaign deletion clearing <c>Sessions."CampaignId"</c> is a real write that
+    /// depends on it.
+    /// </summary>
+    [Fact]
+    public async Task A_null_reference_passes_both_halves_of_its_guard()
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync("Sessions");
+
+        await harness.ExecuteAsync(
+            """UPDATE "Sessions" SET "CampaignId" = NULL;""");
+
+        Assert.Equal(0L, await harness.NonCanonicalCountAsync("Sessions", "CampaignId"));
+
+    }
+
+    /// <summary>
+    /// The one rewrite of a resolved Campaign binding version 5 admits, and four ways of being
+    /// something other than that rewrite.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exemption exists because the sweep could not otherwise repair one row.</b>
+    /// <c>session_campaign_bindings_guard_update</c> aborted every update to a binding whose kind was
+    /// not 3, and every binding carrying a Campaign identity has kind 2 - so settling that column meant
+    /// admitting exactly one write and nothing more. What is asserted here is the "nothing more": this
+    /// table has four columns, the abort above the exemption pins <c>SessionId</c>, the exemption pins
+    /// <c>BindingKindCode</c> and <c>BoundAtUtc</c>, and it pins <c>CampaignId</c> to the single value
+    /// <c>upper(OLD.CampaignId)</c>. There is no degree of freedom left for it to move a Session into
+    /// another Campaign's context, launder one into Global context, or alter the receipt.
+    ///
+    /// <para>The accepting case is the one that makes the refusals mean something: a guard that refused
+    /// everything would satisfy the four refusals on its own while leaving the sweep unable to run.</para>
+    ///
+    /// <para>Two further ways of being something else - a binding that carries no Campaign being given
+    /// one, and a Campaign binding having its Campaign cleared - are the two cases beside this one. They
+    /// are split out because each discriminates one of the exemption's two <c>IS NOT NULL</c> conjuncts,
+    /// and because each is a row the table's own CHECK would also refuse, so each has to assert the
+    /// guard's own sentence rather than any failure.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_resolved_campaign_binding_admits_a_spelling_rewrite_and_nothing_else()
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync("session_campaign_bindings");
+
+        await harness.InsertAsync("session_campaign_bindings", "CampaignId", Canonical(Campaign));
+
+        const string Rewrite = """
+            UPDATE session_campaign_bindings SET {0} WHERE BindingKindCode = 2;
+            """;
+
+        // Without the scope, the same canonicalization is refused for want of authority.
+        SqliteException unauthorized = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.ExecuteAsync(
+                string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    Rewrite,
+                    "CampaignId = upper(CampaignId)")));
+
+        Assert.Contains(
+            "requires the Session binding write scope",
+            unauthorized.Message,
+            StringComparison.Ordinal);
+
+        // A different Campaign, a changed kind and a changed receipt are each refused, with the scope open.
+        foreach (string assignment in new[]
+        {
+            $"CampaignId = '{Canonical(Second)}'",
+            "CampaignId = upper(CampaignId), BindingKindCode = 1",
+            "CampaignId = upper(CampaignId), BoundAtUtc = '2027-01-01T00:00:00.0000000+00:00'",
+        })
+        {
+
+            SqliteException refused = await Assert.ThrowsAsync<SqliteException>(
+                () => harness.AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => harness.ExecuteAsync(
+                        string.Format(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            Rewrite,
+                            assignment))));
+
+            Assert.Contains(
+                "Only an unresolved legacy Session Campaign binding can be resolved.",
+                refused.Message,
+                StringComparison.Ordinal);
+
+        }
+
+        // And the canonicalization itself goes through, which is what lets the sweep settle the column.
+        await harness.AuthorizedAsync(
+            CovenantSqliteAuthorizationKind.SessionBindingWrite,
+            () => harness.ExecuteAsync(
+                string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    Rewrite,
+                    "CampaignId = upper(CampaignId)")));
+
+        Assert.Equal(
+            1L,
+            await harness.RowCountAsync("session_campaign_bindings", "CampaignId", Canonical(Campaign)));
+
+    }
+
+    /// <summary>
+    /// A binding that carries no Campaign is refused a Campaign <i>by this guard</i>, which is what the
+    /// exemption's <c>OLD.CampaignId IS NOT NULL</c> conjunct buys and the only thing it buys.
+    /// </summary>
+    /// <remarks>
+    /// <b>The conjunct is defence in depth, not the refusal, and an earlier version of this remark said
+    /// otherwise.</b> Removing it does open the exemption's three-valued hole - <c>upper(NULL)</c> is
+    /// NULL, the comparison against it is NULL, <c>NOT NULL</c> is NULL, and the abort does not fire -
+    /// but the write still never lands, because this table's own CHECK pairs <c>BindingKindCode</c> with
+    /// the presence of <c>CampaignId</c> and refuses the row. What the conjunct changes is <i>which
+    /// layer</i> refuses and therefore what a developer is told, and that is exactly what this case
+    /// asserts: the guard's own sentence, not merely that something threw. A case satisfied by any
+    /// failure would stay green with the conjunct gone, because the CHECK would still refuse.
+    ///
+    /// <para>Measured rather than reasoned about. Against the real table in SQLite, removing this
+    /// conjunct changes this row alone from a guard refusal to a CHECK refusal, and removing both
+    /// conjuncts admits nothing that was not admitted before - <c>NULL AND FALSE</c> is <c>FALSE</c>, so
+    /// any other pinned conjunct that differs collapses the exemption on its own.</para>
+    ///
+    /// <para>The seeded global-only row is the shape: kind 1, Campaign NULL, and no authority to
+    /// lend.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_binding_with_no_campaign_cannot_be_given_one_by_the_spelling_exemption()
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync("session_campaign_bindings");
+
+        SqliteException refused = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => harness.ExecuteAsync(
+                    $"""
+                    UPDATE session_campaign_bindings
+                    SET CampaignId = '{Canonical(Campaign)}'
+                    WHERE BindingKindCode = 1;
+                    """)));
+
+        Assert.Contains(
+            "Only an unresolved legacy Session Campaign binding can be resolved.",
+            refused.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A Campaign binding cannot have its Campaign cleared <i>by this guard</i>, which is the sibling
+    /// half - what the exemption's <c>NEW.CampaignId IS NOT NULL</c> conjunct buys.
+    /// </summary>
+    /// <remarks>
+    /// Its own case because the two conjuncts protect opposite directions and neither covers the other:
+    /// the case above rewrites a row that holds no Campaign, this one empties a row that does. Removing
+    /// <c>NEW.CampaignId IS NOT NULL</c> changes this row alone from a guard refusal to a CHECK refusal
+    /// and leaves the case above untouched, so with a case each the two are distinguished - which a
+    /// single mutation removing both could not do.
+    ///
+    /// <para>Like its sibling, the assertion is on the guard's own sentence, because the CHECK would
+    /// refuse this row too and a case that accepted any failure would prove nothing about the
+    /// guard.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_campaign_binding_cannot_have_its_campaign_cleared_by_the_spelling_exemption()
+    {
+
+        await using GuardHarness harness = await GuardHarness.StartAsync("session_campaign_bindings");
+
+        await harness.InsertAsync("session_campaign_bindings", "CampaignId", Canonical(Campaign));
+
+        SqliteException refused = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => harness.ExecuteAsync(
+                    """
+                    UPDATE session_campaign_bindings
+                    SET CampaignId = NULL
+                    WHERE BindingKindCode = 2;
+                    """)));
+
+        Assert.Contains(
+            "Only an unresolved legacy Session Campaign binding can be resolved.",
+            refused.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The closed inventory: every column this change governs has an insert guard in the shipped
+    /// catalog, and an update guard unless its table refuses every update.
+    /// </summary>
+    /// <remarks>
+    /// Without this a column added to <see cref="IdentitySpellingBackfill.VerifiedColumns"/> would be
+    /// counted by the sweep and guarded by nothing, and every case above would stay green because none
+    /// of them knows the column exists. It also pins the naming, which is what makes a guard findable
+    /// from the column it protects.
+    /// </remarks>
+    [Fact]
+    public void Every_governed_identity_column_carries_the_guards_its_table_can_hold()
+    {
+
+        HashSet<string> objects =
+        [
+            .. GrimoireSchemaCatalog.CoreObjects.Select(static definition => definition.Name),
+        ];
+
+        HashSet<string> statements =
+        [
+            .. GrimoireSchemaCatalog.TransitionStatements
+                .Where(static statement => statement.TransactionTier == GrimoireSchemaTransactionTier.Core)
+                .Select(static statement => statement.Name),
+        ];
+
+        foreach ((string table, string column) in GovernedColumns)
+        {
+
+            string insert = $"{table}_{column}_guard_identity_insert";
+
+            Assert.Contains(insert, objects);
+
+            Assert.Contains(insert, statements);
+
+            string update = $"{table}_{column}_guard_identity_update";
+
+            if (ColumnsWithNoUpdateGuard.Any(entry =>
+                string.Equals(entry.Table, table, StringComparison.Ordinal)
+                && string.Equals(entry.Column, column, StringComparison.Ordinal)))
+            {
+
+                Assert.DoesNotContain(update, objects);
+
+                continue;
+
+            }
+
+            Assert.Contains(update, objects);
+
+            Assert.Contains(update, statements);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Every guard object in the tree is byte-identical to the version-5 statement that installs it, so
+    /// an upgraded installation and a fresh one hold the same trigger rather than two that merely look
+    /// alike.
+    /// </summary>
+    [Fact]
+    public void Every_guard_is_the_same_text_in_the_head_tree_and_in_the_version_five_step()
+    {
+
+        Dictionary<string, string> statements = GrimoireSchemaCatalog.TransitionStatements
+            .Where(static statement =>
+                statement.TransactionTier == GrimoireSchemaTransactionTier.Core
+                && statement.ToVersion == 5
+                && statement.Name.Contains("_guard_identity_", StringComparison.Ordinal))
+            .ToDictionary(
+                static statement => statement.Name,
+                static statement => statement.Sql,
+                StringComparer.Ordinal);
+
+        Assert.NotEmpty(statements);
+
+        foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.CoreObjects
+            .Where(static definition => definition.Name.Contains("_guard_identity_", StringComparison.Ordinal)))
+        {
+
+            Assert.True(
+                statements.TryGetValue(definition.Name, out string? statement),
+                $"{definition.Name} is a head object with no version-5 statement to install it.");
+
+            Assert.Equal(definition.Sql, statement);
+
+        }
+
+        Assert.Equal(
+            statements.Count,
+            GrimoireSchemaCatalog.CoreObjects.Count(static definition =>
+                definition.Name.Contains("_guard_identity_", StringComparison.Ordinal)));
+
+        // Version 5 also carries one statement that is not an identity guard, and it cannot be byte
+        // identical to its head object because it has to drop the version-4 trigger it replaces. It is
+        // covered by the case below rather than excluded silently.
+        Assert.Equal(
+            statements.Count + 1,
+            GrimoireSchemaCatalog.TransitionStatements.Count(static statement =>
+                statement.TransactionTier == GrimoireSchemaTransactionTier.Core
+                && statement.ToVersion == 5));
+
+    }
+
+    /// <summary>
+    /// The one version-5 statement that is not an identity guard replaces an object version 4 already
+    /// installed, and the trigger it leaves behind is the head tree's own text.
+    /// </summary>
+    /// <remarks>
+    /// Byte identity cannot be asserted here the way it is above, because the statement has to carry a
+    /// <c>DROP TRIGGER</c> the head object does not: a trigger is a whole object, and an evolved
+    /// installation that kept the version-4 text would fail the drift gate on the very version this step
+    /// completes. So the <c>CREATE</c> half is compared instead, which is what actually lands in
+    /// <c>sqlite_master</c> and what the drift gate reads.
+    ///
+    /// <para>The membership assertion is the closed half: a second edited object added to version 5
+    /// without a case of its own would land here rather than being uncovered.</para>
+    /// </remarks>
+    [Fact]
+    public void The_one_edited_object_in_version_five_installs_the_head_tree_text_it_replaces()
+    {
+
+        GrimoireSchemaTransitionStatementResource[] edited =
+        [
+            .. GrimoireSchemaCatalog.TransitionStatements
+                .Where(static statement =>
+                    statement.TransactionTier == GrimoireSchemaTransactionTier.Core
+                    && statement.ToVersion == 5
+                    && !statement.Name.Contains("_guard_identity_", StringComparison.Ordinal)),
+        ];
+
+        GrimoireSchemaTransitionStatementResource statement = Assert.Single(edited);
+
+        Assert.Equal("session_campaign_bindings_guard_update", statement.Name);
+
+        Assert.Contains(
+            "DROP TRIGGER IF EXISTS session_campaign_bindings_guard_update;",
+            statement.Sql,
+            StringComparison.Ordinal);
+
+        GrimoireSchemaObject head = Assert.Single(
+            GrimoireSchemaCatalog.CoreObjects,
+            definition => string.Equals(definition.Name, statement.Name, StringComparison.Ordinal));
+
+        Assert.Equal(CreateHalf(head.Sql), CreateHalf(statement.Sql));
+
+    }
+
+    /// <summary>Everything from the first <c>CREATE</c> onward, which is the object itself.</summary>
+    private static string CreateHalf(string sql) =>
+        sql[sql.IndexOf("CREATE TRIGGER", StringComparison.Ordinal)..];
+
+    /// <summary>The message a developer sees, which has to name the column and the form it expects.</summary>
+    private static string Message(string table, string column) =>
+        $"{table}.{column} must be stored as an uppercase dashed 36-character identity.";
+
+    /// <summary>The canonical spelling: uppercase, dashed, 36 characters, as the provider renders it.</summary>
+    private static string Canonical(string identity) => identity.ToUpperInvariant();
+
+    /// <summary>The minority spelling, as a bare <c>ToString()</c> renders it.</summary>
+    private static string Lowercase(string identity) => identity.ToLowerInvariant();
+
+    /// <summary>
+    /// The dash-free spelling, as <c>Guid.ToString("N")</c> renders it - already uppercase, which is the
+    /// whole point of testing it separately.
+    /// </summary>
+    private static string DashFree(string identity) =>
+        identity.Replace("-", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
+
+    /// <summary>
+    /// The identity a case writes into the column under test.
+    /// </summary>
+    /// <remarks>
+    /// A reference column under a real foreign key names a parent the seed created, because the case that
+    /// asserts a <i>canonical</i> write is accepted has to reach the insert rather than being turned back
+    /// by the foreign key - which would make it pass for a reason that has nothing to do with the guard.
+    /// The refusal cases spell the same value wrongly and never reach the foreign key at all, since a
+    /// BEFORE INSERT trigger runs before the constraint is checked.
+    /// </remarks>
+    private static string SecondFor(string table, string column) =>
+        (table, column) switch
+        {
+
+            ("Entries", "SessionId") => SecondSession,
+
+            ("assistant_entry_finalizations", "SessionId") => SecondSession,
+
+            ("session_sensitivity_state", "SessionId") => SecondSession,
+
+            ("session_attachment_chunks", "AttachmentId") => SecondAttachment,
+
+            ("session_attachment_index_state", "AttachmentId") => SecondAttachment,
+
+            ("session_campaign_bindings", "SessionId") => SecondSession,
+
+            _ => Second,
+
+        };
+
+    /// <summary>
+    /// One open scratch installation of the shipped head tree, seeded with exactly one canonical row in
+    /// every guarded table so an insert case can write a second row beside it and an update case can
+    /// rewrite the one that is there.
+    /// </summary>
+    private sealed class GuardHarness : IAsyncDisposable
+    {
+
+        private readonly EvolutionScratchDatabase _file;
+
+        private readonly SqliteConnection _connection;
+
+        private GuardHarness(EvolutionScratchDatabase file, SqliteConnection connection)
+        {
+
+            _file = file;
+
+            _connection = connection;
+
+        }
+
+        /// <summary>
+        /// Installs the shipped tree and seeds the parents the table under test needs.
+        /// </summary>
+        /// <remarks>
+        /// <c>assistant_entry_finalizations</c> is the one table whose row cannot be written at all
+        /// against the live schema: <c>assistant_entry_finalizations_validate_insert</c> demands a
+        /// consumed capacity reservation for the same Session and assistant identity, and minting one
+        /// needs an authorized turn-capacity mutation scope that direct SQL cannot open by design. That
+        /// unrelated precondition guard is dropped so the identity guard is the thing being exercised;
+        /// nothing else about the tree is changed, and the guard under test is never touched.
+        /// </remarks>
+        internal static async Task<GuardHarness> StartAsync(string table)
+        {
+
+            EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+            SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+
+            GuardHarness harness = new(file, connection);
+
+            await harness.SeedAsync(table);
+
+            return harness;
+
+        }
+
+        /// <summary>
+        /// Runs one write inside the narrow, false-by-default scope its own guard demands.
+        /// </summary>
+        /// <remarks>
+        /// <c>session_campaign_bindings_guard_insert</c> refuses any insert made without the Session
+        /// binding write scope, which is the same authority production borrows. Opening it here rather
+        /// than dropping the trigger keeps the identity guard the only thing under test while leaving the
+        /// rest of the table's rules in force.
+        /// </remarks>
+        internal async Task AuthorizedAsync(CovenantSqliteAuthorizationKind kind, Func<Task> write)
+        {
+
+            using CovenantSqliteAuthorizationScope scope =
+                CovenantSqliteConnectionInitializer.Instance.Authorize(_connection, kind);
+
+            await write().ConfigureAwait(false);
+
+        }
+
+        internal async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
+        {
+
+            await using SqliteCommand command = _connection.CreateCommand();
+
+            command.CommandText = sql;
+
+            foreach ((string name, object? value) in parameters)
+            {
+
+                _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+            }
+
+            _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        /// <summary>How many rows hold exactly this value in this column.</summary>
+        internal async Task<long> RowCountAsync(string table, string column, string value)
+        {
+
+            await using SqliteCommand command = _connection.CreateCommand();
+
+            command.CommandText = $"""SELECT COUNT(*) FROM "{table}" WHERE "{column}" = $value;""";
+
+            _ = command.Parameters.AddWithValue("$value", value);
+
+            return Convert.ToInt64(
+                await command.ExecuteScalarAsync(CancellationToken.None),
+                System.Globalization.CultureInfo.InvariantCulture);
+
+        }
+
+        /// <summary>Asks the sweep's own question of one column, so no case carries a second copy of it.</summary>
+        internal Task<long> NonCanonicalCountAsync(string table, string column) =>
+            IdentitySpellingBackfill.CountNonCanonicalAsync(
+                _connection,
+                transaction: null,
+                table,
+                column,
+                CancellationToken.None);
+
+        /// <summary>Writes a row into one guarded table with the column under test set to a given spelling.</summary>
+        internal Task InsertAsync(string table, string column, string value) =>
+            (table, column) switch
+            {
+
+                ("Sessions", "Id") => ExecuteAsync(
+                    """
+                    INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                    VALUES ($value, $campaign, 'active', $now, $now);
+                    """,
+                    ("$value", value),
+                    ("$campaign", Canonical(Campaign)),
+                    ("$now", Timestamp)),
+
+                ("Sessions", "CampaignId") => ExecuteAsync(
+                    """
+                    INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                    VALUES ($id, $value, 'active', $now, $now);
+                    """,
+                    ("$id", Canonical(Second)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("Campaigns", "Id") => ExecuteAsync(
+                    """
+                    INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+                    VALUES ($value, 'Beta', 'beta', '/campaigns/beta', 0, '{}', $now, $now);
+                    """,
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("Entries", "Id") => ExecuteAsync(
+                    """
+                    INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                    VALUES ($value, $session, 0, 'content', 'model', $now, 2);
+                    """,
+                    ("$value", value),
+                    ("$session", Canonical(Session)),
+                    ("$now", Timestamp)),
+
+                ("Entries", "SessionId") => ExecuteAsync(
+                    """
+                    INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                    VALUES ($id, $value, 0, 'content', 'model', $now, 3);
+                    """,
+                    ("$id", Canonical(Second)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("entry_embeddings", "EntryId") => ExecuteAsync(
+                    "INSERT INTO entry_embeddings (EntryId, Embedding, Dim) VALUES ($value, zeroblob(8), 2);",
+                    ("$value", value)),
+
+                ("assistant_entry_finalizations", "AssistantEntryId") => ExecuteAsync(
+                    """
+                    INSERT INTO assistant_entry_finalizations (
+                        AssistantEntryId, SessionId, OutcomeCode, ContentSensitivityCode,
+                        ContentSensitivityDigest, RequestDigest, FinalizedAtUtc)
+                    VALUES ($value, $session, 1, 0, zeroblob(32), zeroblob(32), $now);
+                    """,
+                    ("$value", value),
+                    ("$session", Canonical(Session)),
+                    ("$now", Timestamp)),
+
+                ("assistant_entry_finalizations", "SessionId") => ExecuteAsync(
+                    """
+                    INSERT INTO assistant_entry_finalizations (
+                        AssistantEntryId, SessionId, OutcomeCode, ContentSensitivityCode,
+                        ContentSensitivityDigest, RequestDigest, FinalizedAtUtc)
+                    VALUES ($id, $value, 1, 0, zeroblob(32), zeroblob(32), $now);
+                    """,
+                    ("$id", Canonical(Second)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("session_sensitivity_state", "SessionId") => ExecuteAsync(
+                    """
+                    INSERT INTO session_sensitivity_state (
+                        SessionId, TaintedArtifactCount, MaximumSensitivityCode,
+                        GenerationProvenanceDigest, Revision, UpdatedAtUtc)
+                    VALUES ($value, 0, 0, zeroblob(32), 0, $now);
+                    """,
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("SessionAttachments", "Id") => ExecuteAsync(
+                    AttachmentInsert,
+                    ("$id", value),
+                    ("$session", Canonical(Session)),
+                    ("$entry", Canonical(Entry)),
+                    ("$key", "second"),
+                    ("$now", Timestamp)),
+
+                ("SessionAttachments", "SessionId") => ExecuteAsync(
+                    AttachmentInsert,
+                    ("$id", Canonical(Second)),
+                    ("$session", value),
+                    ("$entry", Canonical(Entry)),
+                    ("$key", "second"),
+                    ("$now", Timestamp)),
+
+                ("SessionAttachments", "EntryId") => ExecuteAsync(
+                    AttachmentInsert,
+                    ("$id", Canonical(Second)),
+                    ("$session", Canonical(Session)),
+                    ("$entry", value),
+                    ("$key", "second"),
+                    ("$now", Timestamp)),
+
+                ("session_attachment_chunks", "AttachmentId") => ExecuteAsync(
+                    """
+                    INSERT INTO session_attachment_chunks (
+                        ChunkId, GenerationId, SessionId, AttachmentId, LogicalKey, Version,
+                        OriginalFileName, MimeType, ContentSha256, ChunkIndex, CharacterStart,
+                        CharacterEnd, StartLine, EndLine, Content, EmbeddingDimension, ExtractedAt,
+                        IndexedAt)
+                    VALUES ($chunk, 'g2', $session, $value, 'key', 1, 'f.txt', 'text/plain', 'sha',
+                            1, 0, 1, 1, 1, 'body', 1536, $now, $now);
+                    """,
+                    ("$chunk", Canonical(Second)),
+                    ("$session", Session.ToLowerInvariant()),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("session_attachment_index_state", "AttachmentId") => ExecuteAsync(
+                    """
+                    INSERT INTO session_attachment_index_state (AttachmentId, Status, ContentSha256, UpdatedAt)
+                    VALUES ($value, 'Indexed', 'sha', $now);
+                    """,
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("attachment_memory_consultations", "AttachmentId") => ExecuteAsync(
+                    """
+                    INSERT INTO attachment_memory_consultations (
+                        SourceEntryId, SessionId, AttachmentId, LogicalKey, Version, ContentHash,
+                        MaterializedAt, SourceType)
+                    VALUES ($entry, $session, $value, 'key', 1, 'hash', $now, 'Attachment');
+                    """,
+                    ("$entry", Canonical(Entry)),
+                    ("$session", Canonical(Session)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("saga_memory_attachment_provenance", "AttachmentId") => ExecuteAsync(
+                    """
+                    INSERT INTO saga_memory_attachment_provenance (
+                        MemoryId, SessionId, AttachmentId, LogicalKey, Version, ContentHash,
+                        MaterializedAt, SourceType)
+                    VALUES ($memory, $session, $value, 'key', 1, 'hash', $now, 'Attachment');
+                    """,
+                    ("$memory", Canonical(SecondMemory)),
+                    ("$session", Canonical(Session)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("lexicon_fact_attachment_provenance", "AttachmentId") => ExecuteAsync(
+                    """
+                    INSERT INTO lexicon_fact_attachment_provenance (
+                        EntryId, FactHash, Fact, SessionId, AttachmentId, LogicalKey, Version,
+                        ContentHash, MaterializedAt, SourceType)
+                    VALUES ($lexicon, 'hash-2', 'fact', $session, $value, 'key', 1, 'hash', $now,
+                            'Attachment');
+                    """,
+                    ("$lexicon", LexiconEntry),
+                    ("$session", Canonical(Session)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("session_campaign_bindings", "SessionId") => AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => ExecuteAsync(
+                        """
+                        INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                        VALUES ($value, 1, NULL, $now);
+                        """,
+                        ("$value", value),
+                        ("$now", Timestamp))),
+
+                // Kind 2, because this table's own CHECK says a Campaign identity may only sit on a
+                // Campaign binding: a global-only or unresolved row that carried one would be authority
+                // nobody granted.
+                ("session_campaign_bindings", "CampaignId") => AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => ExecuteAsync(
+                        """
+                        INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                        VALUES ($session, 2, $value, $now);
+                        """,
+                        ("$session", Canonical(SecondSession)),
+                        ("$value", value),
+                        ("$now", Timestamp))),
+
+                // Scope kind 2, for the same reason: SagaMemoryScopeKind pairs a Campaign identity with
+                // the Campaign scope alone, and a memory recorded any other way is retrievable nowhere.
+                ("saga_memories", "CampaignId") => ExecuteAsync(
+                    """
+                    INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode, CampaignId)
+                    VALUES ($id, 'scoped', $now, 2, $value);
+                    """,
+                    ("$id", Canonical(ScopedMemory)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                // Scope kind 2 for the reason above, and a digest distinct from the seeded row's,
+                // because the digest is this table's primary key and a collision would refuse the write
+                // before its Campaign spelling was ever judged.
+                ("saga_retirement_suppressions", "CampaignId") => ExecuteAsync(
+                    """
+                    INSERT INTO saga_retirement_suppressions (
+                        SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+                    VALUES (randomblob(32), 2, $value, $now);
+                    """,
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                ("artifact_sensitivity", "SessionId") => ExecuteAsync(
+                    ArtifactSensitivityInsert,
+                    ("$label", Canonical(Second)),
+                    ("$artifact", Canonical(Second)),
+                    ("$value", value),
+                    ("$now", Timestamp)),
+
+                _ => throw new InvalidOperationException($"No insert template for {table}.{column}."),
+
+            };
+
+        /// <summary>
+        /// Rewrites the seeded row's identity column, which is the write a
+        /// <c>BEFORE UPDATE OF &lt;column&gt;</c> guard exists to judge.
+        /// </summary>
+        /// <remarks>
+        /// No <c>WHERE</c> clause, deliberately: the statement names the column and nothing else, which
+        /// is the shape that makes <c>UPDATE OF</c> fire at all. It rewrites every row of the table, and
+        /// for three of them - <c>"Sessions"</c>, <c>"SessionAttachments"</c> and <c>saga_memories</c> -
+        /// the seed holds two rather than one, because a foreign-key child needs a second parent to name.
+        /// That is harmless here and worth stating rather than implying: what the case asserts is that
+        /// the write is refused, and one refused row is enough to refuse the statement.
+        /// </remarks>
+        internal Task UpdateAsync(string table, string column, string value) =>
+            (table, column) switch
+            {
+
+                // The one write this guard exists to judge, written as production will make it. A bare
+                // rewrite of CampaignId is refused by session_campaign_bindings_guard_update before any
+                // identity guard is reached - for a resolved row because only an unresolved one may be
+                // resolved, and for an unresolved one because the resulting kind would still be 3 - so
+                // the statement resolves the seeded unresolved binding, which is the shape the authority
+                // guard admits and the identity guard is then the only thing left to refuse.
+                ("session_campaign_bindings", "CampaignId") => AuthorizedAsync(
+                    CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                    () => ExecuteAsync(
+                        """
+                        UPDATE session_campaign_bindings
+                        SET BindingKindCode = 2, CampaignId = $value
+                        WHERE BindingKindCode = 3;
+                        """,
+                        ("$value", value))),
+
+                _ => ExecuteAsync(
+                    $"""UPDATE "{table}" SET "{column}" = $value;""",
+                    ("$value", value)),
+
+            };
+
+        /// <summary>
+        /// Rewrites one identified row's column, so a refusal cannot come from collapsing two rows onto
+        /// one value.
+        /// </summary>
+        /// <remarks>
+        /// The row is found by the value it currently holds, which is unique across the seed in every
+        /// table this is used on. <c>session_campaign_bindings</c> additionally needs the Session binding
+        /// write scope open, or its guard refuses the update for want of authority before it can refuse it
+        /// for changing the Session - both are that table's own rules, but only the second is the one this
+        /// family's omission rests on.
+        /// </remarks>
+        internal Task UpdateOneAsync(string table, string column, string from, string to)
+        {
+
+            Task Write() =>
+                ExecuteAsync(
+                    $"""UPDATE "{table}" SET "{column}" = $to WHERE "{column}" = $from;""",
+                    ("$to", to),
+                    ("$from", from));
+
+            return string.Equals(table, "session_campaign_bindings", StringComparison.Ordinal)
+                ? AuthorizedAsync(CovenantSqliteAuthorizationKind.SessionBindingWrite, Write)
+                : Write();
+
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+
+            await _connection.DisposeAsync();
+
+            _file.Dispose();
+
+        }
+
+        /// <summary>
+        /// One canonical row in every guarded table, plus the parents a foreign key demands. Seeded in
+        /// dependency order and always in full, so an insert case and an update case see the same
+        /// installation whatever table they name.
+        /// </summary>
+        private async Task SeedAsync(string table)
+        {
+
+            if (string.Equals(table, "assistant_entry_finalizations", StringComparison.Ordinal))
+            {
+
+                await ExecuteAsync(
+                    "DROP TRIGGER IF EXISTS assistant_entry_finalizations_validate_insert;");
+
+            }
+
+            await ExecuteAsync(
+                """
+                INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+                VALUES ($id, 'Alpha', 'alpha', '/campaigns/alpha', 0, '{}', $now, $now);
+                """,
+                ("$id", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ($id, $campaign, 'active', $now, $now);
+                """,
+                ("$id", Canonical(Session)),
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            // A second Session and a second attachment exist so that the case asserting a canonical write
+            // is accepted has a parent to name. Without them a reference column under a foreign key would
+            // be turned back by the constraint and the case would pass for a reason unrelated to its guard.
+            await ExecuteAsync(
+                """
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ($id, $campaign, 'active', $now, $now);
+                """,
+                ("$id", Canonical(SecondSession)),
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            // Exists, and deliberately gets no binding row below: it is the only Session a
+            // session_campaign_bindings row can be rewritten onto without colliding on that table's
+            // primary key, which is what lets its refusal be the thing that stops the write.
+            await ExecuteAsync(
+                """
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ($id, $campaign, 'active', $now, $now);
+                """,
+                ("$id", Canonical(UnboundSession)),
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            // Gets an unresolved binding below, so the CampaignId update cases have a row the authority
+            // guard will let them resolve.
+            await ExecuteAsync(
+                """
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ($id, $campaign, 'active', $now, $now);
+                """,
+                ("$id", Canonical(ResolvableSession)),
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+                VALUES ($id, $session, 0, 'content', 'model', $now, 1);
+                """,
+                ("$id", Canonical(Entry)),
+                ("$session", Canonical(Session)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                "INSERT INTO entry_embeddings (EntryId, Embedding, Dim) VALUES ($id, zeroblob(8), 2);",
+                ("$id", Canonical(Entry)));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO session_sensitivity_state (
+                    SessionId, TaintedArtifactCount, MaximumSensitivityCode,
+                    GenerationProvenanceDigest, Revision, UpdatedAtUtc)
+                VALUES ($session, 0, 0, zeroblob(32), 0, $now);
+                """,
+                ("$session", Canonical(Session)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                AttachmentInsert,
+                ("$id", Canonical(Attachment)),
+                ("$session", Canonical(Session)),
+                ("$entry", Canonical(Entry)),
+                ("$key", "seed"),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                AttachmentInsert,
+                ("$id", Canonical(SecondAttachment)),
+                ("$session", Canonical(SecondSession)),
+                ("$entry", Canonical(Entry)),
+                ("$key", "spare"),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO session_attachment_chunks (
+                    ChunkId, GenerationId, SessionId, AttachmentId, LogicalKey, Version,
+                    OriginalFileName, MimeType, ContentSha256, ChunkIndex, CharacterStart,
+                    CharacterEnd, StartLine, EndLine, Content, EmbeddingDimension, ExtractedAt,
+                    IndexedAt)
+                VALUES ($chunk, 'g1', $session, $attachment, 'key', 1, 'f.txt', 'text/plain', 'sha',
+                        0, 0, 1, 1, 1, 'body', 1536, $now, $now);
+                """,
+                ("$chunk", Canonical(Entry)),
+                ("$session", Session.ToLowerInvariant()),
+                ("$attachment", Canonical(Attachment)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO session_attachment_index_state (AttachmentId, Status, ContentSha256, UpdatedAt)
+                VALUES ($attachment, 'Indexed', 'sha', $now);
+                """,
+                ("$attachment", Canonical(Attachment)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO attachment_memory_consultations (
+                    SourceEntryId, SessionId, AttachmentId, LogicalKey, Version, ContentHash,
+                    MaterializedAt, SourceType)
+                VALUES ($entry, $session, $attachment, 'key', 1, 'hash', $now, 'Attachment');
+                """,
+                ("$entry", Canonical(Entry)),
+                ("$session", Canonical(Session)),
+                ("$attachment", Canonical(Attachment)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO saga_memories (Id, Content, CreatedAt) VALUES ($id, 'memory', $now);
+                """,
+                ("$id", Canonical(Memory)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO saga_memories (Id, Content, CreatedAt) VALUES ($id, 'second', $now);
+                """,
+                ("$id", Canonical(SecondMemory)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO saga_memory_attachment_provenance (
+                    MemoryId, SessionId, AttachmentId, LogicalKey, Version, ContentHash,
+                    MaterializedAt, SourceType)
+                VALUES ($memory, $session, $attachment, 'key', 1, 'hash', $now, 'Attachment');
+                """,
+                ("$memory", Canonical(Memory)),
+                ("$session", Canonical(Session)),
+                ("$attachment", Canonical(Attachment)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
+                VALUES ($id, 'Name', 'name', 'Thing', '[]', '', $now);
+                """,
+                ("$id", LexiconEntry),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO lexicon_fact_attachment_provenance (
+                    EntryId, FactHash, Fact, SessionId, AttachmentId, LogicalKey, Version,
+                    ContentHash, MaterializedAt, SourceType)
+                VALUES ($lexicon, 'hash-1', 'fact', $session, $attachment, 'key', 1, 'hash', $now,
+                        'Attachment');
+                """,
+                ("$lexicon", LexiconEntry),
+                ("$session", Canonical(Session)),
+                ("$attachment", Canonical(Attachment)),
+                ("$now", Timestamp));
+
+            await AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => ExecuteAsync(
+                    """
+                    INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                    VALUES ($value, 1, NULL, $now);
+                    """,
+                    ("$value", Canonical(Session)),
+                    ("$now", Timestamp)));
+
+            await AuthorizedAsync(
+                CovenantSqliteAuthorizationKind.SessionBindingWrite,
+                () => ExecuteAsync(
+                    """
+                    INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+                    VALUES ($value, 3, NULL, $now);
+                    """,
+                    ("$value", Canonical(ResolvableSession)),
+                    ("$now", Timestamp)));
+
+            await ExecuteAsync(
+                """
+                INSERT INTO saga_retirement_suppressions (
+                    SuppressionDigest, ScopeKindCode, CampaignId, RetiredAtUtc)
+                VALUES (zeroblob(32), 2, $campaign, $now);
+                """,
+                ("$campaign", Canonical(Campaign)),
+                ("$now", Timestamp));
+
+            await ExecuteAsync(
+                ArtifactSensitivityInsert,
+                ("$label", Canonical(Attachment)),
+                ("$artifact", Canonical(Entry)),
+                ("$value", Canonical(Session)),
+                ("$now", Timestamp));
+
+        }
+
+        /// <summary>An attachment row, with the three guarded columns and the logical key parameterised.</summary>
+        private const string AttachmentInsert =
+            """
+            INSERT INTO "SessionAttachments" (
+                "Id", "SessionId", "EntryId", "State", "LogicalKey", "OriginalFileName", "Version",
+                "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt")
+            VALUES ($id, $session, $entry, 'Bound', $key, 'f.txt', 1, 'p/f.txt', 'sha', 'text/plain',
+                    1, 'Text', $now);
+            """;
+
+        /// <summary>
+        /// A Covenant-derived artifact label, in the exact-provenance mode its CHECK constraints demand:
+        /// one 16-byte generation identity, no Bloom, and three 32-byte digests.
+        /// </summary>
+        private const string ArtifactSensitivityInsert =
+            """
+            INSERT INTO artifact_sensitivity (
+                LabelId, ArtifactKindCode, ArtifactId, SensitivityCode, ProvenanceModeCode,
+                ExactGenerationIds, GenerationBloom, SessionId, CampaignId, TurnId,
+                ArtifactRevision, ArtifactContentDigest, SensitivityDigest, ArtifactLabelDigest,
+                CreatedAtUtc)
+            VALUES ($label, 1, $artifact, 1, 1, zeroblob(16), NULL, $value, NULL, NULL,
+                    1, zeroblob(32), zeroblob(32), zeroblob(32), $now);
+            """;
+
+    }
+
+}

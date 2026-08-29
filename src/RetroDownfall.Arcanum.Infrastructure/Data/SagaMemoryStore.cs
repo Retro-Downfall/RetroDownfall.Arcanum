@@ -4,12 +4,14 @@ using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -22,14 +24,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// so all access goes through <see cref="DbCommand"/> rather than LINQ, mirroring
 /// <see cref="UnseenServantWatermarkStore"/> and <see cref="SanctumBreachRepository"/>.
 /// </summary>
-internal sealed class SagaMemoryStore(
+internal sealed partial class SagaMemoryStore(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ISagaMemoryStore
 {
 
-    public Task InsertAsync(
+    public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -49,7 +51,7 @@ internal sealed class SagaMemoryStore(
             provenance: null,
             cancellationToken);
 
-    public Task InsertAsync(
+    public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -76,7 +78,7 @@ internal sealed class SagaMemoryStore(
 
     }
 
-    private Task InsertCoreAsync(
+    private Task<SagaMemoryWriteOutcome> InsertCoreAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -112,15 +114,65 @@ internal sealed class SagaMemoryStore(
                 // across saga_memories/saga_memory_embeddings/saga_memory_embeddings_vec.
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
+                // Derived here, from the owning Session's canonical binding, rather than accepted from
+                // the caller. A memory's scope is a statement about authority, and a writer that could
+                // name its own Campaign could fabricate one for a Session that never carried it.
+                (SagaMemoryScopeKind scopeKind, string? scopeCampaignId) =
+                    await SagaMemoryScopeClassifier
+                        .ResolveForSessionAsync(connection, transaction, sessionId, cancellationToken)
+                        .ConfigureAwait(false);
+
+                // The one chokepoint every Saga write goes through, so extraction cannot re-add what an
+                // operator just retired and no future writer can reach around the check by calling
+                // something else. A null key means nothing has ever been retired.
+                byte[]? suppressionKey = await SagaSuppressionKeyStore
+                    .ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+                if (suppressionKey is not null)
+                {
+
+                    (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
+                        SuppressionDigests(suppressionKey, scopeKind, scopeCampaignId, content);
+
+                    await using DbCommand suppressionCheckCmd = connection.CreateCommand();
+
+                    suppressionCheckCmd.Transaction = transaction;
+
+                    suppressionCheckCmd.CommandText =
+                        "SELECT 1 FROM saga_retirement_suppressions"
+                        + " WHERE SuppressionDigest IN (@digest, @legacyDigest)";
+
+                    AddParameter(suppressionCheckCmd, "@digest", suppressionDigest);
+
+                    AddParameter(suppressionCheckCmd, "@legacyDigest", legacySuppressionDigest);
+
+                    object? hit = await suppressionCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (hit is not null)
+                    {
+
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                        return SagaMemoryWriteOutcome.Suppressed;
+
+                    }
+
+                }
+
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
                 memoryCmd.Transaction = transaction;
 
                 memoryCmd.CommandText =
                     """
-                    INSERT INTO "saga_memories" ("Id", "Content", "CreatedAt", "SessionId", "Tags", "Source")
-                    VALUES (@id, @content, @createdAt, @sessionId, @tags, @source)
+                    INSERT INTO "saga_memories" (
+                        "Id", "Content", "CreatedAt", "SessionId", "Tags", "Source", ScopeKindCode, CampaignId)
+                    VALUES (@id, @content, @createdAt, @sessionId, @tags, @source, @scopeKindCode, @scopeCampaignId)
                     """;
+
+                AddParameter(memoryCmd, "@scopeKindCode", (int)scopeKind);
+
+                AddParameter(memoryCmd, "@scopeCampaignId", (object?)scopeCampaignId ?? DBNull.Value);
 
                 AddParameter(memoryCmd, "@id", id);
 
@@ -144,6 +196,36 @@ internal sealed class SagaMemoryStore(
                         transaction,
                         id,
                         provenance,
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                if (options.CurrentValue.Features.Annals)
+                {
+
+                    // Inside the memory's own transaction, and reusing the scope the classifier just
+                    // derived rather than deriving a second one. Two derivations of one authority
+                    // eventually disagree, and the disagreement would land on what a turn may recall.
+                    //
+                    // AgentExtracted is the only honest origin here: no scribe tool writes to Saga and no
+                    // operator writes a memory into it, so a row arriving on this path is a headless
+                    // extraction's inference from a finished transcript rather than something anyone chose
+                    // to state. The operator's curation verbs append their own OperatorStated versions over
+                    // a memory this path already wrote; they never open a claim as an assertion of their
+                    // own, which is why this origin stays the only one an insert can record.
+                    _ = await AnnalsClaimWriter.AppendAssertAsync(
+                        connection,
+                        transaction,
+                        AnnalSubjectStore.Saga,
+                        id,
+                        AnnalOrigin.AgentExtracted,
+                        scopeKind,
+                        scopeCampaignId,
+                        ContentSensitivity.None,
+                        AnnalContentDigest.ForSagaMemory(content),
+                        createdAt,
+                        createdAt,
+                        sessionId,
                         cancellationToken).ConfigureAwait(false);
 
                 }
@@ -190,6 +272,8 @@ internal sealed class SagaMemoryStore(
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return SagaMemoryWriteOutcome.Written;
 
             },
             cancellationToken);
@@ -248,6 +332,7 @@ internal sealed class SagaMemoryStore(
     public async Task<SagaMemoryDto[]> ListAsync(
         string? query,
         Guid? sessionId,
+        MemoryScope scope,
         int limit,
         int offset,
         CancellationToken cancellationToken)
@@ -269,7 +354,8 @@ internal sealed class SagaMemoryStore(
                            EXISTS(
                                SELECT 1 FROM "SessionAttachments" a
                                WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
-                           )
+                           ),
+                           m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE 1 = 1
@@ -290,6 +376,43 @@ internal sealed class SagaMemoryStore(
                     sql.Append(" AND m.\"SessionId\" = @sessionId");
 
                     AddParameter(cmd, "@sessionId", sessionId.Value.ToString());
+
+                }
+
+                // The same ownership predicate retrieval ranks by, so this never shows a memory a turn
+                // in this scope could not own. The converse does not follow, in either direction. The
+                // SessionId filter above narrows further, to what one Session wrote, so a sibling
+                // Session's memory in the same Campaign is ranked by that turn and is still not listed
+                // beside it. And there is no join to the embeddings and no predicate over RetiredAtUtc
+                // here, so a retired memory lists exactly as a live one does while no turn can recall
+                // it. That second one is deliberate -- retirement's promise is about retrieval, and an
+                // operator has to be able to see what they took out in order to put it back.
+                if (scope.IsEnforced)
+                {
+
+                    if (scope.CampaignId is { } campaignId)
+                    {
+
+                        sql.Append(
+                            " AND (m.ScopeKindCode = @globalScopeKind"
+                            + " OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId))");
+
+                        AddParameter(cmd, "@campaignScopeKind", (int)SagaMemoryScopeKind.Campaign);
+
+                        // Canonical, exactly as DivinationService binds it: the listing and retrieval have
+                        // to select the same candidate set, so a spelling that halved one would have to
+                        // halve the other or the promise above this block is false.
+                        AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
+
+                    }
+                    else
+                    {
+
+                        sql.Append(" AND m.ScopeKindCode = @globalScopeKind");
+
+                    }
+
+                    AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
 
                 }
 
@@ -359,7 +482,8 @@ internal sealed class SagaMemoryStore(
                            EXISTS(
                                SELECT 1 FROM "SessionAttachments" a
                                WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
-                           )
+                           ),
+                           m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE m."Id" IN ({string.Join(", ", parameterNames)})
@@ -470,6 +594,16 @@ internal sealed class SagaMemoryStore(
 
                 }
 
+                // Deliberately ungated. A claim written while the Annals was enabled has to stay
+                // removable after it is disabled, or turning the feature off would strand records no
+                // surface can reach and no reset can clear.
+                await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    id,
+                    cancellationToken).ConfigureAwait(false);
+
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return true;
@@ -553,6 +687,14 @@ internal sealed class SagaMemoryStore(
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 }
+
+                // Saga's claims and no others. The Lexicon's stay exactly where they are, which is what
+                // makes a store-scoped reset mean what the operator asked for.
+                await AnnalsClaimWriter.DeleteClaimsForStoreAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -690,6 +832,65 @@ internal sealed class SagaMemoryStore(
 
     }
 
+    /// <summary>
+    /// The two digests a suppression can be recorded under: the one this installation writes now, and
+    /// the one it wrote before the Campaign spelling was settled.
+    /// </summary>
+    /// <remarks>
+    /// <b>The second is a compatibility branch that cannot be dropped.</b> The Campaign identity is part
+    /// of the preimage, because a rejection made inside one Campaign is not an opinion about another.
+    /// Before <c>session_campaign_bindings.CampaignId</c> was settled, the identity a retirement hashed
+    /// was whichever spelling that Session's binding happened to carry, and for every Session created
+    /// through the turn-begin path that was the minority form. A digest cannot be recomputed after the
+    /// fact - retirement deletes the content that is its preimage - so an installation's existing
+    /// suppression rows are the only copy of it.
+    ///
+    /// <para><b>Both halves of the lifecycle have to ask the same pair, and one of them did not.</b> The
+    /// write path checks a suppression before adding a memory; the release path deletes one when an
+    /// operator reinstates. Shipping the pair to the first and a single digest to the second made a
+    /// memory retired before the upgrade impossible to un-retire: the delete matched nothing, the
+    /// suppression stayed, and the reinstated memory was refused on the next extraction with nothing
+    /// reporting why. Returning both from one place is what stops the two paths from disagreeing
+    /// again.</para>
+    ///
+    /// <para><b>Sharing the function was not enough on its own, and the first attempt at this shared
+    /// only that.</b> The pair is derived from whatever the caller hands in, and the two callers do not
+    /// read the Campaign identity from the same place: the write path takes it from the classifier,
+    /// which canonicalizes, while the release reads it out of the memory row, which the version-5 sweep
+    /// may not have reached. Handed the minority spelling, this returned one digest twice - so a release
+    /// asked only for the spelling the row happened to hold, removed nothing when the retirement had
+    /// been recorded on the other half, and still reported success. Canonicalizing here rather than
+    /// trusting the callers to agree is what makes the pair a property of the function.</para>
+    ///
+    /// <para>A Global or unresolved scope carries no Campaign, so both renderings are
+    /// <see langword="null"/> and the two digests are the same value. Asking for it twice is
+    /// harmless.</para>
+    ///
+    /// <para><c>RetireAsync</c> deliberately does not come through here: it writes one digest, over the
+    /// spelling the memory row holds. The pair above covers it, because every spelling either binding
+    /// writer has ever produced is the canonical form or its lowercase image. A parseable identity in
+    /// any other casing would not be covered - but no writer can produce one, version 5's guard refuses
+    /// one, and the sweep repairs one, since a mixed-case value is canonically shaped and
+    /// <c>upper()</c> settles it.</para>
+    /// </remarks>
+    private static (byte[] Settled, byte[] Legacy) SuppressionDigests(
+        byte[] suppressionKey,
+        SagaMemoryScopeKind scopeKind,
+        string? campaignId,
+        string content)
+    {
+
+        string? settled = SagaMemoryScopeClassifier.CanonicalCampaignIdentity(campaignId);
+
+        return (SagaSuppressionDigest.Compute(suppressionKey, scopeKind, settled, content),
+            SagaSuppressionDigest.Compute(
+                suppressionKey,
+                scopeKind,
+                settled?.ToLowerInvariant(),
+                content));
+
+    }
+
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
 
@@ -737,6 +938,14 @@ internal sealed class SagaMemoryStore(
                     ? AttachmentSourceAvailability.Available
                     : AttachmentSourceAvailability.Unavailable);
 
+        DateTimeOffset? retiredAtUtc = reader.IsDBNull(16)
+            ? null
+            : DateTimeOffset.Parse(reader.GetString(16), CultureInfo.InvariantCulture);
+
+        DateTimeOffset? pinnedAtUtc = reader.IsDBNull(17)
+            ? null
+            : DateTimeOffset.Parse(reader.GetString(17), CultureInfo.InvariantCulture);
+
         return new SagaMemoryDto(
             id,
             content,
@@ -744,7 +953,11 @@ internal sealed class SagaMemoryStore(
             sessionId,
             tags,
             source,
-            provenance);
+            provenance,
+            (SagaMemoryScopeKind)reader.GetInt32(14),
+            reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)),
+            retiredAtUtc,
+            pinnedAtUtc);
 
     }
 
@@ -774,7 +987,7 @@ internal sealed class SagaMemoryStore(
 
         AddParameter(command, "@sessionId", provenance.SessionId.ToString());
 
-        AddParameter(command, "@attachmentId", provenance.AttachmentId.ToString());
+        AddParameter(command, "@attachmentId", provenance.AttachmentId.ToString().ToUpperInvariant());
 
         AddParameter(command, "@logicalKey", provenance.LogicalKey);
 

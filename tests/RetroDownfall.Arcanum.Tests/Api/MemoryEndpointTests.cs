@@ -22,6 +22,12 @@ using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -93,6 +99,94 @@ public sealed class MemoryEndpointTests
 
     }
 
+    /// <summary>
+    /// A Session's bound-attachment count reports the attachment the store actually wrote.
+    /// </summary>
+    /// <remarks>
+    /// This endpoint binds one Session identity across six predicates, and the columns behind them do
+    /// not agree on one spelling: <c>SessionAttachments.SessionId</c> holds the canonical form while
+    /// <c>session_attachment_chunks.SessionId</c>, <c>saga_memories.SessionId</c> and
+    /// <c>tapestry_generations.ScopeId</c> deliberately hold the minority one. A single parameter served
+    /// both groups, so once the attachment family moved this count compared a lowercase value against a
+    /// canonical column and reported zero - a store an operator can see filling up, reported empty, with
+    /// no error anywhere.
+    ///
+    /// <para>The attachment is written through <c>SessionAttachmentStore.PersistNewAsync</c> rather than
+    /// seeded, because a seeded row can only ever agree with whatever the seed chose and that is how
+    /// this defect family has stayed alive. The assertion is on the number, since the label is present
+    /// either way.</para>
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_session_status_counts_the_attachment_its_store_actually_wrote()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId;
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            Session session = new()
+            {
+
+                Id = Guid.NewGuid(),
+
+                Status = "active",
+
+                CreatedAt = DateTimeOffset.UtcNow,
+
+                UpdatedAt = DateTimeOffset.UtcNow,
+
+            };
+
+            db.Sessions.Add(session);
+
+            _ = await db.SaveChangesAsync();
+
+            sessionId = session.Id;
+
+            ISessionAttachmentStore attachments =
+                scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
+
+            _ = await attachments.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                "counted",
+                "counted.txt",
+                System.Text.Encoding.UTF8.GetBytes("counted content"),
+                "text/plain",
+                SessionAttachmentKind.Text);
+
+        }
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync(
+            "/api/memory/status/" + sessionId.ToString("D"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemoryStatusDto>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.NotNull(envelope?.Data);
+
+        MemoryStoreStatusDto attachmentStore = Assert.Single(
+            envelope.Data.Stores,
+            static store => string.Equals(store.Name, "Attachments", StringComparison.Ordinal));
+
+        Assert.Equal(1, attachmentStore.Count);
+
+    }
+
     [SkippableFact]
 
     public async Task Search_requires_query_but_not_an_embedding_feature_gate()
@@ -150,12 +244,14 @@ public sealed class MemoryEndpointTests
             "Operator",
             "Person",
             ["Prefers dark mode."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         _ = await lexicon.UpsertAsync(
             "Arcanum",
             "Project",
             ["Uses C#."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -215,9 +311,9 @@ public sealed class MemoryEndpointTests
 
         Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
 
-        Result<LexiconEntryDto?> remainingOperator = await lexicon.GetByNameAsync("Operator");
+        Result<LexiconEntryDto?> remainingOperator = await lexicon.GetByNameAsync("Operator", LexiconScope.Global);
 
-        Result<LexiconEntryDto?> remainingArcanum = await lexicon.GetByNameAsync("Arcanum");
+        Result<LexiconEntryDto?> remainingArcanum = await lexicon.GetByNameAsync("Arcanum", LexiconScope.Global);
 
         Assert.Null(remainingOperator.Value);
 
@@ -293,6 +389,7 @@ public sealed class MemoryEndpointTests
             "Operator",
             "Person",
             ["Prefers dark mode."],
+            LexiconScope.Global,
             CancellationToken.None);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -354,6 +451,7 @@ public sealed class MemoryEndpointTests
                 $"Moonlit-{index}",
                 "Person",
                 ["Works by moonlight."],
+                LexiconScope.Global,
                 CancellationToken.None);
 
         }
@@ -618,7 +716,7 @@ public sealed class MemoryEndpointTests
 
         public Task<SagaMemoryDto[]> ListAsync(
             string? query,
-            Guid? sessionId,
+            Guid? sessionId, MemoryScope scope,
             int limit,
             int offset,
             CancellationToken cancellationToken)
@@ -647,7 +745,7 @@ public sealed class MemoryEndpointTests
 
         }
 
-        public Task InsertAsync(
+        public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,
             string content,
             DateTimeOffset createdAt,
@@ -666,6 +764,34 @@ public sealed class MemoryEndpointTests
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(
             IReadOnlyList<string> ids,
             CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> RetireAsync(
+            string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> ReinstateAsync(
+            string id,
+            byte[] expectedContentDigest,
+            float[] embedding,
+            DateTimeOffset reinstatedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> CorrectAsync(
+            string id,
+            byte[] expectedContentDigest,
+            string content,
+            float[] embedding,
+            DateTimeOffset correctedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> SetPinAsync(
+            string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>

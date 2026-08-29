@@ -102,4 +102,34 @@ public interface ICovenantStore
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Reads what one curation change would do, in one bounded transaction.
+    /// </summary>
+    /// <remarks>
+    /// The current curation state, the two head facts the broader-scope sentence is read off, and every
+    /// epoch the preflight token binds, all inside one read. Reading them separately would leave a
+    /// window in which the effect an operator was shown and the epochs their token binds describe two
+    /// different installations.
+    /// </remarks>
+    ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(
+        CovenantCurationEffectQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads one live retirement target, with the content a Ward will show and the facts it turns on.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not the lane-head probe. That probe answers "does a head exist, at what revision,
+    /// and is it a tombstone", which is what a proposal needs; a retirement needs the compiled fragment
+    /// an operator has to read and the broader-scope fact they have to be told, and widening the probe
+    /// would hand every staging handler content its turn never admitted.
+    /// </remarks>
+    ValueTask<Result<CovenantRetirementTarget>> ReadRetirementTargetAsync(
+        CanonicalCampaignContext campaign,
+        CovenantLane lane,
+        string normalizedKey,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
 }

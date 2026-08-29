@@ -658,7 +658,7 @@ public sealed class CovenantSchemaManifestTests
         GrimoireSchemaManifestBuilder.Build(
             family,
             tier,
-            GrimoireSchemaManifestBuilder.CovenantSchemaVersion,
+            GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion,
             $"source-fingerprint-{tier}",
             [
                 new GrimoireSchemaObject(

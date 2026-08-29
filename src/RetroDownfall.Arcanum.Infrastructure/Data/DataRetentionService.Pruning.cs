@@ -22,6 +22,10 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Core.Annals;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class DataRetentionService
@@ -415,7 +419,7 @@ internal sealed partial class DataRetentionService
             candidates,
             cancellationToken).ConfigureAwait(false);
 
-        await AddSagaCandidatesAsync(
+        DataRetentionSagaCurationInventory sagaCuration = await AddSagaCandidatesAsync(
             retention,
             limit,
             items,
@@ -474,7 +478,7 @@ internal sealed partial class DataRetentionService
             candidates,
             cancellationToken).ConfigureAwait(false);
 
-        DataRetentionPlan plan = FinalizePlan(
+        DataRetentionPlan finalized = FinalizePlan(
             request,
             items,
             blockers,
@@ -483,6 +487,16 @@ internal sealed partial class DataRetentionService
             requiresConfirmation: true,
             planAuthority: BuildPrunePolicyAuthority(retention),
             generatedAt: generatedAt);
+
+        // Attached before the frozen-authority registration below, which is keyed by reference: a
+        // `with` after it would register the authority against a plan instance nothing else holds, and
+        // apply would fall back to recomputing cutoffs from whatever the policy says by then.
+        DataRetentionPlan plan = finalized with
+        {
+
+            SagaCuration = sagaCuration,
+
+        };
 
         IReadOnlyDictionary<string, DateTimeOffset> cutoffs =
             await BuildCandidateCutoffsAsync(
@@ -2269,7 +2283,16 @@ internal sealed partial class DataRetentionService
 
     }
 
-    private async Task AddSagaCandidatesAsync(
+    /// <summary>
+    /// Selects the aged, unpinned Saga memories, and reports what the pin kept out of that selection.
+    /// </summary>
+    /// <remarks>
+    /// A pinned memory is not a candidate: the pin binds the automatic path, which is the one that acts
+    /// without being asked. The returned inventory is what keeps the preview honest about it — an
+    /// operator reading a dry-run that silently omitted the exempted rows would believe their rule
+    /// reaches further than it does.
+    /// </remarks>
+    private async Task<DataRetentionSagaCurationInventory> AddSagaCandidatesAsync(
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
@@ -2279,20 +2302,33 @@ internal sealed partial class DataRetentionService
 
         RetentionRuleSettings rule = retention.SagaMemories;
 
+        long pinnedRows = await CountTableAsync(
+            "saga_memories",
+            "PinnedAtUtc IS NOT NULL",
+            cancellationToken).ConfigureAwait(false);
+
         if (!rule.Enabled || candidates.Count >= limit)
         {
 
-            return;
+            // This plan selects no Saga memory at all, so none of the pinned ones was exempted from
+            // anything.
+            return new DataRetentionSagaCurationInventory(pinnedRows, 0);
 
         }
 
         DateTimeOffset cutoff = PrunePlanningTimestamp.AddDays(
             -ArcanumSettingClamps.RetentionRuleDays(rule.Days));
 
+        long pinnedRowsExemptFromPlan = await CountTableAsync(
+            "saga_memories",
+            "PinnedAtUtc IS NOT NULL AND julianday(CreatedAt) <= julianday(@cutoff)",
+            cancellationToken,
+            ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false);
+
         string[] ids = await ReadStringIdsAsync(
             "saga_memories",
             "Id",
-            "julianday(CreatedAt) <= julianday(@cutoff)",
+            "julianday(CreatedAt) <= julianday(@cutoff) AND PinnedAtUtc IS NULL",
             "CreatedAt, Id",
             limit - candidates.Count,
             cancellationToken,
@@ -2319,6 +2355,12 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", id)).ConfigureAwait(false);
 
+            derived += await CountTableAsync(
+                "annal_claims",
+                "SubjectStoreCode = 1 AND SubjectId = @id",
+                cancellationToken,
+                ("@id", id)).ConfigureAwait(false);
+
             candidates.Add(SagaCandidatePrefix + id);
 
             items.Add(
@@ -2330,6 +2372,10 @@ internal sealed partial class DataRetentionService
                     derived));
 
         }
+
+        return new DataRetentionSagaCurationInventory(
+            pinnedRows,
+            pinnedRowsExemptFromPlan);
 
     }
 
@@ -2374,6 +2420,12 @@ internal sealed partial class DataRetentionService
             derived += await CountTableAsync(
                 "lexicon_fts",
                 "rowid IN (SELECT rowid FROM lexicon_entries WHERE Id = @id)",
+                cancellationToken,
+                ("@id", id)).ConfigureAwait(false);
+
+            derived += await CountTableAsync(
+                "annal_claims",
+                "SubjectStoreCode = 2 AND SubjectId = @id",
                 cancellationToken,
                 ("@id", id)).ConfigureAwait(false);
 
@@ -6356,6 +6408,19 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", memoryId)).ConfigureAwait(false);
 
+            // Before the memory row, because the claim is found through the row that names it. The
+            // rows-zero arm below rolls the whole transaction back, so a candidate the delete's own
+            // WHERE refuses keeps its claim along with its memory.
+            await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                connection,
+                transaction,
+                AnnalSubjectStore.Saga,
+                memoryId,
+                cancellationToken).ConfigureAwait(false);
+
+            // The pin is re-proved here rather than trusted from the plan. A plan is a measurement, and
+            // a measurement that authorizes a later delete has to hold at the moment it is used --
+            // otherwise a pin taken while apply is running loses exactly the race it exists to win.
             rows = await ExecuteAsync(
                 connection,
                 transaction,
@@ -6363,6 +6428,7 @@ internal sealed partial class DataRetentionService
                 DELETE FROM saga_memories
                 WHERE Id = @id
                   AND julianday(CreatedAt) <= julianday(@cutoff)
+                  AND PinnedAtUtc IS NULL
                 """,
                 cancellationToken,
                 ("@id", memoryId),
@@ -6404,6 +6470,12 @@ internal sealed partial class DataRetentionService
         reconciled &= await CountTableAsync(
             "saga_memory_attachment_provenance",
             "MemoryId = @id",
+            cancellationToken,
+            ("@id", memoryId)).ConfigureAwait(false) == 0;
+
+        reconciled &= await CountTableAsync(
+            "annal_claims",
+            "SubjectStoreCode = 1 AND SubjectId = @id",
             cancellationToken,
             ("@id", memoryId)).ConfigureAwait(false) == 0;
 
@@ -6475,6 +6547,13 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", entryId)).ConfigureAwait(false);
 
+            await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                connection,
+                transaction,
+                AnnalSubjectStore.Lexicon,
+                entryId,
+                cancellationToken).ConfigureAwait(false);
+
             rows = await ExecuteAsync(
                 connection,
                 transaction,
@@ -6517,6 +6596,12 @@ internal sealed partial class DataRetentionService
         reconciled &= await CountTableAsync(
             "lexicon_fact_attachment_provenance",
             "EntryId = @id",
+            cancellationToken,
+            ("@id", entryId)).ConfigureAwait(false) == 0;
+
+        reconciled &= await CountTableAsync(
+            "annal_claims",
+            "SubjectStoreCode = 2 AND SubjectId = @id",
             cancellationToken,
             ("@id", entryId)).ConfigureAwait(false) == 0;
 

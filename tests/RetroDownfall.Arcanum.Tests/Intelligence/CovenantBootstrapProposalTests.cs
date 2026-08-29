@@ -463,13 +463,20 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 VALUES ($sessionId, $kindCode, $campaignId, $boundAtUtc);
                 """;
 
-            _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+            // Canonical, because the foreign key to "Sessions"("Id") leaves this column no spelling of
+            // its own and the parent is written by the object-relational writer. CampaignId below is now
+            // canonical for a different reason: that column still carries no foreign key, but its two
+            // production writers no longer disagree - the core data initializer always canonicalized and
+            // GrimoireRepository.InsertBindingAsync now does too - and version 5 guards it.
+            _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
             _ = command.Parameters.AddWithValue(
                 "$kindCode",
                 (long)SessionCampaignBinding.ForCampaign(CampaignId).Kind);
 
-            _ = command.Parameters.AddWithValue("$campaignId", CampaignId.ToString());
+            _ = command.Parameters.AddWithValue(
+                "$campaignId",
+                CampaignId.ToString("D").ToUpperInvariant());
 
             _ = command.Parameters.AddWithValue(
                 "$boundAtUtc",

@@ -124,6 +124,13 @@ public sealed class ErrorCodeCatalogContractTests
     [InlineData("Validation.InvalidLore")]
     [InlineData("Validation.InvalidKey")]
     [InlineData("Execution.NotFound")]
+    [InlineData("Saga.StaleContent")]
+    [InlineData("Saga.AlreadyRetired")]
+    [InlineData("Saga.EmbeddingUnavailable")]
+    [InlineData("Validation.InvalidFields")]
+    [InlineData("Validation.BodyTooLarge")]
+    [InlineData("Validation.BodyReadTimeout")]
+    [InlineData("Validation.RequestHeadersTooLarge")]
     public void Catalog_and_constant_table_both_carry_every_code_a_route_emits(string code)
     {
 

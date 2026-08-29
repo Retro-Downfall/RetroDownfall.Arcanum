@@ -134,7 +134,10 @@ public sealed partial class DataRetentionServiceTests
 
                 blockedResourceId = blockedEntryId.ToString("D");
 
-                expectedCandidate = "entry-embedding:" + eligibleEntryId.ToString("D");
+                // Passed through from the stored EntryId rather than re-rendered, unlike the two
+                // above - see DataRetentionService.Pruning, which adds this candidate as the raw column
+                // value and the entry and attachment candidates as a parsed Guid's "D" form.
+                expectedCandidate = "entry-embedding:" + Canonical(eligibleEntryId);
 
                 expectedBlockerClass = RetentionDataClass.SessionEntryEmbeddings;
 
@@ -265,13 +268,13 @@ public sealed partial class DataRetentionServiceTests
 
         await ExecuteAsync(
             "UPDATE Entries SET Id = @newId, CreatedAt = @at WHERE lower(replace(Id, '-', '')) = @oldId",
-            ("@newId", olderEntryId.ToString()),
+            ("@newId", Canonical(olderEntryId)),
             ("@at", "1999-01-01T00:00:00.0000000+00:00"),
             ("@oldId", originalOlderEntryId.ToString("N")));
 
         await ExecuteAsync(
             "UPDATE Entries SET Id = @newId, CreatedAt = @at WHERE lower(replace(Id, '-', '')) = @oldId",
-            ("@newId", newerEntryId.ToString()),
+            ("@newId", Canonical(newerEntryId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"),
             ("@oldId", originalNewerEntryId.ToString("N")));
 
@@ -287,6 +290,9 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(
             [
+                // Lowercase whatever the row holds: the planner parses the stored identity and
+                // re-renders it with ToString("D"). The rows themselves are canonical above, which is
+                // what the identity guards enforce; this is the planner's own identifier format.
                 "entry:" + olderEntryId.ToString("D"),
                 "entry:" + newerEntryId.ToString("D"),
             ],

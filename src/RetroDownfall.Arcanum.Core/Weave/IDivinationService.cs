@@ -59,4 +59,47 @@ public interface IDivinationService
         float similarityThreshold,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Like <see cref="SearchScopedAsync"/>, but with a two-tier ownership predicate instead of a single
+    /// equality: a row is a candidate when its owner is marked installation-scoped, or when its owner
+    /// names the Campaign in <paramref name="scope"/>. Every other ownership state — including one that
+    /// has not been classified, and one whose classification is unresolved — is excluded from every
+    /// scope.
+    /// </summary>
+    /// <remarks>
+    /// This always ranks through the managed cosine path, exactly as <see cref="SearchScopedAsync"/>
+    /// does, and deliberately so rather than incidentally. The vec0 KNN path carries no per-row partition
+    /// key, so a scoped search that used it would have to rank first and filter afterwards; the ownership
+    /// predicate would then apply on one path and not the other, and what a turn recalled would change
+    /// with whether an optional native asset happened to ship. One path means one answer.
+    /// </remarks>
+    Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+        string tableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        DivinationCampaignScope scope,
+        Embedding<float> queryEmbedding,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken);
+
 }
+
+/// <summary>
+/// Where a feature records who owns each embedded row, and which Campaign the search is being run for.
+/// </summary>
+/// <remarks>
+/// The table and column names are internal constants owned by the calling feature's retrieval code —
+/// <see cref="SagaStorageKeys.CampaignScope"/> is the only construction that ships — and reach the
+/// query as interpolated identifiers. <paramref name="CampaignId"/> is the one value bound as a
+/// parameter, and a null one means the caller resolved to no Campaign: the candidate set is then the
+/// installation-scoped rows alone.
+/// </remarks>
+public sealed record DivinationCampaignScope(
+    string OwnerTableName,
+    string OwnerJoinColumn,
+    string OwnerScopeKindColumn,
+    string OwnerCampaignColumn,
+    int GlobalScopeKindCode,
+    int CampaignScopeKindCode,
+    Guid? CampaignId);

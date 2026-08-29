@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -182,16 +183,136 @@ public sealed class ReadSagaToolTests
 
     }
 
+    /// <summary>
+    /// The tool reads inside the turn's Campaign, and takes that Campaign from the Session the host
+    /// bound to the call rather than from anything the model could say.
+    /// </summary>
+    /// <remarks>
+    /// <c>read_saga</c> is read-only precisely so a model cannot steer its own memory. Letting it steer
+    /// which Campaign's memory it reads would hand that back, so the Session identity the scope is
+    /// resolved from is asserted here alongside the scope itself.
+    /// </remarks>
+    [Fact]
+    public async Task ToolsCall_ReadSaga_WhenScopingIsOn_SearchesTheAmbientSessionsCampaign()
+    {
+
+        Guid campaign = new("5E2A9C11-7B34-4D80-9F16-2C7E0A3B4D59");
+
+        Guid session = new("11111111-2222-4333-8444-555555555555");
+
+        FakeWeaveService weave = new() { Available = true };
+
+        FakeSagaMemoryStore store = new();
+
+        store.Memories["mem-1"] = new SagaMemoryDto(
+            "mem-1",
+            "a conclusion",
+            DateTimeOffset.UtcNow,
+            SessionId: null,
+            Tags: null,
+            Source: "extraction");
+
+        FakeDivinationService divination = new()
+        {
+            Results = [new DivinationResult("mem-1", 0.87f, EmptyMetadata)],
+        };
+
+        FakeMemoryScopeResolver scopeResolver = new(
+            new MemoryScope(MemoryScopeKind.Campaign, campaign));
+
+        await using TestMcpSession mcp = await CreateSessionAsync(
+            sagaEnabled: true,
+            weave: weave,
+            divination: divination,
+            store: store,
+            scopeResolver: scopeResolver);
+
+        Guid? previousSession = SessionAttachmentToolAmbient.CurrentSessionId;
+
+        try
+        {
+
+            SessionAttachmentToolAmbient.CurrentSessionId = session;
+
+            McpToolsCallResultWire result = await mcp.CallToolAsync(
+                "read_saga",
+                JsonSerializer.SerializeToElement(
+                    new ReadSagaParams("what did we decide?"),
+                    McpJsonSerializerContext.Default.ReadSagaParams));
+
+            Assert.False(result.IsError);
+
+        }
+        finally
+        {
+
+            SessionAttachmentToolAmbient.CurrentSessionId = previousSession;
+
+        }
+
+        Assert.NotNull(divination.LastCampaignScope);
+
+        Assert.Equal(campaign, divination.LastCampaignScope!.CampaignId);
+
+        Assert.Equal(session, scopeResolver.LastSessionId);
+
+    }
+
+    /// <summary>
+    /// With the gate off the tool asks the unscoped question it always asked.
+    /// </summary>
+    [Fact]
+    public async Task ToolsCall_ReadSaga_WhenScopingIsOff_UsesTheUnscopedSearch()
+    {
+
+        FakeWeaveService weave = new() { Available = true };
+
+        FakeSagaMemoryStore store = new();
+
+        store.Memories["mem-1"] = new SagaMemoryDto(
+            "mem-1",
+            "a conclusion",
+            DateTimeOffset.UtcNow,
+            SessionId: null,
+            Tags: null,
+            Source: "extraction");
+
+        FakeDivinationService divination = new()
+        {
+            Results = [new DivinationResult("mem-1", 0.87f, EmptyMetadata)],
+        };
+
+        await using TestMcpSession mcp = await CreateSessionAsync(
+            sagaEnabled: true,
+            weave: weave,
+            divination: divination,
+            store: store);
+
+        McpToolsCallResultWire result = await mcp.CallToolAsync(
+            "read_saga",
+            JsonSerializer.SerializeToElement(
+                new ReadSagaParams("what did we decide?"),
+                McpJsonSerializerContext.Default.ReadSagaParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Null(divination.LastCampaignScope);
+
+    }
+
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata = new Dictionary<string, string>(0);
 
     private static async Task<TestMcpSession> CreateSessionAsync(
         bool sagaEnabled,
         FakeWeaveService? weave = null,
         FakeDivinationService? divination = null,
-        FakeSagaMemoryStore? store = null)
+        FakeSagaMemoryStore? store = null,
+        FakeMemoryScopeResolver? scopeResolver = null)
     {
 
         ServiceCollection services = new();
+
+        services.AddSingleton<IMemoryScopeResolver>(scopeResolver ?? new FakeMemoryScopeResolver());
 
         services.AddSingleton<IWeaveService>(weave ?? new FakeWeaveService());
 
@@ -345,6 +466,26 @@ public sealed class ReadSagaToolTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
 
+        /// <summary>The scope the tool asked for, or null when it used the unscoped search.</summary>
+        public DivinationCampaignScope? LastCampaignScope { get; private set; }
+
+        public Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            DivinationCampaignScope scope,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken)
+        {
+
+            LastCampaignScope = scope;
+
+            return SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
+
+        }
+
     }
 
     private sealed class FakeSagaMemoryStore : ISagaMemoryStore
@@ -352,7 +493,7 @@ public sealed class ReadSagaToolTests
 
         public Dictionary<string, SagaMemoryDto> Memories { get; } = new(StringComparer.Ordinal);
 
-        public Task InsertAsync(
+        public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,
             string content,
             DateTimeOffset createdAt,
@@ -368,7 +509,7 @@ public sealed class ReadSagaToolTests
         public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
 
-        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, int limit, int offset, CancellationToken cancellationToken) =>
+        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
 
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken)
@@ -391,6 +532,34 @@ public sealed class ReadSagaToolTests
             return Task.FromResult((IReadOnlyDictionary<string, SagaMemoryDto>)result);
 
         }
+
+        public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
+        public Task<SagaCurationOutcome> RetireAsync(
+            string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
+        public Task<SagaCurationOutcome> ReinstateAsync(
+            string id,
+            byte[] expectedContentDigest,
+            float[] embedding,
+            DateTimeOffset reinstatedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
+        public Task<SagaCurationOutcome> CorrectAsync(
+            string id,
+            byte[] expectedContentDigest,
+            string content,
+            float[] embedding,
+            DateTimeOffset correctedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
+        public Task<SagaCurationOutcome> SetPinAsync(
+            string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
 
         public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");

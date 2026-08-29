@@ -657,7 +657,7 @@ public static class GrimoireDatabaseBootstrapper
         // it, and every CLI bootstrap silently installed with the DEFAULT embedding dimension instead
         // of the configured one. Keep the two resolutions separate, and keep the optional one
         // nullable, so an absent registration can never again decide the embedding width.
-        int dimensions = ResolveEmbeddingDimensions(scope);
+        int dimensions = GrimoireEmbeddingDimensionResolver.Resolve(scope.ServiceProvider);
 
         WeaveIndexAvailability? availability = scope.ServiceProvider.GetService<WeaveIndexAvailability>();
 
@@ -953,7 +953,7 @@ public static class GrimoireDatabaseBootstrapper
                     scope.ServiceProvider.GetRequiredService<GrimoireSchemaManifestInspector>(),
                     scope.ServiceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
                     BuildInitializationContext(heldInstallationLock, grimoireDirectory, masterApiKey),
-                    ResolveEmbeddingDimensions(scope)),
+                    GrimoireEmbeddingDimensionResolver.Resolve(scope.ServiceProvider)),
                 initializer,
                 TimeProvider.System);
 
@@ -1051,32 +1051,6 @@ public static class GrimoireDatabaseBootstrapper
     /// Resolves the configured embedding width, falling back to the shipped default when the options
     /// pipeline is not composed in this container.
     /// </summary>
-    private static int ResolveEmbeddingDimensions(AsyncServiceScope scope)
-    {
-
-        try
-        {
-
-            IOptionsMonitor<ArcanumSettings> optionsMonitor =
-                scope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
-
-            return ArcanumSettingClamps.EmbeddingsDimensions(
-                optionsMonitor.CurrentValue.ResolveEmbeddings().Dimensions);
-
-        }
-        catch (Exception ex)
-        {
-
-            Log.Warning(
-                ex,
-                "Embedding settings could not be resolved for schema installation; installing with the default dimension.");
-
-            return new EmbeddingSettings().Dimensions;
-
-        }
-
-    }
-
     /// <summary>
     /// Builds the installation-local facts every tier initializer runs against.
     /// </summary>

@@ -129,7 +129,7 @@ public sealed partial class DataRetentionServiceTests
             await CountAsync(
                 "SessionAttachments",
                 "Id",
-                attachment.AttachmentId.ToString()));
+                Canonical(attachment.AttachmentId)));
 
         Assert.True(File.Exists(attachment.AbsolutePath));
 
@@ -219,7 +219,7 @@ public sealed partial class DataRetentionServiceTests
             await CountAsync(
                 "SessionAttachments",
                 "Id",
-                attachment.AttachmentId.ToString()));
+                Canonical(attachment.AttachmentId)));
 
         Assert.True(File.Exists(attachment.AbsolutePath));
 
@@ -331,12 +331,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAsync(
             "entry_embeddings",
             "EntryId",
-            entryId.ToString()));
+            Canonical(entryId)));
 
         Assert.Equal(1, await CountAsync(
             "session_attachment_chunks",
             "AttachmentId",
-            attachment.AttachmentId.ToString()));
+            Canonical(attachment.AttachmentId)));
 
     }
 
@@ -420,7 +420,7 @@ public sealed partial class DataRetentionServiceTests
         bool entryVector = await TrySeedVectorMirrorAsync(
             "entry_embeddings_vec",
             "EntryId",
-            entryId.ToString());
+            Canonical(entryId));
 
         bool attachmentVector = await TrySeedVectorMirrorAsync(
             "session_attachment_embeddings_vec",
@@ -438,7 +438,7 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@entryId", entryId.ToString().ToUpperInvariant()),
             ("@sessionId", sessionId.ToString().ToUpperInvariant()),
-            ("@attachmentId", attachment.AttachmentId.ToString()),
+            ("@attachmentId", Canonical(attachment.AttachmentId)),
             ("@at", OldTimestamp));
 
         await ExecuteAsync(

@@ -1925,9 +1925,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                      1, 'x', 'abc', 'text/plain', 1, 'Text', @createdAt)
                 """;
 
-            AddParam(boundDup, "@id", Guid.NewGuid().ToString());
+            // Both identities in the spelling the store writes: the partial unique index this case is
+            // about compares SessionId exactly, so a minority-spelled duplicate would collide with
+            // nothing and the case would pass by not reaching the index at all.
+            AddParam(boundDup, "@id", Guid.NewGuid().ToString().ToUpperInvariant());
 
-            AddParam(boundDup, "@sessionId", sessionId.ToString());
+            AddParam(boundDup, "@sessionId", sessionId.ToString().ToUpperInvariant());
 
             AddParam(boundDup, "@createdAt", DateTimeOffset.UtcNow.ToString("o"));
 
@@ -1950,7 +1953,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                      1, 'y', 'def', 'text/plain', 1, 'Text', @createdAt)
                 """;
 
-            AddParam(pendingDup, "@id", Guid.NewGuid().ToString());
+            AddParam(pendingDup, "@id", Guid.NewGuid().ToString().ToUpperInvariant());
 
             AddParam(pendingDup, "@pendingTurnId", pendingTurnId);
 
@@ -2741,7 +2744,10 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         idParam.ParameterName = "@id";
 
-        idParam.Value = id.ToString();
+        // Rendered the way the store renders it. A bare ToString() here matched nothing once the store
+        // was canonicalised, and the backdate then updated zero rows in silence - which made the stale
+        // sweep this helper exists to trigger look as though it had failed.
+        idParam.Value = id.ToString().ToUpperInvariant();
 
         cmd.Parameters.Add(idParam);
 

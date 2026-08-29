@@ -191,94 +191,14 @@ internal static class BackupRestoreDatabaseWorker
 
         ArgumentException.ThrowIfNullOrEmpty(masterKeyMaterial);
 
-        GrimoireSchemaInitializationContext? staged = await TryReadStagedAuthorityAsync(
-            connection,
-            installedAtUtc,
-            cancellationToken).ConfigureAwait(false);
+        GrimoireSchemaInitializationContext? staged = await GrimoireSchemaInitializationContextReader
+            .TryReadAsync(connection, installedAtUtc, cancellationToken)
+            .ConfigureAwait(false);
 
         return staged
             ?? CovenantAuthorityBootstrapper.PrepareWithoutInstallationLock(
                 masterKeyMaterial,
                 installedAtUtc);
-
-    }
-
-    /// <summary>
-    /// Reads the staged authority row, or returns <see langword="null"/> when there is nothing usable
-    /// to preserve.
-    /// </summary>
-    /// <remarks>
-    /// A row that fails the shape check is treated as absent rather than propagated. Feeding a
-    /// malformed identity into the install transaction would abort the Core tier and fail the whole
-    /// restore, when the snapshot's remaining content is still perfectly recoverable.
-    /// </remarks>
-    private static async Task<GrimoireSchemaInitializationContext?> TryReadStagedAuthorityAsync(
-        SqliteConnection connection,
-        DateTimeOffset installedAtUtc,
-        CancellationToken cancellationToken)
-    {
-
-        if (!await TableExistsAsync(connection, "covenant_authority_state", cancellationToken)
-            .ConfigureAwait(false))
-        {
-
-            return null;
-
-        }
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = """
-            SELECT InstallationIdentity,
-                   AuthorityEpoch,
-                   CurrentMasterKeyVersion,
-                   CurrentMasterKeyFingerprint,
-                   RecoveryEnvelopeEpoch
-            FROM covenant_authority_state
-            WHERE StateKey = 1;
-            """;
-
-        await using SqliteDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-
-            return null;
-
-        }
-
-        if (reader.IsDBNull(0) || reader.GetValue(3) is not byte[] fingerprint)
-        {
-
-            return null;
-
-        }
-
-        string installationIdentity = reader.GetString(0);
-
-        long authorityEpoch = reader.GetInt64(1);
-
-        long masterKeyVersion = reader.GetInt64(2);
-
-        long recoveryEnvelopeEpoch = reader.GetInt64(4);
-
-        bool usable = installationIdentity.Length is > 0 and <= 128
-            && authorityEpoch > 0
-            && masterKeyVersion is > 0 and <= uint.MaxValue
-            && fingerprint.Length == 32
-            && recoveryEnvelopeEpoch > 0;
-
-        return usable
-            ? new GrimoireSchemaInitializationContext(
-                installationIdentity,
-                authorityEpoch,
-                (uint)masterKeyVersion,
-                fingerprint,
-                recoveryEnvelopeEpoch,
-                installedAtUtc)
-            : null;
 
     }
 

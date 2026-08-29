@@ -48,7 +48,22 @@ public sealed record MemoryStatusDto(
     Guid? SessionId,
     string? SessionTitle,
     MemoryStoreStatusDto[] Stores,
-    CovenantStatusDto? Covenant = null);
+    CovenantStatusDto? Covenant = null,
+    MemoryCampaignScopeDto? CampaignScope = null);
+
+/// <summary>
+/// Which Campaign scope a turn on this surface would draw memory from, stated before any turn runs.
+/// </summary>
+/// <remarks>
+/// Resolved through the same seam retrieval uses, so this is the scope a turn would actually take
+/// rather than a second description of it. <paramref name="Kind"/> is the closed name;
+/// <paramref name="Detail"/> is the operator-facing sentence, which is what makes "narrowed, and by
+/// what" legible without reading a configuration key.
+/// </remarks>
+public sealed record MemoryCampaignScopeDto(
+    string Kind,
+    Guid? CampaignId,
+    string Detail);
 
 public sealed record MemorySourceDto(
     string Name,
@@ -80,7 +95,8 @@ public sealed record MemorySearchResultDto(
     string Content,
     string Provenance,
     string Retention,
-    string SourceId);
+    string SourceId,
+    MemoryCampaignScopeDto? CampaignScope = null);
 
 /// <summary>
 /// What one scope contributed, and whether it had more to give. Scopes are consulted in order against
@@ -110,6 +126,7 @@ public sealed record MemoryEligibilityDto(
 public sealed record MemoryExplainDto(
     Guid? SessionId,
     string? SessionTitle,
-    MemoryEligibilityDto[] Sources);
+    MemoryEligibilityDto[] Sources,
+    MemoryCampaignScopeDto? CampaignScope = null);
 
 public sealed record LexiconListDto(LexiconEntryDto[] Entries);

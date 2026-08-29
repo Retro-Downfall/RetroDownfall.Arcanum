@@ -30,13 +30,34 @@ public sealed record CovenantOperatorPreflightBody(
     CovenantDigest DependentHeadVectorDigest,
     CovenantDigest EffectDigest,
     long IssuedAt,
-    long ExpiresAt)
+    long ExpiresAt,
+
+    /// <summary>The exact version a correction believes it is replacing, or absent.</summary>
+    /// <remarks>
+    /// Present for a correction and absent for everything else. It is here rather than in the request
+    /// digest because that digest is stored durably and recomputed to resolve a replay: changing its
+    /// preimage would make a client retrying a mutation committed before an upgrade receive an
+    /// idempotency conflict instead of its own receipt.
+    /// </remarks>
+    Guid? TargetVersionId = null,
+
+    /// <summary>The compiled hash of the version a correction believes it is replacing, or absent.</summary>
+    /// <remarks>
+    /// The revision alone can be guessed. The hash is what proves the operator saw the content they
+    /// are correcting rather than a number that happened to be right.
+    /// </remarks>
+    CovenantDigest? TargetRenderedHash = null)
 {
 
     /// <summary>The one encoded length this format ever produces.</summary>
-    public const int EncodedBytes = 32 + 8 + 16 + 8 + 8 + 8 + 1 + 8 + 1 + 32 + 32 + 32 + 8 + 8;
+    public const int EncodedBytes = 32 + 8 + 16 + 8 + 8 + 8 + 1 + 8 + 1 + 32 + 32 + 32 + 8 + 8 + 1 + 16 + 1 + 32;
 
-    private const byte FormatVersion = 1;
+    /// <summary>
+    /// Version 2 carries the correction target. A version-1 body is refused rather than read as a
+    /// version-2 one with no target: reading it that way would silently drop the binding a correction
+    /// exists to carry, and a token lives five minutes, so no operator loses more than one preparation.
+    /// </summary>
+    private const byte FormatVersion = 2;
 
     public PreflightBodyDigestInput ToDigestInput() =>
         new(
@@ -51,7 +72,9 @@ public sealed record CovenantOperatorPreflightBody(
             DependentHeadVectorDigest,
             EffectDigest,
             IssuedAt,
-            ExpiresAt);
+            ExpiresAt,
+            TargetVersionId,
+            TargetRenderedHash);
 
     public CovenantDigest Digest() => CovenantDigests.PreflightBody(ToDigestInput());
 
@@ -118,6 +141,28 @@ public sealed record CovenantOperatorPreflightBody(
         offset += 8;
 
         BinaryPrimitives.WriteInt64BigEndian(buffer.AsSpan(offset, 8), ExpiresAt);
+
+        offset += 8;
+
+        buffer[offset++] = TargetVersionId is null ? (byte)0 : (byte)1;
+
+        if (TargetVersionId is { } target)
+        {
+
+            _ = target.TryWriteBytes(buffer.AsSpan(offset, 16), bigEndian: true, out _);
+
+        }
+
+        offset += 16;
+
+        buffer[offset++] = TargetRenderedHash is null ? (byte)0 : (byte)1;
+
+        if (TargetRenderedHash is { } rendered)
+        {
+
+            rendered.Span.CopyTo(buffer.AsSpan(offset, 32));
+
+        }
 
         return buffer;
 
@@ -195,7 +240,19 @@ public sealed record CovenantOperatorPreflightBody(
 
         long expiresAt = BinaryPrimitives.ReadInt64BigEndian(payload.Slice(offset, 8));
 
-        if (hasRegistry > 1 || hasArtifact > 1)
+        offset += 8;
+
+        byte hasTargetVersion = payload[offset++];
+
+        Guid targetVersionId = new(payload.Slice(offset, 16), bigEndian: true);
+
+        offset += 16;
+
+        byte hasTargetHash = payload[offset++];
+
+        CovenantDigest targetRenderedHash = new(payload.Slice(offset, 32).ToArray());
+
+        if (hasRegistry > 1 || hasArtifact > 1 || hasTargetVersion > 1 || hasTargetHash > 1)
         {
 
             return Result<CovenantOperatorPreflightBody>.Failure(new Error(
@@ -216,7 +273,9 @@ public sealed record CovenantOperatorPreflightBody(
             dependentHeads,
             effect,
             issuedAt,
-            expiresAt));
+            expiresAt,
+            hasTargetVersion == 1 ? targetVersionId : null,
+            hasTargetHash == 1 ? targetRenderedHash : null));
 
     }
 

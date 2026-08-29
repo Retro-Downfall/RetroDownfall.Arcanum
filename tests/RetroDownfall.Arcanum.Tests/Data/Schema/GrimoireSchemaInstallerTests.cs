@@ -109,6 +109,13 @@ public sealed class GrimoireSchemaInstallerTests
     /// entry it indexes, the way <c>lexicon_entries</c> already does, so deleting a session's entries
     /// stays linear instead of scanning the index once per row.
     /// </summary>
+    /// <remarks>
+    /// The identities are written out as canonical uppercase dashed literals rather than as the readable
+    /// labels this case used to carry. <c>Sessions."Id"</c>, <c>Entries."Id"</c> and
+    /// <c>Entries."SessionId"</c> hold a Guid the value binder renders that way and nothing else, and the
+    /// version-5 guards refuse anything that is not one - a label like <c>'entry-a'</c> described a row no
+    /// installation could hold.
+    /// </remarks>
     [Fact]
     public async Task Entries_fts_rows_are_keyed_by_the_rowid_of_the_entry_they_index()
     {
@@ -119,26 +126,28 @@ public sealed class GrimoireSchemaInstallerTests
             connection,
             """
             INSERT INTO "Sessions" ("Id", "Status", "CreatedAt", "UpdatedAt")
-            VALUES ('session-1', 'active', '2026-01-01', '2026-01-01');
+            VALUES ('11111111-1111-4111-8111-111111111111', 'active', '2026-01-01', '2026-01-01');
 
             INSERT INTO "Entries"
                 ("rowid", "Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
             VALUES
-                (1000, 'entry-a', 'session-1', 0, 'alpha', 'test-model', '2026-01-01', 1),
-                (2000, 'entry-b', 'session-1', 0, 'beta', 'test-model', '2026-01-01', 2);
+                (1000, '22222222-2222-4222-8222-22222222222A',
+                       '11111111-1111-4111-8111-111111111111', 0, 'alpha', 'test-model', '2026-01-01', 1),
+                (2000, '22222222-2222-4222-8222-22222222222B',
+                       '11111111-1111-4111-8111-111111111111', 0, 'beta', 'test-model', '2026-01-01', 2);
             """);
 
         Assert.Equal([1000L, 2000L], await ReadFtsRowIdsAsync(connection));
 
         await ExecuteAsync(
             connection,
-            """UPDATE "Entries" SET "Content" = 'gamma' WHERE "Id" = 'entry-a';""");
+            """UPDATE "Entries" SET "Content" = 'gamma' WHERE "Id" = '22222222-2222-4222-8222-22222222222A';""");
 
         Assert.Equal([1000L, 2000L], await ReadFtsRowIdsAsync(connection));
 
         await ExecuteAsync(
             connection,
-            """DELETE FROM "Entries" WHERE "Id" = 'entry-b';""");
+            """DELETE FROM "Entries" WHERE "Id" = '22222222-2222-4222-8222-22222222222B';""");
 
         Assert.Equal([1000L], await ReadFtsRowIdsAsync(connection));
 
@@ -449,7 +458,9 @@ public sealed class GrimoireSchemaInstallerTests
                 new ThrowingCoreDataInitializer(),
                 new CovenantCanonicalSchemaDataInitializer(),
                 new CovenantAcceleratorSchemaDataInitializer(),
-            ]));
+            ]),
+            GrimoireSchemaVersionChains.Default,
+            TimeProvider.System);
 
         _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             installer.InstallAsync(
@@ -619,7 +630,7 @@ public sealed class GrimoireSchemaInstallerTests
             connection,
             """
             INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
-            VALUES ('entry-a', X'00', 8);
+            VALUES ('22222222-2222-4222-8222-22222222222A', X'00', 8);
             """);
 
         _ = await GrimoireSchemaTestInstaller.InstallAsync(
@@ -668,6 +679,22 @@ public sealed class GrimoireSchemaInstallerTests
             GrimoireSchemaInitializationContext context,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The core tier seed failed for this test.");
+
+    }
+
+    /// <summary>
+    /// The transition journal is a core object like any other: it has to exist on a fresh install,
+    /// because the very first thing a version run does is write a row into it.
+    /// </summary>
+    [Fact]
+    public async Task InstallAsync_creates_the_transition_journal()
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        Assert.True(await TableExistsAsync(connection, "grimoire_schema_transitions"));
+
+        Assert.True(await IndexExistsAsync(connection, "idx_grimoire_schema_transitions_target"));
 
     }
 

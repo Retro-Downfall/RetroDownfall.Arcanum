@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -779,12 +780,12 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         Assert.Contains("send_commlink_alert", listedNames);
 
-        // The two Covenant mutation handlers are registered unconditionally and advertised in no
-        // build, because neither capability can be delivered: retirement cannot be granted without a
-        // Ward receipt, and a granted proposal is staged into a collector nothing ever seals. So they
-        // are the registered-but-unlisted names on every host, not only one that composed no Covenant
-        // tier (§10.14). Everything else must still match one-for-one: an advertised tool with no
-        // handler, or a handler nobody can see, is a wiring bug either way.
+        // The two Covenant mutation handlers are registered unconditionally and advertised only where
+        // the capability can be delivered. This host composed no Covenant tier at all, so neither is
+        // listed here; a host that composed one lists the proposal always and the retirement wherever
+        // Wards can be raised, which its own suite asserts. Everything else must still match
+        // one-for-one: an advertised tool with no handler, or a handler nobody can see, is a wiring
+        // bug either way.
         registeredNames.ExceptWith((string[])
         [
             CovenantToolNames.ProposeCovenant,
@@ -3315,6 +3316,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             });
 
         ServiceCollection services = new();
+
+        services.AddSingleton<IMemoryScopeResolver>(new FakeMemoryScopeResolver());
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 

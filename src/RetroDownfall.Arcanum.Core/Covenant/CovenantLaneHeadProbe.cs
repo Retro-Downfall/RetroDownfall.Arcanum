@@ -37,7 +37,15 @@ public sealed record CovenantLaneHeadProbe(
     long LaneRevision,
     CovenantOrigin? Origin,
     long CompiledByteCost,
-    long KeyEpoch)
+    long KeyEpoch,
+
+    /// <summary>Whether the operator has pinned this scoped lane against agent authorship.</summary>
+    /// <remarks>
+    /// Reported so a staging handler can refuse before it stages. The write authority inside the
+    /// publication transaction is what actually enforces the pin — this is the early answer that keeps
+    /// a refused proposal from costing the turn the answer it was carrying.
+    /// </remarks>
+    bool IsPinned = false)
 {
 
     /// <summary>

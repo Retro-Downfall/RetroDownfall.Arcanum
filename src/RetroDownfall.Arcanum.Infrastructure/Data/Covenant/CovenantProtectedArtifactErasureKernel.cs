@@ -14,8 +14,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <remarks>
 /// Both halves are fixed internal literals, never input. That is what makes it safe to interpolate
 /// them into the statement text SQLite gives no parameter form for.
+///
+/// <para><c>ExistsConditionally</c> marks a table no schema file installs — the sqlite-vec mirrors,
+/// which are present only where that accelerator built them. Such a target names its table unquoted
+/// so a consumer can probe <c>sqlite_master</c> for it before deleting.</para>
 /// </remarks>
-internal sealed record CovenantArtifactPurgeTarget(string Table, string KeyColumn);
+internal sealed record CovenantArtifactPurgeTarget(
+    string Table,
+    string KeyColumn,
+    bool ExistsConditionally = false)
+{
+
+    /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
+    internal string DeleteBy(string parameter) =>
+        $"DELETE FROM {Table} WHERE {CovenantIdentitySql.Keyed(KeyColumn, parameter)};";
+
+}
 
 /// <summary>
 /// The statements one artifact kind's rule resolves to in this build's schema.
@@ -44,7 +58,10 @@ internal static class CovenantArtifactPurgePlans
     {
         [SensitiveArtifactKind.AssistantEntry] = new(
             SensitiveArtifactKind.AssistantEntry,
-            [new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId")],
+            [
+                new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
+                VectorMirror("entry_embeddings_vec", "EntryId"),
+            ],
             new CovenantArtifactPurgeTarget("\"Entries\"", "\"Id\""),
             CurrentPointerTable: null,
             RedactionSql: null),
@@ -54,19 +71,37 @@ internal static class CovenantArtifactPurgePlans
             [],
             new CovenantArtifactPurgeTarget("session_summary_artifacts", "ArtifactId"),
             CurrentPointerTable: "session_summary_state",
-            RedactionSql: "UPDATE \"Sessions\" SET \"Summary\" = NULL WHERE \"Id\" = $sessionId;"),
+            RedactionSql:
+                "UPDATE \"Sessions\" SET \"Summary\" = NULL WHERE "
+                + CovenantIdentitySql.Keyed("\"Id\"", "$sessionKey")
+                + ";"),
 
         [SensitiveArtifactKind.SessionTitle] = new(
             SensitiveArtifactKind.SessionTitle,
             [],
             new CovenantArtifactPurgeTarget("session_title_artifacts", "ArtifactId"),
             CurrentPointerTable: "session_title_state",
-            RedactionSql: "UPDATE \"Sessions\" SET \"Title\" = NULL WHERE \"Id\" = $sessionId;"),
+            RedactionSql:
+                "UPDATE \"Sessions\" SET \"Title\" = NULL WHERE "
+                + CovenantIdentitySql.Keyed("\"Id\"", "$sessionKey")
+                + ";"),
 
+        // FOLLOW-UP, and its trigger is labelling rather than a date: the Saga and Lexicon plans below
+        // take the durable row and leave the Annals claim describing it. A removal of a saga_memories or
+        // lexicon_entries row is required to take that store's claims in the same transaction - a memory
+        // reset's recovery counts only the store's own tables and infers from them that the Annals went
+        // too - and these plans do not. Every consumer of this table inherits that, this kernel and the
+        // staged-restore purger alike, so it is a property of the plan rather than of one caller.
+        //
+        // Out of reach while nothing labels either kind, which is what makes this a record rather than a
+        // live defect. Closing it is an erasure ordering over annal_heads, annal_versions and
+        // annal_claims, and the purge policy for these two kinds saying so. Whoever first labels a Saga
+        // memory or a Lexicon entry is the person this is addressed to, and it belongs to that change.
         [SensitiveArtifactKind.Saga] = new(
             SensitiveArtifactKind.Saga,
             [
                 new CovenantArtifactPurgeTarget("saga_memory_embeddings", "MemoryId"),
+                VectorMirror("saga_memory_embeddings_vec", "MemoryId"),
                 new CovenantArtifactPurgeTarget("saga_memory_attachment_provenance", "MemoryId"),
             ],
             new CovenantArtifactPurgeTarget("saga_memories", "Id"),
@@ -82,7 +117,7 @@ internal static class CovenantArtifactPurgePlans
 
         [SensitiveArtifactKind.Embedding] = new(
             SensitiveArtifactKind.Embedding,
-            [],
+            [VectorMirror("entry_embeddings_vec", "EntryId")],
             new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
             CurrentPointerTable: null,
             RedactionSql: null),
@@ -94,8 +129,25 @@ internal static class CovenantArtifactPurgePlans
             [],
             Artifact: null,
             CurrentPointerTable: null,
-            RedactionSql: "UPDATE \"IdempotencyClaims\" SET \"ResponseBody\" = NULL WHERE \"Id\" = $artifactId;"),
+            RedactionSql:
+                "UPDATE \"IdempotencyClaims\" SET \"ResponseBody\" = NULL WHERE "
+                + CovenantIdentitySql.Keyed("\"Id\"", "$artifactKey")
+                + ";"),
     };
+
+    /// <summary>
+    /// One embedding mirror the sqlite-vec accelerator owns, holding the same content as its BLOB
+    /// counterpart.
+    /// </summary>
+    /// <remarks>
+    /// Inside the erasure boundary because the mirror stores the embedding itself, not a pointer to
+    /// it: leaving it behind would keep Covenant-derived content reachable through the vector search
+    /// path after a purge reported success. No schema file installs these tables — the accelerator
+    /// creates them where it is present — so every consumer probes for the table before it deletes,
+    /// which is the same guard the retention pruner uses on the same two tables.
+    /// </remarks>
+    private static CovenantArtifactPurgeTarget VectorMirror(string table, string keyColumn) =>
+        new(table, keyColumn, ExistsConditionally: true);
 
     /// <summary>
     /// The plan for a kind, or the label-only plan for a kind whose storage this build does not ship.
@@ -331,10 +383,19 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
 
+            if (projection.ExistsConditionally
+                && !await TableExistsAsync(connection, transaction, projection.Table, cancellationToken)
+                    .ConfigureAwait(false))
+            {
+
+                continue;
+
+            }
+
             await ExecuteAsync(
                 connection,
                 transaction,
-                $"DELETE FROM {projection.Table} WHERE {projection.KeyColumn} = $artifactId;",
+                projection.DeleteBy("$artifactKey"),
                 item,
                 cancellationToken).ConfigureAwait(false);
 
@@ -346,7 +407,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             await ExecuteAsync(
                 connection,
                 transaction,
-                $"DELETE FROM {pointer} WHERE CurrentArtifactId = $artifactId;",
+                $"DELETE FROM {pointer} WHERE {CovenantIdentitySql.Keyed("CurrentArtifactId", "$artifactKey")};",
                 item,
                 cancellationToken).ConfigureAwait(false);
 
@@ -365,12 +426,16 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             await ExecuteAsync(
                 connection,
                 transaction,
-                $"DELETE FROM {artifact.Table} WHERE {artifact.KeyColumn} = $artifactId;",
+                artifact.DeleteBy("$artifactKey"),
                 item,
                 cancellationToken).ConfigureAwait(false);
 
         }
 
+        // The label is the one table whose identities have a single writer. ArtifactSensitivityLedger
+        // is the sole INSERT into artifact_sensitivity and spells every identity the way Format does,
+        // so an exact comparison here is internally consistent and keeps the primary-key seek that
+        // makes the label delete cheap.
         await ExecuteAsync(
             connection,
             transaction,
@@ -418,6 +483,12 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         command.Transaction = transaction;
 
+        // Exact, unlike the content deletes above it, and the difference is the whole point.
+        // assistant_entry_finalizations.AssistantEntryId is a governed identity column: a guard trigger
+        // refuses any spelling but the canonical one and the version-5 sweep verifies what is already
+        // stored, so the turn committed natively and the one copied in by a protected transfer now
+        // spell that identity alike. The content tables the deletes reach include columns outside that
+        // family, which is why they still normalise.
         command.CommandText = """
             INSERT OR IGNORE INTO assistant_entry_erasure_receipts (
                 AssistantEntryId, SessionId, FinalizationGuardDigest, ErasureReasonCode, OperationId, ErasedAtUtc)
@@ -458,6 +529,12 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     /// <c>CovenantDerived</c> whenever anything is still counted. It is never lowered to <c>None</c>
     /// by this path even when the count reaches zero, because taint that has been purged still bars a
     /// cached replay.
+    ///
+    /// <para>Both identity comparisons are exact indexed matches against one bound spelling, and both
+    /// columns carry a write-time identity guard that refuses any spelling but the canonical one. The
+    /// second used to need a normalised comparison instead, because its foreign key makes it agree with
+    /// whichever spelling created the Session and that was once either of two. There is one spelling
+    /// for it to agree with now.</para>
     /// </remarks>
     private async Task RepairSessionSensitivityAsync(
         SqliteConnection connection,
@@ -571,11 +648,19 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         command.CommandText = sql;
 
-        // All three identities are bound for every statement rather than sniffed out of the text.
-        // SQLite ignores a bound parameter a statement does not mention, and choosing which to bind by
+        // Every identity is bound for every statement rather than sniffed out of the text. SQLite
+        // ignores a bound parameter a statement does not mention, and choosing which to bind by
         // searching the SQL would make the binding a property of how the statement happens to be
         // spelled.
+        //
+        // Each identity is bound twice, in two spellings that are never interchangeable. The canonical
+        // $artifactId, $labelId, and $sessionId match artifact_sensitivity, whose single writer spells
+        // them that way. The normalised $artifactKey and $sessionKey match the content tables, whose
+        // several writers do not agree on a spelling, and are the only forms a statement generated by
+        // CovenantIdentitySql may compare against.
         _ = command.Parameters.AddWithValue("$artifactId", Format(item.ArtifactId));
+
+        _ = command.Parameters.AddWithValue("$artifactKey", CovenantIdentitySql.Key(item.ArtifactId));
 
         _ = command.Parameters.AddWithValue("$labelId", Format(item.SensitivityLabelId));
 
@@ -583,7 +668,48 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             "$sessionId",
             item.SessionId is { } sessionId ? Format(sessionId) : DBNull.Value);
 
+        // A null Session binds null on both spellings, so a redaction for an item that names no Session
+        // matches nothing rather than matching every row — the same no-op the exact comparison gave.
+        _ = command.Parameters.AddWithValue(
+            "$sessionKey",
+            item.SessionId is { } key ? CovenantIdentitySql.Key(key) : DBNull.Value);
+
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Whether a conditionally installed table is present in this database.
+    /// </summary>
+    /// <remarks>
+    /// Read inside the erasure transaction, and against <c>sqlite_master</c> rather than against a
+    /// process-wide accelerator flag. Whether the vector mirrors hold rows is a property of the
+    /// database in front of this kernel, not of whether the current process loaded an accelerator: a
+    /// build with the accelerator off would skip a mirror an earlier build filled, and content a
+    /// purge skipped is content a purge left behind. It is the same guard the retention pruner uses
+    /// over the same two tables, and it matches a vec0 virtual table, which <c>sqlite_master</c>
+    /// records as an ordinary <c>table</c>.
+    /// </remarks>
+    private static async Task<bool> TableExistsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT 1 FROM sqlite_master WHERE name = $table AND type IN ('table', 'view') LIMIT 1;
+            """;
+
+        _ = command.Parameters.AddWithValue("$table", table);
+
+        object? found = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return found is not null && found != DBNull.Value;
 
     }
 

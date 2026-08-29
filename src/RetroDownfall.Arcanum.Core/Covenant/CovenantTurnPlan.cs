@@ -42,7 +42,7 @@ public sealed class CovenantPlanCandidateDecision
         _digestInput;
 
     private static CovenantPlanDecision ValidateDecision(CovenantPlanDecision decision) =>
-        decision is >= CovenantPlanDecision.EligibleConfirmed and <= CovenantPlanDecision.Invalid
+        decision is >= CovenantPlanDecision.EligibleConfirmed and <= CovenantPlanDecision.Masked
             ? decision
             : throw new ArgumentOutOfRangeException(nameof(decision));
 

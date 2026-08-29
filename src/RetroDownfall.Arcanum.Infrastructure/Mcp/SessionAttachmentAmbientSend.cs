@@ -202,10 +202,11 @@ internal static class SessionAttachmentAmbientSend
     /// for. <c>TryAdd</c> semantics mean a duplicate request id is refused rather than overwriting a
     /// live registration.
     ///
-    /// <para>Proposal only. A retirement's capability additionally requires the preflight disclosure
-    /// its Ward showed the operator and the receipt proving they approved it, and neither exists yet;
-    /// minting one without them would produce a capability whose constructor refuses it anyway, so
-    /// the retirement path is left to fail closed where it already does.</para>
+    /// <para>A retirement's capability additionally requires the preflight disclosure its Ward showed
+    /// the operator and the receipt proving they approved it. Both arrive on the staging context, put
+    /// there by the tool pipeline for the one dispatch it warded; a retirement that reaches here
+    /// without them mints nothing, and the handler then fails closed exactly as it does for a turn that
+    /// carries no capability at all.</para>
     /// </remarks>
     private static void BindCovenantStaging(
         string connectionKey,
@@ -214,13 +215,27 @@ internal static class SessionAttachmentAmbientSend
     {
 
         if (toolName is not { Length: > 0 } name
-            || !string.Equals(name, CovenantToolNames.ProposeCovenant, StringComparison.Ordinal)
+            || !CovenantToolNames.IsCovenantMutationTool(name)
             || CovenantToolStagingAmbient.Current is not { } staging)
         {
             return;
         }
 
-        CovenantToolCapabilityNonce nonce = CovenantToolCapabilityNonce.Create();
+        bool retirement = string.Equals(name, CovenantToolNames.RetireCovenant, StringComparison.Ordinal);
+
+        if (retirement != (staging.RetirementPreflight is not null && staging.WardReceipt is not null))
+        {
+
+            // A proposal carrying retirement material, or a retirement carrying none, is a capability
+            // the constructor would refuse anyway. Refusing here keeps the mint from ever producing one
+            // whose shape contradicts the tool it authorizes.
+            return;
+
+        }
+
+        // The nonce the disclosure receipt already bound, when a retirement was warded and disclosed
+        // one frame earlier. One call is one nonce.
+        CovenantToolCapabilityNonce nonce = staging.Nonce ?? CovenantToolCapabilityNonce.Create();
 
         CovenantToolInvocationContext capability;
 
@@ -235,8 +250,8 @@ internal static class SessionAttachmentAmbientSend
                 nonce,
                 name,
                 requestId,
-                retirementPreflight: null,
-                wardReceipt: null,
+                staging.RetirementPreflight,
+                staging.WardReceipt,
                 staging.TurnCancellation);
         }
         catch (ArgumentException)

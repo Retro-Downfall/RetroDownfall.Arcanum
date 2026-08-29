@@ -536,7 +536,14 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         if (request.Scope == BackupScope.SpecificSession)
         {
 
-            command.Parameters.AddWithValue("$sessionId", request.SessionId!.Value.ToString());
+            // Canonical, because that is what "SessionAttachments"."SessionId" holds. A bare ToString()
+            // matched nothing under BINARY collation, and the failure was silent in the worst possible
+            // way: the reader below simply never iterated, so a session-scoped archive reported no
+            // missing path and no failure while omitting every attachment blob the database still
+            // names. Nothing downstream re-checks that, so the archive was permanently incomplete.
+            command.Parameters.AddWithValue(
+                "$sessionId",
+                request.SessionId!.Value.ToString().ToUpperInvariant());
 
         }
 

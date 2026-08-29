@@ -657,6 +657,7 @@ public sealed class CovenantAcrossSessionsTests
             new PassthroughEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
             new CovenantMutationKernel(),
+            new CovenantCurationKernel(),
             new FixedAuthority(),
             TimeProvider.System);
 

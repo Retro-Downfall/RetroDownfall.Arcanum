@@ -52,7 +52,10 @@ internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource con
 
         command.CommandText = Sql;
 
-        _ = command.Parameters.AddWithValue("$sessionId", id.ToString());
+        // Serves both statements above, and both want the same spelling: "Sessions"."Id" is written
+        // canonically by the object-relational writer, and session_campaign_bindings.SessionId is bound
+        // to it by an enforced foreign key. A bare ToString() matched neither.
+        _ = command.Parameters.AddWithValue("$sessionId", id.ToString("D").ToUpperInvariant());
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -106,7 +109,9 @@ internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource con
 
         command.CommandText = SessionExistsSql;
 
-        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+        // "Sessions"."Id" is written canonically by the object-relational writer, so a bare ToString()
+        // here reported every Session absent for any identity carrying a hex letter.
+        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
 

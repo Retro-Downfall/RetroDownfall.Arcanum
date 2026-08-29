@@ -73,11 +73,12 @@ public sealed class MacOsSigningScriptTests
     /// The <c>.app</c> path signs the same tree: build-app-dmg.sh copies the publish directory verbatim
     /// into <c>Contents/MacOS/</c>, so a nested dylib is exactly as deep there as it is in the CLI zip.
     /// A plain <c>find</c> walk is pre-order, not depth-first, so it hands back shallow files before the
-    /// subdirectories it has not descended into yet; ordering has to be imposed after the walk, and
-    /// every Mach-O has to be signed, not merely most of them.
+    /// subdirectories it has not descended into yet; ordering has to be imposed after the walk. What
+    /// gets ordered is every file in that directory, not every Mach-O: codesign seals a bundle's
+    /// executables directory by location, so the contract is that nothing under it is left out.
     /// </summary>
     [SkippableFact]
-    public void Sign_app_bundle_signs_every_nested_macho_deepest_first()
+    public void Sign_app_bundle_signs_every_file_under_contents_macos_deepest_first()
     {
 
         Skip.IfNot(OperatingSystem.IsMacOS(), "sign_app_bundle is a macOS packaging primitive.");
@@ -132,7 +133,7 @@ public sealed class MacOsSigningScriptTests
 
             }
 
-            // /bin/echo is a real Mach-O, which is what the `file -b | grep Mach-O` filter selects on.
+            // /bin/echo is a real Mach-O, standing in for the dylibs and apphost a bundle really holds.
             foreach (string target in shallow.Concat(deep).Append(main))
             {
 
@@ -140,8 +141,13 @@ public sealed class MacOsSigningScriptTests
 
             }
 
-            // A managed assembly is not Mach-O and must never reach codesign.
-            File.WriteAllText(Path.Combine(macosDirectory, "RetroDownfall.Arcanum.Cli.dll"), "not mach-o");
+            // A managed assembly must reach codesign. The first release to get this far signed and
+            // notarized the CLI, then failed sealing the .app with "code object is not signed at all /
+            // In subcomponent: Microsoft.CSharp.dll". It is left as a non-Mach-O file so that nothing
+            // but the signer's own rule can account for its being signed.
+            string managedAssembly = Path.Combine(macosDirectory, "RetroDownfall.Arcanum.Cli.dll");
+
+            File.WriteAllText(managedAssembly, "not mach-o");
 
             IReadOnlyList<string> signed = RunSigningFunction(root, "sign_app_bundle", appPath);
 
@@ -153,7 +159,7 @@ public sealed class MacOsSigningScriptTests
             string[] nested = [.. signed.Take(signed.Count - 2)];
 
             Assert.Equal(
-                [.. shallow.Concat(deep).Order(StringComparer.Ordinal)],
+                [.. shallow.Concat(deep).Append(managedAssembly).Order(StringComparer.Ordinal)],
                 [.. nested.Order(StringComparer.Ordinal)]);
 
             int[] depths = [.. nested.Select(static path => path.Count(static c => c == '/'))];

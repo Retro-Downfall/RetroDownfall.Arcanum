@@ -20,6 +20,37 @@ public static class ErrorCodes
         /// <summary>A JSON route received a body whose <c>Content-Type</c> is missing or is not JSON.</summary>
         public const string UnsupportedMediaType = "Validation.UnsupportedMediaType";
 
+        /// <summary>
+        /// The request body is larger than this server accepts, so it was never read to the end.
+        /// </summary>
+        /// <remarks>
+        /// Distinct from <see cref="InvalidBody"/> because the two ask the caller for different things:
+        /// a malformed body is worth resending corrected, and an oversized one is not worth resending at
+        /// all. That is the same reason <c>Attachment.TooLarge</c> is distinct from
+        /// <c>Attachment.InvalidRequest</c>, and every other code on this installation's 413.
+        /// </remarks>
+        public const string BodyTooLarge = "Validation.BodyTooLarge";
+
+        /// <summary>
+        /// The request body arrived too slowly to be read, so the server stopped waiting for it.
+        /// </summary>
+        /// <remarks>
+        /// Kestrel enforces a minimum data rate and answers 408 when a body falls under it. Distinct
+        /// from <see cref="InvalidBody"/> because nothing is wrong with the body: it is worth resending
+        /// unchanged on a better connection, which is the one thing a 400 would tell the caller not to do.
+        /// </remarks>
+        public const string BodyReadTimeout = "Validation.BodyReadTimeout";
+
+        /// <summary>
+        /// The request's headers or trailers exceed the total size this server accepts.
+        /// </summary>
+        /// <remarks>
+        /// Reachable while reading a chunked body, because trailers arrive after it and count against
+        /// the same ceiling. Distinct from <see cref="BodyTooLarge"/> because shrinking the body will
+        /// not help, and from <see cref="InvalidBody"/> because the body may be perfectly well formed.
+        /// </remarks>
+        public const string RequestHeadersTooLarge = "Validation.RequestHeadersTooLarge";
+
         public const string InvalidQuery = "Validation.InvalidQuery";
 
         public const string InvalidProviderType = "Validation.InvalidProviderType";
@@ -685,6 +716,26 @@ public static class ErrorCodes
         public const string NotEmpty = "Saga.NotEmpty";
 
         public const string SearchFailed = "Saga.SearchFailed";
+
+        /// <summary>The caller's view of this memory's content is stale relative to what is stored now.</summary>
+        public const string StaleContent = "Saga.StaleContent";
+
+        /// <summary>
+        /// A correction was asked for against a retired memory. Reinstate it first.
+        /// </summary>
+        /// <remarks>
+        /// Emitted by correction alone. Retiring a memory that is already retired is not an error — the
+        /// operator asked for a state and has it — but correcting one is: a retired memory is reinstated
+        /// before it is corrected, and the store checks the retirement before it compares any content,
+        /// so this is the answer whatever text the correction carried.
+        /// </remarks>
+        public const string AlreadyRetired = "Saga.AlreadyRetired";
+
+        /// <summary>
+        /// The embedding substrate cannot produce a vector right now, so the write was refused rather
+        /// than leaving this memory's text and its vector disagreeing about what it says.
+        /// </summary>
+        public const string EmbeddingUnavailable = "Saga.EmbeddingUnavailable";
 
     }
 

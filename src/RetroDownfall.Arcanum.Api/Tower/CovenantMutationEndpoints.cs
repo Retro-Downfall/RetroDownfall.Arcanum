@@ -119,6 +119,73 @@ internal static class CovenantMutationEndpoints
             .WithName("RetireCovenantEntry")
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
 
+        apiGroup.MapPost(
+            "/memory/covenant/correct/prepare",
+            static async (
+                CovenantCorrectPrepareRequest? request,
+                ICovenantMutationService? service,
+                ICovenantOperationGate? gate,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+                await PrepareAsync(
+                        request,
+                        service,
+                        gate,
+                        httpContext,
+                        static (mutation, body, lease, token) =>
+                            mutation.PrepareCorrectAsync(body, lease, token),
+                        cancellationToken)
+                    .ConfigureAwait(false))
+            .WithName("PrepareCovenantCorrection")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
+
+        apiGroup.MapPost(
+            "/memory/covenant/correct",
+            static async (
+                CovenantCorrectRequest? request,
+                ICovenantMutationService? service,
+                ICovenantOperationGate? gate,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+                await CommitAsync(
+                        request,
+                        service,
+                        gate,
+                        httpContext,
+                        request?.Scope,
+                        request?.CampaignId,
+                        static (mutation, body, lease, token) => mutation.CorrectAsync(body, lease, token),
+                        cancellationToken)
+                    .ConfigureAwait(false))
+            .WithName("CorrectCovenantEntry")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
+
+        apiGroup.MapPost(
+            "/memory/covenant/curate/prepare",
+            static async (
+                CovenantCurationPrepareRequest? request,
+                ICovenantMutationService? service,
+                ICovenantOperationGate? gate,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+                await PrepareCurationAsync(request, service, gate, httpContext, cancellationToken)
+                    .ConfigureAwait(false))
+            .WithName("PrepareCovenantCuration")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
+
+        apiGroup.MapPost(
+            "/memory/covenant/curate",
+            static async (
+                CovenantCurationRequest? request,
+                ICovenantMutationService? service,
+                ICovenantOperationGate? gate,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+                await CommitCurationAsync(request, service, gate, httpContext, cancellationToken)
+                    .ConfigureAwait(false))
+            .WithName("CurateCovenantEntry")
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
+
         return apiGroup;
 
     }
@@ -283,6 +350,172 @@ internal static class CovenantMutationEndpoints
                 owned,
                 committed,
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto);
+
+            owned = null;
+
+            return response;
+
+        }
+        finally
+        {
+
+            if (owned is not null)
+            {
+
+                await owned.DisposeAsync().ConfigureAwait(false);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Measures one prospective curation change under the installation read capability.
+    /// </summary>
+    /// <remarks>
+    /// Written out beside its mutation twin rather than folded into one generic helper. The route
+    /// generator resolves the method a route lambda calls and cannot emit an open
+    /// <c>JsonTypeInfo&lt;ApiResponse&lt;T&gt;&gt;</c>, so a shared generic helper compiles here and
+    /// produces a source-generated delegate that does not.
+    /// </remarks>
+    private static async Task<IResult> PrepareCurationAsync(
+        CovenantCurationPrepareRequest? request,
+        ICovenantMutationService? service,
+        ICovenantOperationGate? gate,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+
+        if (request is null)
+        {
+
+            return Refuse<CovenantCurationPreflightDto>(
+                httpContext,
+                new Error(ErrorCodes.Validation.InvalidBody, "A Covenant curation request is required."),
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
+
+        }
+
+        if (service is null || gate is null)
+        {
+
+            return Refuse<CovenantCurationPreflightDto>(
+                httpContext,
+                UnavailableError,
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
+
+        }
+
+        Result<CovenantInstallationReadLease> lease = await gate
+            .AcquireInstallationReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (lease.IsFailure)
+        {
+
+            return Refuse<CovenantCurationPreflightDto>(
+                httpContext,
+                lease.Error,
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
+
+        }
+
+        CovenantInstallationReadLease? owned = lease.Value;
+
+        try
+        {
+
+            Result<CovenantCurationPreflightDto> prepared = await service
+                .PrepareCurationAsync(request, owned, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Ownership moves to the result, which revalidates before the first byte and disposes in
+            // its own finally. Clearing the local is what keeps the guard below from double-releasing.
+            IResult response = new CovenantProtectedJsonResult<CovenantCurationPreflightDto>(
+                owned,
+                prepared,
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
+
+            owned = null;
+
+            return response;
+
+        }
+        finally
+        {
+
+            if (owned is not null)
+            {
+
+                await owned.DisposeAsync().ConfigureAwait(false);
+
+            }
+
+        }
+
+    }
+
+    private static async Task<IResult> CommitCurationAsync(
+        CovenantCurationRequest? request,
+        ICovenantMutationService? service,
+        ICovenantOperationGate? gate,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+
+        if (request is null)
+        {
+
+            return Refuse<CovenantCurationResultDto>(
+                httpContext,
+                new Error(ErrorCodes.Validation.InvalidBody, "A Covenant curation request is required."),
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
+
+        }
+
+        if (service is null || gate is null)
+        {
+
+            return Refuse<CovenantCurationResultDto>(
+                httpContext,
+                UnavailableError,
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
+
+        }
+
+        CovenantOperationScope operationScope =
+            request.Scope is CovenantScope.Global || request.CampaignId is not { } id
+                ? CovenantOperationScope.Global
+                : CovenantOperationScope.ForCampaign(id);
+
+        Result<CovenantWriteLease> lease = await gate
+            .AcquireWriteAsync(operationScope, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (lease.IsFailure)
+        {
+
+            return Refuse<CovenantCurationResultDto>(
+                httpContext,
+                lease.Error,
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
+
+        }
+
+        CovenantWriteLease? owned = lease.Value;
+
+        try
+        {
+
+            Result<CovenantCurationResultDto> committed = await service
+                .CurateAsync(request, owned, cancellationToken)
+                .ConfigureAwait(false);
+
+            IResult response = new CovenantProtectedJsonResult<CovenantCurationResultDto>(
+                owned,
+                committed,
+                ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
 
             owned = null;
 

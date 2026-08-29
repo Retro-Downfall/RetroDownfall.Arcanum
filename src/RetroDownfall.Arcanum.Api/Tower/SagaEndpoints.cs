@@ -46,6 +46,7 @@ internal static class SagaEndpoints
                 int? limit,
                 int? offset,
                 ISagaMemoryStore store,
+                IMemoryScopeResolver scopeResolver,
                 HttpContext ctx) =>
             {
 
@@ -70,8 +71,24 @@ internal static class SagaEndpoints
 
                 int clampedOffset = Math.Max(0, offset ?? 0);
 
+                // Naming a Session resolves that Session's scope, so the listing is bounded by the
+                // ownership a turn there would rank by; naming none is an operator inspecting the whole
+                // store, and every row reports its own scope either way, so nothing becomes invisible to
+                // the operator who owns it.
+                //
+                // Bounded by, not equal to. ListAsync also matches the memory's own SessionId, so this
+                // returns what this Session wrote rather than everything a turn here could recall -- a
+                // sibling Session's memory in the same Campaign is ranked by that turn and is not listed
+                // here. In the other direction the listing is wider: it reads saga_memories with no join
+                // to the embeddings, so a retired memory lists although no turn can rank it.
+                MemoryScope scope = sessionId is null
+                    ? MemoryScope.Installation
+                    : await scopeResolver
+                        .ResolveForSessionAsync(sessionId, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
                 SagaMemoryDto[] memories = await store
-                    .ListAsync(q, sessionId, clampedLimit, clampedOffset, ctx.RequestAborted)
+                    .ListAsync(q, sessionId, scope, clampedLimit, clampedOffset, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return Results.Ok(
@@ -87,6 +104,7 @@ internal static class SagaEndpoints
                 IWeaveService weaveService,
                 IDivinationService divinationService,
                 ISagaMemoryStore store,
+                IMemoryScopeResolver scopeResolver,
                 IOptionsMonitor<ArcanumSettings> options,
                 HttpContext ctx) =>
             {
@@ -139,16 +157,34 @@ internal static class SagaEndpoints
 
                 float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold);
 
-                Result<DivinationResult[]> searchResult = await divinationService
-                    .SearchAsync(
-                        "saga_memory_embeddings_vec",
-                        "MemoryId",
-                        "Embedding",
-                        embedResult.Value,
-                        limit,
-                        similarityThreshold,
-                        ctx.RequestAborted)
+                // The same primitive the turn uses, resolved the same way, so what this surface finds is
+                // what a turn in that Session would have been offered.
+                MemoryScope scope = await scopeResolver
+                    .ResolveForSessionAsync(request.SessionId, ctx.RequestAborted)
                     .ConfigureAwait(false);
+
+                Result<DivinationResult[]> searchResult = scope.IsEnforced
+                    ? await divinationService
+                        .SearchCampaignScopedAsync(
+                            SagaStorageKeys.VectorTable,
+                            SagaStorageKeys.EmbeddingKeyColumn,
+                            SagaStorageKeys.EmbeddingColumn,
+                            scope.ToSagaScope(),
+                            embedResult.Value,
+                            limit,
+                            similarityThreshold,
+                            ctx.RequestAborted)
+                        .ConfigureAwait(false)
+                    : await divinationService
+                        .SearchAsync(
+                            SagaStorageKeys.VectorTable,
+                            SagaStorageKeys.EmbeddingKeyColumn,
+                            SagaStorageKeys.EmbeddingColumn,
+                            embedResult.Value,
+                            limit,
+                            similarityThreshold,
+                            ctx.RequestAborted)
+                        .ConfigureAwait(false);
 
                 if (searchResult.IsFailure)
                 {
@@ -377,8 +413,10 @@ internal static class SagaEndpoints
         while (true)
         {
 
+            // Deliberately unscoped: erasure has to reach every memory, including the ones no turn in
+            // any Campaign can currently retrieve.
             SagaMemoryDto[] page = await store
-                .ListAsync(null, null, PageSize, offset, cancellationToken)
+                .ListAsync(null, null, MemoryScope.Installation, PageSize, offset, cancellationToken)
                 .ConfigureAwait(false);
 
             if (page.Length == 0)

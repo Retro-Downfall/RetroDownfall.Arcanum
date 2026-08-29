@@ -1,0 +1,879 @@
+using System.Security.Cryptography;
+
+using Microsoft.Data.Sqlite;
+
+using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Core.Tower;
+
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
+
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Tests.Data.Schema;
+
+using RetroDownfall.Arcanum.Tests.Fixtures;
+
+namespace RetroDownfall.Arcanum.Tests.Covenant;
+
+/// <summary>
+/// The behavioural contract that stands where a source-scanning register used to: every stored
+/// identity these two writers produce holds the canonical spelling the object-relational writer
+/// renders, proven by driving each one through its own outermost production entry point against a
+/// real encrypted database and reading back every governed identity column of the rows it wrote.
+/// </summary>
+/// <remarks>
+/// <para><b>Why a production entry point, not the store's method directly.</b> A hand-assembled
+/// request only ever agrees with itself. <c>BackupSessionImporter.ImportProtectedAsync</c> and
+/// <c>BackupSessionImporter.ImportAsync</c> are what <c>BackupRestoreService</c> actually calls, so
+/// entering there runs the planner, the compound lease, the real store and the merge loop exactly as
+/// production does.</para>
+///
+/// <para><b>Why the unprotected merge case forces a remap.</b> Without a collision the identity the
+/// merge writes is the archive's own text uppercased, so a fixture that seeds an archive canonically —
+/// as this one does, because that is what an installation writes — would be handing the writer a value
+/// that was already canonical and learning nothing from it agreeing. Forcing a collision in the
+/// destination makes the importer mint a fresh <see cref="Guid.NewGuid()"/> for the remapped Session,
+/// and that value is the writer's own rendering rather than the archive's.</para>
+///
+/// <para><b>What each case depends on.</b> The protected case proves a writer and nothing else: it is
+/// unaffected by whether any read normalises. The unprotected case is not independent in that way, and
+/// deliberately so — its archive is spelled the way an installation writes one, so the merge path's
+/// reads of that archive have to tolerate a spelling other than the one this build renders before the
+/// writer under test is reached at all. Reverting the archive-existence gate, the Session read or the
+/// Entry read turns this case red, which is what makes its green mean something.</para>
+///
+/// <para><b>Why <c>SessionAttachmentStore</c> is covered by a sibling suite rather than a third case
+/// here.</b> That store's conversion could not be made until the data migration that moves the rows it
+/// had already written landed beside it, because every existing <c>SessionAttachments</c> row held the
+/// minority form and its two foreign-key children key off <c>SessionAttachments.Id</c> in whatever
+/// spelling they were given. Both have now landed, and the contract they establish is asserted by
+/// <see cref="RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentIdentitySpellingTests"/> — a separate
+/// suite because it needs the object-relational context the attachment store, the index repository, the
+/// Saga store and the Lexicon service share, where this one needs a KDF-sidecar Grimoire to import
+/// into.</para>
+/// </remarks>
+public sealed class IdentitySpellingContractTests
+{
+
+    /// <summary>
+    /// Drives <see cref="RetroDownfall.Arcanum.Infrastructure.Repositories.ProtectedArtifactTransferStore"/>
+    /// through <c>BackupSessionImporter.ImportProtectedAsync</c>, over a source that carries a
+    /// committed finalization so <c>WriteImportedGuardsAsync</c>'s write is exercised too.
+    /// </summary>
+    /// <remarks>
+    /// Say plainly what this proves and what it does not, because a green run of a test that disables
+    /// a guard is exactly the shape this whole defect family has hidden inside before. This exact
+    /// finalization write cannot succeed against a live, undropped destination schema today — the
+    /// harness drops <c>assistant_entry_finalizations_validate_insert</c> first (see
+    /// <see cref="IdentitySpellingHarness.DropFinalizationCapacityGuardAsync"/>) because the write has
+    /// no way to satisfy it from outside. So this case proves the identity that write lands is
+    /// rendered canonically once the write is allowed to happen. It proves nothing about whether a
+    /// protected import of a Session with a committed assistant turn can actually commit against a
+    /// real, undropped installation — that is a separate, pre-existing, spelling-unrelated gap the
+    /// design spec already records as out of scope (§9), and this test is not evidence either way.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_protected_transfer_store_writes_only_canonical_identities()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using IdentitySpellingHarness harness = await IdentitySpellingHarness.CreateAsync();
+
+        await harness.CommitImportedSessionThroughTheStoreAsync();
+
+        Assert.Empty(await harness.NonCanonicalAsync());
+
+    }
+
+    [SkippableFact]
+    public async Task The_backup_session_importer_writes_only_canonical_identities()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using IdentitySpellingHarness harness = await IdentitySpellingHarness.CreateAsync();
+
+        await harness.ImportSessionThroughTheUnprotectedMergeAsync();
+
+        Assert.Empty(await harness.NonCanonicalAsync());
+
+    }
+
+}
+
+/// <summary>
+/// One offending row: the table and column it was found in, the exact value stored, and which half
+/// of "canonical" it failed — wrong case, wrong shape (not 36 characters with dashes at 8/13/18/23),
+/// or both.
+/// </summary>
+internal readonly record struct NonCanonicalIdentity(string Table, string Column, string Value, string Reason);
+
+/// <summary>
+/// Owns whichever real encrypted database a drive method populates, and can read every governed
+/// identity column back out of it afterwards.
+/// </summary>
+/// <remarks>
+/// One harness drives exactly one component per test, so it only ever tracks one destination to
+/// scan: the KDF-sidecar-backed Grimoire a backup import writes into. <see cref="NonCanonicalAsync"/>
+/// asks the same set of columns of whichever drive method populated it, so which columns are examined
+/// does not vary with which writer is under test.
+/// </remarks>
+internal sealed class IdentitySpellingHarness : IAsyncDisposable
+{
+
+    /// <summary>
+    /// Every identity column the schema governs, table-qualified.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the whole governed set rather than the columns the drive methods below happen to
+    /// fill. A list of what a writer touches today has to be edited the moment that writer touches one
+    /// more, and until someone edits it the new column is outside what this asserts — which is the one
+    /// place a regression would be able to land unread. Asking the governed set instead means the
+    /// question does not move when a writer does.
+    ///
+    /// <para><b>What that is worth, measured rather than assumed.</b> Every governed table exists in
+    /// the database a drive method leaves behind, so every column here is genuinely queried and none is
+    /// skipped. Most of them are empty when queried: between them the two cases below populate the
+    /// Session, Entry, attachment and finalization columns, and the rest are asked and answer nothing.
+    /// An empty answer is not evidence about a writer nobody drove — it is the assertion being in place
+    /// for one that arrives later.</para>
+    ///
+    /// <para>Taken from <see cref="IdentitySpellingGuardTests.GovernedColumns"/> rather than restated,
+    /// so the guard suite and this one ask about the same columns by construction and a column added to
+    /// the sweep arrives in both. A table the database does not carry is skipped by
+    /// <see cref="NonCanonicalAsync"/>'s own existence probe rather than filtered here, so a schema that
+    /// loses one is reported by that column falling silent rather than by this list disagreeing with
+    /// the schema.</para>
+    /// </remarks>
+    private static IReadOnlyList<(string Table, string Column)> IdentityColumns =>
+        IdentitySpellingGuardTests.GovernedColumns;
+
+    private readonly string _root;
+
+    private string? _kdfDatabasePath;
+
+    private string? _kdfSecret;
+
+    private IdentitySpellingHarness(string root) => _root = root;
+
+    public static Task<IdentitySpellingHarness> CreateAsync() =>
+        Task.FromResult(
+            new IdentitySpellingHarness(
+                Directory.CreateDirectory(
+                    Path.Combine(
+                        Path.GetTempPath(),
+                        "arcanum-identity-spelling-" + Guid.NewGuid().ToString("N"))).FullName));
+
+    /// <summary>
+    /// Drives <see cref="ProtectedArtifactTransferStore"/> through
+    /// <see cref="BackupSessionImporter.ImportProtectedAsync"/>, over an archive written the way the
+    /// object-relational writer actually writes one — canonical uppercase, a Campaign binding included
+    /// so the destination-Campaign rendering is exercised too — for a Session id that carries a hex
+    /// letter, so a spelling defect at any of the sites this component fills has somewhere to show up.
+    /// </summary>
+    public async Task CommitImportedSessionThroughTheStoreAsync(
+        CancellationToken cancellationToken = default)
+    {
+
+        string sourceRoot = Directory.CreateDirectory(Path.Combine(_root, "source")).FullName;
+
+        string destinationRoot = Directory.CreateDirectory(Path.Combine(_root, "destination")).FullName;
+
+        string sourceAttachments = Directory.CreateDirectory(
+            Path.Combine(sourceRoot, "attachments")).FullName;
+
+        string destinationAttachments = Directory.CreateDirectory(
+            Path.Combine(destinationRoot, "attachments")).FullName;
+
+        string sourceSecret = await CreateGrimoireDatabaseAsync(sourceRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        string destinationSecret = await CreateGrimoireDatabaseAsync(destinationRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        await DropFinalizationCapacityGuardAsync(destinationRoot, destinationSecret, cancellationToken)
+            .ConfigureAwait(false);
+
+        Guid archivedSessionId = Guid.Parse("a6b5c4d3-e2f1-4098-8765-4a3b2c1d0e9f");
+
+        Guid sourceCampaignId = Guid.Parse("caff1e00-1111-4a2b-8c3d-4e5f60718293");
+
+        Guid destinationCampaignId = Guid.NewGuid();
+
+        string session = archivedSessionId.ToString("D").ToUpperInvariant();
+
+        string campaign = sourceCampaignId.ToString("D").ToUpperInvariant();
+
+        string entryOne = Guid.Parse("b7c8d9ea-1f20-4a31-8b42-c53d64e75f86").ToString("D").ToUpperInvariant();
+
+        string assistantEntryId =
+            Guid.Parse("f00d1e57-1111-4a2b-8c3d-4e5f60718293").ToString("D").ToUpperInvariant();
+
+        string owner = archivedSessionId.ToString("N");
+
+        string relative = owner + "/note/v1/note.bin";
+
+        byte[] payload = "attachment bytes"u8.ToArray();
+
+        string payloadPath = Path.Combine(sourceAttachments, relative.Replace('/', Path.DirectorySeparatorChar));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+
+        await File.WriteAllBytesAsync(payloadPath, payload, cancellationToken).ConfigureAwait(false);
+
+        string digest = Convert.ToHexString(SHA256.HashData(payload));
+
+        await using (SqliteConnection connection = await BackupRestoreDatabaseWorker
+            .OpenAsync(
+                Path.Combine(sourceRoot, "arcanum.db"),
+                sourceSecret,
+                readOnly: false,
+                cancellationToken)
+            .ConfigureAwait(false))
+        {
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = $"""
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{session}', '{campaign}', 'Archived session', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                       "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+                VALUES ('{entryOne}', '{session}', 0, 'ask', '', '2026-01-01T00:00:00Z', 1, NULL, NULL,
+                        NULL, 0);
+
+                INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                       "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+                VALUES ('{assistantEntryId}', '{session}', 1, 'answer', 'model', '2026-01-01T00:00:00Z',
+                        2, NULL, NULL, NULL, 0);
+
+                INSERT INTO "SessionAttachments"
+                    ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
+                     "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                     "SourceKind", "SourceStatus", "EncryptionVersion")
+                VALUES ('{Guid.Parse("c8d9ea1f-2031-4b42-8c53-d64e75f86a97").ToString("D").ToUpperInvariant()}', '{session}', 'Bound',
+                        'note', 'note.txt', 1, '{relative}', '{digest}', 'text/plain', {payload.Length},
+                        'Text', '2026-01-01T00:00:00Z', 'WorkspaceFile', 'Refreshable', 0);
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            // A committed finalization, so WriteImportedGuardsAsync's AssistantEntryId/SessionId
+            // write is actually exercised rather than only argued correct by substitution. The guard
+            // refuses a row with no consumed reservation for the same Session and assistant identity,
+            // so an archive that holds a finalization holds both — the reservation is minted inside an
+            // authorized turn-capacity scope, matching how a real committed turn produces one.
+            using (CovenantSqliteAuthorizationScope capacity = CovenantSqliteConnectionInitializer
+                .Instance
+                .Authorize(connection, CovenantSqliteAuthorizationKind.TurnCapacityMutation))
+            {
+
+                await using SqliteCommand reservation = connection.CreateCommand();
+
+                reservation.CommandText = $"""
+                    INSERT INTO assistant_finalization_capacity_reservations (
+                        ReservationId, SessionId, AssistantEntryId, OriginCode, ClaimId, StateCode,
+                        CreatedAtUtc, StateChangedAtUtc)
+                    VALUES ('{Guid.NewGuid():D}', '{session}', '{assistantEntryId}', 2, NULL, 2,
+                            '2026-01-01T00:00:00.0000000Z', '2026-01-01T00:00:00.0000000Z');
+                    """;
+
+                _ = await reservation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+            await using SqliteCommand finalization = connection.CreateCommand();
+
+            finalization.CommandText = $"""
+                INSERT INTO assistant_entry_finalizations (
+                    AssistantEntryId, SessionId, OutcomeCode, ContentSensitivityCode,
+                    ContentSensitivityDigest, RequestDigest, FinalReceiptDigest, SourceEvidenceDigest,
+                    FinalizedAtUtc)
+                VALUES ('{assistantEntryId}', '{session}', 1, 0, zeroblob(32), zeroblob(32), NULL, NULL,
+                        '2026-01-01T00:00:00.0000000Z');
+                """;
+
+            _ = await finalization.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        CovenantSelectiveImportServices services = new(
+            new GrantingProtectedTransferGate(),
+            new ProtectedArtifactTransferStore(CovenantSqliteConnectionInitializer.Instance, TimeProvider.System));
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportProtectedAsync(
+            services,
+            Path.Combine(sourceRoot, "arcanum.db"),
+            Path.Combine(destinationRoot, "arcanum.db"),
+            [archivedSessionId],
+            sourceAttachments,
+            destinationAttachments,
+            destinationSecret,
+            sourceSecret,
+            [new BackupSessionCampaignMapping(sourceCampaignId, destinationCampaignId)],
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.Issues.Length != 0 || result.Sessions != 1 || result.Entries != 2 || result.Attachments != 1)
+        {
+
+            throw new InvalidOperationException(
+                "The harness's protected-transfer drive did not commit the graph it seeded: "
+                + string.Join(
+                    "; ",
+                    result.Issues.Select(static issue => issue.Code + " " + issue.Message)));
+
+        }
+
+        _kdfDatabasePath = Path.Combine(destinationRoot, "arcanum.db");
+
+        _kdfSecret = destinationSecret;
+
+        // The finalization write is exercised, not just staged: confirmed by reading it back rather
+        // than trusted from the result counts above, which say nothing about this table.
+        await using (SqliteConnection verify = await BackupRestoreDatabaseWorker
+            .OpenAsync(_kdfDatabasePath, _kdfSecret, readOnly: true, cancellationToken)
+            .ConfigureAwait(false))
+        {
+
+            await using SqliteCommand count = verify.CreateCommand();
+
+            count.CommandText = "SELECT COUNT(*) FROM assistant_entry_finalizations;";
+
+            long finalizations = (long)(await count.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false))!;
+
+            if (finalizations != 1)
+            {
+
+                throw new InvalidOperationException(
+                    "The harness's protected-transfer drive did not write the finalization it seeded.");
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Drives <see cref="BackupSessionImporter"/>'s unprotected merge path through
+    /// <see cref="BackupSessionImporter.ImportAsync"/>, over an archive spelled the way an installation
+    /// writes one, forcing a Session id collision so the importer mints a fresh remapped identity — a
+    /// value the writer under test actually has to canonicalise, rather than the archive's own text
+    /// echoed back.
+    /// </summary>
+    public async Task ImportSessionThroughTheUnprotectedMergeAsync(
+        CancellationToken cancellationToken = default)
+    {
+
+        string sourceRoot = Directory.CreateDirectory(Path.Combine(_root, "unprotected-source")).FullName;
+
+        string destinationRoot = Directory.CreateDirectory(
+            Path.Combine(_root, "unprotected-destination")).FullName;
+
+        string sourceAttachments = Directory.CreateDirectory(
+            Path.Combine(sourceRoot, "attachments")).FullName;
+
+        string destinationAttachments = Directory.CreateDirectory(
+            Path.Combine(destinationRoot, "attachments")).FullName;
+
+        string sourceSecret = await CreateGrimoireDatabaseAsync(sourceRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        string destinationSecret = await CreateGrimoireDatabaseAsync(destinationRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Hex letters, deliberately. This was all ones, so that upper and lower rendered the same bytes
+        // and the merge path's existence gate — which bound an unnormalised rendering against the
+        // archive — could reach the writer at all. A fixture built on such an identity cannot tell a
+        // canonicalising writer from one that does nothing, which is the shape this whole family keeps
+        // hiding inside. The gate reads the archive normalised now, so the identity can carry letters
+        // and the two spellings can be different bytes again.
+        Guid sessionId = Guid.Parse("3f2e1d0c-9b8a-4756-8432-1a0b9c8d7e6f");
+
+        // Canonical, which is what a real archive holds and what the version-5 guards now enforce. These
+        // were lowercase, with a comment saying so was inert because nothing read them back; the guard
+        // reads every write, so an inert misrepresentation is no longer one. Entries."Id" is the
+        // object-relational writer's own uppercase form, "Sessions"."Id" and "Entries"."SessionId" are
+        // the same writer's, and "SessionAttachments"."Id" and "SessionId" are what an archive taken
+        // after the version-5 attachment move holds.
+        string session = sessionId.ToString("D").ToUpperInvariant();
+
+        string sourceEntryId = Guid.NewGuid().ToString("D").ToUpperInvariant();
+
+        string sourceAttachmentId = Guid.NewGuid().ToString("D").ToUpperInvariant();
+
+        string relative = sessionId.ToString("N") + "/note/v1/note.bin";
+
+        string payloadPath = Path.Combine(sourceAttachments, relative.Replace('/', Path.DirectorySeparatorChar));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+
+        await File.WriteAllTextAsync(payloadPath, "attachment bytes", cancellationToken)
+            .ConfigureAwait(false);
+
+        await using (SqliteConnection connection = await BackupRestoreDatabaseWorker
+            .OpenAsync(
+                Path.Combine(sourceRoot, "arcanum.db"),
+                sourceSecret,
+                readOnly: false,
+                cancellationToken)
+            .ConfigureAwait(false))
+        {
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = $"""
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{session}', NULL, 'Archived session', 'active',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                       "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+                VALUES ('{sourceEntryId}', '{session}', 0, 'ask', '', '2026-01-01T00:00:00Z', 1, NULL,
+                        NULL, NULL, 0);
+
+                INSERT INTO "SessionAttachments"
+                    ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
+                     "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                     "SourceKind", "SourceStatus", "EncryptionVersion")
+                VALUES ('{sourceAttachmentId}', '{session}', 'Bound', 'note', 'note.txt', 1,
+                        '{relative}', 'abc', 'text/plain', 16, 'Text', '2026-01-01T00:00:00Z',
+                        'WorkspaceFile', 'Refreshable', 0);
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        // The destination already has a Session under this exact id, so the merge must remap — which
+        // is what makes it mint the fresh, letter-bearing Guid this test actually needs.
+        await using (SqliteConnection connection = await BackupRestoreDatabaseWorker
+            .OpenAsync(
+                Path.Combine(destinationRoot, "arcanum.db"),
+                destinationSecret,
+                readOnly: false,
+                cancellationToken)
+            .ConfigureAwait(false))
+        {
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = $"""
+                INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
+                VALUES ('{session}', NULL, 'The Session already living here', 'active',
+                        '2026-02-02T00:00:00Z', '2026-02-02T00:00:00Z');
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        BackupSessionImportResult result = await BackupSessionImporter.ImportAsync(
+            Path.Combine(sourceRoot, "arcanum.db"),
+            Path.Combine(destinationRoot, "arcanum.db"),
+            [sessionId],
+            sourceAttachments,
+            destinationAttachments,
+            destinationSecret,
+            sourceSecret,
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.Issues.Length != 0 || result.RemappedIds != 1 || result.Sessions != 1
+            || result.Entries != 1 || result.Attachments != 1)
+        {
+
+            throw new InvalidOperationException(
+                "The harness's unprotected-merge drive did not remap and commit the graph it seeded: "
+                + string.Join(
+                    "; ",
+                    result.Issues.Select(static issue => issue.Code + " " + issue.Message)));
+
+        }
+
+        _kdfDatabasePath = Path.Combine(destinationRoot, "arcanum.db");
+
+        _kdfSecret = destinationSecret;
+
+    }
+
+    /// <summary>
+    /// Every non-canonical <c>(table, column, value)</c> in whichever database a drive method
+    /// populated.
+    /// </summary>
+    public async Task<IReadOnlyList<NonCanonicalIdentity>> NonCanonicalAsync(
+        CancellationToken cancellationToken = default)
+    {
+
+        await using SqliteConnection connection = await OpenForScanAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        List<NonCanonicalIdentity> found = [];
+
+        foreach ((string table, string column) in IdentityColumns)
+        {
+
+            await using SqliteCommand exists = connection.CreateCommand();
+
+            exists.CommandText = """
+                SELECT 1 FROM sqlite_master WHERE "type" = 'table' AND "name" = $table LIMIT 1;
+                """;
+
+            _ = exists.Parameters.AddWithValue("$table", table);
+
+            if (await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+            {
+
+                continue;
+
+            }
+
+            await using SqliteCommand scan = connection.CreateCommand();
+
+            // Case alone is only half of canonical. Guid.ToString("N") renders 32 hex characters
+            // with no dashes at all, all uppercase if the caller happened to uppercase it — a form
+            // "<> upper(...)" alone cannot see, since it is already its own upper() image. The shape
+            // half — 36 characters, dashes at the fixed positions a dashed Guid always has them —
+            // catches that. Neither check subsumes the other: a lowercase-dashed value fails only the
+            // first, a dash-free uppercase value fails only the second.
+            scan.CommandText = $"""
+                SELECT "{column}" FROM "{table}"
+                WHERE "{column}" IS NOT NULL
+                  AND (
+                      "{column}" <> upper("{column}")
+                      OR length("{column}") <> 36
+                      OR substr("{column}", 9, 1) <> '-'
+                      OR substr("{column}", 14, 1) <> '-'
+                      OR substr("{column}", 19, 1) <> '-'
+                      OR substr("{column}", 24, 1) <> '-'
+                  );
+                """;
+
+            await using SqliteDataReader reader = await scan.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                string value = reader.GetString(0);
+
+                found.Add(new NonCanonicalIdentity(table, column, value, DescribeFailure(value)));
+
+            }
+
+        }
+
+        return found;
+
+    }
+
+    /// <summary>
+    /// Which half of "canonical uppercase dashed, 36 characters" a value fails, or both.
+    /// </summary>
+    /// <remarks>
+    /// Computed here rather than in SQL: SQLite's <c>substr</c> is forgiving of an out-of-range
+    /// offset on a short string, which is exactly what makes it safe to use for the filter above, but
+    /// building a readable two-part message is clearer as ordinary string indexing once the row is
+    /// already known to be one of the offenders.
+    /// </remarks>
+    private static string DescribeFailure(string value)
+    {
+
+        bool wrongCase = !string.Equals(value, value.ToUpperInvariant(), StringComparison.Ordinal);
+
+        bool wrongShape = value.Length != 36
+            || value[8] != '-'
+            || value[13] != '-'
+            || value[18] != '-'
+            || value[23] != '-';
+
+        return (wrongCase, wrongShape) switch
+        {
+
+            (true, true) => "wrong case and wrong shape (not 36 characters dashed at 8/13/18/23)",
+
+            (true, false) => "wrong case",
+
+            (false, true) => "wrong shape (not 36 characters dashed at 8/13/18/23)",
+
+            (false, false) => "unknown — matched the SQL filter but neither check on the C# side agrees",
+
+        };
+
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+
+        SqliteConnection.ClearAllPools();
+
+        try
+        {
+
+            if (Directory.Exists(_root))
+            {
+
+                Directory.Delete(_root, recursive: true);
+
+            }
+
+        }
+        catch (IOException)
+        {
+
+            // Scratch under the OS temp root; a scanner still holding a handle must not fail a test
+            // that has already made its assertions.
+
+        }
+        catch (UnauthorizedAccessException)
+        {
+
+            // Same.
+
+        }
+
+    }
+
+    private Task<SqliteConnection> OpenForScanAsync(CancellationToken cancellationToken)
+    {
+
+        if (_kdfDatabasePath is null)
+        {
+
+            throw new InvalidOperationException(
+                "NonCanonicalAsync was called before any drive method populated a database.");
+
+        }
+
+        return BackupRestoreDatabaseWorker.OpenAsync(
+            _kdfDatabasePath,
+            _kdfSecret!,
+            readOnly: true,
+            cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Drops <c>assistant_entry_finalizations_validate_insert</c> in full, so the protected-transfer
+    /// case's seeded finalization can be written at all.
+    /// </summary>
+    /// <remarks>
+    /// <c>DROP TRIGGER</c> removes the whole trigger body, not one clause of it — both the
+    /// capacity-reservation <c>RAISE</c> this case actually needs out of the way, and the separate
+    /// erased-assistant-entry <c>RAISE</c> alongside it. Nothing in this test exercises the erasure
+    /// clause, so the drop is harmless here, but it is not surgical: this removes both guards, not
+    /// only the one blocking the write.
+    ///
+    /// <para>The capacity-reservation guard refuses a row with no consumed reservation for the exact
+    /// (Session, AssistantEntryId) pair being written. The destination pair is minted fresh by the
+    /// store on every import — <c>WriteDestinationGraphAsync</c> gives every copied Entry a new
+    /// <see cref="Guid.NewGuid()"/>, and the destination Session id is chosen the same way — so no
+    /// reservation for it can be seeded in advance from outside the write. This is the documented,
+    /// pre-existing capacity-reservation gap the design spec records as deliberately out of scope for
+    /// identity spelling (§9), not something this task introduces or is fixing.
+    /// <see cref="RetroDownfall.Arcanum.Tests.Repositories.ProtectedArtifactTransferStoreTests"/>
+    /// carries the same limitation and resolves it the same way, one layer earlier: its destination's
+    /// selective schema install never includes this trigger in the first place. Dropping it here
+    /// after a full install reaches the same end state without giving up full-schema fidelity for
+    /// every other guard this harness relies on for its other assertions.</para>
+    /// </remarks>
+    private static async Task DropFinalizationCapacityGuardAsync(
+        string installationRoot,
+        string secret,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker
+            .OpenAsync(
+                Path.Combine(installationRoot, "arcanum.db"),
+                secret,
+                readOnly: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await using SqliteCommand drop = connection.CreateCommand();
+
+        drop.CommandText = "DROP TRIGGER IF EXISTS assistant_entry_finalizations_validate_insert;";
+
+        _ = await drop.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task<string> CreateGrimoireDatabaseAsync(
+        string installationRoot,
+        CancellationToken cancellationToken)
+    {
+
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+        string databasePath = Path.Combine(installationRoot, "arcanum.db");
+
+        GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
+
+        GrimoireKdfSidecarFile.Write(databasePath, sidecar);
+
+        byte[] salt = sidecar.GetSaltBytes();
+
+        string passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(secret, salt);
+
+        CryptographicOperations.ZeroMemory(salt);
+
+        SqliteNativeRuntime.Instance.Initialize();
+
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            new SqliteConnectionStringBuilder
+            {
+
+                DataSource = databasePath,
+
+                Password = passphrase,
+
+                Pooling = false,
+
+            }.ToString(),
+            cancellationToken).ConfigureAwait(false);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, cancellationToken)
+            .ConfigureAwait(false);
+
+        return secret;
+
+    }
+
+}
+
+/// <summary>
+/// A compound lease gate that grants exactly the one capability a selective protected import takes,
+/// and refuses every other. What is under test through this harness is the archive the planner reads
+/// and the graph the store copies, not the lease arbitration, which has its own suite.
+/// </summary>
+internal sealed class GrantingProtectedTransferGate : ICovenantOperationGate
+{
+
+    public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
+        ProtectedTransferScope scope,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(
+            Result<CovenantProtectedTransferLease>.Success(
+                new CovenantProtectedTransferLease(
+                    new GrantedRegistration(owner, scope.ToOperationScope()))));
+
+    public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import takes no installation read lease.");
+
+    public ValueTask<Result<CovenantReadLease>> AcquireReadAsync(
+        CovenantOperationScope scope,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import takes no nested read lease.");
+
+    public ValueTask<Result<CovenantWriteLease>> AcquireWriteAsync(
+        CovenantOperationScope scope,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import takes no nested write lease.");
+
+    public ValueTask<Result<CovenantTurnLease>> AcquireTurnAsync(
+        CanonicalCampaignContext context,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import runs no turn.");
+
+    public ValueTask<Result<CovenantMcpLease>> AcquireMcpAsync(
+        CovenantOperationScope scope,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import runs no MCP mutation.");
+
+    public ValueTask<Result<CovenantAcceleratorLease>> AcquireAcceleratorAsync(
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import synchronizes no accelerator.");
+
+    public ValueTask<Result<CovenantCleanupLease>> AcquireCleanupAsync(
+        CovenantOperationScope scope,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import runs no owner cleanup.");
+
+    public ValueTask<Result<CovenantCampaignExclusiveLease>> AcquireCampaignExclusiveAsync(
+        Guid campaignId,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import closes no Campaign.");
+
+    public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A selective import closes no installation.");
+
+    public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A live import resumes nothing.");
+
+    public ValueTask<Result<CovenantCampaignExclusiveLease>> ResumeCampaignExclusiveAsync(
+        Guid campaignId,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A live import resumes no Campaign scope.");
+
+    public ValueTask<Result<CovenantProtectedTransferLease>> ResumeProtectedTransferAsync(
+        ProtectedTransferScope scope,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A live import acquires; only startup resumes.");
+
+    public ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("A live import acquires; only startup resumes.");
+
+    private sealed class GrantedRegistration(
+        CovenantExclusiveRecoveryOwner owner,
+        CovenantOperationScope scope) : ICovenantExclusiveLeaseRegistration
+    {
+
+        public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
+            Guid.NewGuid(),
+            RuntimeAuthorityGeneration: 1,
+            CovenantLeaseKind.ProtectedTransfer,
+            CovenantLeaseCoverage.Scoped,
+            scope,
+            DatasetGeneration: Guid.NewGuid(),
+            CapabilityGeneration: 1,
+            AuthorityEpoch: 1,
+            CanonicalSequence: 1,
+            CampaignAvailabilityGeneration: null,
+            CampaignPathRevision: null,
+            AcceleratorEpoch: null,
+            AppliedCampaignDeletionSequence: null,
+            owner,
+            CleanupOnlyHistoricalCampaign: false);
+
+        public CancellationToken Revocation => CancellationToken.None;
+
+        public Result ExecuteWhileHeld(Func<Result> callback) => callback();
+
+        public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> CompleteAsync(
+            CovenantExclusiveLeaseDisposition disposition,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result.Success());
+
+        public ValueTask ReleaseAsync() => ValueTask.CompletedTask;
+
+    }
+
+}

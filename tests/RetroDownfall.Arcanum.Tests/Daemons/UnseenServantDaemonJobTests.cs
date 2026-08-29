@@ -49,7 +49,7 @@ public sealed class UnseenServantDaemonJobTests
 
         FakeLexiconService lexicon = new();
 
-        await lexicon.UpsertAsync("daemon_state:Watcher:default", "DaemonState", ["last average was 42"], CancellationToken.None);
+        await lexicon.UpsertAsync("daemon_state:Watcher:default", "DaemonState", ["last average was 42"], LexiconScope.Global, CancellationToken.None);
 
         UnseenServantDaemonJob job = await RunJobAsync(intelligence, lexicon, enableLexicon: true);
 

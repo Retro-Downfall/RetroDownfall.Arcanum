@@ -53,9 +53,15 @@ internal sealed partial class DataRetentionService
         new("saga_memory_embeddings_vec", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("saga_memory_attachment_provenance", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("saga_extraction_watermarks", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
+        new("saga_retirement_suppressions", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
+        new("saga_suppression_key", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("lexicon_entries", RetentionDataClass.LexiconEntries, FactoryRecordKind.Physical),
         new("lexicon_fts", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
         new("lexicon_fact_attachment_provenance", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
+        new("annal_claims", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_versions", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_heads", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_dependencies", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("WorkspaceContexts", RetentionDataClass.WorkspaceChunks, FactoryRecordKind.Physical),
         new("workspace_file_chunks", RetentionDataClass.WorkspaceChunks, FactoryRecordKind.Derived),
         new("workspace_file_embeddings", RetentionDataClass.WorkspaceEmbeddings, FactoryRecordKind.Derived),
@@ -98,8 +104,14 @@ internal sealed partial class DataRetentionService
         new("saga_memory_embeddings", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("saga_memory_attachment_provenance", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("saga_extraction_watermarks", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
+        new("saga_retirement_suppressions", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
+        new("saga_suppression_key", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("attachment_memory_consultations", RetentionDataClass.Entries, FactoryRecordKind.Derived),
         new("lexicon_fact_attachment_provenance", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
+        new("annal_dependencies", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_heads", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_versions", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_claims", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("SessionContextPins", RetentionDataClass.Entries, FactoryRecordKind.Derived),
         new("lexicon_entries", RetentionDataClass.LexiconEntries, FactoryRecordKind.Physical),
         new("saga_memories", RetentionDataClass.SagaMemories, FactoryRecordKind.Physical),
@@ -978,6 +990,17 @@ internal sealed partial class DataRetentionService
         FactoryTablePlan table,
         CancellationToken cancellationToken)
     {
+
+        if (string.Equals(table.Table, "annal_versions", StringComparison.Ordinal))
+        {
+
+            return await DeleteAnnalVersionsAsync(
+                connection,
+                transaction,
+                predicate: null,
+                cancellationToken).ConfigureAwait(false);
+
+        }
 
         using CovenantSqliteAuthorizationScope? retention =
             string.Equals(table.Table, "Sessions", StringComparison.Ordinal)

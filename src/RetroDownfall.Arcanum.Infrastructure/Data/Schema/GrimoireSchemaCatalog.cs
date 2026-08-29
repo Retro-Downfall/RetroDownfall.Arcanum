@@ -47,8 +47,13 @@ internal static class GrimoireSchemaCatalog
 
     private const string CapabilitiesSegment = "Capabilities";
 
+    private const string TransitionsSegment = "Transitions";
+
     private static readonly Lazy<IReadOnlyList<GrimoireSchemaObject>> LoadedObjects =
         new(LoadOrderedObjects, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static readonly Lazy<IReadOnlyList<GrimoireSchemaTransitionStatementResource>> LoadedTransitions =
+        new(LoadOrderedTransitions, LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static readonly Lazy<IReadOnlyList<GrimoireSchemaObject>> LoadedCoreObjects =
         new(() => FilterTier(GrimoireSchemaTransactionTier.Core), LazyThreadSafetyMode.ExecutionAndPublication);
@@ -108,6 +113,26 @@ internal static class GrimoireSchemaCatalog
     /// </summary>
     public static IReadOnlyList<GrimoireSchemaObject> CovenantAcceleratorObjects =>
         LoadedAcceleratorObjects.Value;
+
+    /// <summary>
+    /// Every transition statement in the tree, ordered by tier, then target version, then ordinal.
+    /// That order is the install order of a version step.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately outside <see cref="AllObjects"/>, outside every per-tier object list, and outside
+    /// every source fingerprint. A transition resource that entered a tier's fingerprint would change
+    /// the value recorded for the version it upgrades <i>from</i>, so authoring the very step that
+    /// leaves version 1 would make every installation at version 1 refuse with
+    /// <c>SourceDefinitionMismatch</c> before that step could run. The feature would break itself on
+    /// its first use.
+    ///
+    /// <para>Core is the tier that has moved the most, and it declares steps to versions 2, 3, and 4.
+    /// Covenant canonical left version 1 once, for its curation substrate, and declares one step to
+    /// version 2. The Covenant accelerator is still at version 1 and declares none, so the loader finds
+    /// nothing for it, which is the cost a tier that never left version 1 does not pay.</para>
+    /// </remarks>
+    public static IReadOnlyList<GrimoireSchemaTransitionStatementResource> TransitionStatements =>
+        LoadedTransitions.Value;
 
     /// <summary>
     /// Stable hash of the whole canonical schema source, every tier, in install order. It identifies
@@ -245,6 +270,113 @@ internal static class GrimoireSchemaCatalog
     }
 
     /// <summary>
+    /// Decodes a transition resource path, or reports that the path names an object instead.
+    /// </summary>
+    /// <remarks>
+    /// Returning <see langword="false"/> means "this is not a transition", which is the ordinary
+    /// answer for every object in the tree. A path that <i>is</i> under a <c>Transitions</c> folder
+    /// and is malformed throws instead: declining it would hand it to
+    /// <see cref="ParseResourcePath"/> and produce a failure naming the wrong mistake.
+    /// </remarks>
+    internal static bool TryParseTransitionResourcePath(
+        string relativePath,
+        out GrimoireSchemaTransitionResourcePath? path)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+
+        string[] segments = relativePath.Split('.');
+
+        if (segments.Length == 3
+            && string.Equals(segments[0], TransitionsSegment, StringComparison.Ordinal))
+        {
+
+            path = BuildTransitionPath(
+                GrimoireSchemaFamily.Core,
+                GrimoireSchemaTransactionTier.Core,
+                segments[1],
+                segments[2],
+                relativePath);
+
+            return true;
+
+        }
+
+        if (segments.Length == 6
+            && string.Equals(segments[0], CapabilitiesSegment, StringComparison.Ordinal)
+            && string.Equals(segments[3], TransitionsSegment, StringComparison.Ordinal))
+        {
+
+            (GrimoireSchemaFamily family, GrimoireSchemaTransactionTier tier) =
+                ParseCapability(segments[1], segments[2], relativePath);
+
+            path = BuildTransitionPath(family, tier, segments[4], segments[5], relativePath);
+
+            return true;
+
+        }
+
+        path = null;
+
+        return false;
+
+    }
+
+    /// <summary>
+    /// Decodes the <c>V&lt;n&gt;</c> folder and the <c>&lt;ordinal&gt;_&lt;name&gt;</c> file name of
+    /// one transition resource.
+    /// </summary>
+    /// <remarks>
+    /// Version 1 is refused along with 0 and every non-numeric folder: version 1 is what the head
+    /// tree installs directly, so it can never be a transition <i>target</i>, and a folder claiming
+    /// otherwise is an authoring mistake rather than a step to run.
+    /// </remarks>
+    private static GrimoireSchemaTransitionResourcePath BuildTransitionPath(
+        GrimoireSchemaFamily family,
+        GrimoireSchemaTransactionTier tier,
+        string versionFolder,
+        string fileName,
+        string relativePath)
+    {
+
+        if (versionFolder.Length < 2
+            || versionFolder[0] != 'V'
+            || !int.TryParse(
+                versionFolder.AsSpan(1),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out int toVersion)
+            || toVersion < 2)
+        {
+
+            throw new InvalidOperationException(
+                $"Embedded Grimoire transition resource '{relativePath}.sql' is not in a 'V<n>' folder "
+                + "with n of 2 or more; version 1 is installed by the head tree and is never a transition target.");
+
+        }
+
+        int underscore = fileName.IndexOf('_', StringComparison.Ordinal);
+
+        if (underscore <= 0
+            || underscore == fileName.Length - 1
+            || !int.TryParse(
+                fileName.AsSpan(0, underscore),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out int ordinal))
+        {
+
+            throw new InvalidOperationException(
+                $"Embedded Grimoire transition resource '{relativePath}.sql' is not named "
+                + "'<ordinal>_<name>' with a numeric ordinal and a non-empty name.");
+
+        }
+
+        return new GrimoireSchemaTransitionResourcePath(family, tier, toVersion, ordinal, fileName[(underscore + 1)..]);
+
+    }
+
+    /// <summary>
     /// Extracts the object name from the first <c>CREATE ... IF NOT EXISTS</c> declaration, with
     /// optional double quoting removed. Used to prove the declaration and the file name agree.
     /// </summary>
@@ -327,7 +459,18 @@ internal static class GrimoireSchemaCatalog
 
             }
 
-            GrimoireSchemaObject definition = ReadObject(assembly, resourceName);
+            string relative = resourceName[ResourcePrefix.Length..^ResourceSuffix.Length];
+
+            // A transition statement lives in the same embedded tree and is loaded separately. It is
+            // never a head object: nothing converges it, and it must not reach any source fingerprint.
+            if (TryParseTransitionResourcePath(relative, out GrimoireSchemaTransitionResourcePath? _))
+            {
+
+                continue;
+
+            }
+
+            GrimoireSchemaObject definition = ReadObject(assembly, resourceName, relative);
 
             if (!seen.Add((definition.TransactionTier, definition.Category, definition.Name)))
             {
@@ -360,10 +503,12 @@ internal static class GrimoireSchemaCatalog
 
     }
 
-    private static GrimoireSchemaObject ReadObject(Assembly assembly, string resourceName)
+    /// <summary>
+    /// Reads one head object. The relative path is supplied rather than recomputed, because the
+    /// caller has already decoded it once to rule the resource out as a transition.
+    /// </summary>
+    private static GrimoireSchemaObject ReadObject(Assembly assembly, string resourceName, string relative)
     {
-
-        string relative = resourceName[ResourcePrefix.Length..^ResourceSuffix.Length];
 
         GrimoireSchemaResourcePath path = ParseResourcePath(relative);
 
@@ -432,10 +577,88 @@ internal static class GrimoireSchemaCatalog
         };
 
     /// <summary>
+    /// Loads every transition statement in the tree, in the order a version step installs them.
+    /// </summary>
+    /// <remarks>
+    /// Duplicate ordinals within one tier and target version throw rather than being ordered
+    /// arbitrarily: the ordinal <i>is</i> the install order, and two statements sharing one have no
+    /// defined order at all.
+    /// </remarks>
+    private static IReadOnlyList<GrimoireSchemaTransitionStatementResource> LoadOrderedTransitions()
+    {
+
+        Assembly assembly = typeof(GrimoireSchemaCatalog).Assembly;
+
+        List<GrimoireSchemaTransitionStatementResource> statements = [];
+
+        HashSet<(GrimoireSchemaTransactionTier Tier, int ToVersion, int Ordinal)> seen = [];
+
+        foreach (string resourceName in assembly.GetManifestResourceNames())
+        {
+
+            if (!resourceName.StartsWith(ResourcePrefix, StringComparison.Ordinal)
+                || !resourceName.EndsWith(ResourceSuffix, StringComparison.Ordinal))
+            {
+
+                continue;
+
+            }
+
+            string relative = resourceName[ResourcePrefix.Length..^ResourceSuffix.Length];
+
+            if (!TryParseTransitionResourcePath(relative, out GrimoireSchemaTransitionResourcePath? path))
+            {
+
+                continue;
+
+            }
+
+            if (!seen.Add((path!.TransactionTier, path.ToVersion, path.Ordinal)))
+            {
+
+                throw new InvalidOperationException(
+                    $"Embedded Grimoire transition resource '{relative}.sql' duplicates ordinal "
+                    + $"{path.Ordinal} already declared for the same tier and target version; two "
+                    + "statements sharing one ordinal have no defined install order.");
+
+            }
+
+            using Stream stream = assembly.GetManifestResourceStream(resourceName)
+                ?? throw new InvalidOperationException($"Embedded Grimoire transition resource not found: {resourceName}");
+
+            using StreamReader reader = new(stream, Encoding.UTF8);
+
+            statements.Add(
+                new GrimoireSchemaTransitionStatementResource(
+                    path.Family,
+                    path.TransactionTier,
+                    path.ToVersion,
+                    path.Ordinal,
+                    path.Name,
+                    relative,
+                    reader.ReadToEnd()));
+
+        }
+
+        return
+        [
+            .. statements
+                .OrderBy(static statement => (int)statement.TransactionTier)
+                .ThenBy(static statement => statement.ToVersion)
+                .ThenBy(static statement => statement.Ordinal),
+        ];
+
+    }
+
+    /// <summary>
     /// Frames each object with family, tier, category, resource path, and name before its exact
     /// unresolved SQL, so two objects cannot hash alike by moving between tiers or folders.
     /// </summary>
-    private static string ComputeSourceFingerprint(IReadOnlyList<GrimoireSchemaObject> definitions)
+    /// <remarks>
+    /// Internal rather than private so a test can prove every published fingerprint is computed over
+    /// head objects alone. A test-only wrapper would be a second name for one algorithm.
+    /// </remarks>
+    internal static string ComputeSourceFingerprint(IReadOnlyList<GrimoireSchemaObject> definitions)
     {
 
         StringBuilder combined = new();

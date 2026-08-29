@@ -75,6 +75,8 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Created")));
 
+        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Scope")));
+
         foreach (SagaMemoryDto memory in memories)
         {
 
@@ -91,7 +93,8 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
                 new Markup(themePalette.TextMarkup(Markup.Escape(preview))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(memory.Source ?? "-"))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))));
+                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeScope(memory)))));
 
         }
 
@@ -113,7 +116,15 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// </summary>
     /// <param name="query">Search query text.</param>
     /// <param name="limit">Maximum number of results to return.</param>
-    public async Task<int> Divine(string query, int? limit = null, CancellationToken cancellationToken = default)
+    /// <param name="session">
+    /// The session to search as. Its Campaign binding decides the scope, so this is a request to see
+    /// what that session's turns would recall rather than a way to name a Campaign directly.
+    /// </param>
+    public async Task<int> Divine(
+        string query,
+        int? limit = null,
+        string? session = null,
+        CancellationToken cancellationToken = default)
     {
 
         if (string.IsNullOrWhiteSpace(query))
@@ -125,7 +136,25 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         }
 
-        SagaSearchRequest request = new(query.Trim(), limit);
+        Guid? sessionId = null;
+
+        if (!string.IsNullOrWhiteSpace(session))
+        {
+
+            if (!Guid.TryParse(session, out Guid parsedSessionId))
+            {
+
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a GUID.")));
+
+                return 1;
+
+            }
+
+            sessionId = parsedSessionId;
+
+        }
+
+        SagaSearchRequest request = new(query.Trim(), limit, sessionId);
 
         Result<SagaSearchResult> result = await apiClient.SagaDivineAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -152,6 +181,8 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Session")));
 
+        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Scope")));
+
         for (int i = 0; i < memories.Length; i++)
         {
 
@@ -167,7 +198,8 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
                 new Markup(themePalette.TextMarkup(Markup.Escape(memory.Content))),
                 new Markup(themePalette.HighlightMarkup(Markup.Escape(similarityPercent))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))));
+                new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeScope(memory)))));
 
         }
 
@@ -263,5 +295,29 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         return 0;
 
     }
+
+
+    /// <summary>
+    /// Which Campaign owns a memory, in one short cell.
+    /// </summary>
+    /// <remarks>
+    /// The two unresolved kinds are named rather than blanked. "unresolved" is an operator's cue that a
+    /// Session binding needs resolving before that memory can be recalled anywhere, and a blank cell
+    /// would read as "installation-scoped" - the one thing it is not.
+    /// </remarks>
+    private static string DescribeScope(SagaMemoryDto memory) =>
+        memory.ScopeKind switch
+        {
+
+            SagaMemoryScopeKind.Campaign =>
+                memory.ScopeCampaignId is { } campaignId ? campaignId.ToString("D")[..8] : "campaign",
+
+            SagaMemoryScopeKind.Global => "global",
+
+            SagaMemoryScopeKind.LegacyUnresolved => "unresolved",
+
+            _ => "unclassified",
+
+        };
 
 }

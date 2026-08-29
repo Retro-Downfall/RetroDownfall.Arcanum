@@ -164,7 +164,7 @@ public sealed partial class DataRetentionServiceTests
             WHEN NEW.Kind = '{LongRunningOperationKinds.DataRetentionMutation}'
             BEGIN
                 INSERT INTO entry_embeddings (EntryId, Embedding, Dim)
-                VALUES ('{secondEntryId}', X'0000803F', 1);
+                VALUES ('{Canonical(secondEntryId)}', X'0000803F', 1);
             END;
             """);
 

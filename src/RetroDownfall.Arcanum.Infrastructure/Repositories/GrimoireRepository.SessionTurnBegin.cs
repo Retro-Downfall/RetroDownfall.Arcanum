@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -252,7 +253,12 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
             WHERE b.SessionId = $sessionId;
             """;
 
-        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+        // session_campaign_bindings.SessionId is declared REFERENCES "Sessions"("Id") and foreign keys
+        // are set and verified on every connection this context opens, so the column holds exactly what
+        // the parent holds - and the parent is written by the object-relational writer, which the SQLite
+        // value binder renders uppercase unconditionally. A bare ToString() here was refused by the
+        // foreign key outright.
+        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
         SessionCampaignBinding stored;
 
@@ -345,18 +351,42 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
         await using SqliteCommand command = CreateSqliteCommand();
 
+        // The narrow, false-by-default authority session_campaign_bindings_guard_insert demands, and the
+        // same one CoreGrimoireSchemaDataInitializer opens for its own writes to this table. It begins
+        // FALSE on every connection so that direct SQL cannot fabricate Campaign authority for a Session;
+        // this method is the writer the schema means to allow, and it was refused with the rest because
+        // it never opened the scope. That is a separate defect from the spelling below - it would have
+        // refused a canonical write just as firmly - and both had to be true for a Session to be created.
+        using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(command.Connection!, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
         command.CommandText = """
             INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
             VALUES ($sessionId, $kindCode, $campaignId, $boundAtUtc);
             """;
 
-        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString());
+        // session_campaign_bindings.SessionId is declared REFERENCES "Sessions"("Id") and foreign keys
+        // are set and verified on every connection this context opens, so the column holds exactly what
+        // the parent holds - and the parent is written by the object-relational writer, which the SQLite
+        // value binder renders uppercase unconditionally. A bare ToString() here was refused by the
+        // foreign key outright.
+        _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
         _ = command.Parameters.AddWithValue("$kindCode", (long)campaign.Binding.Kind);
 
+        // session_campaign_bindings.CampaignId carries no foreign key by design - it is the historical
+        // authority identity, so a Campaign deletion can clear its own row without rewriting the durable
+        // fact that this Session was bound to that Campaign - and nothing therefore forced this writer to
+        // agree with CoreGrimoireSchemaDataInitializer, which canonicalizes the same column. A bare
+        // ToString() here made the table hold two spellings of one Campaign, and SagaMemoryScopeClassifier
+        // copied whichever it found straight into saga_memories.CampaignId, so Campaign-scoped recall
+        // returned only the rows whose binding came from this writer. Recall no longer depends on this
+        // line - the classifier canonicalizes the identity it hands on - but this column has an exact
+        // reader of its own: a Campaign memory reset selects the Sessions whose extraction watermarks it
+        // must clear by comparing it, and a minority-spelled binding is omitted from that selection.
         _ = command.Parameters.AddWithValue(
             "$campaignId",
-            campaign.CampaignId is { } id ? id.ToString() : DBNull.Value);
+            campaign.CampaignId is { } id ? id.ToString("D").ToUpperInvariant() : DBNull.Value);
 
         _ = command.Parameters.AddWithValue(
             "$boundAtUtc",

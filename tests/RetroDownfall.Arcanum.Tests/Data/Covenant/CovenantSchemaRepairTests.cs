@@ -601,7 +601,9 @@ public sealed class CovenantSchemaRepairTests
                         new CoreGrimoireSchemaDataInitializer(),
                         new CovenantCanonicalSchemaDataInitializer(),
                         new CovenantAcceleratorSchemaDataInitializer(),
-                    ])),
+                    ]),
+                    GrimoireSchemaVersionChains.Default,
+                    TimeProvider.System),
                 new GrimoireSchemaInitializationContext(
                     "installation",
                     AuthorityEpoch: 1,

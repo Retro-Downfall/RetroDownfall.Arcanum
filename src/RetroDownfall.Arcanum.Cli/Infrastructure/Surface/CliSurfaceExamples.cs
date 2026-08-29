@@ -114,6 +114,25 @@ internal static class CliSurfaceExamples
             ["arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"],
         ["memory covenant retire"] =
             ["arcanum memory covenant retire preference.builds --expected-revision 1"],
+        ["memory covenant correct"] =
+            ["arcanum memory covenant correct preference.builds --file corrected.txt --target-version 0195a0f0-0000-7000-8000-0000000000aa --target-hash 0000000000000000000000000000000000000000000000000000000000000000 --expected-revision 1"],
+        ["memory covenant pin"] =
+            ["arcanum memory covenant pin preference.builds"],
+        ["memory covenant unpin"] =
+            ["arcanum memory covenant unpin preference.builds --expected-revision 1"],
+        ["memory saga show"] = ["arcanum memory saga show mem-01j9x8"],
+        ["memory saga correct"] =
+            ["arcanum memory saga correct mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000 --file corrected.txt"],
+        ["memory saga retire"] =
+            ["arcanum memory saga retire mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000"],
+        ["memory saga reinstate"] =
+            ["arcanum memory saga reinstate mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000"],
+        ["memory saga pin"] = ["arcanum memory saga pin mem-01j9x8"],
+        ["memory saga unpin"] = ["arcanum memory saga unpin mem-01j9x8"],
+        ["memory covenant mask"] =
+            ["arcanum memory covenant mask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
+        ["memory covenant unmask"] =
+            ["arcanum memory covenant unmask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77 --expected-revision 1"],
 
         // Lore
         ["lore list"] = ["arcanum lore list"],

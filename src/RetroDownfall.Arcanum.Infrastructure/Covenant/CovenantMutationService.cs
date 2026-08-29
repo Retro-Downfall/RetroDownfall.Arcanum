@@ -26,12 +26,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// at, so a client that lost the response to a network failure gets its committed answer back rather
 /// than a stale-token refusal for work that already happened.</para>
 /// </remarks>
-internal sealed class CovenantMutationService(
+internal sealed partial class CovenantMutationService(
     ICovenantStore store,
     ICovenantCompiler compiler,
     ICovenantEnvelopeCodec codec,
     ICovenantConnectionSource connections,
     CovenantMutationKernel kernel,
+    CovenantCurationKernel curationKernel,
     ICovenantAuthoritySnapshotProvider authority,
     TimeProvider timeProvider) : ICovenantMutationService
 {
@@ -204,7 +205,9 @@ internal sealed class CovenantMutationService(
         bool reactivate,
         CovenantCompiledContent? compiled,
         ICovenantSnapshotReadLease readLease,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? targetVersionId = null,
+        CovenantDigest? targetRenderedHash = null)
     {
 
         Result<ulong> authorityEpoch = ResolveAuthorityEpoch();
@@ -277,7 +280,9 @@ internal sealed class CovenantMutationService(
             effect.Value.DependentHeadVectorDigest,
             EffectDigest(effect.Value),
             issuedAt.ToUnixTimeMilliseconds(),
-            expiresAt.ToUnixTimeMilliseconds());
+            expiresAt.ToUnixTimeMilliseconds(),
+            targetVersionId,
+            targetRenderedHash);
 
         // The body repeats these timestamps and the commit path requires the two to agree byte for
         // byte, so the instant is stated rather than read a second time inside the codec.
@@ -335,7 +340,9 @@ internal sealed class CovenantMutationService(
         CovenantCompiledContent? compiled,
         string preflightToken,
         CovenantWriteLease writeLease,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? targetVersionId = null,
+        CovenantDigest? targetRenderedHash = null)
     {
 
         ArgumentNullException.ThrowIfNull(writeLease);
@@ -413,6 +420,21 @@ internal sealed class CovenantMutationService(
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant preflight token was issued for a different request.");
+
+        }
+
+        // Three-way equality: what the request states, what the token bound, and — inside the kernel —
+        // what the head actually is. Enforcing only the token against live state would let a commit
+        // name one target, succeed against another, and report success to a client that believes it
+        // corrected the first. The request digest does not cover the target, deliberately, because it
+        // is stored durably and recomputed to resolve a replay.
+        if (body.Value.TargetVersionId != targetVersionId
+            || body.Value.TargetRenderedHash != targetRenderedHash)
+        {
+
+            return new Error(
+                ErrorCodes.Covenant.ForbiddenAuthority,
+                "This Covenant preflight token was issued for a different correction target.");
 
         }
 

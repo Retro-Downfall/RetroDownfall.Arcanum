@@ -130,12 +130,108 @@ public static class CovenantDigests
         });
     }
 
+    /// <summary>
+    /// The request digest one curation change is authorized under.
+    /// </summary>
+    /// <remarks>
+    /// Domain-separated from <see cref="MutationRequest"/> so a token issued for one can never be
+    /// honoured by the other, and epoch-bound so a pin recorded against a key that was later retired
+    /// and reclaimed cannot authorize anything against the key that re-created the name.
+    /// </remarks>
+    public static CovenantDigest CurationRequest(CurationRequestDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint kind = Code(input.Kind, nameof(input.Kind));
+        uint scope = Code(input.Scope, nameof(input.Scope));
+        uint lane = Code(input.Lane, nameof(input.Lane));
+        RequireGuid(input.MutationId, nameof(input.MutationId));
+        ValidateScopeCampaign(input.Scope, input.CampaignId, nameof(input));
+        string key = RequireKey(input.NormalizedKey, nameof(input.NormalizedKey));
+
+        return Hash(CovenantDomainTag.CurationRequest, writer =>
+        {
+            writer.WriteUInt32(kind);
+            writer.WriteGuid(input.MutationId);
+            writer.WriteUInt32(scope);
+            WriteOptionalGuid(writer, input.CampaignId);
+            writer.WriteUtf8(key);
+            writer.WriteUInt32(lane);
+            writer.WriteUInt64(input.KeyEpoch);
+            writer.WriteUInt64(input.ExpectedRevision);
+        });
+    }
+
+    public static CovenantDigest CurationDependentHeads(CurationDependentHeadsDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint scope = Code(input.Scope, nameof(input.Scope));
+        uint lane = Code(input.Lane, nameof(input.Lane));
+        ValidateScopeCampaign(input.Scope, input.CampaignId, nameof(input));
+        string key = RequireKey(input.NormalizedKey, nameof(input.NormalizedKey));
+
+        return Hash(CovenantDomainTag.CurationDependentHeads, writer =>
+        {
+            writer.WriteUInt32(scope);
+            WriteOptionalGuid(writer, input.CampaignId);
+            writer.WriteUtf8(key);
+            writer.WriteUInt32(lane);
+            writer.WriteUInt64(input.KeyEpoch);
+            writer.WriteByte(ToByte(input.GlobalConfirmedHeadExists));
+            writer.WriteByte(ToByte(input.ScopedConfirmedHeadExists));
+        });
+    }
+
+    public static CovenantDigest CurationEffect(CurationEffectDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint kind = Code(input.Kind, nameof(input.Kind));
+
+        return Hash(CovenantDomainTag.CurationEffect, writer =>
+        {
+            writer.WriteUInt32(kind);
+            writer.WriteUInt64(input.CurrentRevision);
+            writer.WriteByte(ToByte(input.CurrentlyPinned));
+            writer.WriteByte(ToByte(input.CurrentlyMasked));
+            writer.WriteByte(ToByte(input.ProjectedPinned));
+            writer.WriteByte(ToByte(input.ProjectedMasked));
+            writer.WriteByte(ToByte(input.GlobalConfirmedSuppressed));
+            writer.WriteByte(ToByte(input.GlobalConfirmedResurfaces));
+        });
+    }
+
+    public static CovenantDigest RetirementPreflight(RetirementPreflightDigestInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        uint scope = Code(input.Scope, nameof(input.Scope));
+        uint lane = Code(input.Lane, nameof(input.Lane));
+        RequireGuid(input.EntryId, nameof(input.EntryId));
+        RequireGuid(input.VersionId, nameof(input.VersionId));
+        ValidateScopeCampaign(input.Scope, input.CampaignId, nameof(input));
+        string key = RequireKey(input.NormalizedKey, nameof(input.NormalizedKey));
+        RequireDigest(input.RenderedHash, nameof(input.RenderedHash));
+
+        return Hash(CovenantDomainTag.RetirementPreflight, writer =>
+        {
+            writer.WriteGuid(input.EntryId);
+            writer.WriteGuid(input.VersionId);
+            writer.WriteUInt32(scope);
+            WriteOptionalGuid(writer, input.CampaignId);
+            writer.WriteUtf8(key);
+            writer.WriteUInt32(lane);
+            writer.WriteUInt64(input.TargetLaneRevision);
+            writer.WriteUInt64(input.KeyEpoch);
+            WriteDigest(writer, input.RenderedHash);
+            writer.WriteByte(ToByte(input.GlobalFallbackApplies));
+        });
+    }
+
     public static CovenantDigest PreflightBody(PreflightBodyDigestInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
         ValidateDigestFields(input.RequestDigest, input.DependentHeadVectorDigest, input.EffectDigest);
         RequireGuid(input.DatasetGeneration, nameof(input.DatasetGeneration));
         RequireOptionalDigest(input.CompiledArtifactDigest, nameof(input.CompiledArtifactDigest));
+        RequireOptionalDigest(input.TargetRenderedHash, nameof(input.TargetRenderedHash));
 
         return Hash(CovenantDomainTag.PreflightBody, writer =>
         {
@@ -151,6 +247,8 @@ public static class CovenantDigests
             WriteDigest(writer, input.EffectDigest);
             writer.WriteInt64(input.IssuedAt);
             writer.WriteInt64(input.ExpiresAt);
+            WriteOptionalGuid(writer, input.TargetVersionId);
+            WriteOptionalDigest(writer, input.TargetRenderedHash);
         });
     }
 

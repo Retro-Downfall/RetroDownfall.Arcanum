@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Conclave;
@@ -39,6 +40,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -284,7 +286,16 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<GrimoireSchemaManifestInspector>();
 
+        // The chains say which versions each tier has had and how to reach the one this binary
+        // declares. Injected rather than read statically so the installer has exactly one source of
+        // that answer, and so a suite can drive a longer chain through the same entry point.
+        services.AddSingleton(static _ => GrimoireSchemaVersionChains.Default);
+
         services.AddSingleton<GrimoireSchemaInstaller>();
+
+        services.AddSingleton<GrimoireSchemaBackfillRunner>();
+
+        services.AddScoped<GrimoireSchemaTransitionCoordinator>();
 
         // One table for the whole host: a Covenant capability is registered by the API pipeline and
         // taken by the in-process MCP server, and those two run on different tasks.
@@ -947,7 +958,16 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<GrimoireSchemaManifestInspector>();
 
+        // The chains say which versions each tier has had and how to reach the one this binary
+        // declares. Injected rather than read statically so the installer has exactly one source of
+        // that answer, and so a suite can drive a longer chain through the same entry point.
+        services.AddSingleton(static _ => GrimoireSchemaVersionChains.Default);
+
         services.AddSingleton<GrimoireSchemaInstaller>();
+
+        services.AddSingleton<GrimoireSchemaBackfillRunner>();
+
+        services.AddScoped<GrimoireSchemaTransitionCoordinator>();
 
         // One table for the whole host: a Covenant capability is registered by the API pipeline and
         // taken by the in-process MCP server, and those two run on different tasks.
@@ -1046,6 +1066,13 @@ public static class ServiceCollectionExtensions
         // composition is short-lived, and a sweep that started with a command and died with it would
         // drain a backlog only for whoever happened to run one.
         services.AddInstallationResetRecoveryAwareHostedService<CovenantMaintenanceHostedService>();
+
+        // Journal-gated rather than availability-gated, which is the opposite of the sweep above and
+        // deliberately so. A tier with a version run in flight is not healthy by design, so a driver
+        // that waited for health could never run the sweep that restores it; for Core, whose run
+        // stands its dependents down, that would leave the installation unrepairable by the only
+        // process able to repair it.
+        services.AddInstallationResetRecoveryAwareHostedService<GrimoireSchemaTransitionHostedService>();
 
         // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until
         // Arcanum:Features:SessionSearch / CodebaseRetrieval are enabled, so registering them
@@ -1168,9 +1195,20 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+        // Same lifetime as ISagaMemoryStore: this wraps that store's DbContext-backed calls directly,
+        // and a service scoped any looser would hold that DbContext across a boundary the store itself
+        // does not.
+        services.AddScoped<ISagaCurationService, SagaCurationService>();
+
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
         services.AddScoped<ILexiconService, LexiconService>();
+
+        services.AddScoped<IAnnalsStore, AnnalsStore>();
+
+        // One owner for the Campaign-scoped-memory gate, so retrieval and every inspection surface
+        // cannot disagree about which scope a turn draws from.
+        services.AddScoped<IMemoryScopeResolver, MemoryScopeResolver>();
 
         services.AddSingleton(TimeProvider.System);
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
@@ -1650,6 +1688,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantEnvelopeCodec>(),
             sp.GetRequiredService<ICovenantConnectionSource>(),
             sp.GetRequiredService<CovenantMutationKernel>(),
+            sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
             sp.GetRequiredService<TimeProvider>()));
 
@@ -1769,6 +1808,10 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped(
             static sp => new CovenantMutationKernel(sp.GetRequiredService<CovenantQuotaGuard>()));
+
+        // No quota guard: a curation change appends no compiled content and joins no Section, so there
+        // is no capacity for it to consume and nothing for a guard to measure.
+        services.AddScoped(static _ => new CovenantCurationKernel());
 
         services.AddScoped(
             static sp => new CovenantTurnReceiptCompactor(

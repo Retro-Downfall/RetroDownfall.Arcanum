@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Models;
+using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -378,6 +380,18 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<SagaMemoryDto[]>))]
 [JsonSerializable(typeof(ApiResponse<SagaSearchResult>))]
 [JsonSerializable(typeof(ApiResponse<SagaStats>))]
+[JsonSerializable(typeof(SagaCorrectRequest))]
+[JsonSerializable(typeof(SagaRetireRequest))]
+[JsonSerializable(typeof(SagaReinstateRequest))]
+[JsonSerializable(typeof(SagaMemoryLifecycle))]
+[JsonSerializable(typeof(SagaRetrievalEligibility))]
+[JsonSerializable(typeof(AnnalClaimHead))]
+[JsonSerializable(typeof(AnnalClaimVersion))]
+[JsonSerializable(typeof(SagaMemoryDetail))]
+[JsonSerializable(typeof(ApiResponse<SagaMemoryDetail>))]
+[JsonSerializable(typeof(SagaCurationOutcomeKind))]
+[JsonSerializable(typeof(SagaCurationResult))]
+[JsonSerializable(typeof(ApiResponse<SagaCurationResult>))]
 [JsonSerializable(typeof(MemorySearchScope))]
 [JsonSerializable(typeof(MemoryStoreStatusDto))]
 [JsonSerializable(typeof(MemoryStoreStatusDto[]))]
@@ -659,6 +673,15 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(CovenantRetirePrepareRequest))]
 [JsonSerializable(typeof(CovenantSetRequest))]
 [JsonSerializable(typeof(CovenantRetireRequest))]
+[JsonSerializable(typeof(CovenantRetirementDisclosureWire))]
+[JsonSerializable(typeof(CovenantCorrectPrepareRequest))]
+[JsonSerializable(typeof(CovenantCorrectRequest))]
+[JsonSerializable(typeof(CovenantCurationPrepareRequest))]
+[JsonSerializable(typeof(CovenantCurationRequest))]
+[JsonSerializable(typeof(CovenantCurationPreflightDto))]
+[JsonSerializable(typeof(CovenantCurationResultDto))]
+[JsonSerializable(typeof(ApiResponse<CovenantCurationPreflightDto>))]
+[JsonSerializable(typeof(ApiResponse<CovenantCurationResultDto>))]
 [JsonSerializable(typeof(CovenantMutationEffectExampleDto))]
 [JsonSerializable(typeof(CovenantMutationEffectExampleDto[]))]
 [JsonSerializable(typeof(CovenantMutationEffectDto))]

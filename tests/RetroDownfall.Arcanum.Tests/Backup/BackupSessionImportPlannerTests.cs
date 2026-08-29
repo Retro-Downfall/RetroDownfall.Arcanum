@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 
+using System.Text;
+
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -11,6 +13,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -34,17 +38,42 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 public sealed class BackupSessionImportPlannerTests : IDisposable
 {
 
+    // Hex letters in every identity the archive stores, because an all-digit Guid renders identically
+    // in both cases and a fixture built from one cannot tell a normalised comparison from a broken
+    // one. These four used to be 1111…, 9999…, 2222… and 3333…, which is half of why this suite was
+    // green over a planner that could not read a real backup at all.
     private static readonly Guid BoundSessionId =
-        Guid.Parse("11111111-1111-1111-1111-111111111111");
+        Guid.Parse("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d");
 
     private static readonly Guid UnboundSessionId =
-        Guid.Parse("99999999-9999-9999-9999-999999999999");
+        Guid.Parse("f0e1d2c3-b4a5-4968-8778-695a4b3c2d1e");
 
     private static readonly Guid ArchivedCampaignId =
-        Guid.Parse("22222222-2222-2222-2222-222222222222");
+        Guid.Parse("bead1e55-c0de-4fab-9dec-ade1facec0de");
 
     private static readonly Guid DestinationCampaignId =
-        Guid.Parse("33333333-3333-3333-3333-333333333333");
+        Guid.Parse("d0c0ffee-baba-4d0d-8fee-1ceb00dac0fe");
+
+    private static readonly Guid UserEntryId =
+        Guid.Parse("b7c8d9ea-1f20-4a31-8b42-c53d64e75f86");
+
+    private static readonly Guid AssistantEntryId =
+        Guid.Parse("c8d9ea1f-2031-4b42-8c53-d64e75f86a97");
+
+    private static readonly Guid AttachmentId =
+        Guid.Parse("d9ea1f20-3142-4c53-8d64-e75f86a97b08");
+
+    private static readonly Guid ReservationId =
+        Guid.Parse("ea1f2031-4253-4d64-8e75-f86a97b08c19");
+
+    // The owner segment is the Session in "N" form, exactly as SessionAttachmentStore writes it.
+    private static readonly string AttachmentRelativePath =
+        UnboundSessionId.ToString("N") + "/note/v1/note.bin";
+
+    // A real 64-character digest, because the manifest preimage carries the attachment's content hash
+    // and a placeholder shorter than that is silently replaced with thirty-two zero bytes.
+    private static readonly string AttachmentContentSha256 =
+        Convert.ToHexString(SHA256.HashData("attachment bytes"u8));
 
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -224,6 +253,65 @@ public sealed class BackupSessionImportPlannerTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The plan describes the graph the archive actually holds, not an empty one.
+    /// </summary>
+    /// <remarks>
+    /// Six of the planner's eight identity comparisons assemble this: the Entry manifest, the
+    /// attachment manifest, the finalization manifest, and the three counts beside them. Every one of
+    /// them bound the lowercase rendering of a <see cref="Guid"/> against a column an archive spells
+    /// uppercase, so all six returned nothing and the plan committed to a manifest and a count vector
+    /// describing a Session with no content at all — which the transfer store then refused as a
+    /// mismatch, if it was ever reached.
+    ///
+    /// <para>The counts are asserted individually rather than through the digest, because a digest
+    /// comparison says only that something differs. The manifest is asserted against the exact ordered
+    /// preimages the archive's rows produce, rebuilt here from what the fixture seeded — an assertion
+    /// that it merely differs from the empty manifest survives any single read still returning nothing,
+    /// because the other two keep the item set non-empty.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_plan_over_an_ordinary_archive_counts_the_graph_that_archive_holds()
+    {
+
+        await using ImportedSessionSourceLease lease = await OpenSourceAsync();
+
+        Result<ImportedSessionTransferRequest> planned = await BackupSessionImportPlanner.PlanAsync(
+            lease,
+            UnboundSessionId,
+            [],
+            CancellationToken.None);
+
+        Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : string.Empty);
+
+        Assert.Equal(1UL, planned.Value.ManifestCounts.Sessions);
+
+        Assert.Equal(2UL, planned.Value.ManifestCounts.Entries);
+
+        Assert.Equal(1UL, planned.Value.ManifestCounts.Attachments);
+
+        Assert.Equal(1UL, planned.Value.ManifestCounts.AttachmentBlobs);
+
+        Assert.Equal(1UL, planned.Value.ManifestCounts.Finalizations);
+
+        // The manifest is what the transfer store recomputes and refuses a mismatch on, and each of
+        // the three reads contributes its own preimages to it. Pinned item by item, because one read
+        // returning nothing while the other two still return rows leaves a manifest that is wrong and
+        // non-empty — which is the shape a weaker assertion here let through.
+        Assert.Equal(
+            ProtectedSessionTransferDigests.Manifest(
+            [
+                Preimage($"entry:{Stored(UserEntryId)}:1"),
+                Preimage($"entry:{Stored(AssistantEntryId)}:2"),
+                Preimage($"attachment:{AttachmentRelativePath}:{AttachmentContentSha256}:16"),
+                Preimage($"finalization:{Stored(AssistantEntryId)}"),
+            ]),
+            planned.Value.SourceManifestDigest);
+
+    }
+
+    private static byte[] Preimage(string item) => Encoding.UTF8.GetBytes(item);
+
     private async Task<ImportedSessionSourceLease> OpenSourceAsync()
     {
 
@@ -276,7 +364,17 @@ public sealed class BackupSessionImportPlannerTests : IDisposable
             CancellationToken.None))
         {
 
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+            // The archive is created on the version-4 tree, not the head, because the attachment row
+            // below carries the spelling the attachment family held before the version-5 step moved it.
+            // Version 5 installs a write-time guard on every governed identity column, so on the head
+            // tree that row cannot be written at all - which is the guard working. A real archive of this
+            // vintage carries the version-4 tree and no such guard, so reconstructing it is what makes
+            // this a faithful old archive rather than a new one with the rules suspended.
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(
+                connection,
+                CoreSchemaVersionFourFixture.ChainSet(),
+                1536,
+                CancellationToken.None);
 
             const string emptyJson = "{}";
 
@@ -286,23 +384,137 @@ public sealed class BackupSessionImportPlannerTests : IDisposable
                 INSERT INTO "Campaigns"
                     ("Id", "Name", "NameLower", "Path", "Type", "Description", "Settings",
                      "SanctumConfigJson", "CreatedAt", "UpdatedAt")
-                VALUES ('{ArchivedCampaignId:D}', 'Alpha', 'alpha', '/archived/alpha', 0, NULL,
+                VALUES ('{Stored(ArchivedCampaignId)}', 'Alpha', 'alpha', '/archived/alpha', 0, NULL,
                         '{emptyJson}', '{emptyJson}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
                 INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
-                VALUES ('{BoundSessionId:D}', '{ArchivedCampaignId:D}', 'Bound session', 'active',
-                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                VALUES ('{Stored(BoundSessionId)}', '{Stored(ArchivedCampaignId)}', 'Bound session',
+                        'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 
                 INSERT INTO "Sessions" ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt")
-                VALUES ('{UnboundSessionId:D}', NULL, 'Unbound session', 'active',
+                VALUES ('{Stored(UnboundSessionId)}', NULL, 'Unbound session', 'active',
                         '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+                INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                       "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+                VALUES ('{Stored(UserEntryId)}', '{Stored(UnboundSessionId)}', 0, 'ask', '',
+                        '2026-01-01T00:00:00Z', 1, NULL, NULL, NULL, 0);
+
+                INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                                       "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+                VALUES ('{Stored(AssistantEntryId)}', '{Stored(UnboundSessionId)}', 1, 'answer',
+                        'model', '2026-01-01T00:00:00Z', 2, NULL, NULL, NULL, 0);
+
+                INSERT INTO "SessionAttachments"
+                    ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",
+                     "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                     "SourceKind", "SourceStatus", "EncryptionVersion")
+                VALUES ('{AttachmentId:D}', '{UnboundSessionId:D}', 'Bound', 'note',
+                        'note.txt', 1, '{AttachmentRelativePath}', '{AttachmentContentSha256}',
+                        'text/plain', 16, 'Text', '2026-01-01T00:00:00Z', 'WorkspaceFile',
+                        'Refreshable', 0);
                 """;
 
             _ = await seed.ExecuteNonQueryAsync();
 
+            await SeedCommittedFinalizationAsync(connection);
+
+            await PinStoredSpellingAsync(connection);
+
         }
 
         return secret;
+
+    }
+
+    /// <summary>
+    /// One committed finalization, with the consumed capacity slot the schema requires beside it.
+    /// </summary>
+    /// <remarks>
+    /// The finalization guard refuses a row with no consumed reservation for the same Session and
+    /// assistant identity, and that reservation can only be minted inside an authorized turn-capacity
+    /// scope — so an archive that holds a finalization holds both. Seeded here rather than in the
+    /// statement above because that scope has to be opened around the insert.
+    /// </remarks>
+    private static async Task SeedCommittedFinalizationAsync(SqliteConnection connection)
+    {
+
+        using (CovenantSqliteAuthorizationScope capacity = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(connection, CovenantSqliteAuthorizationKind.TurnCapacityMutation))
+        {
+
+            await using SqliteCommand reservation = connection.CreateCommand();
+
+            reservation.CommandText = $"""
+                INSERT INTO assistant_finalization_capacity_reservations (
+                    ReservationId, SessionId, AssistantEntryId, OriginCode, ClaimId, StateCode,
+                    CreatedAtUtc, StateChangedAtUtc)
+                VALUES ('{Stored(ReservationId)}', '{Stored(UnboundSessionId)}',
+                        '{Stored(AssistantEntryId)}', 2, NULL, 2,
+                        '2026-01-01T00:00:00.0000000Z', '2026-01-01T00:00:00.0000000Z');
+                """;
+
+            _ = await reservation.ExecuteNonQueryAsync();
+
+        }
+
+        await using SqliteCommand finalization = connection.CreateCommand();
+
+        finalization.CommandText = $"""
+            INSERT INTO assistant_entry_finalizations (
+                AssistantEntryId, SessionId, OutcomeCode, ContentSensitivityCode,
+                ContentSensitivityDigest, RequestDigest, FinalReceiptDigest, SourceEvidenceDigest,
+                FinalizedAtUtc)
+            VALUES ('{Stored(AssistantEntryId)}', '{Stored(UnboundSessionId)}', 1, 0,
+                    zeroblob(32), zeroblob(32), NULL, NULL, '2026-01-01T00:00:00.0000000Z');
+            """;
+
+        _ = await finalization.ExecuteNonQueryAsync();
+
+    }
+
+    /// <summary>
+    /// The spelling an ordinary archive holds, which is not the one a <see cref="Guid"/> renders.
+    /// </summary>
+    /// <remarks>
+    /// <c>"Sessions"."Id"</c>, <c>"Campaigns"."Id"</c> and <c>"Entries"."SessionId"</c> come from a
+    /// <see cref="Guid"/> property mapped to TEXT, and the object-relational writer stores one as
+    /// uppercase dashed text; <c>assistant_entry_finalizations</c> is bound as a <see cref="Guid"/> by
+    /// the turn-commit writer and the provider renders it the same way. This fixture used to seed the
+    /// lowercase form instead — the one the planner's own comparisons bound — so every case here
+    /// agreed with those comparisons by accident, and the suite structurally could not have caught a
+    /// planner that refuses every real backup.
+    ///
+    /// <para>Deliberately not applied to <c>"SessionAttachments"</c>. All three of that table's
+    /// writers render the identity with <c>ToString()</c>, so an archive holds the lowercase form
+    /// there, and seeding it uppercase would be this suite inventing a spelling production does not
+    /// write in order to make two comparisons look broken that are not.</para>
+    /// </remarks>
+    private static string Stored(Guid value) => value.ToString("D").ToUpperInvariant();
+
+    /// <summary>
+    /// Proves the archive this suite plans against is spelled the way an archive is spelled.
+    /// </summary>
+    /// <remarks>
+    /// Read back out of the rows rather than asserted about <see cref="Stored"/>, and both halves
+    /// matter. Uppercase alone would pass vacuously if these identities ever lost their hex letters,
+    /// because an all-digit Guid renders the same in either case — so the inequality against the
+    /// default rendering is what keeps this suite exercising the mismatch rather than describing it.
+    /// </remarks>
+    private static async Task PinStoredSpellingAsync(SqliteConnection connection)
+    {
+
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.CommandText = """
+            SELECT "Id" FROM "Sessions" WHERE "Title" = 'Bound session';
+            """;
+
+        string stored = (string)(await read.ExecuteScalarAsync())!;
+
+        Assert.Equal(stored.ToUpperInvariant(), stored);
+
+        Assert.NotEqual(BoundSessionId.ToString("D"), stored);
 
     }
 

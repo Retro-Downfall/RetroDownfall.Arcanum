@@ -4,10 +4,14 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
@@ -44,6 +48,25 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         "protected_session_transfer_intents_guard_delete",
         "protected_session_transfer_blobs_guard_update",
         "protected_session_transfer_blobs_guard_delete",
+
+        // What an imported Entry has to be erasable through afterwards. The store is the only
+        // production writer that puts a lowercase identity into "Entries"."Id", so the destination is
+        // the one place a purge of such a row can be exercised without a test choosing the spelling.
+        "entry_embeddings",
+        "artifact_sensitivity",
+        "session_sensitivity_state",
+        "assistant_entry_erasure_receipts",
+        "artifact_sensitivity_guard_delete",
+        "artifact_sensitivity_guard_update",
+
+        // What a summary written for an imported Session has to land in. Same reason as above: the
+        // store is the only production writer that gives "Sessions"."Id" a lowercase identity, so a
+        // Session it created is the only one a derived-artifact write can be exercised against
+        // without a test choosing the spelling the foreign key has to agree with.
+        "session_summary_artifacts",
+        "session_summary_artifacts_guard_delete",
+        "session_summary_artifacts_guard_update",
+        "session_summary_state",
     ];
 
     private readonly string _root =
@@ -81,6 +104,47 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             TimeProvider.System);
 
         await SeedSourceSessionAsync();
+
+    }
+
+    /// <summary>
+    /// An archive written the ordinary way is found, over the spelling that writer stores.
+    /// </summary>
+    /// <remarks>
+    /// Three of the four reads that assemble the source graph bound a lowercase identity against
+    /// columns the object-relational writer fills uppercase, so a selective protected import of a
+    /// genuine backup found no Session and refused. The fourth reads
+    /// <c>"SessionAttachments"."SessionId"</c>, which that writer does not fill at all and which every
+    /// production writer spells lowercase — it was matching, and normalising it changed nothing.
+    /// Every other import case here is now also evidence of the three, because the fixture seeds the
+    /// spellings production writes — but only this one says so, and only this one fails with a message
+    /// naming the cause when the fixture drifts back.
+    /// </remarks>
+    [Fact]
+    public async Task An_archive_written_by_the_object_relational_writer_is_found_and_imported()
+    {
+
+        // The precondition, pinned rather than assumed. Without it a fixture that drifted back to the
+        // lowercase spelling would leave this case passing while proving nothing.
+        string stored = await StoredSessionIdAsync(_source, _sourceSessionId);
+
+        Assert.Equal(stored.ToUpperInvariant(), stored);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
+            await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null));
+
+        Assert.True(
+            completion.Result.IsSuccess,
+            completion.Result.IsFailure ? completion.Result.Error.Message : string.Empty);
+
+        // The whole graph came across, so the reads matched rows rather than merely not throwing.
+        Assert.Equal(1, await CountDestinationAsync("Sessions"));
+
+        Assert.Equal(2, await CountDestinationAsync("Entries"));
+
+        Assert.Equal(1, await CountDestinationAsync("SessionAttachments"));
+
+        Assert.Equal(1, await CountDestinationAsync("assistant_entry_finalizations"));
 
     }
 
@@ -224,9 +288,10 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(2, await CountDestinationAsync("Entries"));
         Assert.Equal(1, await CountDestinationAsync("SessionAttachments"));
 
-        // The explicit mapping, not a guess and not a dropped binding.
+        // The explicit mapping, not a guess and not a dropped binding. Canonical uppercase, which is
+        // the spelling pinned rather than assumed: the store renders every identity it writes that way.
         Assert.Equal(
-            destinationCampaign.ToString("D"),
+            destinationCampaign.ToString("D").ToUpperInvariant(),
             await _destination.ScalarStringAsync(
                 "SELECT \"CampaignId\" FROM \"Sessions\";",
                 CancellationToken.None));
@@ -379,6 +444,322 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
+    /// <summary>
+    /// An imported Entry is still Covenant-erasable, over the identity this store chose for it.
+    /// </summary>
+    /// <remarks>
+    /// Lives here rather than beside the other erasure suites because the precondition is this store's
+    /// own destination write. It once spelled a new Entry identity lowercase while the
+    /// object-relational writer that fills the same column everywhere else spelled it uppercase, which
+    /// made the equivalent assertion over an object-relational Entry evidence of nothing — it would
+    /// pass whether or not the purge compared identity correctly, because that spelling was also the
+    /// one the label ledger used. Both writers now render the same canonical spelling, so this case has
+    /// lost that distinguishing power; it is kept as the regression test for the entry this store
+    /// creates. Nothing here seeds an Entry, an identity, or a label row: the store writes the graph,
+    /// the ledger writes the label, and the kernel is entered at its outermost method.
+    /// </remarks>
+    [Fact]
+    public async Task An_imported_entry_is_erased_by_the_protected_artifact_erasure_kernel()
+    {
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        Assert.True((await CommitAsync(request)).Result.IsSuccess);
+
+        // Read back rather than remembered, and the lowercase precondition pinned rather than assumed:
+        // the identities under test are the ones the store chose for its destination rows, and values
+        // supplied here would prove nothing about the spellings it stores.
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
+
+        // Named with its Session, which is what makes the purge repair the Session projection as well
+        // as delete the content. The label could not carry a Session at all until the projection began
+        // agreeing with "Sessions"."Id", so this is the assertion that had nowhere to live before.
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            ImportedEntryLabel(imported),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : string.Empty);
+
+        Assert.Equal(
+            1,
+            (await ledger.ReadSessionProjectionAsync(imported.SessionId, CancellationToken.None))
+                .Value.TaintedArtifactCount);
+
+        ArtifactSensitivityLabel label = (await ledger.TryReadLabelAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            imported.EntryId,
+            CancellationToken.None)).Value!;
+
+        CovenantProtectedArtifactErasureKernel kernel = new(
+            new FixedCovenantConnectionSource(_destination.Connection),
+            CovenantSqliteConnectionInitializer.Instance,
+            TimeProvider.System);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantExclusiveLease lease = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
+            CancellationToken.None)).Value;
+
+        Result<CovenantArtifactErasureProgress> erased = await kernel.ErasePageAsync(
+            new CovenantProtectedArtifactErasurePage(
+                CovenantOperationGateFixture.DatasetGeneration,
+                [
+                    new CovenantProtectedArtifactErasureItem(
+                        label.ArtifactId,
+                        label.ArtifactKind,
+                        label.SessionId,
+                        label.LabelId,
+                        label,
+                        label.ArtifactContentDigest,
+                        label.ArtifactRevision),
+                ]),
+            CovenantArtifactErasureAuthority
+                .ForExclusive(lease, CovenantExclusiveOperation.CovenantFamilyReinitialize)
+                .Value,
+            CancellationToken.None);
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.None, erased.Value.Blocker);
+
+        Assert.Equal(1UL, erased.Value.ErasedCount);
+
+        // The assistant Entry is gone and the user Entry beside it is untouched, so the purge matched
+        // one row rather than every row or none.
+        Assert.Equal(1, await CountDestinationAsync("Entries"));
+
+        Assert.Equal(
+            0,
+            await _destination.ScalarLongAsync(
+                "SELECT COUNT(*) FROM \"Entries\" WHERE \"Role\" = 1;",
+                CancellationToken.None));
+
+        Assert.Equal(0, await CountDestinationAsync("artifact_sensitivity"));
+
+        // The Session projection was repaired, not merely left behind. That statement finds its row by
+        // the normalised comparison, because the projection agrees with "Sessions"."Id" and this
+        // Session's identity is the lowercase one the store wrote — an exact match would update
+        // nothing and leave the count reporting an artifact that no longer exists.
+        Assert.Equal(
+            0,
+            (await ledger.ReadSessionProjectionAsync(imported.SessionId, CancellationToken.None))
+                .Value.TaintedArtifactCount);
+
+    }
+
+    /// <summary>
+    /// Labelling an artifact of an imported Session reaches that Session's taint projection.
+    /// </summary>
+    /// <remarks>
+    /// <c>session_sensitivity_state.SessionId</c> declares <c>REFERENCES "Sessions" ("Id")</c>, and
+    /// SQLite resolves a foreign key by byte equality rather than through a predicate. The ledger
+    /// spelled that identity uppercase while this store spells a Session it created lowercase, so
+    /// every attempt to label any artifact of an imported Session failed on the constraint and the
+    /// Session was never recorded as tainted at all. Nothing here seeds a Session or a projection row:
+    /// the store writes the Session, the ledger writes the label, and the assertion reads the
+    /// projection back through the ledger's own production reader — the one the dispatch gate consults
+    /// on every session-backed turn.
+    /// </remarks>
+    [Fact]
+    public async Task A_label_on_an_imported_sessions_artifact_reaches_that_sessions_projection()
+    {
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        Assert.True((await CommitAsync(request)).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            ImportedEntryLabel(imported),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : string.Empty);
+
+        // The projection row exists and agrees with the Session row it references, byte for byte.
+        // Asserting the text rather than only the count is what distinguishes "the foreign key
+        // resolved" from "the constraint happened not to be enforced".
+        Assert.Equal(
+            imported.StoredSessionId,
+            await _destination.ScalarStringAsync(
+                "SELECT SessionId FROM session_sensitivity_state;",
+                CancellationToken.None));
+
+        Result<SessionSensitivityProjection> projection =
+            await ledger.ReadSessionProjectionAsync(imported.SessionId, CancellationToken.None);
+
+        Assert.True(projection.IsSuccess, projection.IsFailure ? projection.Error.Message : string.Empty);
+
+        Assert.True(projection.Value.IsTainted);
+
+        Assert.Equal(1, projection.Value.TaintedArtifactCount);
+
+    }
+
+    /// <summary>
+    /// A Session this installation imported and then labelled can never leave it in plaintext.
+    /// </summary>
+    /// <remarks>
+    /// The guard this proves is the only member of its defect family that failed open. The taint scan
+    /// bound a lowercase identity against <c>artifact_sensitivity.SessionId</c>, which the label ledger
+    /// writes uppercase, so the count was zero for every labelled Session and the refusal never fired.
+    /// The suite's existing coverage could not see it: that case seeds the label row itself, in the
+    /// spelling the broken comparison already matched.
+    ///
+    /// <para>Nothing here seeds a label. A Session is imported, one of its artifacts is labelled
+    /// through the real ledger, and the onward transfer is a genuine request built from the graph the
+    /// store itself wrote — so without the refusal it would commit, which is exactly what the
+    /// companion case asserts.</para>
+    /// </remarks>
+    [Fact]
+    public async Task An_imported_session_carrying_a_covenant_label_can_never_be_transferred_onward()
+    {
+
+        Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(_destination.Connection));
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            ImportedEntryLabel(imported),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : string.Empty);
+
+        await using CovenantSchemaScratchDatabase onward = await CreateOnwardDestinationAsync();
+
+        string onwardAttachments = Directory.CreateDirectory(Path.Combine(_root, "onward")).FullName;
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(
+            await BuildRequestAsync(Guid.NewGuid(), null, _destination, imported.SessionId),
+            _destination,
+            _destinationAttachments,
+            onward,
+            onwardAttachments);
+
+        Assert.True(completion.Result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, completion.Result.Error.Code);
+
+        Assert.Contains("Covenant-derived", completion.Result.Error.Message, StringComparison.Ordinal);
+
+        // Refused before the graph was read, so nothing of the labelled Session reached the plaintext
+        // destination at all.
+        Assert.Equal(
+            0,
+            await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Sessions\";", CancellationToken.None));
+
+        Assert.Equal(
+            0,
+            await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Entries\";", CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// The same onward request commits when nothing about the imported Session is labelled.
+    /// </summary>
+    /// <remarks>
+    /// The control for the refusal above. Without it, "the transfer failed" would be consistent with a
+    /// request the onward hop could never have satisfied for some unrelated reason, and the refusal
+    /// would be evidence of nothing.
+    /// </remarks>
+    [Fact]
+    public async Task An_unlabelled_imported_session_transfers_onward()
+    {
+
+        Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        await using CovenantSchemaScratchDatabase onward = await CreateOnwardDestinationAsync();
+
+        string onwardAttachments = Directory.CreateDirectory(Path.Combine(_root, "onward")).FullName;
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(
+            await BuildRequestAsync(Guid.NewGuid(), null, _destination, imported.SessionId),
+            _destination,
+            _destinationAttachments,
+            onward,
+            onwardAttachments);
+
+        Assert.True(
+            completion.Result.IsSuccess,
+            completion.Result.IsFailure ? completion.Result.Error.Message : string.Empty);
+
+        Assert.Equal(
+            1,
+            await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Sessions\";", CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A summary written for an imported Session lands on that Session's row.
+    /// </summary>
+    /// <remarks>
+    /// Lives here for the same reason the erasure case above does: this store is the only production
+    /// writer that gives <c>"Sessions"."Id"</c> a lowercase identity, and the derived-artifact store
+    /// spelled every one of its own identities uppercase — the artifact row and the pointer row that
+    /// both carry a foreign key into that column, and the <c>UPDATE "Sessions"</c> that projects the
+    /// content back onto the Session. The equivalent assertion over an object-relational Session
+    /// passes whether or not any of that is right.
+    /// </remarks>
+    [Fact]
+    public async Task A_summary_written_for_an_imported_session_reaches_the_session_row()
+    {
+
+        Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
+
+        ImportedArtifact imported = await ReadImportedArtifactAsync();
+
+        ISessionSummaryArtifactStore store = new SessionDerivedArtifactStore(
+            new FixedCovenantConnectionSource(_destination.Connection),
+            CovenantSqliteConnectionInitializer.Instance);
+
+        Result<SessionDerivedArtifactWriteReceipt> receipt = await store.ReplaceAsync(
+            new SessionSummaryArtifactWrite(
+                imported.SessionId,
+                "the imported transcript, summarized",
+                null,
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([CovenantOperationGateFixture.DatasetGeneration])),
+            CancellationToken.None);
+
+        Assert.True(receipt.IsSuccess, receipt.IsFailure ? receipt.Error.Message : string.Empty);
+
+        // Read back through the identity the Session row holds, so the assertion is about the row the
+        // store was asked to write rather than about any row that happens to carry a summary.
+        await using SqliteCommand summary = _destination.Connection.CreateCommand();
+
+        summary.CommandText = "SELECT \"Summary\" FROM \"Sessions\" WHERE \"Id\" = $id;";
+
+        _ = summary.Parameters.AddWithValue("$id", imported.StoredSessionId);
+
+        Assert.Equal(
+            "the imported transcript, summarized",
+            await summary.ExecuteScalarAsync(CancellationToken.None) as string);
+
+        // The artifact and its pointer exist too, both keyed by an identity that resolved against the
+        // Session row rather than one the store spelled for itself.
+        Assert.Equal(
+            imported.StoredSessionId,
+            await _destination.ScalarStringAsync(
+                "SELECT SessionId FROM session_summary_artifacts;",
+                CancellationToken.None));
+
+        Assert.Equal(
+            imported.StoredSessionId,
+            await _destination.ScalarStringAsync(
+                "SELECT SessionId FROM session_summary_state;",
+                CancellationToken.None));
+
+    }
+
     public async Task DisposeAsync()
     {
 
@@ -420,8 +801,96 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// </summary>
     private static byte[] NonZeroBloom() => [.. Enumerable.Repeat((byte)0x0F, 32)];
 
+    /// <summary>The label an imported assistant Entry carries, naming the Session it belongs to.</summary>
+    /// <remarks>
+    /// Naming the Session is the point. It is what makes the label reach
+    /// <c>session_sensitivity_state</c> and what makes the plaintext-export taint scan able to find it,
+    /// and both of those cross the identity spelling this store chose for the destination Session.
+    /// </remarks>
+    private static DerivedArtifactWrite ImportedEntryLabel(ImportedArtifact imported) =>
+        new(
+            SensitiveArtifactKind.AssistantEntry,
+            imported.EntryId,
+            imported.SessionId,
+            campaignId: null,
+            turnId: null,
+            artifactRevision: 1,
+            DerivedArtifactContentDigest.ForText("answer"),
+            ContentSensitivity.CovenantDerived,
+            GenerationProvenance.CreateExact([CovenantOperationGateFixture.DatasetGeneration]));
+
+    /// <summary>
+    /// The imported Session and assistant Entry, read out of the rows the store wrote.
+    /// </summary>
+    /// <remarks>
+    /// Read back rather than remembered, and the lowercase spelling is pinned rather than assumed. If
+    /// this store ever switched to the uppercase spelling the label ledger uses, every case built on
+    /// this would keep passing while proving nothing, because that spelling is the one the defects
+    /// under test already matched.
+    /// </remarks>
+    private async Task<ImportedArtifact> ReadImportedArtifactAsync()
+    {
+
+        string? sessionId = await _destination.ScalarStringAsync(
+            "SELECT \"Id\" FROM \"Sessions\";",
+            CancellationToken.None);
+
+        Assert.NotNull(sessionId);
+
+        Assert.Equal(sessionId.ToUpperInvariant(), sessionId);
+
+        string? entryId = await _destination.ScalarStringAsync(
+            "SELECT \"Id\" FROM \"Entries\" WHERE \"Role\" = 1;",
+            CancellationToken.None);
+
+        Assert.NotNull(entryId);
+
+        Assert.Equal(entryId.ToUpperInvariant(), entryId);
+
+        return new ImportedArtifact(
+            sessionId,
+            Guid.Parse(sessionId, CultureInfo.InvariantCulture),
+            Guid.Parse(entryId, CultureInfo.InvariantCulture));
+
+    }
+
+    /// <summary>A third database, to carry a Session onward out of the one this suite imports into.</summary>
+    private static async Task<CovenantSchemaScratchDatabase> CreateOnwardDestinationAsync()
+    {
+
+        CovenantSchemaScratchDatabase onward =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        try
+        {
+
+            await onward.InstallCoreObjectsAsync(DestinationObjects, CancellationToken.None);
+
+            return onward;
+
+        }
+        catch
+        {
+
+            await onward.DisposeAsync();
+
+            throw;
+
+        }
+
+    }
+
+    private Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>> CommitAsync(
+        ImportedSessionTransferRequest request,
+        ProtectedTransferScope? scope = null) =>
+        CommitAsync(request, _source, _sourceAttachments, _destination, _destinationAttachments, scope);
+
     private async Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>> CommitAsync(
         ImportedSessionTransferRequest request,
+        CovenantSchemaScratchDatabase source,
+        string sourceAttachments,
+        CovenantSchemaScratchDatabase destination,
+        string destinationAttachments,
         ProtectedTransferScope? scope = null)
     {
 
@@ -432,8 +901,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         await using ImportedSessionSourceLease sourceLease =
             ImportedSessionSourceLease.Adopt(
-                await _source.OpenAdditionalConnectionAsync(CancellationToken.None),
-                _sourceAttachments);
+                await source.OpenAdditionalConnectionAsync(CancellationToken.None),
+                sourceAttachments);
 
         await using CovenantProtectedTransferLease transferLease = new(
             new StubTransferRegistration(
@@ -447,33 +916,34 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             request,
             sourceLease,
             transferLease,
-            new ProtectedSessionImportDestination(_destination.Connection, _destinationAttachments),
+            new ProtectedSessionImportDestination(destination.Connection, destinationAttachments),
             CancellationToken.None);
 
     }
+
+    private Task<ImportedSessionTransferRequest> BuildRequestAsync(
+        Guid operationId,
+        BackupSessionCampaignMapping? mapping) =>
+        BuildRequestAsync(operationId, mapping, _source, _sourceSessionId);
 
     /// <summary>
     /// Builds the request exactly as the importer must: every digest and count derived from the source
     /// the store will read, never invented.
     /// </summary>
-    private async Task<ImportedSessionTransferRequest> BuildRequestAsync(
+    private static async Task<ImportedSessionTransferRequest> BuildRequestAsync(
         Guid operationId,
-        BackupSessionCampaignMapping? mapping)
+        BackupSessionCampaignMapping? mapping,
+        CovenantSchemaScratchDatabase source,
+        Guid sourceSessionId)
     {
 
         Guid destinationSessionId = Guid.NewGuid();
 
         CovenantDigest sourceEvidence = Digest(0x11);
 
-        ProtectedSessionTransferCounts counts = new(
-            1,
-            (ulong)await CountSourceAsync("Entries"),
-            (ulong)await CountSourceAsync("SessionAttachments"),
-            (ulong)await CountSourceAsync("SessionAttachments"),
-            (ulong)await CountSourceAsync("assistant_entry_finalizations"),
-            0);
+        ProtectedSessionTransferCounts counts = await CountSourceGraphAsync(source, sourceSessionId);
 
-        CovenantDigest manifest = await ComputeSourceManifestAsync();
+        CovenantDigest manifest = await ComputeSourceManifestAsync(source, sourceSessionId);
 
         CovenantDigest binding = ProtectedSessionTransferDigests.DestinationBinding(
             mapping is null ? CovenantScope.Global : CovenantScope.Campaign,
@@ -483,7 +953,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         CovenantDigest effect = ProtectedSessionTransferDigests.Effect(
             ProtectedSessionTransferKind.Import,
             operationId,
-            _sourceSessionId,
+            sourceSessionId,
             null,
             destinationSessionId,
             binding,
@@ -493,7 +963,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         return new ImportedSessionTransferRequest(
             operationId,
-            _sourceSessionId,
+            sourceSessionId,
             destinationSessionId,
             sourceEvidence,
             manifest,
@@ -505,20 +975,104 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     }
 
     /// <summary>
+    /// Counts the source graph the way the store counts it: owned by the Session under transfer, and
+    /// over the finalization outcome the store copies.
+    /// </summary>
+    /// <remarks>
+    /// Owner-scoped rather than whole-table, because an onward transfer reads a database this store
+    /// itself wrote, and the finalizations it wrote there carry the imported outcome the source reader
+    /// deliberately skips. A whole-table count would claim a finalization the graph does not contain.
+    /// </remarks>
+    private static async Task<ProtectedSessionTransferCounts> CountSourceGraphAsync(
+        CovenantSchemaScratchDatabase source,
+        Guid sourceSessionId)
+    {
+
+        long attachments = await OwnedCountAsync(
+            source,
+            $"SELECT COUNT(*) FROM \"SessionAttachments\" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")};",
+            sourceSessionId);
+
+        return new(
+            1,
+            (ulong)await OwnedCountAsync(
+                source,
+                $"SELECT COUNT(*) FROM \"Entries\" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")};",
+                sourceSessionId),
+            (ulong)attachments,
+            (ulong)attachments,
+            (ulong)await OwnedCountAsync(
+                source,
+                $"SELECT COUNT(*) FROM assistant_entry_finalizations WHERE {CovenantIdentitySql.Keyed("SessionId", "$id")} AND OutcomeCode = 1;",
+                sourceSessionId),
+            0);
+
+    }
+
+    private static async Task<long> OwnedCountAsync(
+        CovenantSchemaScratchDatabase database,
+        string sql,
+        Guid sessionId)
+    {
+
+        await using SqliteCommand command = database.Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        // Normalised, exactly as the planner and the store both compare. Binding the Session's own
+        // stored text instead was wrong across tables: "Sessions"."Id" is uppercase for an ordinary
+        // archive while "SessionAttachments"."SessionId" is lowercase whoever wrote it, so one bound
+        // literal counted the entries and missed the attachments.
+        _ = command.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(sessionId));
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            CultureInfo.InvariantCulture);
+
+    }
+
+    /// <summary>
+    /// The exact text <c>"Sessions"."Id"</c> holds for one Session in one database.
+    /// </summary>
+    private static async Task<string> StoredSessionIdAsync(
+        CovenantSchemaScratchDatabase database,
+        Guid sessionId)
+    {
+
+        await using SqliteCommand command = database.Connection.CreateCommand();
+
+        command.CommandText =
+            "SELECT \"Id\" FROM \"Sessions\" WHERE lower(replace(\"Id\", '-', '')) = $key;";
+
+        _ = command.Parameters.AddWithValue("$key", sessionId.ToString("N"));
+
+        return await command.ExecuteScalarAsync(CancellationToken.None) as string
+            ?? throw new InvalidOperationException($"No Session row carries the identity {sessionId}.");
+
+    }
+
+    /// <summary>
     /// Reproduces the manifest the store computes, from the same source rows and the same order.
     /// </summary>
-    private async Task<CovenantDigest> ComputeSourceManifestAsync()
+    private static async Task<CovenantDigest> ComputeSourceManifestAsync(
+        CovenantSchemaScratchDatabase source,
+        Guid sourceSessionId)
     {
+
+        // Normalised for the reason OwnedCountAsync states: the child tables of one Session do not
+        // agree on how that Session is spelled, so no single bound literal reaches all three.
+        string session = CovenantIdentitySql.Key(sourceSessionId);
 
         List<byte[]> items = [];
 
-        await using (SqliteCommand entries = _source.Connection.CreateCommand())
+        await using (SqliteCommand entries = source.Connection.CreateCommand())
         {
 
             entries.CommandText =
-                "SELECT \"Id\", \"Sequence\" FROM \"Entries\" WHERE \"SessionId\" = $id ORDER BY \"Sequence\", \"Id\";";
+                $"SELECT \"Id\", \"Sequence\" FROM \"Entries\" WHERE "
+                + $"{CovenantIdentitySql.Keyed("\"SessionId\"", "$id")} ORDER BY \"Sequence\", \"Id\";";
 
-            _ = entries.Parameters.AddWithValue("$id", _sourceSessionId.ToString("D"));
+            _ = entries.Parameters.AddWithValue("$id", session);
 
             await using SqliteDataReader reader = await entries.ExecuteReaderAsync(CancellationToken.None);
 
@@ -532,15 +1086,16 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         }
 
-        await using (SqliteCommand attachments = _source.Connection.CreateCommand())
+        await using (SqliteCommand attachments = source.Connection.CreateCommand())
         {
 
-            attachments.CommandText = """
+            attachments.CommandText = $"""
                 SELECT "RelativePath", "ContentSha256", "ByteLength"
-                FROM "SessionAttachments" WHERE "SessionId" = $id ORDER BY "Id";
+                FROM "SessionAttachments"
+                WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")} ORDER BY "Id";
                 """;
 
-            _ = attachments.Parameters.AddWithValue("$id", _sourceSessionId.ToString("D"));
+            _ = attachments.Parameters.AddWithValue("$id", session);
 
             await using SqliteDataReader reader =
                 await attachments.ExecuteReaderAsync(CancellationToken.None);
@@ -556,15 +1111,16 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         }
 
-        await using (SqliteCommand finalizations = _source.Connection.CreateCommand())
+        await using (SqliteCommand finalizations = source.Connection.CreateCommand())
         {
 
-            finalizations.CommandText = """
+            finalizations.CommandText = $"""
                 SELECT AssistantEntryId FROM assistant_entry_finalizations
-                WHERE SessionId = $id AND OutcomeCode = 1 ORDER BY AssistantEntryId;
+                WHERE {CovenantIdentitySql.Keyed("SessionId", "$id")} AND OutcomeCode = 1
+                ORDER BY AssistantEntryId;
                 """;
 
-            _ = finalizations.Parameters.AddWithValue("$id", _sourceSessionId.ToString("D"));
+            _ = finalizations.Parameters.AddWithValue("$id", session);
 
             await using SqliteDataReader reader =
                 await finalizations.ExecuteReaderAsync(CancellationToken.None);
@@ -582,10 +1138,31 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
+    /// <summary>
+    /// Seeds the archive the way an ordinary Grimoire is written.
+    /// </summary>
+    /// <remarks>
+    /// A mixture, because that is what an installation actually holds. <c>"Sessions"."Id"</c> and
+    /// <c>"Entries"."SessionId"</c> are uppercase: they come from a <see cref="Guid"/> property mapped
+    /// to TEXT, and the object-relational writer renders one as uppercase dashed text.
+    /// <c>"SessionAttachments"."SessionId"</c> is lowercase, because that table has no such writer —
+    /// all three of its production writers hand the column a string from <c>ToString()</c>.
+    ///
+    /// <para>That last one was seeded uppercase, under a remark asserting the object-relational writer
+    /// filled it. There is no such writer for that table, and the claim was wrong. It mattered: the
+    /// mutation proof for the attachment read was taken against a spelling no production writer
+    /// produces, which is this defect family's own anti-pattern committed inside its own fix. The
+    /// spelling is now read off the writers, and the attachment read is no longer claimed as a fix.</para>
+    ///
+    /// <para>This fixture used to seed every identity lowercase, which is the spelling the store's own
+    /// source reads bound — so every import case here agreed with those reads by accident and the suite
+    /// could not have caught them being wrong about a real archive. The onward-transfer cases cover the
+    /// other spelling, because their source is a Session this store itself wrote.</para>
+    /// </remarks>
     private async Task SeedSourceSessionAsync()
     {
 
-        string session = _sourceSessionId.ToString("D");
+        string session = _sourceSessionId.ToString("D").ToUpperInvariant();
 
         string now = DateTimeOffset.UnixEpoch.UtcDateTime.ToString(
             "yyyy-MM-ddTHH:mm:ss.fffffffZ",
@@ -600,7 +1177,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
              """,
             CancellationToken.None);
 
-        string assistantEntryId = Guid.Parse("aaaaaaaa-1111-4222-8333-444444444444").ToString("D");
+        string assistantEntryId =
+            Guid.Parse("aaaaaaaa-1111-4222-8333-444444444444").ToString("D").ToUpperInvariant();
 
         await _source.ExecuteAsync(
             $"""
@@ -638,7 +1216,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                  ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey",
                   "OriginalFileName", "Version", "RelativePath", "ContentSha256", "MimeType",
                   "ByteLength", "Kind", "CreatedAt", "SourceKind", "SourceStatus", "EncryptionVersion")
-             VALUES ('{Guid.Parse("cccccccc-1111-4222-8333-444444444444")}', '{session}', NULL, NULL,
+             VALUES ('{Guid.Parse("cccccccc-1111-4222-8333-444444444444")}',
+                     '{_sourceSessionId:D}', NULL, NULL,
                      0, 'note', 'note.txt', 1, '{owner}/note.txt', '{hash}', 'text/plain',
                      {bytes.Length}, 0, '{now}', 'SnapshotOnly', 'NotApplicable', 0);
              """,
@@ -690,7 +1269,12 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         _ = command.Parameters.AddWithValue("$bloom", NonZeroBloom());
 
-        _ = command.Parameters.AddWithValue("$session", _sourceSessionId.ToString("D"));
+        // The label ledger is the only writer of this column and it uppercases. Seeding the Session's
+        // other spelling here would make the taint scan agree by accident, which is exactly how the
+        // guard this feeds stayed broken through a green suite.
+        _ = command.Parameters.AddWithValue(
+            "$session",
+            _sourceSessionId.ToString("D").ToUpperInvariant());
 
         _ = command.Parameters.AddWithValue("$content", Digest(0x44).Bytes);
 
@@ -708,9 +1292,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     }
 
-    private Task<long> CountSourceAsync(string table) =>
-        _source.ScalarLongAsync($"SELECT COUNT(*) FROM \"{table}\";", CancellationToken.None);
-
     private Task<long> CountDestinationAsync(string table) =>
         _destination.ScalarLongAsync($"SELECT COUNT(*) FROM \"{table}\";", CancellationToken.None);
 
@@ -718,6 +1299,16 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         _destination.ScalarLongAsync(
             "SELECT PhaseCode FROM protected_session_transfer_intents;",
             CancellationToken.None);
+
+    /// <summary>
+    /// One imported Session and one of its imported Entries, as the destination rows spell them.
+    /// </summary>
+    /// <remarks>
+    /// Carries the Session's stored text alongside the parsed identity because the two are the whole
+    /// point: a foreign key into <c>"Sessions"."Id"</c> has to agree with the text, while every caller
+    /// hands the store a <see cref="Guid"/>.
+    /// </remarks>
+    private sealed record ImportedArtifact(string StoredSessionId, Guid SessionId, Guid EntryId);
 
     /// <summary>
     /// The compound lease a caller already acquired. Only its snapshot matters here: the store must

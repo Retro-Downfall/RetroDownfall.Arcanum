@@ -42,6 +42,11 @@ public sealed partial class DataRetentionServiceTests
             attachment.AttachmentId,
             attachment.ChunkId);
 
+        // One real retirement, so the two curation tables the Saga class accounts for are not both
+        // empty. A mirror that names a table the installation never fills agrees with production
+        // whatever production does with it.
+        _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
+
         Guid uploadedFileId = Guid.NewGuid();
 
         await SeedUploadedFileAsync(uploadedFileId, 999);
@@ -99,7 +104,9 @@ public sealed partial class DataRetentionServiceTests
                 "saga_memory_embeddings",
                 "saga_memory_embeddings_vec",
                 "saga_memory_attachment_provenance",
-                "saga_extraction_watermarks"),
+                "saga_extraction_watermarks",
+                "saga_retirement_suppressions",
+                "saga_suppression_key"),
             "saga_extraction_watermarks");
 
         AssertStatusRows(
@@ -521,7 +528,7 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@entryId", entryId.ToString("N")),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
 
     }
@@ -619,7 +626,7 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", memoryId),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
 
     }
@@ -644,7 +651,7 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", entryId),
             ("@sessionId", sessionId.ToString()),
-            ("@attachmentId", attachmentId.ToString()),
+            ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
 
     private async Task RecreateVectorTableAsync(

@@ -128,8 +128,9 @@ internal static class BackupRestoreProtectedStatePurger
     /// difference from <see cref="CovenantProtectedArtifactErasureKernel"/>, which rereads the live row
     /// inside its own transaction precisely because a live artifact can have changed owner since the
     /// caller listed it. Both resolve <em>where</em> the rows live through the same
-    /// <see cref="CovenantArtifactPurgePlans"/> table, so a kind whose storage moves cannot be purged
-    /// two different ways.
+    /// <see cref="CovenantArtifactPurgePlans"/> table and compare identity through the same
+    /// <see cref="CovenantIdentitySql"/> shape, so a kind whose storage moves cannot be purged
+    /// two different ways and neither path can be left matching a spelling the other has outgrown.
     /// </remarks>
     private static async Task<Result<LabelPurge>> PurgeLabelledArtifactsAsync(
         SqliteConnection staged,
@@ -227,10 +228,20 @@ internal static class BackupRestoreProtectedStatePurger
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
 
+            if (projection.ExistsConditionally
+                && !await BackupRestoreDatabaseWorker
+                    .TableExistsAsync(staged, projection.Table, cancellationToken, transaction)
+                    .ConfigureAwait(false))
+            {
+
+                continue;
+
+            }
+
             _ = await ExecuteAsync(
                 staged,
                 transaction,
-                $"DELETE FROM {projection.Table} WHERE {projection.KeyColumn} = $artifactId;",
+                projection.DeleteBy("$artifactKey"),
                 label,
                 cancellationToken).ConfigureAwait(false);
 
@@ -242,7 +253,7 @@ internal static class BackupRestoreProtectedStatePurger
             _ = await ExecuteAsync(
                 staged,
                 transaction,
-                $"DELETE FROM {pointer} WHERE CurrentArtifactId = $artifactId;",
+                $"DELETE FROM {pointer} WHERE {CovenantIdentitySql.Keyed("CurrentArtifactId", "$artifactKey")};",
                 label,
                 cancellationToken).ConfigureAwait(false);
 
@@ -260,7 +271,7 @@ internal static class BackupRestoreProtectedStatePurger
             && await ExecuteAsync(
                 staged,
                 transaction,
-                $"DELETE FROM {artifact.Table} WHERE {artifact.KeyColumn} = $artifactId;",
+                artifact.DeleteBy("$artifactKey"),
                 label,
                 cancellationToken).ConfigureAwait(false) > 0;
 
@@ -304,15 +315,19 @@ internal static class BackupRestoreProtectedStatePurger
 
             command.Transaction = transaction;
 
-            command.CommandText = """
+            // The identity came out of artifact_sensitivity, which the label ledger spells uppercase,
+            // while session_sensitivity_state agrees with "Sessions"."Id" so its foreign key can
+            // resolve — lowercase for a Session an import created. The two rows describe the same
+            // Session in two spellings, so the fold has to compare them normalised.
+            command.CommandText = $"""
                 UPDATE session_sensitivity_state
                 SET TaintedArtifactCount = 0,
                     Revision = Revision + 1,
                     UpdatedAtUtc = $now
-                WHERE SessionId = $session;
+                WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")};
                 """;
 
-            _ = command.Parameters.AddWithValue("$session", sessionId);
+            _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
             _ = command.Parameters.AddWithValue("$now", Timestamp(timeProvider));
 
@@ -416,18 +431,28 @@ internal static class BackupRestoreProtectedStatePurger
 
         command.CommandText = sql;
 
-        // All three identities are bound for every statement rather than sniffed out of the text.
-        // SQLite ignores a bound parameter a statement does not mention, and choosing which to bind by
+        // Every identity is bound for every statement rather than sniffed out of the text. SQLite
+        // ignores a bound parameter a statement does not mention, and choosing which to bind by
         // searching the SQL would make the binding a property of how the statement happens to be spelled.
-        // The stored spelling is used verbatim: staging is somebody else's database, and reformatting an
-        // identity here would stop it matching the content rows that reference it.
+        //
+        // The label's own spelling is used verbatim against artifact_sensitivity, which is the table it
+        // was read from. The content tables it names are matched through the normalised spelling
+        // instead: a staged archive carries whatever forms its source machine's writers produced, and
+        // an exact comparison there matches the archives that happen to agree with the label ledger and
+        // silently leaves the rest of the protected content in the generation about to be published.
         _ = command.Parameters.AddWithValue("$artifactId", label.ArtifactId);
+
+        _ = command.Parameters.AddWithValue("$artifactKey", CovenantIdentitySql.Key(label.ArtifactId));
 
         _ = command.Parameters.AddWithValue("$labelId", label.LabelId);
 
         _ = command.Parameters.AddWithValue(
             "$sessionId",
             label.SessionId ?? (object)DBNull.Value);
+
+        _ = command.Parameters.AddWithValue(
+            "$sessionKey",
+            label.SessionId is { } sessionKey ? CovenantIdentitySql.Key(sessionKey) : (object)DBNull.Value);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 

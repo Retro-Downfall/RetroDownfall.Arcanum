@@ -70,9 +70,66 @@ internal static class CovenantStoreSql
         LIMIT {CovenantLimits.ActiveSnapshotProbeRows};
         """;
 
+    /// <summary>
+    /// One live retirement target: its identity, the fragment a Ward shows, and the two facts the
+    /// broader-scope sentence turns on.
+    /// </summary>
+    /// <remarks>
+    /// The Global sibling counts only when it is live and not masked here. A retired Global head
+    /// applies to no turn, and a masked one applies to no turn in this Campaign, so reporting either as
+    /// a fallback would promise an operator content that will not arrive when their entry goes.
+    /// </remarks>
+    internal static string RetirementTarget() => """
+        WITH epoch(Value) AS (
+            SELECT COALESCE((SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)
+        )
+        SELECT h.EntryId, h.CurrentVersionId, h.CurrentLaneRevision, h.CurrentOperationCode,
+               v.CompiledContent, v.RenderedHash,
+               epoch.Value,
+               COALESCE(pin.IsPinned, 0),
+               EXISTS(
+                   SELECT 1 FROM covenant_heads g
+                   WHERE g.CampaignId IS NULL AND g.NormalizedKey = $key
+                     AND g.LaneCode = 1 AND g.CurrentOperationCode = 1),
+               EXISTS(
+                   SELECT 1 FROM covenant_curation_heads m
+                   WHERE m.CampaignId = $campaign AND m.NormalizedKey = $key
+                     AND m.LaneCode = 1 AND m.IsMasked = 1 AND m.KeyEpoch = epoch.Value)
+        FROM covenant_heads h
+        JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
+        CROSS JOIN epoch
+        LEFT JOIN covenant_curation_heads pin
+            ON pin.CampaignId = $campaign AND pin.NormalizedKey = $key
+               AND pin.LaneCode = $lane AND pin.KeyEpoch = epoch.Value
+        WHERE h.CampaignId = $campaign AND h.NormalizedKey = $key AND h.LaneCode = $lane;
+        """;
+
+    /// <summary>
+    /// The Global keys one Campaign has masked, for the turn that Campaign is about to take.
+    /// </summary>
+    /// <remarks>
+    /// A separate command from the turn snapshot rather than another arm of its union, and issued only
+    /// for a Campaign-bound turn: a mask is Campaign-scoped by construction, so a Global-only turn can
+    /// hold none and pays nothing. It seeks <c>idx_covenant_curation_heads_campaign_masks</c>.
+    ///
+    /// <para>The key epoch is joined rather than ignored. A mask recorded against a key that was later
+    /// retired and reclaimed describes a key this installation no longer has, and applying it to the
+    /// one that re-created the name would suppress content the operator never masked.</para>
+    /// </remarks>
+    internal static string CampaignMasks() => """
+        SELECT h.NormalizedKey
+        FROM covenant_curation_heads h
+        WHERE h.CampaignId = $campaign
+          AND h.IsMasked = 1
+          AND h.LaneCode = 1
+          AND h.KeyEpoch = COALESCE(
+              (SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = h.NormalizedKey), 0);
+        """;
+
     internal static string LaneHeadProbe(bool campaignScoped) => $"""
         SELECT epochs.KeyEpoch, h.EntryId, h.CurrentVersionId, h.CurrentLaneRevision,
-               h.CurrentOperationCode, h.OriginCode, h.CompiledByteCost
+               h.CurrentOperationCode, h.OriginCode, h.CompiledByteCost,
+               COALESCE(c.IsPinned, 0)
         FROM (
             SELECT COALESCE(MAX(KeyEpoch), 0) AS KeyEpoch
             FROM covenant_key_epochs
@@ -81,6 +138,10 @@ internal static class CovenantStoreSql
         LEFT JOIN covenant_heads h
             ON {(campaignScoped ? "h.CampaignId = $campaign" : "h.CampaignId IS NULL")}
                AND h.NormalizedKey = $key AND h.LaneCode = $lane
+        LEFT JOIN covenant_curation_heads c
+            ON {(campaignScoped ? "c.CampaignId = $campaign" : "c.CampaignId IS NULL")}
+               AND c.NormalizedKey = $key AND c.LaneCode = $lane
+               AND c.KeyEpoch = epochs.KeyEpoch
         LIMIT 1;
         """;
 
@@ -346,5 +407,53 @@ internal static class CovenantStoreSql
         WHERE {(campaignScoped ? "h.CampaignId = $campaign" : "h.CampaignId IS NULL")}
           AND h.NormalizedKey = $key;
         """;
+
+    /// <summary>
+    /// One curation subject's current state, the two head facts a broader-scope sentence is read off,
+    /// and every epoch a preflight token binds, in one round trip.
+    /// </summary>
+    /// <remarks>
+    /// The two head predicates ask about live heads only. A retired head applies to no turn, so a mask
+    /// over a key whose Global head is a tombstone suppresses nothing, and telling an operator otherwise
+    /// would be describing an effect they will not get.
+    ///
+    /// <para>The subject's key epoch is read once into a common table expression and joined from there.
+    /// Repeating the sub-select per column would let two of them disagree if the epoch advanced between
+    /// them, and the disagreement would land on the curation row a commit then failed to find.</para>
+    /// </remarks>
+    internal static string CurationEffectFacts(bool campaignScoped)
+    {
+
+        string campaignPredicate = campaignScoped ? "$campaign" : "NULL";
+
+        string scopedConfirmed = campaignScoped
+            ? "EXISTS(SELECT 1 FROM covenant_heads c WHERE c.CampaignId = $campaign AND c.NormalizedKey = $key"
+                + " AND c.LaneCode = 1 AND c.CurrentOperationCode = 1)"
+            : "0";
+
+        return $"""
+            WITH epoch(Value) AS (
+                SELECT COALESCE((SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)
+            )
+            SELECT st.DatasetGeneration,
+                   st.KeyReclamationEpoch,
+                   epoch.Value,
+                   EXISTS(SELECT 1 FROM covenant_heads g WHERE g.CampaignId IS NULL AND g.NormalizedKey = $key
+                          AND g.LaneCode = 1 AND g.CurrentOperationCode = 1),
+                   {scopedConfirmed},
+                   COALESCE(ch.IsPinned, 0),
+                   COALESCE(ch.IsMasked, 0),
+                   COALESCE(ch.CurrentRevision, 0)
+            FROM covenant_state st
+            CROSS JOIN epoch
+            LEFT JOIN covenant_curation_heads ch
+                ON ch.CampaignId IS {campaignPredicate}
+                   AND ch.NormalizedKey = $key
+                   AND ch.LaneCode = $lane
+                   AND ch.KeyEpoch = epoch.Value
+            WHERE st.StateKey = 1;
+            """;
+
+    }
 
 }

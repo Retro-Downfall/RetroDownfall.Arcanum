@@ -13,4 +13,8 @@ public sealed record SagaMemoryDto(
     Guid? SessionId,
     string? Tags,
     string? Source,
-    AttachmentMemoryProvenance? AttachmentProvenance = null);
+    AttachmentMemoryProvenance? AttachmentProvenance = null,
+    SagaMemoryScopeKind ScopeKind = SagaMemoryScopeKind.Unclassified,
+    Guid? ScopeCampaignId = null,
+    DateTimeOffset? RetiredAtUtc = null,
+    DateTimeOffset? PinnedAtUtc = null);

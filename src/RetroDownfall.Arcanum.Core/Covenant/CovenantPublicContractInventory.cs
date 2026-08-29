@@ -220,6 +220,24 @@ public static class CovenantPublicContractInventory
         new(Namespace + nameof(CovenantRetireRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, Mutation,
             "Optimistic concurrency plus the bound preflight token, with the mutation id as the sole replay key."),
 
+        new(Namespace + nameof(CovenantCorrectPrepareRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, Mutation,
+            "Names the exact version, branch, revision and compiled hash a correction believes it replaces."),
+
+        new(Namespace + nameof(CovenantCorrectRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, Mutation,
+            "Repeats the prepared target beside the bound token, so the server compares all three statements of it."),
+
+        new(Namespace + nameof(CovenantCurationPrepareRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, Mutation,
+            "Names the subject one pin, unpin, mask or unmask is about, and the curation revision it expects."),
+
+        new(Namespace + nameof(CovenantCurationRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, Mutation,
+            "Repeats the prepared fields beside the bound token, so the server re-derives the digest from what was actually sent."),
+
+        new(Namespace + nameof(CovenantCurationPreflightDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Mutation,
+            "The measured curation state, the broader-scope sentence, and the token that binds both."),
+
+        new(Namespace + nameof(CovenantCurationResultDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Mutation,
+            "The durable outcome of one curation change, with a replay distinguished from a first commit."),
+
         new(Namespace + nameof(CovenantMutationEffectExampleDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Mutation,
             "One affected Campaign inside a bounded example set."),
 

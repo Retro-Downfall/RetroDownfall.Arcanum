@@ -18,11 +18,13 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Daemons;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
@@ -30,6 +32,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -258,8 +261,10 @@ internal sealed partial class DataRetentionService(
                 "saga_memory_embeddings_vec",
                 "saga_memory_attachment_provenance",
                 "saga_extraction_watermarks",
+                "saga_retirement_suppressions",
+                "saga_suppression_key",
             ],
-            "Saga facts, embedding companions, typed provenance, and extraction watermarks remain independent from source attachment availability.",
+            "Saga facts and the companion rows the store keeps beside them remain independent from source attachment availability.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -272,6 +277,19 @@ internal sealed partial class DataRetentionService(
                 "lexicon_fact_attachment_provenance",
             ],
             "Lexicon facts, full-text records, and typed provenance remain independent from source attachment availability.",
+            retention,
+            cancellationToken).ConfigureAwait(false);
+
+        await AddCompositeDatabaseStatusAsync(
+            items,
+            RetentionDataClass.Annals,
+            [
+                "annal_claims",
+                "annal_versions",
+                "annal_heads",
+                "annal_dependencies",
+            ],
+            "Bitemporal claim identities, immutable versions, current pointers, and dependency edges over Saga and Lexicon rows. Removed with the memory each claim describes; never aged out on their own.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -941,6 +959,7 @@ internal sealed partial class DataRetentionService(
                         operation.Id,
                         current,
                         request.Request.MemoryScope!.Value,
+                        request.Request.TargetId,
                         cancellationToken).ConfigureAwait(false),
 
                 DataRetentionOperation.ResetWorkspace =>
@@ -2106,65 +2125,35 @@ internal sealed partial class DataRetentionService(
 
         }
 
-        (RetentionDataClass dataClass, string[] tables) = request.MemoryScope switch
+        if (request.TargetId is { } targeted && !CampaignTargetedResetIsSupported(request.MemoryScope!.Value))
         {
 
-            MemoryResetScope.Entry =>
-                (RetentionDataClass.SessionEntryEmbeddings,
-                    new[] { "entry_embeddings", "entry_embeddings_vec" }),
+            return EmptyPlan(
+                request,
+                new DataRetentionBlocker(
+                    MemoryResetDataClass(request.MemoryScope!.Value),
+                    targeted.ToString("D"),
+                    ErrorCodes.Data.InvalidRequest,
+                    "Only Saga and Lexicon memories record an owning Campaign, so only those two can be "
+                    + "reset for one Campaign. Reset this store without a Campaign, or choose one that "
+                    + "carries an owner."));
 
-            MemoryResetScope.Attachments =>
-                (RetentionDataClass.AttachmentEmbeddings,
-                    new[]
-                    {
-                        "session_attachment_embeddings",
-                        "session_attachment_embeddings_vec",
-                        "session_attachment_chunks",
-                        "session_attachment_index_state",
-                    }),
+        }
 
-            MemoryResetScope.Workspace =>
-                (RetentionDataClass.WorkspaceEmbeddings,
-                    new[]
-                    {
-                        "workspace_file_embeddings",
-                        "workspace_file_embeddings_vec",
-                        "workspace_file_chunks",
-                    }),
-
-            MemoryResetScope.Saga =>
-                (RetentionDataClass.SagaMemories,
-                    new[]
-                    {
-                        "saga_memory_embeddings",
-                        "saga_memory_embeddings_vec",
-                        "saga_memory_attachment_provenance",
-                        "saga_extraction_watermarks",
-                        "saga_memories",
-                    }),
-
-            MemoryResetScope.Lexicon =>
-                (RetentionDataClass.LexiconEntries,
-                    new[]
-                    {
-                        "lexicon_fact_attachment_provenance",
-                        "lexicon_fts",
-                        "lexicon_entries",
-                    }),
-
-            _ => throw new InvalidOperationException("Unsupported memory reset scope."),
-
-        };
+        RetentionDataClass dataClass = MemoryResetDataClass(request.MemoryScope!.Value);
 
         long rows = 0;
 
-        foreach (string table in tables)
+        foreach (MemoryResetSelection selection in BuildMemoryResetSelections(
+                     request.MemoryScope!.Value,
+                     request.TargetId))
         {
 
             rows += await CountTableAsync(
-                table,
-                null,
-                cancellationToken).ConfigureAwait(false);
+                selection.Table,
+                selection.Predicate,
+                cancellationToken,
+                selection.Parameters).ConfigureAwait(false);
 
         }
 
@@ -2177,10 +2166,256 @@ internal sealed partial class DataRetentionService(
             await ReadMemoryResetConflictsAsync(
                 request.MemoryScope!.Value,
                 cancellationToken).ConfigureAwait(false),
-            rows == 0 ? [] : [request.MemoryScope!.Value.ToString()],
+            rows == 0 ? [] : [MemoryResetCandidateId(request.MemoryScope!.Value, request.TargetId)],
             requiresConfirmation: true);
 
     }
+
+    /// <summary>
+    /// One table to clear, and the rows of it this reset owns.
+    /// </summary>
+    /// <remarks>
+    /// A null predicate is the whole table, which is what an untargeted reset has always meant. Ordered
+    /// dependents-first so a delete's subquery still sees the rows it selects on.
+    /// </remarks>
+    private readonly record struct MemoryResetSelection(
+        string Table,
+        string? Predicate,
+        (string Name, object Value)[] Parameters);
+
+    /// <summary>Only these two stores record who owns a memory.</summary>
+    private static bool CampaignTargetedResetIsSupported(MemoryResetScope scope) =>
+        scope is MemoryResetScope.Saga or MemoryResetScope.Lexicon;
+
+    private static RetentionDataClass MemoryResetDataClass(MemoryResetScope scope) =>
+        scope switch
+        {
+
+            MemoryResetScope.Entry => RetentionDataClass.SessionEntryEmbeddings,
+
+            MemoryResetScope.Attachments => RetentionDataClass.AttachmentEmbeddings,
+
+            MemoryResetScope.Workspace => RetentionDataClass.WorkspaceEmbeddings,
+
+            MemoryResetScope.Saga => RetentionDataClass.SagaMemories,
+
+            MemoryResetScope.Lexicon => RetentionDataClass.LexiconEntries,
+
+            _ => throw new InvalidOperationException("Unsupported memory reset scope."),
+
+        };
+
+    /// <summary>
+    /// The candidate the plan pins and the apply re-checks, so a plan for one Campaign can never be
+    /// applied as a reset of the whole store.
+    /// </summary>
+    private static string MemoryResetCandidateId(MemoryResetScope scope, Guid? campaignId) =>
+        campaignId is { } campaign
+            ? $"{scope}:{campaign:D}"
+            : scope.ToString();
+
+    /// <summary>
+    /// Every table one memory reset clears, and the rows of each it owns, in delete order.
+    /// </summary>
+    /// <remarks>
+    /// The plan, the apply, and the post-delete reconciliation all read this one list. Three separate
+    /// lists is how a reset ends up counting one set of rows, deleting another, and calling a third
+    /// reconciled.
+    ///
+    /// <para>A Campaign-targeted Lexicon reset deliberately omits <c>lexicon_fts</c>. The index is
+    /// external-content and its rows are retired by the <c>lexicon_entries_ad</c> trigger as the entries
+    /// go; deleting from it directly would clear every other scope's index entries and leave those
+    /// entities unsearchable while still present.</para>
+    /// </remarks>
+    private static IReadOnlyList<MemoryResetSelection> BuildMemoryResetSelections(
+        MemoryResetScope scope,
+        Guid? campaignId)
+    {
+
+        if (campaignId is not { } campaign)
+        {
+
+            return UntargetedMemoryResetTables(scope);
+
+        }
+
+        // The two sets bind one Campaign under two spellings, because the columns they select against do
+        // not hold one. lexicon_entries.ScopeCampaignId is written by the Lexicon service alone with a
+        // bare ToString() and read back the same way by every one of its own readers, so it is internally
+        // consistent in the minority form. saga_memories.CampaignId and
+        // session_campaign_bindings.CampaignId are settled on the canonical form and compared exactly.
+        (string Name, object Value)[] campaignOnly = [("@campaignId", campaign.ToString("D"))];
+
+        (string Name, object Value)[] campaignAndKind =
+        [
+            ("@campaignId", campaign.ToString("D").ToUpperInvariant()),
+            ("@campaignKind", (int)SagaMemoryScopeKind.Campaign),
+        ];
+
+        const string OwnedMemories =
+            "\"MemoryId\" IN (SELECT \"Id\" FROM \"saga_memories\""
+            + " WHERE \"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind)";
+
+        return scope switch
+        {
+
+            MemoryResetScope.Saga =>
+            [
+                .. AnnalsResetSelections(
+                    AnnalSubjectStore.Saga,
+                    "SELECT \"Id\" FROM \"saga_memories\""
+                        + " WHERE \"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
+                    campaignAndKind),
+
+                new("saga_memory_embeddings_vec", OwnedMemories, campaignAndKind),
+                new("saga_memory_embeddings", OwnedMemories, campaignAndKind),
+                new("saga_memory_attachment_provenance", OwnedMemories, campaignAndKind),
+
+                // Watermarks are per Session, so this Campaign's Sessions and no others: clearing them
+                // all would make every other Campaign re-extract its whole transcript history.
+                //
+                // The membership test is normalised on both sides, and this is the one predicate in this
+                // method where that is the right answer rather than a defect. The two columns sit on
+                // opposite sides of a governance boundary: session_campaign_bindings.SessionId is bound by
+                // a foreign key to "Sessions"."Id" and therefore holds the canonical spelling, while
+                // saga_extraction_watermarks.SessionId is written by the Saga memory store with a bare
+                // ToString() and read back the same way by its own reader. Comparing them exactly matched
+                // no row at all, for any Session, so a Campaign memory reset deleted the memories and left
+                // every watermark standing - and those Sessions then never re-extracted what was removed.
+                // The Campaign identity beside it is bound exactly, because that column is settled.
+                new(
+                    "saga_extraction_watermarks",
+                    "lower(replace(\"SessionId\", '-', '')) IN ("
+                        + "SELECT lower(replace(SessionId, '-', '')) FROM session_campaign_bindings"
+                        + " WHERE CampaignId = @campaignId AND BindingKindCode = @campaignKind)",
+                    campaignAndKind),
+
+                new(
+                    "saga_memories",
+                    "\"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
+                    campaignAndKind),
+
+                // A suppression names a scope rather than a memory, so the deletes above cannot reach
+                // it, and one left standing would go on refusing extraction for an owner that no longer
+                // exists.
+                //
+                // Bound exactly, which the column is governed for:
+                // IdentitySpellingBackfill.VerifiedColumns is the register that decides which stored
+                // identities carry that guarantee, and it carries it because a selection like this one
+                // needed it to.
+                //
+                // The key is deliberately absent. This reset clears one Campaign's evidence rather than
+                // the installation's, and a digest left standing is unmatchable without the key that
+                // binds it.
+                new(
+                    "saga_retirement_suppressions",
+                    "\"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
+                    campaignAndKind),
+            ],
+
+            MemoryResetScope.Lexicon =>
+            [
+                .. AnnalsResetSelections(
+                    AnnalSubjectStore.Lexicon,
+                    "SELECT Id FROM lexicon_entries WHERE ScopeCampaignId = @campaignId",
+                    campaignOnly),
+
+                new(
+                    "lexicon_fact_attachment_provenance",
+                    "EntryId IN (SELECT Id FROM lexicon_entries WHERE ScopeCampaignId = @campaignId)",
+                    campaignOnly),
+
+                new("lexicon_entries", "ScopeCampaignId = @campaignId", campaignOnly),
+            ],
+
+            _ => throw new InvalidOperationException(
+                "Only Saga and Lexicon memories record an owning Campaign."),
+
+        };
+
+    }
+
+    /// <summary>
+    /// Every table a whole-store reset clears, in delete order.
+    /// </summary>
+    /// <remarks>
+    /// The Annals steps carry a predicate rather than clearing their tables outright, because the four
+    /// tables hold both stores' claims: resetting Saga must leave the Lexicon's claims exactly where they
+    /// were, and a bare <c>DELETE FROM annal_claims</c> would take both. Their order and their predicates
+    /// come from <see cref="AnnalsErasurePlan"/>, which the claim writer also reads, so a store reset and
+    /// a single-memory delete cannot disagree about which rows an erasure owns.
+    /// </remarks>
+    private static MemoryResetSelection[] UntargetedMemoryResetTables(MemoryResetScope scope) =>
+        scope switch
+        {
+
+            MemoryResetScope.Entry =>
+                [Whole("entry_embeddings_vec"), Whole("entry_embeddings")],
+
+            MemoryResetScope.Attachments =>
+                [
+                    Whole("session_attachment_embeddings_vec"),
+                    Whole("session_attachment_embeddings"),
+                    Whole("session_attachment_chunks"),
+                    Whole("session_attachment_index_state"),
+                ],
+
+            MemoryResetScope.Workspace =>
+                [
+                    Whole("workspace_file_embeddings_vec"),
+                    Whole("workspace_file_embeddings"),
+                    Whole("workspace_file_chunks"),
+                ],
+
+            MemoryResetScope.Saga =>
+                [
+                    .. AnnalsResetSelections(AnnalSubjectStore.Saga),
+                    Whole("saga_memory_embeddings_vec"),
+                    Whole("saga_memory_embeddings"),
+                    Whole("saga_memory_attachment_provenance"),
+                    Whole("saga_extraction_watermarks"),
+                    Whole("saga_memories"),
+
+                    // The evidence and the key that binds it go together. Clearing the digests alone
+                    // would leave a key nothing can use, and clearing the key alone would leave rows
+                    // that can never match again while still reading as evidence.
+                    Whole("saga_retirement_suppressions"),
+                    Whole("saga_suppression_key"),
+                ],
+
+            // lexicon_fts is deliberately absent, exactly as it is from the Campaign-targeted list and
+            // for a sharper version of the same reason. It is an external-content index whose rows the
+            // lexicon_entries_ad trigger retires as the entries go. Deleting from it directly empties the
+            // index first, and the trigger then issues an FTS5 delete for a row the index no longer
+            // holds, which SQLite reports as "database disk image is malformed" and which aborted the
+            // whole reset. A whole-store Lexicon reset could not complete at all while any entry existed.
+            MemoryResetScope.Lexicon =>
+                [
+                    .. AnnalsResetSelections(AnnalSubjectStore.Lexicon),
+                    Whole("lexicon_fact_attachment_provenance"),
+                    Whole("lexicon_entries"),
+                ],
+
+            _ => throw new InvalidOperationException("Unsupported memory reset scope."),
+
+        };
+
+    /// <summary>A table this reset clears entirely.</summary>
+    private static MemoryResetSelection Whole(string table) => new(table, null, []);
+
+    /// <summary>
+    /// The Annals steps one erasure runs, projected onto the reset executor's selection shape.
+    /// </summary>
+    private static MemoryResetSelection[] AnnalsResetSelections(
+        AnnalSubjectStore subjectStore,
+        string? subjectIdQuery = null,
+        (string Name, object Value)[]? parameters = null) =>
+        [
+            .. (subjectIdQuery is null
+                    ? AnnalsErasurePlan.ForStore(subjectStore)
+                    : AnnalsErasurePlan.ForSubjectQuery(subjectStore, subjectIdQuery))
+                .Select(step => new MemoryResetSelection(step.Table, step.Predicate, parameters ?? [])),
+        ];
 
     /// <summary>
     /// Plans a content-free Covenant memory-reset inventory.
@@ -2795,63 +3030,32 @@ internal sealed partial class DataRetentionService(
 
     }
 
+    /// <summary>
+    /// Clears one memory store, or the part of it one Campaign owns.
+    /// </summary>
+    /// <remarks>
+    /// The selections, the pre-delete count, the deletes, and the reconciliation all read the same list,
+    /// so a Campaign-targeted reset cannot count one set of rows and delete another. Reconciliation
+    /// re-counts through the same predicate: an untargeted reset must leave its tables empty, and a
+    /// targeted one must leave every other Campaign's rows exactly where they were.
+    /// </remarks>
     private async Task<DataRetentionApplyResult> ApplyMemoryResetAsync(
         Guid operationId,
         DataRetentionPlan plan,
         MemoryResetScope scope,
+        Guid? campaignId,
         CancellationToken cancellationToken)
     {
 
-        string[] tables = scope switch
+        List<MemoryResetSelection> selections = [];
+
+        foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))
         {
 
-            MemoryResetScope.Entry =>
-                ["entry_embeddings_vec", "entry_embeddings"],
-
-            MemoryResetScope.Attachments =>
-                [
-                    "session_attachment_embeddings_vec",
-                    "session_attachment_embeddings",
-                    "session_attachment_chunks",
-                    "session_attachment_index_state",
-                ],
-
-            MemoryResetScope.Workspace =>
-                [
-                    "workspace_file_embeddings_vec",
-                    "workspace_file_embeddings",
-                    "workspace_file_chunks",
-                ],
-
-            MemoryResetScope.Saga =>
-                [
-                    "saga_memory_embeddings_vec",
-                    "saga_memory_embeddings",
-                    "saga_memory_attachment_provenance",
-                    "saga_extraction_watermarks",
-                    "saga_memories",
-                ],
-
-            MemoryResetScope.Lexicon =>
-                [
-                    "lexicon_fact_attachment_provenance",
-                    "lexicon_fts",
-                    "lexicon_entries",
-                ],
-
-            _ => [],
-
-        };
-
-        List<string> existingTables = [];
-
-        foreach (string table in tables)
-        {
-
-            if (await TableExistsAsync(table, cancellationToken).ConfigureAwait(false))
+            if (await TableExistsAsync(selection.Table, cancellationToken).ConfigureAwait(false))
             {
 
-                existingTables.Add(table);
+                selections.Add(selection);
 
             }
 
@@ -2885,15 +3089,16 @@ internal sealed partial class DataRetentionService(
 
             long currentRows = 0;
 
-            foreach (string table in existingTables)
+            foreach (MemoryResetSelection selection in selections)
             {
 
                 currentRows += await CountInTransactionAsync(
                     connection,
                     transaction,
-                    table,
-                    null,
-                    cancellationToken).ConfigureAwait(false);
+                    selection.Table,
+                    selection.Predicate,
+                    cancellationToken,
+                    selection.Parameters).ConfigureAwait(false);
 
             }
 
@@ -2901,7 +3106,7 @@ internal sealed partial class DataRetentionService(
                 || plan.Rows != 0
                 || plan.Files != 0
                 || plan.EstimatedBytes != 0
-                || !plan.CandidateIds.SequenceEqual([scope.ToString()]))
+                || !plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)]))
             {
 
                 throw new RetentionConflictException(
@@ -2909,14 +3114,27 @@ internal sealed partial class DataRetentionService(
 
             }
 
-            foreach (string table in existingTables)
+            foreach (MemoryResetSelection selection in selections)
             {
 
-                deleted += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    $"DELETE FROM \"{table}\"",
-                    cancellationToken).ConfigureAwait(false);
+                // annal_versions goes through the leaf-first delete for the reason stated there: a bare
+                // statement over it empties the table and reports fewer rows than it removed, and this
+                // sum is the number the operator is shown.
+                deleted += string.Equals(selection.Table, "annal_versions", StringComparison.Ordinal)
+                    ? await DeleteAnnalVersionsAsync(
+                        connection,
+                        transaction,
+                        selection.Predicate,
+                        cancellationToken,
+                        selection.Parameters).ConfigureAwait(false)
+                    : await ExecuteAsync(
+                        connection,
+                        transaction,
+                        selection.Predicate is null
+                            ? $"DELETE FROM \"{selection.Table}\""
+                            : $"DELETE FROM \"{selection.Table}\" WHERE {selection.Predicate}",
+                        cancellationToken,
+                        selection.Parameters).ConfigureAwait(false);
 
             }
 
@@ -2934,13 +3152,14 @@ internal sealed partial class DataRetentionService(
 
         bool reconciled = true;
 
-        foreach (string table in existingTables)
+        foreach (MemoryResetSelection selection in selections)
         {
 
             reconciled &= await CountTableAsync(
-                table,
-                null,
-                cancellationToken).ConfigureAwait(false) == 0;
+                selection.Table,
+                selection.Predicate,
+                cancellationToken,
+                selection.Parameters).ConfigureAwait(false) == 0;
 
         }
 
@@ -5628,6 +5847,72 @@ internal sealed partial class DataRetentionService(
 
     }
 
+    /// <summary>
+    /// Deletes from <c>annal_versions</c> a revision chain at a time, from its leaves inward, and
+    /// returns how many rows went.
+    /// </summary>
+    /// <remarks>
+    /// <c>PredecessorVersionId</c> references this same table <c>ON DELETE CASCADE</c>, and SQLite
+    /// counts only the rows a statement deletes directly — never the ones a foreign-key action takes
+    /// with them. One bare delete over this table therefore removes a whole revision chain while
+    /// reporting one row for it. The number returned here is read rather than discarded, so that
+    /// shortfall is a wrong answer rather than a harmless one.
+    ///
+    /// <para>Deleting the leaves first — the versions no other version names as its predecessor — means
+    /// the cascade never has anything to take, so each pass's count is the whole truth about that pass.
+    /// A chain that could not be reduced stops the loop and leaves its rows standing rather than
+    /// spinning; whether that is noticed afterwards is the caller's to decide, and this returns the
+    /// count it actually made either way.</para>
+    ///
+    /// <para><c>PredecessorVersionId IS NOT NULL</c> inside the subquery is load-bearing. <c>NOT IN</c>
+    /// over a set containing a single NULL is never true for any row, so without it the first pass
+    /// deletes nothing and the table survives the delete intact.</para>
+    ///
+    /// <para>The leaf test is taken over the whole table rather than over
+    /// <paramref name="predicate"/>'s rows. A predecessor edge does not leave the claim it belongs to,
+    /// so a predicate selecting whole claims is unaffected by the wider test; taking it over the
+    /// selection instead would delete a row whose successor outside the selection then cascaded away
+    /// uncounted, which is the miscount this exists to end.</para>
+    /// </remarks>
+    private static async Task<int> DeleteAnnalVersionsAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string? predicate,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+
+        const string LeafOnly =
+            "VersionId NOT IN ("
+            + "SELECT PredecessorVersionId FROM annal_versions WHERE PredecessorVersionId IS NOT NULL)";
+
+        string sql = predicate is null
+            ? $"DELETE FROM annal_versions WHERE {LeafOnly}"
+            : $"DELETE FROM annal_versions WHERE ({predicate}) AND {LeafOnly}";
+
+        int total = 0;
+
+        int removed;
+
+        do
+        {
+
+            removed = await ExecuteAsync(
+                connection,
+                transaction,
+                sql,
+                cancellationToken,
+                parameters).ConfigureAwait(false);
+
+            total += removed;
+
+        }
+        while (removed > 0);
+
+        return total;
+
+    }
+
     private static async Task<int> ExecuteAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -5836,8 +6121,11 @@ internal sealed partial class DataRetentionService(
             case DataRetentionOperation.ResetMemory:
                 subtype = "reset-memory";
 
-                target = ((int)request.MemoryScope!.Value).ToString(
-                    CultureInfo.InvariantCulture);
+                // The Campaign is part of the target, not a detail beside it. A checkpoint that recorded
+                // only the store would let a resumed reset clear every Campaign's memories when the
+                // operator asked for one Campaign's.
+                target = ((int)request.MemoryScope!.Value).ToString(CultureInfo.InvariantCulture)
+                    + (request.TargetId is { } resetCampaignId ? ":" + resetCampaignId.ToString("N") : string.Empty);
 
                 attachments = [];
 
@@ -6829,6 +7117,181 @@ internal sealed partial class DataRetentionService(
 
     }
 
+    /// <summary>
+    /// The tables whose rows witness that one untargeted memory reset's data mutation did not commit.
+    /// </summary>
+    /// <remarks>
+    /// What a scope names here is a witness that the reset's data mutation did not commit - not an
+    /// inventory of what that reset clears. The mutation is one transaction, so any table it empties
+    /// answers for the whole of it, and a witness only has to be readable by a bare count carrying no
+    /// predicate.
+    ///
+    /// <para>Emptying the table is what a bare count rests on, and only an untargeted reset does that. A
+    /// Campaign-targeted reset leaves every other Campaign's rows standing in the same tables, so a bare
+    /// count over them reads another Campaign's memories as this reset's unfinished work. That settles
+    /// the operation at Failed - once and terminally, on the wrong answer, for rows the reset was never
+    /// asked to remove. Its witness is <see cref="BuildMemoryResetSelections"/> instead, which is what
+    /// <see cref="MemoryResetResidueSelections"/> chooses between.</para>
+    ///
+    /// <para>That is why the Annals tables a memory reset also clears are absent. Their rows belong to
+    /// whichever store's claim wrote them, and a count with no predicate cannot tell those apart - so
+    /// naming one here would report another store's claims as this reset's unfinished work, and a reset
+    /// that had committed would be recovered as failed for as long as that other store held a claim. On
+    /// every retry, because nothing about it would ever change.</para>
+    ///
+    /// <para><b>Leaving them out needs no Annals row to outlive the durable row it describes, and that
+    /// is a requirement on every removal rather than something this list can establish.</b> A claim
+    /// binds to the row that carries its content, that row is in a table the scope clearing it names
+    /// here, and the heads, versions and dependencies are keyed up to the claim. A removal that takes
+    /// the row and that store's claims in one transaction keeps this count sufficient; one that takes
+    /// only the row leaves records describing a row that is gone, and an interrupted reset then finds
+    /// every table named here empty with those records still standing. What makes a removal the first
+    /// kind is running the Annals erasure plan for the store in the same transaction, which is where
+    /// the requirement is written down and what a removal added later has to adopt.</para>
+    ///
+    /// <para><b>The protected-artifact purge is a known exception, wherever its plan table is read.</b>
+    /// It deletes a Saga memory or a Lexicon entry by that plan and takes no claim, and it runs only
+    /// against a labelled artifact - so it cannot reach these rows while nothing produces a label of
+    /// either kind, which is pinned rather than assumed here. This is what is known rather than a
+    /// closed account of what can exist: a removal composed from a table name held elsewhere is
+    /// invisible to a search for the statement that would name it, and the account above has been
+    /// incomplete that way before.</para>
+    /// </remarks>
+    internal static string[] MemoryResetResidueTables(MemoryResetScope scope) =>
+        scope switch
+        {
+
+            MemoryResetScope.Entry =>
+                ["entry_embeddings_vec", "entry_embeddings"],
+
+            MemoryResetScope.Attachments =>
+                [
+                    "session_attachment_embeddings_vec",
+                    "session_attachment_embeddings",
+                    "session_attachment_chunks",
+                    "session_attachment_index_state",
+                ],
+
+            MemoryResetScope.Workspace =>
+                [
+                    "workspace_file_embeddings_vec",
+                    "workspace_file_embeddings",
+                    "workspace_file_chunks",
+                ],
+
+            MemoryResetScope.Saga =>
+                [
+                    "saga_memory_embeddings_vec",
+                    "saga_memory_embeddings",
+                    "saga_memory_attachment_provenance",
+                    "saga_extraction_watermarks",
+                    "saga_memories",
+                    "saga_retirement_suppressions",
+                    "saga_suppression_key",
+                ],
+
+            MemoryResetScope.Lexicon =>
+                [
+                    "lexicon_fact_attachment_provenance",
+                    "lexicon_fts",
+                    "lexicon_entries",
+                ],
+
+            _ => [],
+
+        };
+
+    /// <summary>
+    /// The rows whose survival witnesses that one memory reset's data mutation did not commit.
+    /// </summary>
+    /// <remarks>
+    /// A Campaign-targeted reset owns some of the rows in the tables it touches rather than all of them,
+    /// so its witness has to carry the same predicate the reset selected, deleted, and reconciled
+    /// through. <see cref="BuildMemoryResetSelections"/> is that list, and reading it here is what keeps
+    /// recovery from becoming a fifth idea of which rows a reset owns.
+    ///
+    /// <para>Two tables the untargeted witness names are absent from the targeted list, and their
+    /// absence is what a bare count gets wrong. <c>saga_suppression_key</c> is the one a whole-store
+    /// Saga reset does clear: it holds a single row for the installation, a targeted reset deliberately
+    /// leaves it, and counting it settles every targeted Saga reset at failed wherever anything had ever
+    /// been retired. <c>lexicon_fts</c> is cleared by no reset at all - it is an external-content index
+    /// whose rows the <c>lexicon_entries_ad</c> trigger retires as the entries go, which is why it is
+    /// named in <see cref="MemoryResetResidueTables"/> and in neither selection list - and it carries no
+    /// scope column, so every other scope's terms are what a count of it reads.</para>
+    /// </remarks>
+    private static IReadOnlyList<MemoryResetSelection> MemoryResetResidueSelections(
+        MemoryResetScope scope,
+        Guid? campaignId) =>
+        campaignId is null
+            ? [.. MemoryResetResidueTables(scope).Select(Whole)]
+            : BuildMemoryResetSelections(scope, campaignId);
+
+    /// <summary>
+    /// Reads a reset-memory journal target back into the scope and the Campaign that wrote it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PrepareMutationJournalAsync"/> writes the scope, and a Campaign-targeted reset writes
+    /// the Campaign after it behind a colon. A reader that parsed the whole string as the scope accepted
+    /// the untargeted form and rejected the targeted one, and that rejection left recovery throwing on a
+    /// target production had written correctly - which reaches the reconciler as a corrupt checkpoint,
+    /// the one disposition it re-selects forever.
+    ///
+    /// <para>The Campaign comes back as a <see cref="Guid"/> rather than as the text the journal
+    /// carried, because the selections it feeds bind their own spellings: canonical upper case for
+    /// saga_memories and session_campaign_bindings, a bare ToString() for
+    /// lexicon_entries.ScopeCampaignId. The journal's "N" form matches neither.</para>
+    ///
+    /// <para>A Campaign against a scope that records no owner is refused here rather than passed on,
+    /// because <see cref="BuildMemoryResetSelections"/> throws for it and recovery would then report a
+    /// generic failure instead of the invalid target this is.</para>
+    /// </remarks>
+    private static bool TryParseMemoryResetTarget(
+        string target,
+        out MemoryResetScope scope,
+        out Guid? campaignId)
+    {
+
+        scope = default;
+
+        campaignId = null;
+
+        int separator = target.IndexOf(':', StringComparison.Ordinal);
+
+        if (!int.TryParse(
+                separator < 0 ? target : target[..separator],
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out int scopeValue)
+            || !Enum.IsDefined((MemoryResetScope)scopeValue))
+        {
+
+            return false;
+
+        }
+
+        scope = (MemoryResetScope)scopeValue;
+
+        if (separator < 0)
+        {
+
+            return true;
+
+        }
+
+        if (!CampaignTargetedResetIsSupported(scope)
+            || !Guid.TryParseExact(target[(separator + 1)..], "N", out Guid campaign))
+        {
+
+            return false;
+
+        }
+
+        campaignId = campaign;
+
+        return true;
+
+    }
+
     private async Task<bool> MutationTargetExistsAsync(
         RetentionMutationJournal journal,
         CancellationToken cancellationToken)
@@ -6859,62 +7322,22 @@ internal sealed partial class DataRetentionService(
         }
 
         if (journal.Subtype == "reset-memory"
-            && int.TryParse(
+            && TryParseMemoryResetTarget(
                 journal.Target,
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out int scopeValue)
-            && Enum.IsDefined((MemoryResetScope)scopeValue))
+                out MemoryResetScope resetScope,
+                out Guid? resetCampaignId))
         {
 
-            string[] tables = (MemoryResetScope)scopeValue switch
-            {
-
-                MemoryResetScope.Entry =>
-                    ["entry_embeddings_vec", "entry_embeddings"],
-
-                MemoryResetScope.Attachments =>
-                    [
-                        "session_attachment_embeddings_vec",
-                        "session_attachment_embeddings",
-                        "session_attachment_chunks",
-                        "session_attachment_index_state",
-                    ],
-
-                MemoryResetScope.Workspace =>
-                    [
-                        "workspace_file_embeddings_vec",
-                        "workspace_file_embeddings",
-                        "workspace_file_chunks",
-                    ],
-
-                MemoryResetScope.Saga =>
-                    [
-                        "saga_memory_embeddings_vec",
-                        "saga_memory_embeddings",
-                        "saga_memory_attachment_provenance",
-                        "saga_extraction_watermarks",
-                        "saga_memories",
-                    ],
-
-                MemoryResetScope.Lexicon =>
-                    [
-                        "lexicon_fact_attachment_provenance",
-                        "lexicon_fts",
-                        "lexicon_entries",
-                    ],
-
-                _ => [],
-
-            };
-
-            foreach (string table in tables)
+            foreach (MemoryResetSelection selection in MemoryResetResidueSelections(
+                         resetScope,
+                         resetCampaignId))
             {
 
                 if (await CountTableAsync(
-                        table,
-                        null,
-                        cancellationToken).ConfigureAwait(false) > 0)
+                        selection.Table,
+                        selection.Predicate,
+                        cancellationToken,
+                        selection.Parameters).ConfigureAwait(false) > 0)
                 {
 
                     return true;

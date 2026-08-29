@@ -821,7 +821,7 @@ internal sealed class ProtectedArtifactTransferStore(
         CancellationToken cancellationToken)
     {
 
-        string destinationSessionId = request.DestinationSessionId.ToString("D");
+        string destinationSessionId = request.DestinationSessionId.ToString("D").ToUpperInvariant();
 
         await using (SqliteCommand write = destination.Connection.CreateCommand())
         {
@@ -841,7 +841,7 @@ internal sealed class ProtectedArtifactTransferStore(
             _ = write.Parameters.AddWithValue(
                 "$campaign",
                 request.CampaignMapping is { } mapping
-                    ? mapping.DestinationCampaignId.ToString("D")
+                    ? mapping.DestinationCampaignId.ToString("D").ToUpperInvariant()
                     : DBNull.Value);
 
             _ = write.Parameters.AddWithValue("$title", graph.Session.Title);
@@ -871,7 +871,7 @@ internal sealed class ProtectedArtifactTransferStore(
         foreach (EntryRow entry in graph.Entries)
         {
 
-            string entryId = Guid.NewGuid().ToString("D");
+            string entryId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
             entryIds[entry.Id] = entryId;
 
@@ -941,7 +941,7 @@ internal sealed class ProtectedArtifactTransferStore(
                         $encryptionVersion, $encryptionKeyId);
                 """;
 
-            _ = write.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D"));
+            _ = write.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D").ToUpperInvariant());
 
             _ = write.Parameters.AddWithValue("$sessionId", destinationSessionId);
 
@@ -1226,6 +1226,30 @@ internal sealed class ProtectedArtifactTransferStore(
 
     }
 
+    /// <summary>
+    /// Counts the source's own labels for one Session, in the spelling the label ledger writes them.
+    /// </summary>
+    /// <remarks>
+    /// <c>artifact_sensitivity.SessionId</c> has exactly one writer and that writer spells an identity
+    /// uppercase, while this scan bound <c>ToString("D")</c>, which is lowercase. SQLite compares TEXT
+    /// byte for byte, so the count was zero for every labelled Session and the refusal this feeds
+    /// never fired for any of them — the one member of its defect family that returned a clean verdict
+    /// and authorized the export it exists to prevent. Both sides are normalised now.
+    ///
+    /// <para><b>The cost, specific to this site.</b> A normalised column cannot use
+    /// <c>idx_artifact_sensitivity_session</c>, so this becomes a full scan of the archive's label
+    /// table. That table holds one row per tainted artifact rather than one per Entry, the scan runs
+    /// once per Session transferred rather than once per turn, and it is a read of a snapshot this
+    /// process opened for exactly this purpose. A refusal that scans is worth more than an indexed
+    /// count that answers zero.</para>
+    ///
+    /// <para><b>An absent table counts as zero, deliberately.</b> A Grimoire predating the
+    /// information-flow ledger genuinely holds no labels, and refusing every such archive would break
+    /// a transfer that has always been allowed. This method cannot tell that installation apart from
+    /// one whose ledger was dropped after labelling something — both present as a missing table, and
+    /// nothing else in the snapshot distinguishes them — so the refusal is not the honest answer here.
+    /// The same ruling as <c>CovenantExportPolicy</c>'s absent-table arm, for the same reason.</para>
+    /// </remarks>
     private static async Task<long> CountTaintedAsync(
         SqliteConnection source,
         Guid sessionId,
@@ -1243,11 +1267,12 @@ internal sealed class ProtectedArtifactTransferStore(
 
         await using SqliteCommand command = source.CreateCommand();
 
-        command.CommandText = """
-            SELECT COUNT(*) FROM artifact_sensitivity WHERE SessionId = $session;
+        command.CommandText = $"""
+            SELECT COUNT(*) FROM artifact_sensitivity
+            WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")};
             """;
 
-        _ = command.Parameters.AddWithValue("$session", sessionId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1255,6 +1280,24 @@ internal sealed class ProtectedArtifactTransferStore(
 
     }
 
+    /// <summary>
+    /// The four reads that assemble the source graph, all keyed by the Session under transfer.
+    /// </summary>
+    /// <remarks>
+    /// Each of them bound <c>ToString("D")</c> — lowercase — against a column the object-relational
+    /// writer fills uppercase. The source of a protected transfer is a backed-up Grimoire opened by
+    /// the backup importer, and its <c>"Sessions"."Id"</c>, <c>"Entries"."SessionId"</c>,
+    /// <c>"SessionAttachments"."SessionId"</c>, and <c>assistant_entry_finalizations.SessionId</c> are
+    /// written from a <c>Guid</c> property, which the SQLite provider stores as uppercase dashed TEXT.
+    /// A selective protected import of an ordinary archive therefore found no Session and refused with
+    /// "The archive does not contain the requested Session"; only an archive whose Session had itself
+    /// been written by a previous protected transfer could be read at all. Fails closed, and invisible
+    /// to a suite whose source fixture chose the one spelling these reads already matched.
+    ///
+    /// <para><b>The cost.</b> These four scan the archive rather than seeking. They run once per
+    /// Session imported, against a snapshot opened for that import, and the transfer copies every row
+    /// they return — so the scan is a fraction of the work the operation was always going to do.</para>
+    /// </remarks>
     private static async Task<SessionRow?> ReadSessionAsync(
         SqliteConnection source,
         Guid sessionId,
@@ -1263,14 +1306,14 @@ internal sealed class ProtectedArtifactTransferStore(
 
         await using SqliteCommand command = source.CreateCommand();
 
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt", "Summary",
                    "LastSummarizedMessageAt", "TotalTokensUsed", "TotalCostUsd",
                    "UnsummarizedEntryCount"
-            FROM "Sessions" WHERE "Id" = $id;
+            FROM "Sessions" WHERE {CovenantIdentitySql.Keyed("\"Id\"", "$sessionKey")};
             """;
 
-        _ = command.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -1310,13 +1353,14 @@ internal sealed class ProtectedArtifactTransferStore(
 
         await using SqliteCommand command = source.CreateCommand();
 
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT "Id", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence", "ToolCallId",
                    "ToolName", "ToolArguments", "IsPinned"
-            FROM "Entries" WHERE "SessionId" = $id ORDER BY "Sequence", "Id";
+            FROM "Entries" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$sessionKey")}
+            ORDER BY "Sequence", "Id";
             """;
 
-        _ = command.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -1361,16 +1405,17 @@ internal sealed class ProtectedArtifactTransferStore(
 
         await using SqliteCommand command = source.CreateCommand();
 
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName", "Version",
                    "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                    "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath",
                    "SourceCanonicalPath", "SourceContentSha256", "SourceFileIdentity",
                    "SourceLastWriteAt", "SourceByteLength", "EncryptionVersion", "EncryptionKeyId"
-            FROM "SessionAttachments" WHERE "SessionId" = $id ORDER BY "Id";
+            FROM "SessionAttachments" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$sessionKey")}
+            ORDER BY "Id";
             """;
 
-        _ = command.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -1414,14 +1459,14 @@ internal sealed class ProtectedArtifactTransferStore(
 
         await using SqliteCommand command = source.CreateCommand();
 
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT AssistantEntryId, ContentSensitivityDigest, RequestDigest
             FROM assistant_entry_finalizations
-            WHERE SessionId = $id AND OutcomeCode = 1
+            WHERE {CovenantIdentitySql.Keyed("SessionId", "$sessionKey")} AND OutcomeCode = 1
             ORDER BY AssistantEntryId;
             """;
 
-        _ = command.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$sessionKey", CovenantIdentitySql.Key(sessionId));
 
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

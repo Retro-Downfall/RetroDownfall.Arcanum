@@ -89,6 +89,11 @@ public enum RetentionDataClass
     /// <summary>The Covenant family. Inventoried, never aged out.</summary>
     Covenant = 28,
 
+    /// <summary>
+    /// The Annals. Inventoried, never aged out on its own timer: a claim's lifecycle is its subject's.
+    /// </summary>
+    Annals = 29,
+
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<DataRetentionOperation>))]
@@ -160,9 +165,16 @@ public sealed record RetentionRuleUpdateRequest(
     [property: JsonRequired] bool Enabled,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Days = null);
 
+/// <remarks>
+/// <paramref name="CampaignId"/> narrows the reset to the memories one Campaign owns, leaving every
+/// other Campaign's and every installation-scoped memory in place. Only the two stores that carry an
+/// owning Campaign - <see cref="MemoryResetScope.Saga"/> and <see cref="MemoryResetScope.Lexicon"/> -
+/// accept it; naming it for any other store is refused rather than silently widened to all of it.
+/// </remarks>
 public sealed record MemoryResetRequest(
     [property: JsonRequired] MemoryResetScope Scope,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedPlanId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? CampaignId = null);
 
 public sealed record FactoryResetRequest(
     [property: JsonRequired] string Confirmation,
@@ -231,6 +243,23 @@ public sealed record DataRetentionConflict(
     string ResourceId,
     string Message);
 
+/// <summary>
+/// What operator curation of the Saga store means for one plan: how many memories are pinned, and how
+/// many of those this plan would otherwise have selected.
+/// </summary>
+/// <remarks>
+/// <see cref="PinnedRowsExemptFromPlan"/> counts the pinned rows this plan's own cutoff would otherwise
+/// have selected. Reporting it is what keeps a dry-run honest: a preview that silently omitted the
+/// exempted rows would tell an operator their retention rule reaches further than it does.
+///
+/// <para>Retention is the whole of what a pin exempts a memory from today. There is no consolidation
+/// sweep and no decay pass in the installation for it to bind, so this inventory has nothing else to
+/// report. The state is durable, and the sweeps that arrive inherit it.</para>
+/// </remarks>
+public sealed record DataRetentionSagaCurationInventory(
+    long PinnedRows,
+    long PinnedRowsExemptFromPlan);
+
 public sealed record DataRetentionPlan(
     string PlanId,
     DataRetentionRequest Request,
@@ -245,7 +274,9 @@ public sealed record DataRetentionPlan(
     string[] CandidateIds,
     bool RequiresConfirmation,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionCovenantInventory? Covenant = null);
+    DataRetentionCovenantInventory? Covenant = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionSagaCurationInventory? SagaCuration = null);
 
 /// <summary>
 /// A plan and the optional Covenant read lease that protects its response until serialization ends.
@@ -360,6 +391,10 @@ public static class DataRetentionSettingsCatalog
             // Explicit, not a fall-through. The Covenant family is inventoried and never aged out, and
             // an arm that says so cannot be mistaken for a rule somebody forgot to wire.
             RetentionDataClass.Covenant => null,
+
+            // Explicit for the same reason. A claim's lifecycle is its subject's, and a rule that could
+            // age one out from under a live memory would leave that memory unexplained.
+            RetentionDataClass.Annals => null,
 
             _ => null,
 
