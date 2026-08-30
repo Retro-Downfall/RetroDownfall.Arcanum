@@ -8,8 +8,8 @@ using RetroDownfall.Arcanum.Core.Tower;
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
-/// Classification of a frozen tool call, the dynamic Ward policy that governs sensitive egress, and
-/// the acknowledgement that has to commit before any of it physically happens (§10.14).
+/// Classification of a frozen tool call, the live policy that governs sensitive egress, and the
+/// acknowledgement that has to commit before any of it physically happens (§10.14).
 /// </summary>
 public sealed class CovenantSensitiveEgressTests
 {
@@ -97,24 +97,56 @@ public sealed class CovenantSensitiveEgressTests
         Assert.Equal(explicitEmpty.CanonicalArgumentDigest, empty.CanonicalArgumentDigest);
     }
 
-    [Fact]
-    public void Retirement_needs_an_attended_operator_ward_and_a_proposal_does_not()
+    [Theory]
+    [InlineData(InvocationAttendance.Attended)]
+    [InlineData(InvocationAttendance.Unattended)]
+    public void Eligible_retirement_is_ungated_regardless_of_attendance(InvocationAttendance attendance)
     {
         CovenantEgressWardDecision retirement = CovenantEgressWardPolicy.Resolve(
             Classified(CovenantToolNames.RetireCovenant),
-            EligibleInvocation(),
-            Wards());
+            EligibleInvocation(attendance));
+
+        Assert.Equal(CovenantEgressAuthorization.UngatedRetirement, retirement.Authorization);
+        Assert.False(retirement.IsDenied);
+    }
+
+    [Fact]
+    public void Ward_configuration_cannot_change_retirement_authorization()
+    {
+        WardSettings[] settings =
+        [
+            Wards(),
+            Wards(enabled: false),
+            Wards(autoApproveEnabled: true, autoApproveTools: [CovenantToolNames.RetireCovenant]),
+            Wards(autoApproveEnabled: false, autoApproveTools: [CovenantToolNames.RetireCovenant]),
+        ];
+
+        CovenantEgressAuthorization[] authorizations =
+        [
+            .. settings.Select(wards => CovenantEgressWardPolicy.Resolve(
+                CovenantToolClassifier.Classify(
+                    CovenantToolNames.RetireCovenant,
+                    Bytes("{\"key\":\"a\",\"lane\":\"Proposed\"}"),
+                    wards).Value,
+                EligibleInvocation()).Authorization),
+        ];
+
+        Assert.All(
+            authorizations,
+            static authorization => Assert.Equal(
+                CovenantEgressAuthorization.UngatedRetirement,
+                authorization));
+    }
+
+    [Fact]
+    public void A_proposal_remains_sensitive_payload_only()
+    {
         CovenantEgressWardDecision proposal = CovenantEgressWardPolicy.Resolve(
             Classified(CovenantToolNames.ProposeCovenant),
-            EligibleInvocation(),
-            Wards());
+            EligibleInvocation());
 
-        Assert.Equal(CovenantEgressAuthorization.AttendedWardRequired, retirement.Authorization);
-        Assert.Equal(CovenantAuthorizationMode.WardInteractive, retirement.Mode);
-        Assert.True(retirement.RequiresOperatorPrompt);
         Assert.Equal(CovenantEgressAuthorization.SensitivePayloadOnly, proposal.Authorization);
-        Assert.Equal(CovenantAuthorizationMode.None, proposal.Mode);
-        Assert.False(proposal.RequiresOperatorPrompt);
+        Assert.False(proposal.IsDenied);
     }
 
     [Fact]
@@ -122,8 +154,7 @@ public sealed class CovenantSensitiveEgressTests
     {
         CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
             Classified("read_saga"),
-            EligibleInvocation(),
-            Wards());
+            EligibleInvocation());
 
         Assert.Equal(CovenantEgressAuthorization.NotSensitive, decision.Authorization);
         Assert.False(decision.IsDenied);
@@ -134,109 +165,19 @@ public sealed class CovenantSensitiveEgressTests
     {
         CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
             Classified(CovenantToolNames.RetireCovenant),
-            ArcanumInvocationContext.None,
-            Wards());
+            ArcanumInvocationContext.None);
 
         Assert.Equal(CovenantEgressAuthorization.DeniedIneligibleTurn, decision.Authorization);
         Assert.True(decision.IsDenied);
     }
 
     [Fact]
-    public void An_unattended_turn_can_never_reach_the_retirement_arm()
+    public void No_live_policy_method_produces_a_ward_receipt()
     {
-        CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
-            Classified(CovenantToolNames.RetireCovenant),
-            EligibleInvocation(InvocationAttendance.Unattended),
-            Wards());
-
-        Assert.Equal(CovenantEgressAuthorization.DeniedIneligibleTurn, decision.Authorization);
-    }
-
-    [Fact]
-    public void Disabling_wards_denies_sensitive_egress_rather_than_permitting_it()
-    {
-        CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
-            Classified(CovenantToolNames.RetireCovenant),
-            EligibleInvocation(),
-            Wards(enabled: false));
-
-        // Deliberately unlike ToolRiskClassifier.RequiresWard: switching Wards off removes the
-        // operator's only chance to refuse, and silence is not consent to erase their own profile.
-        Assert.Equal(CovenantEgressAuthorization.DeniedWardsDisabled, decision.Authorization);
-        Assert.True(decision.IsDenied);
-    }
-
-    [Fact]
-    public void Configured_auto_approval_applies_only_when_the_operator_enabled_it_and_named_the_tool()
-    {
-        CovenantEgressWardDecision enabledAndNamed = CovenantEgressWardPolicy.Resolve(
-            Classified(CovenantToolNames.RetireCovenant),
-            EligibleInvocation(),
-            Wards(autoApproveEnabled: true, autoApproveTools: [CovenantToolNames.RetireCovenant]));
-        CovenantEgressWardDecision namedButDisabled = CovenantEgressWardPolicy.Resolve(
-            Classified(CovenantToolNames.RetireCovenant),
-            EligibleInvocation(),
-            Wards(autoApproveEnabled: false, autoApproveTools: [CovenantToolNames.RetireCovenant]));
-        CovenantEgressWardDecision enabledButUnnamed = CovenantEgressWardPolicy.Resolve(
-            Classified(CovenantToolNames.RetireCovenant),
-            EligibleInvocation(),
-            Wards(autoApproveEnabled: true, autoApproveTools: ["read_saga"]));
-
-        Assert.Equal(CovenantEgressAuthorization.ConfiguredAutoApproval, enabledAndNamed.Authorization);
-        Assert.Equal(CovenantAuthorizationMode.WardConfiguredAutoApproval, enabledAndNamed.Mode);
-        Assert.Equal(CovenantEgressAuthorization.AttendedWardRequired, namedButDisabled.Authorization);
-        Assert.Equal(CovenantEgressAuthorization.AttendedWardRequired, enabledButUnnamed.Authorization);
-    }
-
-    [Fact]
-    public void A_ward_receipt_exists_only_where_a_ward_was_actually_placed()
-    {
-        ProviderToolCallClassification retirement = Classified(CovenantToolNames.RetireCovenant);
-
-        Result<CovenantToolWardReceipt> approved = CovenantEgressWardPolicy.Accept(
-            CovenantEgressWardPolicy.Resolve(retirement, EligibleInvocation(), Wards()),
-            retirement,
-            CovenantWardDecision.Approved,
-            Sensitivity(),
-            CovenantEgressDestination.Provider,
-            CovenantTask6Fixture.D(83),
-            operatorAuthorityEpoch: 9);
-
-        Result<CovenantToolWardReceipt> unwarded = CovenantEgressWardPolicy.Accept(
-            CovenantEgressWardPolicy.Resolve(Classified("read_saga"), EligibleInvocation(), Wards()),
-            Classified("read_saga"),
-            CovenantWardDecision.Approved,
-            Sensitivity(),
-            CovenantEgressDestination.Provider,
-            CovenantTask6Fixture.D(83),
-            operatorAuthorityEpoch: 9);
-
-        Result<CovenantToolWardReceipt> denied = CovenantEgressWardPolicy.Accept(
-            CovenantEgressWardPolicy.Resolve(retirement, EligibleInvocation(), Wards(enabled: false)),
-            retirement,
-            CovenantWardDecision.Approved,
-            Sensitivity(),
-            CovenantEgressDestination.Provider,
-            CovenantTask6Fixture.D(83),
-            operatorAuthorityEpoch: 9);
-
-        Assert.True(approved.IsSuccess, approved.Error.Message);
-        Assert.True(approved.Value.IsApproved);
-        Assert.Equal(CovenantAuthorizationMode.WardInteractive, approved.Value.Mode);
-        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, unwarded.Error.Code);
-        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, denied.Error.Code);
-    }
-
-    [Fact]
-    public void A_ward_receipt_binds_the_exact_call_it_was_shown()
-    {
-        ProviderToolCallClassification first = Classified(CovenantToolNames.RetireCovenant, "{\"key\":\"a\"}");
-        ProviderToolCallClassification second = Classified(CovenantToolNames.RetireCovenant, "{\"key\":\"b\"}");
-
-        CovenantToolWardReceipt firstReceipt = Approve(first);
-        CovenantToolWardReceipt secondReceipt = Approve(second);
-
-        Assert.NotEqual(firstReceipt.Digest, secondReceipt.Digest);
+        Assert.DoesNotContain(
+            typeof(CovenantEgressWardPolicy).GetMethods(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static),
+            static method => method.ReturnType == typeof(Result<CovenantToolWardReceipt>));
     }
 
     [Fact]
@@ -370,16 +311,6 @@ public sealed class CovenantSensitiveEgressTests
             Sensitivity(),
             CovenantTask6Fixture.D(24),
             Timestamp: 1_700_000_000);
-
-    private static CovenantToolWardReceipt Approve(ProviderToolCallClassification classification) =>
-        CovenantEgressWardPolicy.Accept(
-            CovenantEgressWardPolicy.Resolve(classification, EligibleInvocation(), Wards()),
-            classification,
-            CovenantWardDecision.Approved,
-            Sensitivity(),
-            CovenantEgressDestination.Provider,
-            CovenantTask6Fixture.D(83),
-            operatorAuthorityEpoch: 9).Value;
 
     private static ProviderCallSensitivity Sensitivity() =>
         CovenantTask6Fixture.ProviderCall().Sensitivity;

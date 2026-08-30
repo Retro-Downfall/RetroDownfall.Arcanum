@@ -176,30 +176,47 @@ public sealed class CovenantMutationIntent
 
         Authorization = authorization;
 
-        // Ward evidence belongs to the approved retirement and to nothing else, exactly as
-        // covenant_versions requires: OriginCode 3 with a receipt and a Ward mode, every other
-        // origin with neither.
+        // New AgentRetire rows carry no legacy Ward pair. Historical OriginCode 3 rows remain
+        // representable only as one complete digest plus mode-2/3 pair; every partial pair, unrelated
+        // mode, and non-AgentApproved use is refused before it can reach SQLite.
         if (origin == CovenantOrigin.AgentApproved)
         {
 
-            if (authorization.WardReceiptDigest is null
-                || authorization.Mode is not (CovenantAuthorizationMode.WardInteractive
-                    or CovenantAuthorizationMode.WardConfiguredAutoApproval))
+            bool newUngatedShape =
+                authorization.WardReceiptDigest is null
+                && authorization.Mode is CovenantAuthorizationMode.None;
+
+            bool historicalWardShape =
+                authorization.WardReceiptDigest is not null
+                && authorization.Mode is (CovenantAuthorizationMode.WardInteractive
+                    or CovenantAuthorizationMode.WardConfiguredAutoApproval);
+
+            if (!newUngatedShape && !historicalWardShape)
             {
 
                 throw new ArgumentException(
-                    "An approved agent retirement carries its Ward receipt digest and the Ward mode it was approved under.",
+                    "An agent retirement carries either no legacy Ward fields or one complete historical Ward pair.",
                     nameof(authorization));
 
             }
 
         }
-        else if (authorization.WardReceiptDigest is not null)
+        else
         {
 
-            throw new ArgumentException(
-                "Only an approved agent retirement carries Ward evidence.",
-                nameof(authorization));
+            CovenantAuthorizationMode requiredMode = origin == CovenantOrigin.Operator
+                ? CovenantAuthorizationMode.ApiMasterKey
+                : CovenantAuthorizationMode.None;
+
+            if (authorization.WardReceiptDigest is not null
+                || authorization.Mode != requiredMode)
+            {
+
+                throw new ArgumentException(
+                    "Only a historical agent retirement carries Ward evidence or a Ward mode.",
+                    nameof(authorization));
+
+            }
 
         }
 

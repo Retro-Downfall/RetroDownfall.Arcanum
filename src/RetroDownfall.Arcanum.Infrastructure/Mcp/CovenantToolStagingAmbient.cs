@@ -25,16 +25,13 @@ internal sealed record CovenantToolStagingContext(
     CovenantToolCapabilityRegistry Registry,
     CancellationToken TurnCancellation,
 
-    /// <summary>The retirement target a Ward showed the operator, for this one dispatch.</summary>
+    /// <summary>The exact retirement target canonical preflight resolved for this one dispatch.</summary>
     /// <remarks>
     /// Per call rather than per turn, and pushed by the tool pipeline as a <c>with</c> copy around the
-    /// single invocation it authorizes. A field the turn could mutate would let one approved retirement
+    /// single invocation it authorizes. A field the turn could mutate would let one retirement
     /// authorize the next tool call the model happened to make.
     /// </remarks>
     CovenantRetirementPreflight? RetirementPreflight = null,
-
-    /// <summary>The operator consent that retirement actually received.</summary>
-    CovenantToolWardReceipt? WardReceipt = null,
 
     /// <summary>
     /// The capability nonce this dispatch was disclosed under, or absent to mint a fresh one.

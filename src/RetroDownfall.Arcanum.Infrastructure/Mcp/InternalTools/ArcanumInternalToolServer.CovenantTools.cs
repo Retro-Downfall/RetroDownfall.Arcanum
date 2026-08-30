@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 /// <remarks>
 /// Both are registered unconditionally in the cached internal-tool superset and both fail closed on
-/// their own, and only proposal is advertised in this build. Advertisement is filtered per turn from
+/// their own. Advertisement is filtered per turn from
 /// the live feature gate, canonical availability, invocation context, and tool policy, but a stale
 /// cached partition or a direct internal invocation would bypass that filter, so each handler
 /// rechecks the same facts before it accepts its capability.
@@ -26,8 +26,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// its completed assistant finalization seals the collector and publishes the batch inside the same
 /// transaction as the answer, and every other ending — interrupted, refused, cancelled, or simply
 /// not Covenant-derived — discards it. A proposal therefore reaches the Campaign's Proposed lane
-/// exactly when the answer it accompanied did, and retirement reaches nothing at all: its capability
-/// is never minted, so its handler refuses before it can stage (§10.13, §10.14).</para>
+/// exactly when the answer it accompanied did; retirement follows the same publication boundary
+/// after its exact canonical preflight is bound (§10.13, §10.14).</para>
 /// </remarks>
 internal sealed partial class ArcanumInternalToolServer
 {
@@ -35,22 +35,6 @@ internal sealed partial class ArcanumInternalToolServer
     internal const string CovenantMutationStagedStatus = "staged";
 
     internal const string CovenantMutationFailedStatus = "failed";
-
-    /// <summary>
-    /// Whether retirement can actually be performed, rather than merely refused.
-    /// </summary>
-    /// <remarks>
-    /// Ward-aware rather than constant. Retirement's capability requires the preflight disclosure a
-    /// Ward showed the operator and the receipt proving they approved it, and with Wards switched off
-    /// the egress policy denies every retirement outright — switching Wards off removes the operator's
-    /// only chance to refuse, and silence is not consent to erase their own standing instructions. On
-    /// such an installation the tool could only ever refuse, and advertising a tool that always refuses
-    /// teaches a model the capability is broken rather than absent.
-    ///
-    /// <para>The handler stays registered regardless, so a direct or stale invocation still fails
-    /// closed rather than reaching an unregistered name.</para>
-    /// </remarks>
-    private bool CovenantRetirementAvailable => _wardsEnabled;
 
     private bool CovenantToolsAvailable()
     {

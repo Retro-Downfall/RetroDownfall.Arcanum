@@ -107,14 +107,13 @@ public sealed class ArcanumInvocationContext
     /// </summary>
     /// <remarks>
     /// Strictly narrower than <see cref="CanReadCovenant"/>. Staging needs a durable assistant entry to
-    /// publish against, so only a session-backed turn qualifies; it needs an operator present, because
-    /// the retirement arm is a Forbidden Art; it needs tools at all; and it needs a Campaign, because
-    /// the Proposed lane is Campaign-only and there is no Global scope for an agent to write into.
+    /// publish against, so only a session-backed turn qualifies; it needs tools at all; and it needs a
+    /// Campaign, because the Proposed lane is Campaign-only and there is no Global scope for an agent
+    /// to write into. Attendance does not add authority to the capability.
     /// </remarks>
     public bool CanStageCovenantMutation =>
         CanReadCovenant
         && Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
-        && Attendance is InvocationAttendance.Attended
         && ToolPolicy is not ToolPolicy.NoTools
         && Campaign is { IsCampaignBound: true };
 

@@ -49,16 +49,15 @@ public interface ICovenantTurnHeadProbe
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Resolves the exact retirement target a Ward will show, or refuses it.
+    /// Resolves the exact retirement target the one-call capability will bind, or refuses it.
     /// </summary>
     /// <remarks>
     /// Here rather than on a port of its own, because this is the one object holding both the store
     /// and the turn's own lease — the same reason the head probe lives here. Resolving it later would
     /// need the lease handed out, which is how a turn ends up with two owners for one admission.
     ///
-    /// <para>It refuses before a Ward is raised, never after: a missing head, a tombstone, and a pinned
-    /// head are all things an operator must not be asked to approve, because approving them authorizes
-    /// nothing the write authority would accept.</para>
+    /// <para>It refuses before any effect: a missing head, a tombstone, and a pinned head are all
+    /// targets the write authority would reject.</para>
     /// </remarks>
     ValueTask<Result<CovenantRetirementPreflight>> ResolveRetirementPreflightAsync(
         CovenantLane lane,
@@ -68,13 +67,12 @@ public interface ICovenantTurnHeadProbe
 }
 
 /// <summary>
-/// The exact retirement target a Ward was shown, resolved outside the inference hot path.
+/// The exact retirement target canonical preflight resolved outside the inference hot path.
 /// </summary>
 /// <remarks>
-/// The operator cannot consent to "retire something the model named": they have to see the content
-/// that is about to disappear, which lane it lives in, which revision it is, and whether Global
-/// content will start applying in its place. This value is that disclosure, frozen before the Ward
-/// opens so the thing approved and the thing staged are provably the same (§10.14).
+/// The host does not retire merely "something the model named": it binds the content, lane, revision,
+/// key epoch, and Global fallback fact from canonical state. This value is that target, frozen before
+/// dispatch so the thing resolved and the thing staged are provably the same (§10.14).
 /// </remarks>
 public sealed class CovenantRetirementPreflight
 {
@@ -152,27 +150,13 @@ public sealed class CovenantRetirementPreflight
 }
 
 /// <summary>
-/// What a Ward shows an operator before they approve one retirement.
+/// Historical operator-consent evidence retained for Ward-backed retirement compatibility.
 /// </summary>
 /// <remarks>
-/// The model's arguments are a key and a lane. This is what those name: the content that will
-/// disappear, the branch it lives on, the revision it is, and whether Global content starts applying
-/// in its place. A Ward that showed the arguments would be asking somebody to approve a pointer.
-/// </remarks>
-public sealed record CovenantRetirementDisclosureWire(
-    string Key,
-    string Lane,
-    long Revision,
-    string Content,
-    bool GlobalContentAppliesAfterwards);
-
-/// <summary>
-/// The operator consent one sensitive-egress tool call actually received.
-/// </summary>
-/// <remarks>
-/// Carries the evidence digest rather than the decision alone, because "approved" is only meaningful
-/// against the exact tool name, final arguments, sensitivity, and destination it was approved for.
-/// A receipt that recorded only a Boolean could be honoured for a different call.
+/// New live calls never create or carry this type. Historical receipts retain the evidence digest
+/// rather than the decision alone, because "approved" is only meaningful against the exact tool name,
+/// final arguments, sensitivity, and destination it was approved for. A receipt that recorded only a
+/// Boolean could be honoured for a different call.
 /// </remarks>
 public sealed class CovenantToolWardReceipt
 {

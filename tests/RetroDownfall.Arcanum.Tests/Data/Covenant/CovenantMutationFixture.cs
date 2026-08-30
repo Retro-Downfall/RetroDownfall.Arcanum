@@ -102,9 +102,7 @@ internal static class CovenantMutationFixture
             basePlanDigest: null,
             admissionReceiptDigest: null);
 
-    /// <summary>
-    /// One approved agent retirement, carrying the Ward evidence that origin alone may hold.
-    /// </summary>
+    /// <summary>One new ungated agent retirement with no legacy Ward authorization fields.</summary>
     internal static CovenantMutationIntent AgentRetire(
         CovenantOperationScope scope,
         string key,
@@ -126,8 +124,44 @@ internal static class CovenantMutationFixture
             [],
             Authorization(authorizationSeed) with
             {
-                Mode = CovenantAuthorizationMode.WardInteractive,
+                Mode = CovenantAuthorizationMode.None,
+                WardReceiptDigest = null,
+                PreflightBodyDigest = CovenantOperationGateFixture.Digest(91),
+            },
+            sourceTurnId: Guid.NewGuid(),
+            sourceToolCallId: "call-1",
+            basePlanDigest: CovenantOperationGateFixture.Digest(70),
+            admissionReceiptDigest: CovenantOperationGateFixture.Digest(71));
+
+    /// <summary>
+    /// One historical agent retirement carrying the complete legacy Ward pair retained for decode
+    /// and persistence compatibility tests only.
+    /// </summary>
+    internal static CovenantMutationIntent HistoricalWardBackedAgentRetire(
+        CovenantOperationScope scope,
+        string key,
+        CovenantLane lane,
+        long expectedRevision,
+        long expectedKeyEpoch,
+        CovenantAuthorizationMode mode = CovenantAuthorizationMode.WardInteractive,
+        Guid? mutationId = null,
+        byte authorizationSeed = 80) =>
+        new(
+            mutationId ?? Guid.NewGuid(),
+            CovenantMutationKind.AgentRetire,
+            CovenantOperation.Retire,
+            CovenantOrigin.AgentApproved,
+            Target(scope, key, lane),
+            expectedRevision,
+            reactivate: false,
+            expectedKeyEpoch,
+            artifact: null,
+            [],
+            Authorization(authorizationSeed) with
+            {
+                Mode = mode,
                 WardReceiptDigest = CovenantOperationGateFixture.Digest(90),
+                PreflightBodyDigest = CovenantOperationGateFixture.Digest(91),
             },
             sourceTurnId: Guid.NewGuid(),
             sourceToolCallId: "call-1",
@@ -154,7 +188,10 @@ internal static class CovenantMutationFixture
             expectedKeyEpoch,
             Artifact(key, authored),
             provenance ?? [],
-            Authorization(authorizationSeed),
+            Authorization(authorizationSeed) with
+            {
+                Mode = CovenantAuthorizationMode.None,
+            },
             sourceTurnId: Guid.NewGuid(),
             sourceToolCallId: "call-1",
             basePlanDigest: CovenantOperationGateFixture.Digest(70),

@@ -202,10 +202,9 @@ internal static class SessionAttachmentAmbientSend
     /// for. <c>TryAdd</c> semantics mean a duplicate request id is refused rather than overwriting a
     /// live registration.
     ///
-    /// <para>A retirement's capability additionally requires the preflight disclosure its Ward showed
-    /// the operator and the receipt proving they approved it. Both arrive on the staging context, put
-    /// there by the tool pipeline for the one dispatch it warded; a retirement that reaches here
-    /// without them mints nothing, and the handler then fails closed exactly as it does for a turn that
+    /// <para>A retirement's capability additionally requires the exact canonical preflight. It arrives
+    /// on the staging context for the one dispatch it authorizes; a retirement that reaches here
+    /// without it mints nothing, and the handler then fails closed exactly as it does for a turn that
     /// carries no capability at all.</para>
     /// </remarks>
     private static void BindCovenantStaging(
@@ -223,7 +222,7 @@ internal static class SessionAttachmentAmbientSend
 
         bool retirement = string.Equals(name, CovenantToolNames.RetireCovenant, StringComparison.Ordinal);
 
-        if (retirement != (staging.RetirementPreflight is not null && staging.WardReceipt is not null))
+        if (retirement != (staging.RetirementPreflight is not null))
         {
 
             // A proposal carrying retirement material, or a retirement carrying none, is a capability
@@ -233,8 +232,7 @@ internal static class SessionAttachmentAmbientSend
 
         }
 
-        // The nonce the disclosure receipt already bound, when a retirement was warded and disclosed
-        // one frame earlier. One call is one nonce.
+        // The nonce the disclosure receipt already bound one frame earlier. One call is one nonce.
         CovenantToolCapabilityNonce nonce = staging.Nonce ?? CovenantToolCapabilityNonce.Create();
 
         CovenantToolInvocationContext capability;
@@ -251,7 +249,6 @@ internal static class SessionAttachmentAmbientSend
                 name,
                 requestId,
                 staging.RetirementPreflight,
-                staging.WardReceipt,
                 staging.TurnCancellation);
         }
         catch (ArgumentException)

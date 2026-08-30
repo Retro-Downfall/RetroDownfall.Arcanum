@@ -178,11 +178,27 @@ public sealed class CovenantToolInvocationContextTests
     }
 
     [Fact]
-    public void A_retirement_capability_requires_its_preflight_and_its_ward_receipt()
+    public async Task A_retirement_capability_requires_exactly_its_preflight()
     {
         CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
         CovenantMutationCollector collector = new(TurnId, plan.Digest, CovenantTask6Fixture.BranchId);
         CovenantAdmissionReceipt admission = CovenantCapabilityFixtures.Admission(plan);
+
+        CovenantToolInvocationContext retirement = new(
+            collector,
+            CovenantCapabilityFixtures.Campaign(),
+            admission,
+            CovenantCapabilityFixtures.Materialization(),
+            new CovenantCapabilityFixtures.StubHeadProbe(),
+            CovenantToolCapabilityNonce.Create(),
+            CovenantToolNames.RetireCovenant,
+            "call-1",
+            CovenantCapabilityFixtures.RetirementPreflight(),
+            CancellationToken.None);
+
+        Assert.NotNull(retirement.RetirementPreflight);
+
+        await retirement.DisposeAsync();
 
         Assert.Throws<ArgumentException>(() => new CovenantToolInvocationContext(
             collector,
@@ -194,25 +210,11 @@ public sealed class CovenantToolInvocationContextTests
             CovenantToolNames.RetireCovenant,
             "call-1",
             retirementPreflight: null,
-            wardReceipt: CovenantCapabilityFixtures.WardReceipt(CovenantWardDecision.Approved),
-            CancellationToken.None));
-
-        Assert.Throws<ArgumentException>(() => new CovenantToolInvocationContext(
-            collector,
-            CovenantCapabilityFixtures.Campaign(),
-            admission,
-            CovenantCapabilityFixtures.Materialization(),
-            new CovenantCapabilityFixtures.StubHeadProbe(),
-            CovenantToolCapabilityNonce.Create(),
-            CovenantToolNames.RetireCovenant,
-            "call-1",
-            CovenantCapabilityFixtures.RetirementPreflight(),
-            wardReceipt: null,
             CancellationToken.None));
     }
 
     [Fact]
-    public void A_proposal_capability_carries_no_ward_receipt_and_no_retirement_target()
+    public async Task A_proposal_capability_carries_no_retirement_target()
     {
         CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
         CovenantMutationCollector collector = new(TurnId, plan.Digest, CovenantTask6Fixture.BranchId);
@@ -227,8 +229,23 @@ public sealed class CovenantToolInvocationContextTests
             CovenantToolNames.ProposeCovenant,
             "call-1",
             CovenantCapabilityFixtures.RetirementPreflight(),
-            wardReceipt: null,
             CancellationToken.None));
+
+        CovenantToolInvocationContext proposal = new(
+            collector,
+            CovenantCapabilityFixtures.Campaign(),
+            CovenantCapabilityFixtures.Admission(plan),
+            CovenantCapabilityFixtures.Materialization(),
+            new CovenantCapabilityFixtures.StubHeadProbe(),
+            CovenantToolCapabilityNonce.Create(),
+            CovenantToolNames.ProposeCovenant,
+            "call-1",
+            retirementPreflight: null,
+            CancellationToken.None);
+
+        Assert.Null(proposal.RetirementPreflight);
+
+        await proposal.DisposeAsync();
     }
 
     [Fact]
@@ -247,7 +264,6 @@ public sealed class CovenantToolInvocationContextTests
             CovenantToolNames.ProposeCovenant,
             "call-1",
             retirementPreflight: null,
-            wardReceipt: null,
             CancellationToken.None));
     }
 
@@ -267,7 +283,6 @@ public sealed class CovenantToolInvocationContextTests
             CovenantToolNames.ProposeCovenant,
             "call-1",
             retirementPreflight: null,
-            wardReceipt: null,
             CancellationToken.None));
     }
 
@@ -311,7 +326,6 @@ public sealed class CovenantToolInvocationContextTests
                 CovenantToolNames.ProposeCovenant,
                 "call-1",
                 retirementPreflight: null,
-                wardReceipt: null,
                 _turn.Token);
         }
 

@@ -82,19 +82,36 @@ public sealed class CovenantToolStagingMintTests
 
     }
 
-    /// <summary>
-    /// A retirement receives no capability, and a proposal into the same registry still does.
-    /// </summary>
-    /// <remarks>
-    /// Two independent guards produce this outcome: the binder mints only for the proposal name, and
-    /// <c>CovenantToolInvocationContext</c>'s own constructor refuses a retirement carrying neither
-    /// preflight nor Ward receipt. This test cannot tell them apart — removing the name check leaves it
-    /// green — so it claims only the outcome. The constructor's refusal is pinned separately by
-    /// <c>CovenantToolInvocationContextTests</c>; the second half here rules out the boring
-    /// explanation that the registry was simply not working.
-    /// </remarks>
     [Fact]
-    public void A_retirement_mints_nothing_while_a_proposal_still_does()
+    public void A_retirement_with_an_exact_preflight_receives_its_capability()
+    {
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        CovenantRetirementPreflight preflight = CovenantCapabilityFixtures.RetirementPreflight();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(
+            Staging(registry) with
+            {
+                RetirementPreflight = preflight,
+            });
+
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
+            ConnectionKey,
+            ToolsCall("7", CovenantToolNames.RetireCovenant));
+
+        Result<CovenantToolCapabilityGrant> taken = registry.TryTake(ConnectionKey, "7");
+
+        Assert.True(taken.IsSuccess, taken.IsFailure ? taken.Error.Message : string.Empty);
+
+        Assert.Equal(CovenantToolNames.RetireCovenant, taken.Value.Capability.ToolName);
+
+        Assert.Same(preflight, taken.Value.Capability.RetirementPreflight);
+
+    }
+
+    [Fact]
+    public void A_retirement_without_preflight_mints_nothing_while_a_proposal_still_does()
     {
 
         CovenantToolCapabilityRegistry registry = new();

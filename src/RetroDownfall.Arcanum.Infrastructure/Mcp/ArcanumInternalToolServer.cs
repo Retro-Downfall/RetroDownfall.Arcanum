@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -130,8 +129,6 @@ internal sealed partial class ArcanumInternalToolServer
     private readonly ICovenantAvailability? _covenantAvailability;
 
     private readonly CovenantToolCapabilityRegistry? _covenantCapabilities;
-
-    private readonly bool _wardsEnabled;
 
     /// <summary>
     /// In-flight <c>tools/call</c> request ids to their linked <see cref="CancellationTokenSource"/>, so
@@ -293,12 +290,6 @@ internal sealed partial class ArcanumInternalToolServer
             _covenantAvailability = composition.ServiceProvider.GetService<ICovenantAvailability>();
 
             _covenantCapabilities = composition.ServiceProvider.GetService<CovenantToolCapabilityRegistry>();
-
-            // Resolved here rather than per advertisement, on the same terms as the two above. What it
-            // decides is whether retirement can be performed at all: with Wards off the egress policy
-            // denies every one, and a tool that can only refuse is worse than one that is absent.
-            _wardsEnabled = composition.ServiceProvider
-                .GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue.ResolveWard().Enabled ?? false;
 
         }
 
@@ -991,20 +982,17 @@ internal sealed partial class ArcanumInternalToolServer
                     OutputSchema = _covenantMutationOutputSchema,
                 });
 
-            if (CovenantRetirementAvailable)
-            {
-                tools.Add(
-                    new McpToolDefinitionWire
-                    {
-                        Name = CovenantToolNames.RetireCovenant,
-                        Description =
-                            "Retire one standing preference the operator says no longer applies. "
-                            + "It always requires their approval, and they are shown the exact content that will disappear before they decide. "
-                            + "Prefer a preference this turn actually showed you: retiring one it did not always waits for them in person.",
-                        InputSchema = _retireCovenantSchema,
-                        OutputSchema = _covenantMutationOutputSchema,
-                    });
-            }
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = CovenantToolNames.RetireCovenant,
+                    Description =
+                        "Retire one standing preference that no longer applies. "
+                        + "The host resolves and binds the exact canonical target, revision, key epoch, and disclosure before staging it. "
+                        + "Retirement remains Campaign-scoped and publishes only with this turn's completed answer.",
+                    InputSchema = _retireCovenantSchema,
+                    OutputSchema = _covenantMutationOutputSchema,
+                });
         }
 
         if (_settings.EnableArchiveSearch)

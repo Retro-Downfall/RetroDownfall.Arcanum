@@ -171,7 +171,7 @@ public sealed class ArcanumInvocationContextTests
     }
 
     [Fact]
-    public void Create_GlobalOnlyAndUnattendedSessionTurnsCannotStage()
+    public void Create_GlobalOnlyAndToollessSessionTurnsCannotStage()
     {
 
         Result<ArcanumInvocationContext> globalOnly = ArcanumInvocationContext.Create(
@@ -185,17 +185,6 @@ public sealed class ArcanumInvocationContextTests
         Assert.True(globalOnly.Value.CanReadCovenant);
         Assert.False(globalOnly.Value.CanStageCovenantMutation);
 
-        Result<ArcanumInvocationContext> unattended = ArcanumInvocationContext.Create(
-            ArcanumExecutionSurface.SessionBackedOperatorTurn,
-            CampaignContext(),
-            InvocationAttendance.Unattended,
-            CovenantContextPolicy.Default,
-            ToolPolicy.AllTools,
-            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
-
-        Assert.True(unattended.Value.CanReadCovenant);
-        Assert.False(unattended.Value.CanStageCovenantMutation);
-
         Result<ArcanumInvocationContext> toolless = ArcanumInvocationContext.Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
             CampaignContext(),
@@ -206,6 +195,23 @@ public sealed class ArcanumInvocationContextTests
 
         Assert.True(toolless.Value.CanReadCovenant);
         Assert.False(toolless.Value.CanStageCovenantMutation);
+
+    }
+
+    [Fact]
+    public void Create_UnattendedSessionTurnWithAuthorityCampaignAndToolsCanStage()
+    {
+
+        Result<ArcanumInvocationContext> unattended = ArcanumInvocationContext.Create(
+            ArcanumExecutionSurface.SessionBackedOperatorTurn,
+            CampaignContext(),
+            InvocationAttendance.Unattended,
+            CovenantContextPolicy.Default,
+            ToolPolicy.AllTools,
+            CovenantReadAuthorityEpoch.CreateForTests(Installation, 1, 7));
+
+        Assert.True(unattended.Value.CanReadCovenant);
+        Assert.True(unattended.Value.CanStageCovenantMutation);
 
     }
 

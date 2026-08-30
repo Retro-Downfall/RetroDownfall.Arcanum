@@ -818,10 +818,13 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
 
         Bind(command, "$ward", (object?)intent.Authorization.WardReceiptDigest?.Bytes ?? DBNull.Value);
 
-        Bind(
-            command,
-            "$authorizationMode",
-            intent.Origin == CovenantOrigin.AgentApproved ? (int)intent.Authorization.Mode : DBNull.Value);
+        object authorizationMode =
+            intent.Origin == CovenantOrigin.AgentApproved
+            && intent.Authorization.Mode != CovenantAuthorizationMode.None
+                ? (int)intent.Authorization.Mode
+                : DBNull.Value;
+
+        Bind(command, "$authorizationMode", authorizationMode);
 
         Bind(command, "$mutation", intent.MutationId.ToString("D"));
 
