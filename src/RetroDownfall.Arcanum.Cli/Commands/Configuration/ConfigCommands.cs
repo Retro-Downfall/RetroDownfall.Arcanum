@@ -120,6 +120,19 @@ internal sealed class ConfigCommands(
 
         ConfigurationCommandSnapshot snapshot = read.Value;
 
+        string? pathError = ConfigurationPathAccessor.GetPathResolutionError(
+            snapshot.Settings,
+            key);
+
+        if (pathError is not null)
+        {
+
+            console.WriteDiagnostic(pathError);
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
         string? resolvedValue = value;
 
         if (ConfigurationPathAccessor.IsSensitive(key))

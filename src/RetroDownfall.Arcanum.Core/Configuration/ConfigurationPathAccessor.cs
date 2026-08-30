@@ -427,15 +427,28 @@ public static class ConfigurationPathAccessor
 
     }
 
-    public static bool Exists(ArcanumSettings settings, string key)
+    /// <summary>
+    /// Resolves a configuration path without changing the supplied settings and returns the exact
+    /// resolver diagnostic when it is not writable through the public configuration surface.
+    /// </summary>
+    public static string? GetPathResolutionError(ArcanumSettings settings, string key)
     {
+
+        ArgumentNullException.ThrowIfNull(settings);
 
         JsonNode root = JsonSerializer.SerializeToNode(
                 settings,
                 ConfigurationJsonContext.Default.ArcanumSettings)
             ?? new JsonObject();
 
-        return Resolve(root, key).IsSuccess;
+        return Resolve(root, key).Error;
+
+    }
+
+    public static bool Exists(ArcanumSettings settings, string key)
+    {
+
+        return GetPathResolutionError(settings, key) is null;
 
     }
 
@@ -448,6 +461,17 @@ public static class ConfigurationPathAccessor
         {
 
             return PathResolution.Failure("Configuration key must not be empty.");
+
+        }
+
+        string normalizedKey = string.Join('.', segments);
+
+        if (IsRemovedWardApprovalPath(normalizedKey))
+        {
+
+            return PathResolution.Failure(
+                $"Configuration key '{key}' was removed. "
+                + ConfigurationValidator.ObsoleteWardApprovalConfigurationMessage);
 
         }
 
@@ -942,6 +966,23 @@ public static class ConfigurationPathAccessor
 
     private static string[] Split(string key) =>
         key.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static bool IsRemovedWardApprovalPath(string normalizedKey) =>
+        string.Equals(
+            normalizedKey,
+            "security.ward.enabled",
+            StringComparison.OrdinalIgnoreCase)
+        || string.Equals(
+            normalizedKey,
+            "security.ward.autoDenyInUnattendedMode",
+            StringComparison.OrdinalIgnoreCase)
+        || string.Equals(
+            normalizedKey,
+            "security.ward.autoApprove",
+            StringComparison.OrdinalIgnoreCase)
+        || normalizedKey.StartsWith(
+            "security.ward.autoApprove.",
+            StringComparison.OrdinalIgnoreCase);
 
     private sealed record PathResolution(
         bool IsSuccess,

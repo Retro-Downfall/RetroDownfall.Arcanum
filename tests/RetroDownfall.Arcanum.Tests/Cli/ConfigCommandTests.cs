@@ -192,6 +192,113 @@ public sealed class ConfigCommandTests
 
     [Fact]
 
+    public void Set_rejects_removed_ward_approval_path_without_a_value_before_value_validation()
+    {
+
+        FakeConfigurationCommandService fake = new(
+            new ArcanumSettings(),
+            ConfigurationAccessMode.HostApi);
+
+        ServiceCollection services = Services(fake);
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "config",
+            "set",
+            "security.ward.enabled",
+            "--plain");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Null(fake.Written);
+
+        Assert.Equal(0, fake.ValidateCount);
+
+        Assert.Contains("security.ward.enabled", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("was removed", result.Error, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Remove this Ward approval setting", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("A configuration value is required", result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+
+    public void Set_rejects_invalid_sensitive_shaped_path_before_sensitive_argv_validation()
+    {
+
+        FakeConfigurationCommandService fake = new(
+            new ArcanumSettings(),
+            ConfigurationAccessMode.HostApi);
+
+        ServiceCollection services = Services(fake);
+
+        const string secret = "https://do-not-echo.example/v1";
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "config",
+            "set",
+            "providers.99.endpoint",
+            secret,
+            "--plain");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Null(fake.Written);
+
+        Assert.Equal(0, fake.ValidateCount);
+
+        Assert.Contains("providers.99.endpoint", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("not an existing collection index", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(secret, result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(secret, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("must not be passed", result.Error, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+
+    public void Set_rejects_invalid_sensitive_shaped_path_before_sensitive_value_input()
+    {
+
+        FakeConfigurationCommandService fake = new(
+            new ArcanumSettings(),
+            ConfigurationAccessMode.HostApi);
+
+        ServiceCollection services = Services(fake);
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "config",
+            "set",
+            "providers.99.endpoint",
+            "--plain");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Null(fake.Written);
+
+        Assert.Equal(0, fake.ValidateCount);
+
+        Assert.Contains("providers.99.endpoint", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("not an existing collection index", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("A configuration value is required", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Enter the value", result.Error, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+
     public void Set_rejects_sensitive_argv_without_echoing_value()
     {
 
