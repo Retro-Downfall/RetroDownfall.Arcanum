@@ -676,7 +676,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
                 Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.MaintenanceFailed,
-                        "A Covenant connection handle is still open after the drain.")));
+                        "A Covenant connection handle did not close.")));
 
     }
 

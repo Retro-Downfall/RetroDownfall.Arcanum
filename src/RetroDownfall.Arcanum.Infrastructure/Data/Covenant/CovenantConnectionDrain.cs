@@ -23,8 +23,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// rather than a list somebody remembered to keep up to date.</para>
 ///
 /// <para>The drain proves its own result. Its caller's next act is an exclusive lock and a delete,
-/// so a best-effort close that reported success over a surviving handle would hand the erasure a
-/// lock failure it could only report as a mystery.</para>
+/// so a best-effort close that reported success over a handle it had failed to close would hand the
+/// erasure a lock failure it could only report as a mystery.</para>
+///
+/// <para>What it proves is that every handle it was shown closed, which is not the same as the
+/// process being quiet, and the difference is deliberate. A component this host is running may open
+/// a Grimoire connection at any instant — a background reconciliation pass mid-flight, a maintenance
+/// sweep between two statements — so a handle correctly closed here and reopened a moment later is
+/// an ordinary condition rather than this owner's failure. It is also indistinguishable, in its
+/// effect on the erasure, from the reopen that lands a microsecond <i>after</i> this returns, which
+/// no drain can forbid: both are the exclusive acquisition's to meet. Refusing over the one that
+/// happens to land inside the call would therefore add no protection and would make an operator's
+/// erasure succeed or fail on when a background pass ran. Closing that window means quiescing every
+/// Grimoire opener for the length of an erasure, which is a larger contract than a connection owner
+/// holds and a change that belongs where the host's lifecycle is decided.</para>
 /// </remarks>
 internal interface ICovenantConnectionDrain
 {
@@ -35,7 +47,8 @@ internal interface ICovenantConnectionDrain
     IDisposable Register(SqliteConnection connection);
 
     /// <summary>
-    /// Closes every enrolled direct handle, clears every idle pool, and proves nothing survived.
+    /// Closes every enrolled direct handle, clears every idle pool, and refuses over any handle it
+    /// could not close.
     /// </summary>
     Task<Result> DrainAsync(CancellationToken cancellationToken);
 
@@ -55,6 +68,15 @@ internal interface ICovenantConnectionDrain
 /// the Covenant connection source that hands it out — and with a set the first release would drop
 /// the other component's registration too, leaving an open handle outside the drain until whichever
 /// component still believed it was enrolled let go.</para>
+///
+/// <para>Each handle is read once, immediately after its own close, and the verify pass judges from
+/// that reading rather than from the state alone. Read only at the end, an open handle says nothing
+/// about which of two opposite things happened to it: a handle this drain could not close is holding
+/// the database and will still be holding it through the exclusive lock that follows, while a handle
+/// closed here and reopened by a live component has already been let go of once and is the ordinary
+/// traffic of a running host. Enrolment used to cover only handles nobody reopened, so the two never
+/// came apart; it now covers every connection Entity Framework opens, and telling them apart is the
+/// difference between an erasure that refuses for a reason and one that refuses on timing.</para>
 /// </remarks>
 internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 {
@@ -86,6 +108,8 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
         SqliteConnection[] enrolled = Snapshot();
 
+        HashSet<SqliteConnection> closed = [];
+
         foreach (SqliteConnection handle in enrolled)
         {
 
@@ -96,12 +120,20 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
                 await handle.CloseAsync().ConfigureAwait(false);
 
+                if (IsClosed(handle))
+                {
+
+                    _ = closed.Add(handle);
+
+                }
+
             }
             catch (ObjectDisposedException)
             {
 
                 // A handle disposed without unregistering is already released. It is untidy rather
                 // than unsafe, and refusing here would block an erasure over bookkeeping.
+                _ = closed.Add(handle);
 
             }
             catch (SqliteException failed)
@@ -121,13 +153,18 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         foreach (SqliteConnection handle in enrolled)
         {
 
-            if (!IsClosed(handle))
+            // Open having never been observed closed is the one this owner may not pass on: nothing
+            // downstream will let go of it, and the exclusive connection behind it spends a busy
+            // timeout per lock before it reports a holder it cannot name. Open after a close read
+            // back as closed is a live component that has reopened, which the exclusive acquisition
+            // meets exactly as it meets a reopen after this call returns.
+            if (!IsClosed(handle) && !closed.Contains(handle))
             {
 
                 return new Error(
                     ErrorCodes.Covenant.MaintenanceFailed,
-                    "A Covenant connection handle is still open after the drain, so no exclusive "
-                    + "maintenance connection may be opened.");
+                    "A Covenant connection handle did not close, so no exclusive maintenance "
+                    + "connection may be opened.");
 
             }
 
