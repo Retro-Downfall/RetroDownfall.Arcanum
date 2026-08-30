@@ -222,6 +222,11 @@ internal static class SessionAttachmentAmbientSend
 
         bool retirement = string.Equals(name, CovenantToolNames.RetireCovenant, StringComparison.Ordinal);
 
+        if (!retirement && !staging.CanStageProposal)
+        {
+            return;
+        }
+
         if (retirement != (staging.RetirementPreflight is not null))
         {
 

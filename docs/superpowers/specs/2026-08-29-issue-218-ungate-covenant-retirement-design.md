@@ -36,7 +36,7 @@ This is deliberately narrower than removing the complete receipt chain. Removing
 - Emit the same record-only `Warded` / `WardResolved` pair with `WardResolutionOrigin.Ungated` for `retire_covenant` that #216/#217 established for ordinary provider-issued calls.
 - Keep target parsing and `ResolveRetirementPreflightAsync` before the effect.
 - Keep `CovenantToolEgressGuard.DiscloseThenAsync`; its `McpToolUse` disclosure is audit/accounting evidence, not operator-consent evidence. The attempt carries a null Ward evidence digest.
-- Permit a session-backed, Campaign-bound, tool-enabled Covenant turn to stage mutations regardless of `InvocationAttendance`.
+- Permit a session-backed, Campaign-bound, tool-enabled Covenant turn to prepare retirement regardless of `InvocationAttendance`; proposal staging remains attended-only.
 - Advertise `retire_covenant` whenever the Covenant feature/canonical tier makes the tool available; Ward enabled state no longer affects advertisement.
 - Remove `CovenantToolWardReceipt` from the live staging ambient and `CovenantToolInvocationContext`. A retirement capability requires its exact preflight and nonce, not a receipt.
 - Permit and persist a new `AgentRetire` with authorization mode `None` and no Ward receipt.
@@ -48,7 +48,7 @@ This is deliberately narrower than removing the complete receipt chain. Removing
 - Removing Ward API routes, Command Center modal/coordinator surfaces, or auto-approve/Forbidden-Arts configuration keys; those belong to #219.
 - Hoisting or deleting per-call Ward settings resolution beyond what this retirement path no longer needs; the complete performance slice is #220.
 - The repository-wide Ward wording and AOT qualification sweep; that is #221.
-- Changing `propose_covenant` wire shape, mutation semantics, destination policy, or Proposed-lane rules. Its shared attendance restriction disappears only because that restriction existed solely to support the retirement prompt.
+- Changing `propose_covenant` wire shape, mutation semantics, destination policy, Proposed-lane rules, or attended-only staging boundary.
 - Changing Covenant identity binding, Campaign scoping, preflight compare-and-swap, pinned-head refusal, key epochs, admission binding, Sanctum, or disclosure-before-effect ordering.
 - Closing #197 or any sibling delivery slice.
 
@@ -74,14 +74,14 @@ Remove receipt production and live capability plumbing, write null legacy fields
 
 ### 5.1 Eligibility and advertisement
 
-`ArcanumInvocationContext.CanStageCovenantMutation` keeps all of its authority conditions except attendance:
+`ArcanumInvocationContext.CanStageCovenantMutation` remains the attended proposal-staging predicate. A separate `CanPrepareCovenantRetirement` predicate shares all of its authority conditions except attendance:
 
 - Covenant content is currently readable under a live authority epoch;
 - the surface is a session-backed operator turn with a durable assistant entry;
 - tools are enabled;
 - a canonical Campaign is bound.
 
-Removing `Attendance == Attended` is necessary for the issue's unattended acceptance case. It also lets `propose_covenant` use the same already-defined `SensitivePayloadOnly` behavior in an unattended eligible turn; no proposal semantics change.
+An unattended turn can therefore reach retirement preflight without becoming eligible to stage a proposal. Both predicates fail when read authority, session backing, tools, or canonical Campaign binding is absent.
 
 `ArcanumInternalToolServer.CovenantRetirementAvailable` no longer depends on `_wardsEnabled`. Feature and canonical-tier health remain the advertisement authority, and the handler continues to re-check its one-shot capability so a stale/direct invocation cannot widen scope.
 
@@ -94,7 +94,7 @@ The Covenant classifier still freezes and canonicalizes the complete tool call a
 | Classification | Authorization |
 |---|---|
 | not a Covenant mutation | `NotSensitive` |
-| invocation cannot stage a Covenant mutation | `DeniedIneligibleTurn` |
+| invocation fails the proposal or retirement predicate for the classified tool | `DeniedIneligibleTurn` |
 | `propose_covenant` | `SensitivePayloadOnly` |
 | `retire_covenant` | `UngatedRetirement` |
 

@@ -150,6 +150,17 @@ public sealed class CovenantSensitiveEgressTests
     }
 
     [Fact]
+    public void An_unattended_proposal_is_denied_as_an_ineligible_turn()
+    {
+        CovenantEgressWardDecision proposal = CovenantEgressWardPolicy.Resolve(
+            Classified(CovenantToolNames.ProposeCovenant),
+            EligibleInvocation(InvocationAttendance.Unattended));
+
+        Assert.Equal(CovenantEgressAuthorization.DeniedIneligibleTurn, proposal.Authorization);
+        Assert.True(proposal.IsDenied);
+    }
+
+    [Fact]
     public void An_ordinary_call_is_outside_this_policy_entirely()
     {
         CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(

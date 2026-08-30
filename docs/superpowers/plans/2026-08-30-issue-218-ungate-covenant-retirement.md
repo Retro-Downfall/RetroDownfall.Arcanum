@@ -16,7 +16,7 @@
 - Apply strict RED-GREEN-REFACTOR: add or change the named tests, run them and observe the expected failure, make the smallest production change, then rerun them green before committing.
 - Preserve `CovenantOrigin.AgentApproved = 3`, every `CovenantAuthorizationMode` numeric code, `WardEvidenceDigestInput`, `CovenantToolWardReceipt`, Ward digest tags/encoders, and pinned digest vectors as historical compatibility vocabulary.
 - Never synthesize a Ward receipt or consent digest for an ungated call.
-- Remove only the attendance condition from Covenant staging eligibility. Session backing, read authority, tool policy, canonical Campaign binding, exact preflight, nonce, disclosure, destination, and Sanctum remain mandatory.
+- Keep proposal staging attended-only and add retirement preparation eligibility that shares every other condition. Session backing, read authority, tool policy, canonical Campaign binding, exact preflight, nonce, disclosure, destination, and Sanctum remain mandatory.
 - Keep `propose_covenant` classified as `SensitivePayloadOnly`; do not expand issue #218 into Ward configuration removal (#219), performance work (#220), or the broader prose sweep (#221).
 - Use `rg --no-config`. Run .NET test/build processes with `--disable-build-servers -m:1`; the VSTest host needs permission to create its local socket in this environment.
 - Do not repeat the complete verification suite after the history-only merge into `remove-wards`; prove the merged tree matches the verified implementation commit instead.
@@ -215,15 +215,15 @@ git commit -m "feat(schema): allow receipt-free Covenant retirement"
 
 ### Step 1: Write the failing eligibility, policy, and advertisement tests
 
-In `ArcanumInvocationContextTests`, split `Create_GlobalOnlyAndUnattendedSessionTurnsCannotStage` so the unattended, session-backed, authority-bearing, Campaign-bound, all-tools case expects `CanStageCovenantMutation` to be true. Retain false assertions for Global-only, no-tools, missing authority, non-session, and context-disabled cases.
+In `ArcanumInvocationContextTests`, keep `CanStageCovenantMutation` false for the unattended, session-backed, authority-bearing, Campaign-bound, all-tools case and expect the new retirement-preparation predicate to be true. Retain false assertions for both predicates in Global-only, no-tools, missing-authority, non-session, and context-disabled cases.
 
 Replace the Ward-specific policy cases in `CovenantSensitiveEgressTests` with assertions that:
 
 - eligible retirement resolves `UngatedRetirement` for attended and unattended eligible invocations;
 - Ward enabled/disabled and auto-approval settings cannot change that result;
-- proposal remains `SensitivePayloadOnly`;
+- attended proposal remains `SensitivePayloadOnly`, while unattended proposal is `DeniedIneligibleTurn`;
 - ordinary calls remain `NotSensitive`;
-- only a turn that cannot stage resolves `DeniedIneligibleTurn`;
+- only a turn that fails the classified tool's proposal or retirement predicate resolves `DeniedIneligibleTurn`;
 - no live policy method produces `CovenantToolWardReceipt`.
 
 The target production signature is:
@@ -246,10 +246,14 @@ Expected failure: unattended staging is false; policy returns attended/auto-appr
 
 ### Step 3: Implement the four-outcome policy
 
-Remove only the attendance predicate:
+Keep proposal staging attended-only and add retirement preparation with the shared non-attendance conditions:
 
 ```csharp
 public bool CanStageCovenantMutation =>
+    Attendance is InvocationAttendance.Attended
+    && CanPrepareCovenantRetirement;
+
+public bool CanPrepareCovenantRetirement =>
     CanReadCovenant
     && Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
     && ToolPolicy is not ToolPolicy.NoTools
@@ -268,15 +272,21 @@ if (!classification.IsCovenantMutation)
     return Decision(CovenantEgressAuthorization.NotSensitive, classification.RiskIdentity);
 }
 
-if (!invocation.CanStageCovenantMutation)
+bool retirement = string.Equals(
+    classification.ToolName,
+    CovenantToolNames.RetireCovenant,
+    StringComparison.Ordinal);
+
+bool eligible = retirement
+    ? invocation.CanPrepareCovenantRetirement
+    : invocation.CanStageCovenantMutation;
+
+if (!eligible)
 {
     return Decision(CovenantEgressAuthorization.DeniedIneligibleTurn);
 }
 
-return string.Equals(
-        classification.ToolName,
-        CovenantToolNames.RetireCovenant,
-        StringComparison.Ordinal)
+return retirement
     ? Decision(CovenantEgressAuthorization.UngatedRetirement)
     : Decision(CovenantEgressAuthorization.SensitivePayloadOnly);
 ```

@@ -68,15 +68,21 @@ public static class CovenantEgressWardPolicy
                 classification.RiskIdentity);
         }
 
-        if (!invocation.CanStageCovenantMutation)
+        bool retirement = string.Equals(
+            classification.ToolName,
+            CovenantToolNames.RetireCovenant,
+            StringComparison.Ordinal);
+
+        bool eligible = retirement
+            ? invocation.CanPrepareCovenantRetirement
+            : invocation.CanStageCovenantMutation;
+
+        if (!eligible)
         {
             return Decision(CovenantEgressAuthorization.DeniedIneligibleTurn);
         }
 
-        return string.Equals(
-                classification.ToolName,
-                CovenantToolNames.RetireCovenant,
-                StringComparison.Ordinal)
+        return retirement
             ? Decision(CovenantEgressAuthorization.UngatedRetirement)
             : Decision(CovenantEgressAuthorization.SensitivePayloadOnly);
 

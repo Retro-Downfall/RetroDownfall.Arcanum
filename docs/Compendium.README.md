@@ -114,11 +114,11 @@ A model's `reasoning` block carries exactly the two keys above. `providers.model
 |---|---|---|---|
 | `security.allowUnsandboxedToolChildren` | `bool`, `false` | — | Explicitly permits process tools without an OS filesystem jail where that escape hatch is supported; it does not bypass Sanctum denials. |
 | `security.metricsRequireApiKey` | `bool`, `true` | — | Requires authentication for loopback metrics; external binding always forces it. |
-| `security.ward.enabled` | `bool`, `true` | — | Retained for configuration compatibility through issue #219. No ordinary or Covenant-retirement live path consumes this value. |
+| `security.ward.enabled` | `bool`, `true` | — | Retained for configuration compatibility. No ordinary or Covenant-retirement live path consumes this value. |
 | `security.ward.forbiddenArts` | `string[]`, `[]` | — | Tool names removed from advertisement when a request selects `noForbiddenArts`. The empty default removes nothing; this list never gates execution. |
 | `security.ward.autoDenyInUnattendedMode` | `bool`, `true` | — | Compatibility setting retained during Ward-surface retirement. No ordinary or Covenant-retirement live path consumes it. |
 | `security.ward.unattendedMode` | `bool`, `false` | — | Default unattended-mode request value for operator-facing chat; daemons and Apprentices remain unattended. It does not make ordinary tool calls Ward-denied. |
-| `security.ward.autoApprove.enabled` | `bool`, `false` | — | Retained for configuration compatibility through issue #219. No ordinary or Covenant-retirement live path consumes this setting; containment remains unconditional (DESIGN §11.14). |
+| `security.ward.autoApprove.enabled` | `bool`, `false` | — | Retained for configuration compatibility. No ordinary or Covenant-retirement live path consumes this setting; containment remains unconditional (DESIGN §11.14). |
 | `security.ward.autoApprove.tools` | `string[]`, `[]` | exact tool names | Retained compatibility names, matched ordinal-ignore-case. Empty is a no-op; blank and duplicate entries still fail startup. No ordinary or Covenant-retirement live path consumes this list. |
 | `security.guardrails.detectPii` | `bool`, `true` | — | PII policy used only when `features.guardrails` is enabled. |
 | `security.guardrails.blockToxicity` | `bool`, `false` | — | Applies the authored toxicity blocklist when guardrails are enabled. |

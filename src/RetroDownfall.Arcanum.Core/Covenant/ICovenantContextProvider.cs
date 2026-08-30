@@ -106,14 +106,14 @@ public sealed class CovenantTurnContext : IAsyncDisposable
 
     public CovenantTurnPlan? Plan { get; }
 
-    /// <summary>The staging collector, present only for an eligible attended session-backed turn.</summary>
+    /// <summary>The staging collector, present when proposal or retirement preparation is eligible.</summary>
     public ICovenantMutationCollector? Collector { get; }
 
     /// <summary>The one bounded head read a staging tool call may make, scoped to this turn.</summary>
     /// <remarks>
-    /// Paired with the collector on purpose: a turn that may stage a mutation is exactly the turn that
-    /// may need to learn whether the key it is proposing already has a head. A turn that may not stage
-    /// has no reason to probe, and carries neither.
+    /// Paired with the collector on purpose: a proposal may need to learn whether its key already has
+    /// a head, and retirement requires the exact current head as canonical preflight. A turn eligible
+    /// for neither operation has no reason to probe, and carries neither.
     /// </remarks>
     public ICovenantTurnHeadProbe? HeadProbe { get; }
 

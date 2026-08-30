@@ -161,7 +161,9 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         // The capability existed while the provider call was in flight. Without it the tool below
         // would have refused with Covenant.IneligibleTurn, which is what every live call did.
-        Assert.True(chat.SawStagingCapability);
+        Assert.True(chat.SawStagingMaterial);
+
+        Assert.True(chat.SawRegisteredCapability);
 
         Assert.Null(chat.ToolFailure);
 
@@ -236,9 +238,13 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         Assert.True(turn.IsSuccess, turn.IsFailure ? $"{turn.Error.Code}: {turn.Error.Message}" : null);
 
-        Assert.False(chat.SawStagingCapability);
+        Assert.True(chat.SawStagingMaterial);
+
+        Assert.False(chat.SawRegisteredCapability);
 
         Assert.Equal(ErrorCodes.Covenant.IneligibleTurn, chat.ToolFailure?.Code);
+
+        Assert.Null(chat.Staged);
 
         Assert.Equal(0, _journal.Count);
 
@@ -544,7 +550,9 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
         string content) : IChatClient
     {
 
-        public bool SawStagingCapability { get; private set; }
+        public bool SawStagingMaterial { get; private set; }
+
+        public bool SawRegisteredCapability => toolCall.SawRegisteredCapability;
 
         public CovenantMutationFailureResultWire? ToolFailure { get; private set; }
 
@@ -562,7 +570,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             CancellationToken cancellationToken = default)
         {
 
-            SawStagingCapability = CovenantToolStagingAmbient.Current is not null;
+            SawStagingMaterial = CovenantToolStagingAmbient.Current is not null;
 
             McpToolsCallResultWire result = await toolCall.ProposeAsync(key, content).ConfigureAwait(false);
 
@@ -618,13 +626,16 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         private readonly string _connectionKey;
 
+        private readonly CovenantToolCapabilityRegistry _registry;
+
         private int _nextId;
 
         private CovenantToolCall(
             InProcessMcpTransport transport,
             Task serverTask,
             CancellationTokenSource lifetime,
-            string connectionKey)
+            string connectionKey,
+            CovenantToolCapabilityRegistry registry)
         {
 
             _transport = transport;
@@ -635,7 +646,11 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
             _connectionKey = connectionKey;
 
+            _registry = registry;
+
         }
+
+        public bool SawRegisteredCapability { get; private set; }
 
         public static async Task<CovenantToolCall> CreateAsync(
             CovenantToolCapabilityRegistry registry,
@@ -686,7 +701,12 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
             await transport.StartAsync();
 
-            return new CovenantToolCall(transport, serverTask, lifetime, server.AmbientConnectionKey);
+            return new CovenantToolCall(
+                transport,
+                serverTask,
+                lifetime,
+                server.AmbientConnectionKey,
+                registry);
 
         }
 
@@ -717,6 +737,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             // The production binding site. It reads the staging ambient this turn published and mints
             // the single-use capability from it, or mints nothing at all.
             JsonRpcRequest bound = SessionAttachmentAmbientSend.ApplyAmbientBinding(_connectionKey, request);
+
+            SawRegisteredCapability = _registry.CountForTests == 1;
 
             await _transport.WriteRequestAsync(bound).ConfigureAwait(false);
 

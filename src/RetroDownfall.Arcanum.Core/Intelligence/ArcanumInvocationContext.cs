@@ -17,10 +17,10 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// carry this would let a request body name its own execution surface, which is the one input this
 /// value exists to refuse.</para>
 ///
-/// <para><see cref="CanReadCovenant"/> and <see cref="CanStageCovenantMutation"/> are the only
-/// eligibility answers in the system. Keeping the truth table here, rather than restating it at each
-/// seam, is what stops two callers from disagreeing about what an unattended stateless preview may do.
-/// </para>
+/// <para><see cref="CanReadCovenant"/>, <see cref="CanStageCovenantMutation"/>, and
+/// <see cref="CanPrepareCovenantRetirement"/> are the only eligibility answers in the system.
+/// Keeping the truth table here, rather than restating it at each seam, is what stops two callers
+/// from disagreeing about what an unattended stateless preview may do.</para>
 /// </remarks>
 public sealed class ArcanumInvocationContext
 {
@@ -109,9 +109,21 @@ public sealed class ArcanumInvocationContext
     /// Strictly narrower than <see cref="CanReadCovenant"/>. Staging needs a durable assistant entry to
     /// publish against, so only a session-backed turn qualifies; it needs tools at all; and it needs a
     /// Campaign, because the Proposed lane is Campaign-only and there is no Global scope for an agent
-    /// to write into. Attendance does not add authority to the capability.
+    /// to write into. Proposal staging also remains limited to an attended operator turn.
     /// </remarks>
     public bool CanStageCovenantMutation =>
+        Attendance is InvocationAttendance.Attended
+        && CanPrepareCovenantRetirement;
+
+    /// <summary>
+    /// Whether this invocation may prepare an exact, one-call Covenant retirement.
+    /// </summary>
+    /// <remarks>
+    /// Shares every proposal-staging authority condition except attendance. Retirement has no
+    /// operator decision point, but still requires a session-backed turn, tools, read authority, and
+    /// a canonical Campaign before its exact preflight and nonce can authorize one effect.
+    /// </remarks>
+    public bool CanPrepareCovenantRetirement =>
         CanReadCovenant
         && Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
         && ToolPolicy is not ToolPolicy.NoTools

@@ -22,6 +22,13 @@ internal sealed record CovenantToolStagingContext(
     CovenantAdmissionReceipt ProducingAdmission,
     ProviderCallMaterializationSnapshot Materialization,
     ICovenantTurnHeadProbe HeadProbe,
+
+    /// <summary>Whether this turn may mint a proposal capability.</summary>
+    /// <remarks>
+    /// Explicit because unattended retirement still needs every other staging input. Inferring
+    /// proposal eligibility from their presence would reopen proposal staging on unattended turns.
+    /// </remarks>
+    bool CanStageProposal,
     CovenantToolCapabilityRegistry Registry,
     CancellationToken TurnCancellation,
 

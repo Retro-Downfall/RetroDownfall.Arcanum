@@ -104,6 +104,7 @@ internal sealed class CovenantRetirementHarness
             CovenantCapabilityFixtures.Admission(plan),
             CovenantCapabilityFixtures.Materialization(),
             _probe,
+            false,
             new CovenantToolCapabilityRegistry(),
             CancellationToken.None));
 

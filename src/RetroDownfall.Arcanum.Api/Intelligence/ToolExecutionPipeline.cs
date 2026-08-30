@@ -108,10 +108,9 @@ public sealed class ToolExecutionPipeline(
 
         /// <summary>The invocation this turn runs under, or absent on a surface that has none.</summary>
         /// <remarks>
-        /// Carried rather than re-derived, because <c>CanReadCovenant</c> and
-        /// <c>CanStageCovenantMutation</c> are the only eligibility answers in the system and restating
-        /// the truth table at this seam is how two callers come to disagree about what an unattended
-        /// stateless preview may do.
+        /// Carried rather than re-derived, because the invocation context owns the read, proposal,
+        /// and retirement eligibility answers. Restating that truth table at this seam is how two
+        /// callers come to disagree about what an unattended stateless preview may do.
         /// </remarks>
         public ArcanumInvocationContext? Invocation { get; init; }
 
