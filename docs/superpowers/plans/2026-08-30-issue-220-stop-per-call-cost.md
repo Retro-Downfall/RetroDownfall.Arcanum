@@ -526,8 +526,8 @@ dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.
 dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj --disable-build-servers -m:1
 ./scripts/packaging/macos/common_test.sh
 ./scripts/verify_aot_il_warnings_test.sh
-./scripts/verify-aot-il-warnings.sh
-./scripts/verify-native-sqlcipher.sh --rid osx-arm64
+RIPGREP_CONFIG_PATH=/dev/null ./scripts/verify-aot-il-warnings.sh
+RIPGREP_CONFIG_PATH=/dev/null ./scripts/verify-native-sqlcipher.sh --rid osx-arm64
 dotnet build tests/RetroDownfall.Arcanum.Covenant.Benchmarks/RetroDownfall.Arcanum.Covenant.Benchmarks.csproj -c Debug --no-incremental --disable-build-servers -m:1
 ./scripts/benchmark-covenant.sh --gate --record .superpowers/sdd/2026-08-30-issue-220-stop-per-call-cost/covenant-benchmark-run.json
 python3 scripts/align_csharp_blanklines.py --repo . --check
