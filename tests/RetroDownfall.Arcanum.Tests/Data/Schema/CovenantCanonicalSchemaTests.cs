@@ -479,6 +479,7 @@ public sealed class CovenantCanonicalSchemaTests
             (3, "NULL", "NULL", true),
             (3, "randomblob(32)", "2", true),
             (3, "randomblob(32)", "3", true),
+            (3, "randomblob(32)", "1", false),
             (3, "randomblob(32)", "NULL", false),
             (3, "NULL", "2", false),
             (1, "randomblob(32)", "NULL", false),

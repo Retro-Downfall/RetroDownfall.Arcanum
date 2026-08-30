@@ -420,6 +420,7 @@ public sealed class CovenantUngatedRetirementEvolutionTests
             (3, "NULL", "NULL", true),
             (3, HistoricalWardDigest, "2", true),
             (3, HistoricalWardDigest, "3", true),
+            (3, HistoricalWardDigest, "1", false),
             (3, HistoricalWardDigest, "NULL", false),
             (3, "NULL", "2", false),
             (1, HistoricalWardDigest, "NULL", false),
