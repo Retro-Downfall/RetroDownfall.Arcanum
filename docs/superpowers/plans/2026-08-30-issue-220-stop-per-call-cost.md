@@ -519,7 +519,7 @@ Prepare the issue comment from the actual captured values. Do not invent or roun
 Use `superpowers:verification-before-completion`. Run from the repository root in this order, stop at the first failure, and apply `superpowers:systematic-debugging` before changing code:
 
 ```bash
-dotnet build RetroDownfall.Arcanum.slnx --disable-build-servers -m:1
+dotnet build RetroDownfall.Arcanum.slnx -c Release --disable-build-servers -m:1
 python3 -m unittest scripts/coverage_threshold_test.py
 ./scripts/coverage.sh --threshold
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj --disable-build-servers -m:1
