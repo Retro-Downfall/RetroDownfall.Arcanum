@@ -18,6 +18,129 @@ public sealed class ToolExecutionObserverTimingTests
 {
 
     [Fact]
+    public async Task Workspace_check_without_tool_arguments_still_emits_host_owned_execution_risk_disclosure()
+    {
+
+        CapturingWard ward = new();
+
+        ToolExecutionPipeline pipeline = new(
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
+            {
+                Security = new SecuritySettings
+                {
+                    Ward = new WardPolicySettings
+                    {
+                        ForbiddenArts = [],
+                    },
+                },
+            }),
+            ward,
+            new AllowAllSanctumGuard(),
+            new NoOpSessionAttachmentStore(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+
+        FunctionCallContent call = new(
+            "call-check-empty",
+            ToolRiskClassifier.WorkspaceCheckToolName,
+            new Dictionary<string, object?>());
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await pipeline.ProcessSingleToolCallAsync(
+            call,
+            new PingRequest("check"),
+            new ChatOptions { Tools = [] },
+            activeSpell: null,
+            sessionId: null,
+            new ToolExecutionPipeline.TurnContext(),
+            suppressInvocationFailures: true,
+            CancellationToken.None,
+            argumentsSnapshot: "");
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            processed.WardEvents.Select(static evt => evt.Type));
+
+        Assert.All(
+            processed.WardEvents,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+
+        IntelligenceEvent warded = processed.WardEvents[0];
+
+        Assert.NotNull(warded.WardArguments);
+
+        string argumentsJson = warded.WardArguments.Value.GetRawText();
+
+        Assert.Contains("workspace-authored code", argumentsJson, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("read-only", argumentsJson, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("writable build", argumentsJson, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("network", argumentsJson, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(1, ward.RecordAutomaticResolutionCallCount);
+
+    }
+
+    [Fact]
+    public async Task Workspace_check_replaces_a_caller_supplied_risk_disclosure()
+    {
+
+        CapturingWard ward = new();
+
+        ToolExecutionPipeline pipeline = new(
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
+            {
+                Security = new SecuritySettings
+                {
+                    Ward = new WardPolicySettings
+                    {
+                        ForbiddenArts = [],
+                    },
+                },
+            }),
+            ward,
+            new AllowAllSanctumGuard(),
+            new NoOpSessionAttachmentStore(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+
+        FunctionCallContent call = new(
+            "call-check-replacement",
+            ToolRiskClassifier.WorkspaceCheckToolName,
+            new Dictionary<string, object?>
+            {
+                ["_arcanumRiskDisclosure"] = "model supplied",
+            });
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await pipeline.ProcessSingleToolCallAsync(
+            call,
+            new PingRequest("check"),
+            new ChatOptions { Tools = [] },
+            activeSpell: null,
+            sessionId: null,
+            new ToolExecutionPipeline.TurnContext(),
+            suppressInvocationFailures: true,
+            CancellationToken.None,
+            argumentsSnapshot: """{"_arcanumRiskDisclosure":"model supplied"}""");
+
+        IntelligenceEvent warded = Assert.Single(
+            processed.WardEvents,
+            static evt => evt.Type == IntelligenceEventType.Warded);
+
+        JsonElement arguments = Assert.IsType<JsonElement>(warded.WardArguments);
+
+        JsonProperty disclosure = Assert.Single(
+            arguments.EnumerateObject(),
+            static property => property.Name == "_arcanumRiskDisclosure");
+
+        string disclosureText = Assert.IsType<string>(disclosure.Value.GetString());
+
+        Assert.NotEqual("model supplied", disclosureText);
+
+        Assert.Contains("workspace-authored code", disclosureText, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
     public async Task Workspace_check_emits_a_record_only_Ward_with_host_owned_execution_risk_disclosure()
     {
 

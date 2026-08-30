@@ -1124,6 +1124,104 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Issue220_Multi_tool_stream_keeps_live_and_durable_tool_records()
+    {
+        const string toolName = "record_progress";
+        Guid sessionId = Guid.Parse("22000000-0000-0000-0000-000000000001");
+        FakeGrimoireRepository grimoire = new() { FixedSessionId = sessionId };
+        ScriptingChatClient chat = new();
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateProgressMcpTool(toolName));
+        chat.EnqueueStreamToolCall(
+            toolName,
+            "progress-1",
+            new Dictionary<string, object?> { ["evidence"] = 1 });
+        chat.EnqueueStreamToolCall(
+            toolName,
+            "progress-2",
+            new Dictionary<string, object?> { ["evidence"] = 2 });
+        chat.EnqueueStreamTokens("completed");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "record changing progress",
+                SessionId = sessionId,
+                SkipSpellRouting = true,
+            });
+
+        List<IntelligenceEvent> toolCalls = events
+            .Where(static evt => evt.Type == IntelligenceEventType.ToolCall)
+            .ToList();
+        List<IntelligenceEvent> toolResults = events
+            .Where(static evt => evt.Type == IntelligenceEventType.ToolResult)
+            .ToList();
+        List<IntelligenceEvent> toolEvents = events
+            .Where(static evt => evt.Type is IntelligenceEventType.ToolCall or IntelligenceEventType.ToolResult)
+            .ToList();
+
+        void AssertToolEvent(
+            IntelligenceEvent evt,
+            IntelligenceEventType expectedType,
+            string expectedCallId)
+        {
+            Assert.Equal(expectedType, evt.Type);
+            Assert.NotNull(evt.ToolCall);
+            Assert.Equal(expectedCallId, evt.ToolCall!.CallId);
+            Assert.Equal(toolName, evt.ToolCall.Name);
+        }
+
+        Assert.Collection(
+            toolEvents,
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolCall, "progress-1"),
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolResult, "progress-1"),
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolCall, "progress-2"),
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolResult, "progress-2"));
+
+        Assert.Equal(2, toolCalls.Count);
+        Assert.Equal(2, toolResults.Count);
+        Assert.Equal(2, grimoire.ToolInteractions.Count);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
+
+        for (int index = 0; index < toolCalls.Count; index++)
+        {
+            IntelligenceEvent toolCall = toolCalls[index];
+            IntelligenceEvent toolResult = toolResults[index];
+            FakeGrimoireRepository.RecordedToolInteraction persisted =
+                grimoire.ToolInteractions[index];
+
+            Assert.NotNull(toolCall.ToolCall);
+            Assert.NotNull(toolResult.ToolCall);
+            Assert.True(
+                events.IndexOf(toolResult) > events.IndexOf(toolCall),
+                "Each ToolResult must follow its corresponding ToolCall.");
+            Assert.Equal(toolCall.ToolCall!.CallId, toolResult.ToolCall!.CallId);
+            Assert.Equal(toolName, toolCall.ToolCall.Name);
+            Assert.Equal(toolName, toolResult.ToolCall.Name);
+            Assert.Equal(toolCall.ToolCall.Name, toolResult.ToolCall.Name);
+            Assert.Equal(toolCall.ToolCall.Name, persisted.ToolName);
+            Assert.Equal(
+                System.Text.Encoding.UTF8.GetBytes(toolCall.ToolCall.ArgumentsJson),
+                System.Text.Encoding.UTF8.GetBytes(persisted.Arguments));
+            Assert.Equal(
+                System.Text.Encoding.UTF8.GetBytes(toolResult.Data!),
+                System.Text.Encoding.UTF8.GetBytes(persisted.Result));
+            Assert.Equal(sessionId, persisted.SessionId);
+            Assert.Equal(ModelName, persisted.ModelUsed);
+        }
+
+        Assert.Equal("progress-1", toolCalls[0].ToolCall!.CallId);
+        Assert.Equal("progress-2", toolCalls[1].ToolCall!.CallId);
+        Assert.Equal("evidence-1", toolResults[0].Data);
+        Assert.Equal("evidence-2", toolResults[1].Data);
+
+    }
+
+    [Fact]
     public async Task StreamingToolLoop_RepeatedIdenticalRound_EmitsTypedNoProgressError()
     {
 
@@ -9107,7 +9205,16 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     private sealed class FakeGrimoireRepository : IGrimoireRepository, ISessionTurnBeginStore
     {
 
+        public sealed record RecordedToolInteraction(
+            Guid SessionId,
+            string ToolName,
+            string Arguments,
+            string Result,
+            string ModelUsed);
+
         public Session? Session { get; init; }
+
+        public List<RecordedToolInteraction> ToolInteractions { get; } = [];
 
         public bool ThrowOnBegin { get; init; }
 
@@ -9242,6 +9349,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             string modelUsed,
             CancellationToken cancellationToken = default)
         {
+            ToolInteractions.Add(new RecordedToolInteraction(
+                sessionId,
+                toolName,
+                arguments,
+                result,
+                modelUsed));
+
             AppendToolInteractionCallCount++;
 
             if (AppendToolInteractionHandler is not null)

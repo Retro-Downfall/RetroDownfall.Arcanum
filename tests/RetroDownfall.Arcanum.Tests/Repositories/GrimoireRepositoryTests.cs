@@ -96,6 +96,61 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task AppendToolInteractionAsync_persists_an_exact_recallable_pair()
+    {
+        const string toolName = "execute_command";
+        const string arguments = """{"command":"dotnet --version"}""";
+        const string result = "10.0.0";
+        const string model = "test-model";
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "recall the command result",
+            model,
+            CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(
+            assistantEntryId,
+            "I will run the command.",
+            CancellationToken.None);
+
+        await repository.AppendToolInteractionAsync(
+            sessionId,
+            toolName,
+            arguments,
+            result,
+            model,
+            CancellationToken.None);
+
+        List<Entry> entries = await _db!.Entries
+            .AsNoTracking()
+            .Where(entry => entry.SessionId == sessionId)
+            .OrderBy(entry => entry.Sequence)
+            .ToListAsync(CancellationToken.None);
+
+        Entry toolCall = entries[^2];
+        Entry toolResult = entries[^1];
+
+        Assert.Equal(toolCall.Sequence + 1, toolResult.Sequence);
+        Assert.Equal(MessageRole.Assistant, toolCall.Role);
+        Assert.Equal("""[ToolCall: execute_command({"command":"dotnet --version"})]""", toolCall.Content);
+        Assert.Equal(toolName, toolCall.ToolName);
+        Assert.Equal(arguments, toolCall.ToolArguments);
+        Assert.Equal(model, toolCall.ModelUsed);
+        Assert.Equal(MessageRole.System, toolResult.Role);
+        Assert.Equal("[ToolResult: 10.0.0]", toolResult.Content);
+        Assert.Null(toolResult.ToolCallId);
+        Assert.Null(toolResult.ToolName);
+        Assert.Null(toolResult.ToolArguments);
+        Assert.Equal(model, toolResult.ModelUsed);
+
+    }
+
+    [SkippableFact]
     public async Task DiscardAssistantEntryAsync_removes_empty_placeholder_without_user_row()
     {
 

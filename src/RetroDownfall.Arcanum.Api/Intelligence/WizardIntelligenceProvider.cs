@@ -6593,7 +6593,8 @@ public sealed partial class WizardIntelligenceProvider(
             ToolPolicy.ReadOnlyTools => FilterToolsToAllowlist(tools, ReadOnlyToolNames),
             ToolPolicy.NoForbiddenArts => FilterToolsExcludingNames(
                 tools,
-                ToolRiskClassifier.BuildForbiddenToolNames(settings.Value.ResolveWard().ForbiddenArts)),
+                ToolRiskClassifier.BuildForbiddenToolNames(
+                    settings.Value.Security?.Ward?.ForbiddenArts ?? [])),
             _ => [],
         };
 
