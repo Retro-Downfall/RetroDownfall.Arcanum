@@ -1160,6 +1160,27 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         List<IntelligenceEvent> toolResults = events
             .Where(static evt => evt.Type == IntelligenceEventType.ToolResult)
             .ToList();
+        List<IntelligenceEvent> toolEvents = events
+            .Where(static evt => evt.Type is IntelligenceEventType.ToolCall or IntelligenceEventType.ToolResult)
+            .ToList();
+
+        void AssertToolEvent(
+            IntelligenceEvent evt,
+            IntelligenceEventType expectedType,
+            string expectedCallId)
+        {
+            Assert.Equal(expectedType, evt.Type);
+            Assert.NotNull(evt.ToolCall);
+            Assert.Equal(expectedCallId, evt.ToolCall!.CallId);
+            Assert.Equal(toolName, evt.ToolCall.Name);
+        }
+
+        Assert.Collection(
+            toolEvents,
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolCall, "progress-1"),
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolResult, "progress-1"),
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolCall, "progress-2"),
+            evt => AssertToolEvent(evt, IntelligenceEventType.ToolResult, "progress-2"));
 
         Assert.Equal(2, toolCalls.Count);
         Assert.Equal(2, toolResults.Count);
