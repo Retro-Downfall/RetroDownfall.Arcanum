@@ -1,5 +1,4 @@
 using System.Text;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -20,11 +19,9 @@ public sealed class CovenantSensitiveEgressTests
     public void A_frozen_covenant_call_classifies_as_sensitive_egress_with_private_arguments()
     {
         Result<ProviderToolCallClassification> proposal = CovenantToolClassifier.Classify(
-            CovenantToolNames.ProposeCovenant, Bytes("{\"key\":\"a\",\"content\":\"b\"}"),
-            Wards());
+            CovenantToolNames.ProposeCovenant, Bytes("{\"key\":\"a\",\"content\":\"b\"}"));
         Result<ProviderToolCallClassification> retirement = CovenantToolClassifier.Classify(
-            CovenantToolNames.RetireCovenant, Bytes("{\"key\":\"a\",\"lane\":\"Proposed\"}"),
-            Wards());
+            CovenantToolNames.RetireCovenant, Bytes("{\"key\":\"a\",\"lane\":\"Proposed\"}"));
 
         Assert.Equal(CovenantToolRiskIdentity.CovenantSensitiveEgress, proposal.Value.RiskIdentity);
         Assert.Equal(CovenantToolRiskIdentity.CovenantSensitiveEgress, retirement.Value.RiskIdentity);
@@ -34,36 +31,30 @@ public sealed class CovenantSensitiveEgressTests
     }
 
     [Fact]
-    public void Formerly_intrinsic_calls_are_ordinary_while_configured_risk_remains_metadata()
+    public void Ordinary_tool_names_are_ordinary_without_configuration_dependent_risk_metadata()
     {
         Result<ProviderToolCallClassification> ordinary = CovenantToolClassifier.Classify(
-            "read_saga", Bytes("{\"query\":\"a\"}"),
-            Wards());
+            "read_saga", Bytes("{\"query\":\"a\"}"));
         Result<ProviderToolCallClassification> formerlyIntrinsic = CovenantToolClassifier.Classify(
-            ToolRiskClassifier.ApplyPatchToolName, Bytes("{\"patch\":\"a\"}"),
-            Wards());
-        Result<ProviderToolCallClassification> configured = CovenantToolClassifier.Classify(
-            "delete_lexicon", Bytes("{\"name\":\"a\"}"),
-            Wards() with { ForbiddenArts = ["delete_lexicon"] });
+            ToolRiskClassifier.ApplyPatchToolName, Bytes("{\"patch\":\"a\"}"));
 
         Assert.Equal(CovenantToolRiskIdentity.Ordinary, ordinary.Value.RiskIdentity);
         Assert.False(ordinary.Value.ArgumentsArePrivate);
         Assert.Equal(CovenantToolRiskIdentity.Ordinary, formerlyIntrinsic.Value.RiskIdentity);
         Assert.False(formerlyIntrinsic.Value.ArgumentsArePrivate);
-        Assert.Equal(CovenantToolRiskIdentity.ConfiguredForbiddenArt, configured.Value.RiskIdentity);
     }
 
     [Fact]
     public void Classification_binds_the_exact_name_and_the_canonical_arguments()
     {
         ProviderToolCallClassification first = CovenantToolClassifier
-            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"b\":2,\"a\":1}"), Wards())
+            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"b\":2,\"a\":1}"))
             .Value;
         ProviderToolCallClassification reordered = CovenantToolClassifier
-            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"a\":1,\"b\":2}"), Wards())
+            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"a\":1,\"b\":2}"))
             .Value;
         ProviderToolCallClassification different = CovenantToolClassifier
-            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"a\":1,\"b\":3}"), Wards())
+            .Classify(CovenantToolNames.ProposeCovenant, Bytes("{\"a\":1,\"b\":3}"))
             .Value;
 
         // RFC 8785 ordering means the same request cannot produce two different evidence digests.
@@ -71,15 +62,14 @@ public sealed class CovenantSensitiveEgressTests
         Assert.NotEqual(first.CanonicalArgumentDigest, different.CanonicalArgumentDigest);
         Assert.NotEqual(
             first.FrozenNameDigest,
-            CovenantToolClassifier.Classify("read_saga", Bytes("{}"), Wards()).Value.FrozenNameDigest);
+            CovenantToolClassifier.Classify("read_saga", Bytes("{}")).Value.FrozenNameDigest);
     }
 
     [Fact]
     public void Classification_refuses_arguments_that_are_not_valid_json()
     {
         Result<ProviderToolCallClassification> malformed = CovenantToolClassifier.Classify(
-            CovenantToolNames.ProposeCovenant, Bytes("{\"key\":"),
-            Wards());
+            CovenantToolNames.ProposeCovenant, Bytes("{\"key\":"));
 
         Assert.Equal(ErrorCodes.Hub.ProviderToolCallInvalid, malformed.Error.Code);
     }
@@ -88,10 +78,10 @@ public sealed class CovenantSensitiveEgressTests
     public void An_absent_argument_body_classifies_as_the_empty_object()
     {
         ProviderToolCallClassification empty = CovenantToolClassifier
-            .Classify("read_saga", Bytes(string.Empty), Wards())
+            .Classify("read_saga", Bytes(string.Empty))
             .Value;
         ProviderToolCallClassification explicitEmpty = CovenantToolClassifier
-            .Classify("read_saga", Bytes("{}"), Wards())
+            .Classify("read_saga", Bytes("{}"))
             .Value;
 
         Assert.Equal(explicitEmpty.CanonicalArgumentDigest, empty.CanonicalArgumentDigest);
@@ -111,31 +101,15 @@ public sealed class CovenantSensitiveEgressTests
     }
 
     [Fact]
-    public void Ward_configuration_cannot_change_retirement_authorization()
+    public void Retirement_egress_authorization_uses_its_frozen_sensitive_classification()
     {
-        WardSettings[] settings =
-        [
-            Wards(),
-            Wards(enabled: false),
-            Wards(autoApproveEnabled: true, autoApproveTools: [CovenantToolNames.RetireCovenant]),
-            Wards(autoApproveEnabled: false, autoApproveTools: [CovenantToolNames.RetireCovenant]),
-        ];
+        CovenantEgressWardDecision retirement = CovenantEgressWardPolicy.Resolve(
+            CovenantToolClassifier.Classify(
+                CovenantToolNames.RetireCovenant,
+                Bytes("{\"key\":\"a\",\"lane\":\"Proposed\"}")).Value,
+            EligibleInvocation());
 
-        CovenantEgressAuthorization[] authorizations =
-        [
-            .. settings.Select(wards => CovenantEgressWardPolicy.Resolve(
-                CovenantToolClassifier.Classify(
-                    CovenantToolNames.RetireCovenant,
-                    Bytes("{\"key\":\"a\",\"lane\":\"Proposed\"}"),
-                    wards).Value,
-                EligibleInvocation()).Authorization),
-        ];
-
-        Assert.All(
-            authorizations,
-            static authorization => Assert.Equal(
-                CovenantEgressAuthorization.UngatedRetirement,
-                authorization));
+        Assert.Equal(CovenantEgressAuthorization.UngatedRetirement, retirement.Authorization);
     }
 
     [Fact]
@@ -329,7 +303,7 @@ public sealed class CovenantSensitiveEgressTests
     private static ProviderToolCallClassification Classified(
         string toolName,
         string arguments = "{\"key\":\"a\"}") =>
-        CovenantToolClassifier.Classify(toolName, Bytes(arguments), Wards()).Value;
+        CovenantToolClassifier.Classify(toolName, Bytes(arguments)).Value;
 
     /// <summary>
     /// The argument bytes exactly as a transport that already framed the call hands them over.
@@ -340,17 +314,6 @@ public sealed class CovenantSensitiveEgressTests
     /// MCP server actually produces keeps them describing a call the system can really receive.
     /// </remarks>
     private static byte[] Bytes(string arguments) => Encoding.UTF8.GetBytes(arguments);
-
-    private static WardSettings Wards(
-        bool enabled = true,
-        bool autoApproveEnabled = false,
-        string[]? autoApproveTools = null) =>
-        new()
-        {
-            Enabled = enabled,
-            AutoApproveEnabled = autoApproveEnabled,
-            AutoApproveTools = autoApproveTools ?? [],
-        };
 
     private static ArcanumInvocationContext EligibleInvocation(
         InvocationAttendance attendance = InvocationAttendance.Attended) =>

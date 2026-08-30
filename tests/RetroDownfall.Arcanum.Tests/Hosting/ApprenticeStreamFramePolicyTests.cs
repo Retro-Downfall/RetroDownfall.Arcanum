@@ -43,4 +43,29 @@ public sealed class ApprenticeStreamFramePolicyTests
     {
         Assert.Equal(expected, ApprenticeStreamFramePolicy.Classify(type).ToString());
     }
+
+    [Fact]
+    public void Legacy_denied_Ward_resolution_is_informational_not_terminal_evidence()
+    {
+        IntelligenceEvent frame = new(
+            IntelligenceEventType.WardResolved,
+            "write_file",
+            WardId: "legacy-ward",
+            WardToolName: "write_file",
+            WardAllowed: false);
+
+        Assert.False(ApprenticeStreamFramePolicy.IsTerminalToolDenial(frame));
+    }
+
+    [Fact]
+    public void Structured_tool_denial_remains_terminal_evidence()
+    {
+        IntelligenceEvent frame = new(
+            IntelligenceEventType.ToolResult,
+            "write_file",
+            ToolCall: new IntelligenceToolCallEvent("call-1", "write_file", "{}"),
+            ToolDenied: true);
+
+        Assert.True(ApprenticeStreamFramePolicy.IsTerminalToolDenial(frame));
+    }
 }

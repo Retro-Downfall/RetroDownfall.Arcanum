@@ -76,8 +76,7 @@ public sealed class CovenantMutationToolTests
 
         // A healthy Covenant tier advertises exactly the tools this build can actually honor. A
         // granted proposal stages, and the turn's completed finalization publishes the batch beside
-        // its answer; a granted retirement is warded, disclosed, and staged the same way, which is why
-        // it is advertised here and withheld on an installation whose Wards are switched off.
+        // its answer; a retirement is disclosed and staged by the same eligible Covenant surface.
         Assert.Contains(tools.Tools, static tool => tool.Name == CovenantToolNames.ProposeCovenant);
         Assert.Contains(tools.Tools, static tool => tool.Name == CovenantToolNames.RetireCovenant);
 
@@ -385,13 +384,11 @@ public sealed class CovenantMutationToolTests
             .Select(static property => property.Name)
             .Order(StringComparer.Ordinal)];
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Retirement_is_advertised_independently_of_Ward_configuration(bool wardsEnabled)
+    [Fact]
+    public async Task Retirement_is_advertised_when_the_Covenant_feature_is_healthy()
     {
 
-        await using CovenantToolSession session = await CovenantToolSession.CreateAsync(wardsEnabled: wardsEnabled);
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
         McpToolsListResultWire tools = await session.ListToolsAsync();
 
@@ -488,8 +485,7 @@ public sealed class CovenantMutationToolTests
 
         public static async Task<CovenantToolSession> CreateAsync(
             bool featureEnabled = true,
-            CovenantCapabilityState canonical = CovenantCapabilityState.Healthy,
-            bool wardsEnabled = true)
+            CovenantCapabilityState canonical = CovenantCapabilityState.Healthy)
         {
             ServiceCollection services = [];
 
@@ -501,13 +497,7 @@ public sealed class CovenantMutationToolTests
                 new StubAvailability(Snapshot(featureEnabled, canonical)));
 
             services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
-                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
-                {
-                    Security = new SecuritySettings
-                    {
-                        Ward = new WardPolicySettings { Enabled = wardsEnabled },
-                    },
-                }));
+                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
             ServiceProvider provider = services.BuildServiceProvider();
 

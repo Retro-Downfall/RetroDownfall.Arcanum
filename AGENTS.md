@@ -32,13 +32,13 @@ dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.
 ./scripts/verify-aot-il-warnings.sh      # AOT publish closure must be free of first-party IL/AOT warnings
 ./scripts/verify-native-sqlcipher.sh --rid osx-arm64   # native provenance, hashes, symbols, compile options
 ```
-Run everything from the repo root. Don't rely on `workspace_check` as a bootstrap verifier for untrusted repos — it executes repo-authored code and requires an eligible macOS runtime + operator Ward.
+Run everything from the repo root. Don't rely on `workspace_check` as a bootstrap verifier for untrusted repos — it executes repo-authored code and requires explicit feature enablement, trusted workspace bytes, and an eligible macOS containment/runtime chain. Its Ward record is informational.
 
 ## Adding things — quick checklists
 - **New endpoint:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or a documented streaming shape) → register the payload type on `ArcanumJsonContext` → `.WithName(...)` → explicit `JsonTypeInfo` on any failable `Results.Json` → update `Arcanum.DESIGN.md` §4.3 and the README's API map.
 - **New CLI verb:** handler under `Cli/Commands`, wired in `CliCommandTree`; use `IConsoleDispatcher` for stdout/stderr, `IConfirmationPrompt` for destructive ops, a defined `CliExitCode`. Prefer `AddArcanumEyeOfTheWorld()` over full infrastructure DI for lightweight verbs.
 - **New inference provider:** add an `AiProviderKind`, extend `IChatClientFactory`; providers are OpenAI-compatible only (including Ollama via `/v1`) — no hard-coded model names, resolve via `ProviderResolver` + `Arcanum:Providers`.
-- **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema (`McpJsonSerializerContext`); honor `WorkspacePathPolicy` containment; treat `ToolOutputCapBytes` as one response/page allocation; decide if it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`.
+- **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema (`McpJsonSerializerContext`); honor `WorkspacePathPolicy` containment; treat `ToolOutputCapBytes` as one response/page allocation; decide its attunement, explicit `NoForbiddenArts` advertisement behavior, tool-specific authority, and Sanctum policy. Every server-executed call receives the same informational Ward audit pair.
 - **Long-running work:** use `ILongRunningOperationCoordinator`; add exactly one descriptor to `LongRunningOperationRecoveryRegistry` **and** an idempotent registered recovery handler (contract tests enforce both); store only minimum encrypted checkpoint state — never a live Task/token/process/DI object.
 
 ## Exit codes & CLI automation contract
@@ -48,4 +48,3 @@ Run everything from the repo root. Don't rely on `workspace_check` as a bootstra
 ```bash
 dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- <cmd>
 ```
-

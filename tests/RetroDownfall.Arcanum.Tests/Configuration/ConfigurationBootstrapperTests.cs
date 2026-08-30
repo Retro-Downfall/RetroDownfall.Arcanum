@@ -164,6 +164,42 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         Assert.Equal(0.25m, pricing.CachedPer1M);
     }
 
+    [Theory]
+
+    [InlineData(
+        """{"Arcanum":{"security":{"ward":{"enabled":true}}}}""",
+        "security.ward.enabled")]
+
+    [InlineData(
+        """{"Arcanum":{"security":{"ward":{"autoDenyInUnattendedMode":true}}}}""",
+        "security.ward.autoDenyInUnattendedMode")]
+
+    [InlineData(
+        """{"Arcanum":{"security":{"ward":{"autoApprove":{"enabled":true}}}}}""",
+        "security.ward.autoApprove")]
+
+    [InlineData(
+        """{"Arcanum":{"security":{"ward":{"autoApprove":{"tools":["write_file"]}}}}}""",
+        "security.ward.autoApprove")]
+
+    public void LoadArcanumSettingsFile_rejects_removed_Ward_keys_from_disk(
+        string json,
+        string removedPath)
+    {
+
+        string path = Path.Combine(_workspace.Root, "removed-ward-arcanum.json");
+
+        File.WriteAllText(path, json);
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => ConfigurationBootstrapper.LoadArcanumSettingsFile(path));
+
+        Assert.Contains(removedPath, exception.Message, StringComparison.Ordinal);
+
+        Assert.Contains("remove", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     [Fact]
     public void LoadArcanumSettingsFile_TreatsAnExplicitNullModelPricingMapAsEmpty()
     {
@@ -247,6 +283,57 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
                 ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
 
             Assert.Equal(6124, settings.Host.Port);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, original);
+
+        }
+
+    }
+
+    [Theory]
+
+    [InlineData(
+        "ARCANUM_Arcanum__Security__Ward__Enabled",
+        "security.ward.enabled")]
+
+    [InlineData(
+        "ARCANUM_Arcanum__Security__Ward__AutoDenyInUnattendedMode",
+        "security.ward.autoDenyInUnattendedMode")]
+
+    [InlineData(
+        "ARCANUM_Arcanum__Security__Ward__AutoApprove__Enabled",
+        "security.ward.autoApprove")]
+
+    [InlineData(
+        "ARCANUM_Arcanum__Security__Ward__AutoApprove__Tools__0",
+        "security.ward.autoApprove")]
+
+    public void LoadArcanumSettingsFile_rejects_removed_Ward_environment_overrides(
+        string variable,
+        string removedPath)
+    {
+
+        string? original = global::System.Environment.GetEnvironmentVariable(variable);
+
+        string path = Path.Combine(_workspace.Root, "environment-removed-ward-arcanum.json");
+
+        File.WriteAllText(path, """{"Arcanum":{"host":{"port":5001}}}""");
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, "true");
+
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+                () => ConfigurationBootstrapper.LoadArcanumSettingsFile(path));
+
+            Assert.Contains(removedPath, exception.Message, StringComparison.Ordinal);
+
+            Assert.Contains("remove", exception.Message, StringComparison.OrdinalIgnoreCase);
 
         }
         finally

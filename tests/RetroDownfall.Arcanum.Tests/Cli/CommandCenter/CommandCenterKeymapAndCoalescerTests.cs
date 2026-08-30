@@ -233,7 +233,6 @@ public sealed class CommandCenterKeymapTests
     [InlineData(nameof(CommandCenterOverlayKind.CommandPalette), nameof(CommandCenterAction.ExecutePaletteItem))]
     [InlineData(nameof(CommandCenterOverlayKind.QuitConfirm), nameof(CommandCenterAction.ConfirmPending))]
     [InlineData(nameof(CommandCenterOverlayKind.DiscardConfirm), nameof(CommandCenterAction.ConfirmPending))]
-    [InlineData(nameof(CommandCenterOverlayKind.WardConfirm), nameof(CommandCenterAction.ConfirmPending))]
     [InlineData(nameof(CommandCenterOverlayKind.HumanPrompt), nameof(CommandCenterAction.NoOp))]
     [InlineData(nameof(CommandCenterOverlayKind.None), nameof(CommandCenterAction.NoOp))]
     public void Overlay_Enter_is_explicit_by_kind(string kindName, string expectedName)

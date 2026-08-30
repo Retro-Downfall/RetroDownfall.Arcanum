@@ -29,7 +29,6 @@ public sealed class ToolExecutionObserverTimingTests
                 {
                     Ward = new WardPolicySettings
                     {
-                        Enabled = true,
                         ForbiddenArts = [],
                     },
                 },

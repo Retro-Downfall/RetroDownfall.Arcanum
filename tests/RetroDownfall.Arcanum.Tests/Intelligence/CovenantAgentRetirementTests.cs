@@ -21,12 +21,12 @@ public sealed class CovenantAgentRetirementTests
 {
 
     [Fact]
-    public async Task Disabled_Wards_execute_retirement_without_waiting()
+    public async Task Retirement_executes_without_waiting_under_the_most_restrictive_surviving_Ward_choices()
     {
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsDisabled());
+        CovenantRetirementHarness harness = new(ward, Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -48,7 +48,7 @@ public sealed class CovenantAgentRetirementTests
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsEnabled());
+        CovenantRetirementHarness harness = new(ward, Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -69,7 +69,7 @@ public sealed class CovenantAgentRetirementTests
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsEnabled());
+        CovenantRetirementHarness harness = new(ward, Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -105,7 +105,7 @@ public sealed class CovenantAgentRetirementTests
     public async Task Disclosure_acknowledgement_precedes_the_retirement_effect()
     {
 
-        CovenantRetirementHarness harness = new(new RecordingWard(), WardsEnabled());
+        CovenantRetirementHarness harness = new(new RecordingWard(), Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -121,7 +121,7 @@ public sealed class CovenantAgentRetirementTests
     public async Task A_journal_failure_stops_the_retirement_effect()
     {
 
-        CovenantRetirementHarness harness = new(new RecordingWard(), WardsEnabled())
+        CovenantRetirementHarness harness = new(new RecordingWard(), Wards())
         {
             JournalFailure = new Error(ErrorCodes.Covenant.Unavailable, "The disclosure journal is closed."),
         };
@@ -140,7 +140,7 @@ public sealed class CovenantAgentRetirementTests
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsEnabled());
+        CovenantRetirementHarness harness = new(ward, Wards());
 
         ToolExecutionPipeline.ProcessedToolCall processed = await harness.RetireAsync();
 
@@ -160,7 +160,7 @@ public sealed class CovenantAgentRetirementTests
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsEnabled());
+        CovenantRetirementHarness harness = new(ward, Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -178,7 +178,7 @@ public sealed class CovenantAgentRetirementTests
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsEnabled());
+        CovenantRetirementHarness harness = new(ward, Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -200,7 +200,7 @@ public sealed class CovenantAgentRetirementTests
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsEnabled())
+        CovenantRetirementHarness harness = new(ward, Wards())
         {
             PreflightFailure = new Error(ErrorCodes.Covenant.StaleSnapshot, reason),
         };
@@ -223,7 +223,7 @@ public sealed class CovenantAgentRetirementTests
 
         RecordingWard ward = new();
 
-        CovenantRetirementHarness harness = new(ward, WardsEnabled());
+        CovenantRetirementHarness harness = new(ward, Wards());
 
         using IDisposable staging = harness.PublishStaging(
             CovenantRetirementHarness.Preflight(normalizedKey: "some.other.key"));
@@ -240,7 +240,7 @@ public sealed class CovenantAgentRetirementTests
     public async Task The_disclosed_retirement_carries_no_ward_evidence_digest()
     {
 
-        CovenantRetirementHarness harness = new(new RecordingWard(), WardsEnabled());
+        CovenantRetirementHarness harness = new(new RecordingWard(), Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -274,7 +274,7 @@ public sealed class CovenantAgentRetirementTests
 
         listener.Start();
 
-        CovenantRetirementHarness harness = new(new RecordingWard(), WardsEnabled());
+        CovenantRetirementHarness harness = new(new RecordingWard(), Wards());
 
         using IDisposable staging = harness.PublishStaging();
 
@@ -288,11 +288,12 @@ public sealed class CovenantAgentRetirementTests
 
     }
 
-    private static WardPolicySettings WardsEnabled() =>
-        new() { Enabled = true, ForbiddenArts = [] };
-
-    private static WardPolicySettings WardsDisabled() =>
-        new() { Enabled = false, ForbiddenArts = [] };
+    private static WardPolicySettings Wards() =>
+        new()
+        {
+            ForbiddenArts = [CovenantToolNames.RetireCovenant],
+            UnattendedMode = true,
+        };
 
     private sealed class RecordingWard : IWard
     {

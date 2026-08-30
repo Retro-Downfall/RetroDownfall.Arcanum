@@ -60,7 +60,7 @@ internal sealed class IncantationRecord
 
     private readonly List<string> _wardNotes = new();
 
-    /// <summary>Ward pending / allow / deny notes for this invocation (Incantations-only).</summary>
+    /// <summary>Ward audit notes for this invocation (Incantations-only).</summary>
     public IReadOnlyList<string> WardNotes => _wardNotes;
 
     private long _revision;

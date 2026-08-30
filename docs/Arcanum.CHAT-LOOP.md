@@ -20,7 +20,7 @@ A unified dry run is a spend-free static pre-inference plan, not an identity-equ
 
 Repeated `--with @path` values are staged before dispatch. Relative paths use the effective working directory, explicitly supplied absolute paths are accepted, and strict-UTF-8 text has no extension allowlist. Text and stdin are SHA-256 hashed, split on UTF-8 boundaries into 1 MiB `AttachedFileDto` chunks under a 32 MiB aggregate allocation with no file/part-count ceiling, and labeled as untrusted data. The 10 MiB reader ceiling applies to stdin, not to each `--with` file. Recognized images are SHA-256 hashed and staged as `ScryingFocusDto` through the existing Scrying policy. The client staging grants no Session pin or server filesystem authority. On a live route, the server uses the normal attachment pipeline: Attachments-enabled hosts persist and Session-bind the sources before model inference, while Attachments-disabled hosts keep them only in memory for the current turn. A dry-run stops at the static plan and never persists them.
 
-The default and `--spell <exact-or-unique-prefix>` routes both enter the ordinary Agent Loop below; the latter supplies `OverrideSpellName` and then uses normal Spell loading, resonances, tool policy, Wards, and Sanctum. `--research` enters the sole server-owned research orchestrator, which validates and resolves the prospective synthesis request before any provider search. Its final synthesis still uses the shared provider and attachment paths with the effective Campaign, Workspace, Session, Model, current-turn files/images, unattended mode, and supported inference options. Its all-tools-disabled synthesis is the existing untrusted-web boundary, not a new restriction on the Agent or Spell routes. `--research` and `--spell` are the only route conflict. `--dry-run` follows the preview path above and never enters either live loop.
+The default and `--spell <exact-or-unique-prefix>` routes both enter the ordinary Agent Loop below; the latter supplies `OverrideSpellName` and then uses normal Spell loading, resonances, tool policy, Ward recording, and Sanctum. `--research` enters the sole server-owned research orchestrator, which validates and resolves the prospective synthesis request before any provider search. Its final synthesis still uses the shared provider and attachment paths with the effective Campaign, Workspace, Session, Model, current-turn files/images, unattended mode, and supported inference options. Its all-tools-disabled synthesis is the existing untrusted-web boundary, not a new restriction on the Agent or Spell routes. `--research` and `--spell` are the only route conflict. `--dry-run` follows the preview path above and never enters either live loop.
 
 ## Termination, progress, and cancellation
 
@@ -32,7 +32,7 @@ Arcanum is a coding harness, so the shared loop has no fixed model-call, tool-ro
 | Cancellation | The caller or host token cancelled. The producer finishes child/process cleanup and durable-state classification before propagating cancellation; CLI Ctrl+C remains responsive. |
 | Explicit policy | An operator-owned token or cost budget was reached. The response reports measured/reserved usage and how to change or resume the policy. |
 | Provider/model boundary | The provider rejected the request or its real context/request shape cannot accept another call after compaction. The response identifies the provider/model fact and smaller-request, continuation, or model-selection action. |
-| Safety/integrity boundary | Authentication, Ward, Sanctum, containment, protocol, or integrity policy prevents safe continuation. The response names the owner and safe recovery action; no boundary is silently bypassed. |
+| Safety/integrity boundary | Authentication, Sanctum, containment, protocol, or integrity policy prevents safe continuation. The response names the owner and safe recovery action; no boundary is silently bypassed. Ward records remain informational. |
 | Deterministic no-progress | The normalized loop state recurred without new evidence. The trace records the progress signature so a test can reproduce termination without sleeps or an attempt counter. |
 
 Progress is state, not elapsed time. The main loop's signature includes the normalized assistant proposal, actionable tool-call identities/arguments, classified tool results, admitted context, and structured-output error state. A new tool result, changed correction error, newly materialized attachment, changed plan, or new research URL is progress. Exact recurrence is no progress. Research uses its deduplicated source set: it continues while a pass adds a URL and emits `source_target_reached` or `source_exhausted` when synthesis begins. A delegated child uses its explicit token/cost ledger; model-call count is telemetry only.
@@ -68,7 +68,7 @@ sequenceDiagram
     participant Tool as refresh_session_file
     participant Store as Attachment store
     Model->>Loop: tool call (attachmentId or logicalKey)
-    Loop->>Tool: Ward then Sanctum then invoke
+    Loop->>Tool: Record Ward audit, enforce Sanctum, then invoke
     Tool-->>Loop: selector acknowledgement
     Loop->>Store: secure source read and persist/reuse
     Store-->>Loop: version plus current bytes metadata

@@ -6,12 +6,20 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
@@ -26,6 +34,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     private MutableOptionsMonitor _settings = null!;
 
     private RecordingEventBus _events = null!;
+
+    private FakeLexiconService _lexicon = null!;
 
     public Task InitializeAsync()
     {
@@ -42,6 +52,14 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         ServiceCollection services = new();
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
+
+        services.AddSingleton<IMemoryScopeResolver, FakeMemoryScopeResolver>();
+
+        services.AddSingleton<IProcessResourceLimiter, ProcessResourceLimiter>();
+
+        _lexicon = new FakeLexiconService();
+
+        services.AddSingleton<ILexiconService>(_lexicon);
 
         services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings>>(
             _settings);
@@ -455,6 +473,167 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     }
 
+    [Fact]
+    public async Task Unattended_forbidden_write_file_runs_through_the_registered_MCP_bridge_and_records_an_ungated_audit()
+    {
+
+        await using TempWorkspace workspace = new();
+        await workspace.InitializeAsync();
+        RecordingWard ward = new();
+        const string content = "The Ward only records this write.\n";
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessRegisteredToolAsync(
+            workspace.Root,
+            "write_file",
+            new Dictionary<string, object?>
+            {
+                ["relativePath"] = "ward-effect.txt",
+                ["content"] = content,
+            },
+            ward,
+            persistedAssistantTurn: true);
+
+        Assert.False(processed.Failed);
+
+        Assert.False(processed.Denied);
+
+        Assert.Equal(
+            content,
+            await File.ReadAllTextAsync(Path.Combine(workspace.Root, "ward-effect.txt")));
+
+        AssertUngatedAudit(processed, "write_file", ward);
+
+    }
+
+    [Fact]
+    public async Task Unattended_forbidden_scribe_lexicon_runs_through_the_registered_MCP_bridge_and_records_an_ungated_audit()
+    {
+
+        await using TempWorkspace workspace = new();
+        await workspace.InitializeAsync();
+        RecordingWard ward = new();
+        const string entityName = "Wardless Atlas";
+        const string fact = "The registered tool reached the Global Lexicon.";
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessRegisteredToolAsync(
+            workspace.Root,
+            "scribe_lexicon",
+            new Dictionary<string, object?>
+            {
+                ["name"] = entityName,
+                ["type"] = "Artifact",
+                ["facts"] = new[] { fact },
+            },
+            ward,
+            persistedAssistantTurn: false);
+
+        Assert.False(processed.Failed);
+
+        Assert.False(processed.Denied);
+
+        Result<LexiconEntryDto?> persisted = await _lexicon.GetByNameInScopeAsync(
+            entityName,
+            LexiconScope.Global,
+            CancellationToken.None);
+        LexiconEntryDto entry = Assert.IsType<LexiconEntryDto>(persisted.Value);
+
+        Assert.Equal("Artifact", entry.Type);
+
+        Assert.Equal([fact], entry.Facts);
+
+        Assert.Null(entry.ScopeCampaignId);
+
+        AssertUngatedAudit(processed, "scribe_lexicon", ward);
+
+    }
+
+    private async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessRegisteredToolAsync(
+        string workspaceRoot,
+        string toolName,
+        IDictionary<string, object?> arguments,
+        RecordingWard ward,
+        bool persistedAssistantTurn)
+    {
+
+        _settings.CurrentValue = _settings.CurrentValue with
+        {
+            Security = _settings.CurrentValue.Security with
+            {
+                Ward = new WardPolicySettings
+                {
+                    ForbiddenArts = [toolName],
+                    UnattendedMode = true,
+                },
+            },
+        };
+
+        AIFunction tool = await GetToolAsync(workspaceRoot, toolName);
+        ToolExecutionPipeline pipeline = new(
+            new TestOptionsSnapshot<ArcanumSettings>(_settings.CurrentValue),
+            ward,
+            new PermissiveSanctumGuard(),
+            new NoOpSessionAttachmentStore(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+        Guid sessionId = Guid.NewGuid();
+
+        return await pipeline.ProcessSingleToolCallAsync(
+            new FunctionCallContent(
+                Guid.NewGuid().ToString("N"),
+                toolName,
+                arguments),
+            new PingRequest(
+                "Execute the registered tool.",
+                WorkingDirectory: workspaceRoot,
+                UnattendedMode: true),
+            new ChatOptions { Tools = [tool] },
+            activeSpell: null,
+            sessionId: sessionId.ToString("D"),
+            new ToolExecutionPipeline.TurnContext
+            {
+                WorkspaceRoot = workspaceRoot,
+                PersistedSessionId = persistedAssistantTurn ? sessionId : null,
+                AssistantEntryId = persistedAssistantTurn ? Guid.NewGuid() : null,
+            },
+            suppressInvocationFailures: false,
+            CancellationToken.None);
+
+    }
+
+    private static void AssertUngatedAudit(
+        ToolExecutionPipeline.ProcessedToolCall processed,
+        string toolName,
+        RecordingWard ward)
+    {
+
+        Assert.Equal(0, ward.WardAsyncCount);
+
+        Assert.Equal(1, ward.AutomaticResolutionCount);
+
+        Assert.Equal(WardResolutionOrigin.Ungated, ward.AutomaticOrigin);
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            processed.WardEvents.Select(static evt => evt.Type));
+
+        IntelligenceEvent warded = processed.WardEvents[0];
+        IntelligenceEvent resolved = processed.WardEvents[1];
+
+        Assert.False(string.IsNullOrWhiteSpace(warded.WardId));
+
+        Assert.Equal(warded.WardId, resolved.WardId);
+
+        Assert.Equal(toolName, warded.WardToolName);
+
+        Assert.Equal(toolName, resolved.WardToolName);
+
+        Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+
+        Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+
+        Assert.True(resolved.WardAllowed);
+
+    }
+
     private async Task<AIFunction> GetToolAsync(
         string workspaceRoot,
         string toolName)
@@ -591,6 +770,61 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         public void Dispose()
         {
         }
+    }
+
+    private sealed class RecordingWard : IWard
+    {
+
+        public int WardAsyncCount { get; private set; }
+
+        public int AutomaticResolutionCount { get; private set; }
+
+        public WardResolutionOrigin? AutomaticOrigin { get; private set; }
+
+        public Task<WardResolution> WardAsync(
+            string wardId,
+            string toolName,
+            System.Text.Json.JsonDocument? arguments,
+            string? sessionId,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+
+            WardAsyncCount++;
+
+            return Task.FromResult(
+                new WardResolution(
+                    Allowed: false,
+                    Reason: "Unexpected interactive Ward invocation.",
+                    ResolvedAt: DateTimeOffset.UtcNow,
+                    Origin: WardResolutionOrigin.Human));
+
+        }
+
+        public ResolveStatus Resolve(string wardId, bool allow, string? reason) =>
+            ResolveStatus.Success;
+
+        public WardResolution RecordAutomaticResolution(
+            string wardId,
+            bool allowed,
+            string? reason,
+            WardResolutionOrigin origin)
+        {
+
+            AutomaticResolutionCount++;
+
+            AutomaticOrigin = origin;
+
+            return new WardResolution(
+                allowed,
+                reason,
+                DateTimeOffset.UtcNow,
+                origin);
+
+        }
+
+        public IReadOnlyList<ActiveWard> GetActiveWards() => [];
+
     }
 
     private sealed class BlockingCommittedReceiptSink

@@ -24,8 +24,7 @@ public static class ApprenticeExecutionPolicy
     public static StepFailureKind ClassifyStepFailure(
         bool stepFailed,
         bool escalationRequested,
-        bool wardDenied,
-        bool forbiddenArtDenied,
+        bool toolDenied,
         bool pauseOrCancelRequested,
         bool isRetryableError)
     {
@@ -51,7 +50,7 @@ public static class ApprenticeExecutionPolicy
 
         }
 
-        if (wardDenied || forbiddenArtDenied)
+        if (toolDenied)
         {
 
             return StepFailureKind.Terminal;

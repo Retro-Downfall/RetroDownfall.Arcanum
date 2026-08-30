@@ -224,6 +224,9 @@ public sealed class ConfigurationPresetServiceTests : IAsyncLifetime
 
         FakeTimeProvider time = new();
 
+        ConfigurationPresetDefinition current =
+            ConfigurationPresetCatalog.Find("general-assistant")!;
+
         DateTimeOffset appliedAt = DateTimeOffset.Parse("2026-08-03T14:30:00Z");
 
         time.SetUtcNow(appliedAt);
@@ -263,12 +266,12 @@ public sealed class ConfigurationPresetServiceTests : IAsyncLifetime
 
         Assert.Equal("general-assistant", provenance.PresetId);
 
-        Assert.Equal(1, provenance.Version);
+        Assert.Equal(current.Version, provenance.Version);
 
         Assert.Equal(appliedAt, provenance.AppliedAt);
 
         Assert.Equal(
-            ConfigurationPresetCatalog.Find("general-assistant")!.OwnedSettings.Length,
+            current.OwnedSettings.Length,
             provenance.BaselineValues.Length);
 
         Assert.Equal(provenance.BaselineValues.Length, provenance.AppliedValues.Length);

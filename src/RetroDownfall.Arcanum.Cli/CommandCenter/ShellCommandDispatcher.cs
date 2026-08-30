@@ -22,7 +22,6 @@ internal sealed class ShellCommandDispatcher(
     ShellCommandParser parser,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     SessionWorkspaceService sessionWorkspace,
-    CommandCenterWardCoordinator wardCoordinator,
     ILogger<ShellCommandDispatcher> logger)
 {
     private const int TerminalListPageSize = 50;
@@ -1339,13 +1338,7 @@ internal sealed class ShellCommandDispatcher(
         bool allow,
         CancellationToken cancellationToken)
     {
-        WardApprovalRequest? pending = wardCoordinator.PendingRequest;
         string? wardId = idArgument;
-
-        if (string.IsNullOrWhiteSpace(wardId))
-        {
-            wardId = pending?.WardId;
-        }
 
         if (string.IsNullOrWhiteSpace(wardId))
         {
@@ -1356,23 +1349,6 @@ internal sealed class ShellCommandDispatcher(
         }
 
         wardId = wardId.Trim();
-
-        // Prefer completing the in-turn prompt so ChatRunner submits the resolve once.
-        if (pending is not null
-            && (string.IsNullOrWhiteSpace(idArgument)
-                || pending.WardId.StartsWith(wardId, StringComparison.OrdinalIgnoreCase)
-                || wardId.StartsWith(pending.WardId, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(pending.WardId, wardId, StringComparison.OrdinalIgnoreCase)))
-        {
-            WardApprovalDecision decision = allow ? WardApprovalDecision.Allow : WardApprovalDecision.Deny;
-            if (wardCoordinator.TryCompletePending(decision))
-            {
-                state.Log.Append(
-                    SessionLogEntryKind.Status,
-                    allow ? $"Allowing ward {pending.WardId}…" : $"Denying ward {pending.WardId}…");
-                return ShellDispatchResult.Continue;
-            }
-        }
 
         // Prefix match against active wards when the operator pasted a short id.
         if (wardId.Length < 36)

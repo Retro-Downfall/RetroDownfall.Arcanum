@@ -165,7 +165,7 @@ internal static class ArcanumBannerRenderer
         {
             table.AddRow(
                 ctx.Theme.MutedMarkup(Markup.Escape("Mode:")),
-                ctx.Theme.HighlightMarkup(Markup.Escape("unattended (ask_human auto-replies)")));
+                ctx.Theme.HighlightMarkup(Markup.Escape("unattended (ask_human unavailable)")));
         }
 
         if (ctx.ToolsDisabled)

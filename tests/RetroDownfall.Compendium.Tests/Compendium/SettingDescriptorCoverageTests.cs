@@ -30,7 +30,7 @@ public sealed class SettingDescriptorCoverageTests
     public void Editable_descriptor_count_matches_the_documented_total()
     {
 
-        Assert.Equal(164, SettingDescriptors.All.Count);
+        Assert.Equal(160, SettingDescriptors.All.Count);
 
     }
 
@@ -112,7 +112,13 @@ public sealed class SettingDescriptorCoverageTests
 
     [InlineData("retention.checkpointInterval")]
 
-    public void Internal_workflow_controls_are_not_exposed(string removedPath)
+    [InlineData("security.ward.enabled")]
+
+    [InlineData("security.ward.autoDenyInUnattendedMode")]
+
+    [InlineData("security.ward.autoApprove")]
+
+    public void Removed_configuration_controls_are_not_exposed(string removedPath)
     {
 
         Assert.DoesNotContain(

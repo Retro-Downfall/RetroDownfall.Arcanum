@@ -58,7 +58,7 @@ OATH spans implemented foundations, active implementation work, approved target 
 | **#82** | Landed | Generation-bound operation gate and lease vocabulary, bounded canonical store, transactional mutation kernel and replay ledger, canonical and turn-capacity quotas, bounded turn-evidence folding, owner-deletion catch-up, FTS query compiler and cursor bodies, eligible search index with bounded canonical fallback, whole-sequence outbox synchronization, resumable base rebuild. |
 | **#83** | Landed | Non-serializable `ArcanumInvocationContext` at every inference seam, six-purpose AES-256-GCM envelope protocol and keyed diagnostic tag, `OperatorAuthorityContextIssuer`, canonical Campaign resolution by keyed physical directory identity (replacing `PingRequestResolver`), assistant-begin path honoring the immutable Session binding. |
 | **#84** | Landed | Deterministic Confirmed and fenced Proposed placement in `SystemPromptBuilder`, Core-owned `SystemPromptAttributionMap`, two new `ContextTokenSource` lanes, `ICovenantContextProvider`, `CovenantAdmissionPlanner`, `ICovenantDisclosureJournal`, `ICovenantMutationCollector`, `IGrimoireTurnCommitter`. |
-| **#85** | Landed; streaming barrier withdrawn | `CovenantToolInvocationContext` and `CovenantToolCapabilityRegistry`, `CovenantEgressWardPolicy`, `CovenantToolEgressGuard`, and the hand-authored `propose_covenant` / `retire_covenant` tools. `propose_covenant` now publishes; `retire_covenant` now publishes too, and `CovenantToolEgressGuard` commits its tool-effect disclosure before the dispatch — the retirement pipeline is delivered under #96. It is advertised wherever a Ward can be raised and withheld where one cannot, because with Wards off the egress policy denies every retirement and the tool could only refuse. `ProviderToolCallBuffer` and its frozen-call classification overload were withdrawn rather than wired: no path under `src/` ever constructed the buffer, the only live classification path takes complete framed calls from the in-process MCP server, and `Hub.ProviderToolBufferExceeded` went with it because nothing could emit it. |
+| **#85** | Landed; streaming barrier withdrawn | `CovenantToolInvocationContext` and `CovenantToolCapabilityRegistry`, `CovenantEgressWardPolicy`, `CovenantToolEgressGuard`, and the hand-authored `propose_covenant` / `retire_covenant` tools. `propose_covenant` and `retire_covenant` publish; `CovenantToolEgressGuard` commits tool-effect disclosure before retirement dispatch. Current retirement advertisement and authority depend on live feature/canonical health, exact preflight, Campaign scope, and the one-call capability—not on attendance or Ward settings. It emits the same informational `ungated` Ward pair as every server tool. `ProviderToolCallBuffer` and its frozen-call classification overload were withdrawn rather than wired: no path under `src/` ever constructed the buffer, the only live classification path takes complete framed calls from the in-process MCP server, and `Hub.ProviderToolBufferExceeded` went with it because nothing could emit it. |
 | **#86** | Landed | `ArtifactSensitivityLedger`, `DerivedArtifactWrite`, `SessionDerivedArtifactStore`, `ProtectedAssistantArtifactReader`, `CovenantProtectedLogScope`, `CovenantDerivedOutputInventory` with its architecture suite, and the two-marker host-process-tools taint gate. |
 | **#88** | Landed | Frozen operator request/response shapes with `Validate()` and bounded UTF-8 limits, the complete Covenant error vocabulary and HTTP status mapping, five service ports, `CovenantPublicContractInventory`, `CovenantProtectedJsonResult<T>` / `CovenantProtectedStreamResult`, two durable recovery checkpoints, caller-named durable operation identity. |
 | **#87** | Landed | `CovenantSensitiveArtifactPurgePolicy` (thirteen-kind table), `CovenantArtifactErasureAuthority`, `CovenantProtectedArtifactErasureKernel`, `CovenantManagedFileErasureKernel`, `CovenantLocalErasureStartupRecovery`, `CovenantSchemaRepairJournal` + startup recovery, `CovenantExclusiveDisposition`, and the `covenant-index-rebuild` / `covenant-family-reinitialize` operation kinds. |
@@ -190,7 +190,7 @@ Semantic transformation, repetition, ranking, summarization, extraction, backup,
 - turn untrusted `DATA` into instructions or policy;
 - remove a contributing source from lineage;
 - lower sensitivity;
-- grant a tool capability or suppress a Ward;
+- grant a tool capability or suppress a Ward audit record;
 - change the immutable Session-to-Campaign binding;
 - make an accelerator result canonical.
 
@@ -226,7 +226,7 @@ Semantic mutations append versions or tombstones. Heads are mutable projections 
 
 ### 4.7 Disclosure before egress
 
-Protected bytes do not reach a provider, external MCP server, process, network destination, message sink, or other content-bearing external effect until the required durable disclosure evidence is acknowledged. An attended Ward is additionally required where policy classifies the effect as sensitive egress.
+Protected bytes do not reach a provider, external MCP server, process, network destination, message sink, or other content-bearing external effect until the required durable disclosure evidence is acknowledged. Sensitive retirement additionally requires live feature/canonical health, exact target preflight, Campaign scope, and a one-call capability; its Ward pair is informational rather than consent.
 
 The receipt proves what Arcanum authorized and attempted. It does not make an external copy revocable.
 
@@ -417,7 +417,7 @@ One resolver combines and verifies:
 
 Conflicts fail before prompt construction or provider dispatch. A legacy-unresolved Session cannot silently become Global. A supplied path is opened and matched through physical ancestor identities, not trusted as a text prefix.
 
-The resolved context flows through loading, prompt assembly, tool filtering, Wards, workspace containment, and finalization. Later stages do not re-resolve scope from a mutable working directory.
+The resolved context flows through loading, prompt assembly, tool filtering, Ward recording, workspace containment, and finalization. Later stages do not re-resolve scope from a mutable working directory.
 
 ### 7.3 Establish the durable turn claim
 
@@ -500,7 +500,7 @@ A Covenant-bearing turn advertises only tools allowed by its invocation context.
 
 The model-facing Covenant tools receive single-use, request-bound capabilities. Their schemas omit Campaign, Session, origin, lane-authority, receipt, and other platform-owned fields. The server adds those facts from the live capability.
 
-A Covenant tool call is classified only over bytes whose identity has already stopped changing. The in-process MCP server frames its own JSON-RPC requests, so a call reaching either mutation handler carries a complete name and a complete argument body by construction, and classification runs over those complete bytes to produce the risk identity and the two evidence digests a Ward receipt and a disclosure receipt bind. That property is supplied by the framing of the one transport these tools are reachable on, not by a barrier of Arcanum's own that withholds partial calls; no provider-side streaming path reaches classification today, and one added later would have to establish completeness for itself. What the model gets back names no key and no content, because every field it carries is an identifier, a coordinate, or a size — an opaque target id, a mutation id, a scope, a lane, an operation, the expected lane revision, and an optional rendered hash and compiled byte cost — and its status says `staged`, never `published`.
+A Covenant tool call is classified only over bytes whose identity has already stopped changing. The in-process MCP server frames its own JSON-RPC requests, so a call reaching either mutation handler carries a complete name and a complete argument body by construction, and classification runs over those complete bytes to produce the risk identity and evidence digests used by disclosure plus any historical Ward receipt. No live retirement creates a Ward receipt. That property is supplied by the framing of the one transport these tools are reachable on, not by a barrier of Arcanum's own that withholds partial calls; no provider-side streaming path reaches classification today, and one added later would have to establish completeness for itself. What the model gets back names no key and no content, because every field it carries is an identifier, a coordinate, or a size — an opaque target id, a mutation id, a scope, a lane, an operation, the expected lane revision, and an optional rendered hash and compiled byte cost — and its status says `staged`, never `published`.
 
 ### 7.10 Finalize exactly once
 
@@ -576,7 +576,7 @@ Intents bind:
 - request, authorization, and mutation digests;
 - compiled proposal artifact;
 - exact call-scoped attachment materialization provenance;
-- Ward evidence where required.
+- historical Ward evidence when decoding a retained legacy receipt; current live retirement carries none.
 
 Tool replay is checked before target uniqueness. Exact replay returns the original staged receipt; changed input under the same identity fails. Branch replacement carries only shared-prefix intents onto the new branch and discards abandoned-branch intents. At most four live staged intents can reach publication.
 
@@ -758,7 +758,7 @@ No model classifier, substring test, empty current plan, feature disable, or lat
 Every assistant or summary consumer must select one explicit policy:
 
 - propagate the label atomically;
-- perform required Ward and disclosure handling;
+- perform the informational Ward audit and required disclosure handling;
 - emit only content-free metadata;
 - reject Covenant-derived input;
 - purge under an authorized lifecycle operation.
@@ -781,9 +781,9 @@ OATH suppresses Arcanum-authored explicit provider-cache directives on Covenant-
 
 ### 12.5 Sensitive egress
 
-`ToolRiskClassifier` upgrades a Covenant-derived content-bearing external or persistent effect to `CovenantSensitiveEgress`. Final complete arguments are frozen before approval. `CovenantEgressWardPolicy` requires attended approval for retirement, resolves against the live invocation, and denies outright when Wards are off. `CovenantToolEgressGuard` commits a disclosure receipt before every physical attempt, counting retries and reconnects separately.
+`ToolRiskClassifier` classifies a Covenant-derived content-bearing external or persistent effect as `CovenantSensitiveEgress`. Final complete arguments are frozen before exact preflight and capability binding. `CovenantEgressWardPolicy` retains its historical name but current retirement resolves to `UngatedRetirement` for both attended and unattended eligible turns; removed Ward settings cannot authorize or deny it. `CovenantToolEgressGuard` commits a disclosure receipt before every physical attempt, counting retries and reconnects separately.
 
-Sensitive network redirects require a new destination-bound decision for every hop. Cross-origin redirects strip origin-bound credentials before a new attended Ward. DNS and connection policy revalidate the approved origin and address class at connection time.
+Sensitive network redirects require a new destination-bound policy decision for every hop. Cross-origin redirects strip origin-bound credentials before the destination is re-evaluated. DNS and connection policy revalidate the allowed origin and address class at connection time.
 
 An exclusively created and verified managed file may be locally revocable. Append, replacement, editing a preexisting file, or later operator modification is nonrevocable. OATH does not pretend it can rewind an unjournaled edit.
 
@@ -859,21 +859,21 @@ Generic `MemorySearchScope.All` and `/api/memory/search` continue to exclude Cov
 The two hand-authored, source-generated MCP tools are:
 
 - `propose_covenant`, for Campaign Proposed content;
-- `retire_covenant`, a Forbidden Art for Campaign-bound retirement under Ward policy.
+- `retire_covenant`, for exact Campaign-bound retirement under its own capability policy.
 
-Both handlers are registered on every host. `propose_covenant` is advertised wherever the tier is healthy; `retire_covenant` is advertised wherever a Ward can also be raised for it, and **withheld on an installation whose Wards are switched off**. Both stay registered whatever their advertisement, so a stale or direct invocation fails closed rather than reaching an unregistered name.
+Both handlers are registered on every host. `propose_covenant` is advertised on eligible session turns wherever the feature and canonical tier are healthy; `retire_covenant` is advertised on the same feature/canonical basis when its retained capability can be prepared. Both stay registered whatever their advertisement, so a stale or direct invocation fails closed rather than reaching an unregistered name.
 
-`retire_covenant` can now be granted. Minting its capability requires the preflight disclosure a Ward showed the operator and the receipt proving they approved it, and the tool pipeline resolves that target from canonical state, raises the Ward over the content that will disappear rather than the model's arguments, and commits the tool-effect disclosure before the dispatch. With Wards switched off the egress policy denies every retirement outright, so on that installation the tool could only refuse and is withheld: a tool that always fails teaches a model that the capability is broken rather than absent.
+`retire_covenant` can be granted. The pipeline emits the ordinary informational `ungated` Ward pair, resolves the exact target from canonical state, binds the Campaign-scoped one-call capability, and commits tool-effect disclosure before dispatch. Missing session/read authority, feature/canonical health, Campaign binding, tool policy, capability, or exact preflight still refuses the effect. Attendance and removed Ward approval settings decide none of those checks.
 
 `propose_covenant` is granted, staged, and published. A turn that reaches its completed assistant finalization seals the collector and hands the resulting batch to `IGrimoireTurnCommitter` beside the answer, so the compiled fragment and the reply it accompanied enter canonical storage in one transaction or neither does. The batch binds the dataset generation and the key-reclamation epoch the turn's own snapshot read, and binds no Campaign registry epoch: an agent proposal reaches exactly one Campaign, and a stand-in value there would be compared like a real one and refuse every proposal on any installation whose registry had ever advanced.
 
-No Ward stands in front of it, and that is a decision rather than an omission. The Proposed lane is review-only beside effective Confirmed content and cannot change it, which is the whole reason it is the lane an agent may write; the write is local canonical storage rather than egress; and the provider dispatch that produced the tool call already committed its own disclosure receipt before any bytes left the process. Retirement is the call that needs consent, and it is the one that asks for it.
+`propose_covenant` receives the same informational Ward pair as every server tool, and that is audit rather than consent. The Proposed lane is review-only beside effective Confirmed content and cannot change it, which is the whole reason it is the lane an agent may write; the write is local canonical storage rather than egress; and the provider dispatch that produced the tool call already committed its own disclosure receipt before any bytes left the process. Retirement is narrower because its exact preflight, one-call capability, and disclosure-before-effect sequence authorize the effect without adding a user prompt.
 
 A turn that ends any other way publishes nothing. Interruption, cancellation, a refused finalization, a guardrails failure, and a turn that was never Covenant-derived all discard the collector. A turn holding a staged batch that cannot reach the atomic committer refuses rather than persisting its answer alone, and the stream-exit cleanup that runs after such a refusal drops the partial reply instead of committing it a moment later without its batch — because an answer written without the batch silently loses an acknowledgement the tool has already reported to the model.
 
 That makes the `Proposed` lane reachable on a real installation for the first time. The Proposed-lane admission pressure arithmetic, the Campaign-Proposed section-capacity arithmetic, and the closed Proposed admission decision shape now meet real candidates rather than only test ones.
 
-Neither can be reached through `mcp invoke`; `arcanum-internal` is not a diagnostic MCP target and both names are on the blocked list alongside the other Forbidden Arts.
+Neither can be reached through `mcp invoke`; `arcanum-internal` is not a diagnostic MCP target and both reserved names remain on the blocklist because that endpoint cannot mint their Master-pipeline context or capabilities.
 
 Issue #101 adds a third, read-only tool: scoped agent recall across durable memory, granting no mutation, promotion, or broader search authority, and absent for disabled, unattended, ambient background, and unauthorized subagent invocations.
 
@@ -1225,7 +1225,7 @@ Each durable store gets the same verbs against one item, using the identity that
 
 **#100 — Selective hard erasure with keyed resurrection suppression (XL).** Erasure requires an exact item and version, typed preflight, explicit confirmation, and a bound effect digest. Canonical versions, projections, embeddings, FTS rows, labels, and managed artifacts are purged under the required generation leases. Suppression fingerprints retain no plaintext, do not correlate across installations, and prevent ordinary extraction or restore from resurrecting erased content. Results distinguish verified local erasure from disclosures Arcanum cannot revoke externally.
 
-**Safety.** Every mutation requires interactive confirmation or `--yes`. Correction and hard delete of a Covenant `Confirmed` entry or a pinned memory are Forbidden Arts when reached through a tool rather than the operator's own CLI. Editing a memory never edits its provenance. No mutation appears on an unauthenticated route or on `/v1`. There is still **no generic delete-all-memory command**.
+**Safety.** Every direct operator mutation requires interactive confirmation or `--yes`. Agent mutations require their own exact capability and compare-and-swap evidence; no Ward prompt substitutes for those authorities. Editing a memory never edits its provenance. No mutation appears on an unauthenticated route or on `/v1`. There is still **no generic delete-all-memory command**.
 
 ### 20.6 Bitemporal validity and dependency-aware claims (#105, XL, prerequisite)
 
@@ -1264,7 +1264,7 @@ Performance alone cannot weaken the OATH disclosure boundary.
 
 ### 20.10 Typed Covenant operational defaults (#104, L, research)
 
-Represent operator-confirmed **nonsecurity** preferences as constrained typed defaults that approved call sites apply deterministically. The closed catalog grants no authority over authentication, Wards, tool risk, egress, retention, resource ceilings, or platform security policy. Compilation rejects unknown kinds, malformed values, unsupported consumers, and every security-policy target. Applied defaults bind the exact Covenant version and policy version into plans, receipts, and explanations, and exhaustive tests prove no typed default can weaken platform-owned authority.
+Represent operator-confirmed **nonsecurity** preferences as constrained typed defaults that approved call sites apply deterministically. The closed catalog grants no authority over authentication, Ward audit behavior, tool advertisement or capabilities, egress, retention, resource ceilings, or platform security policy. Compilation rejects unknown kinds, malformed values, unsupported consumers, and every security-policy target. Applied defaults bind the exact Covenant version and policy version into plans, receipts, and explanations, and exhaustive tests prove no typed default can weaken platform-owned authority.
 
 ### 20.11 Least-authority subagent delegation capsules (#107, XL, research)
 
@@ -1292,7 +1292,7 @@ Until this capability exists, subordinate and unattended execution receives no p
 | **Admission** | Concrete provider-attempt decision about which eligible material fits the frozen call. |
 | **Materialization** | Exact occurrence of a source in the final provider-neutral payload. |
 | **Sensitivity** | Conservative information-flow classification merged across every contributing source. |
-| **Ward** | Attended operator approval boundary for a classified sensitive or dangerous effect. |
+| **Ward** | Informational per-tool audit record; retained active-record routes exist only for compatibility. |
 | **Disclosure** | Receipt-backed evidence that protected content was authorized for an external destination or locally managed sink. |
 | **Locally revocable** | Arcanum-owned artifact that can be identity/hash-verified and deleted locally. |
 | **Nonrevocable** | External or unmanaged effect that local reset cannot reliably undo. |

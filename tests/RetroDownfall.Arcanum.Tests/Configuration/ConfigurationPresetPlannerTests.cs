@@ -281,7 +281,7 @@ public sealed class ConfigurationPresetPlannerTests
             first.BaselineValues,
             first.AppliedValues);
 
-        first.CandidateSettings.Security.Ward.Enabled = false;
+        first.CandidateSettings.Security.AllowUnsandboxedToolChildren = true;
 
         ConfigurationPresetInspection inspection = planner.Inspect(
             Snapshot(first.CandidateSettings, provenance));
@@ -290,7 +290,8 @@ public sealed class ConfigurationPresetPlannerTests
 
         Assert.Contains(
             inspection.Drift,
-            static row => row.Path == "security.ward.enabled" && row.PersistedValueChanges);
+            static row => row.Path == "security.allowUnsandboxedToolChildren"
+                && row.PersistedValueChanges);
 
     }
 
@@ -380,7 +381,7 @@ public sealed class ConfigurationPresetPlannerTests
             new Dictionary<string, string?>
             {
 
-                ["ARCANUM_Arcanum__Security__Ward__Enabled"] = "false",
+                ["ARCANUM_Arcanum__Security__AllowUnsandboxedToolChildren"] = "true",
 
             });
 
@@ -401,7 +402,7 @@ public sealed class ConfigurationPresetPlannerTests
         Assert.False(masked.IsSatisfied);
 
         Assert.Contains(
-            "ARCANUM_Arcanum__Security__Ward__Enabled",
+            "ARCANUM_Arcanum__Security__AllowUnsandboxedToolChildren",
             masked.Detail,
             StringComparison.Ordinal);
 
@@ -532,19 +533,14 @@ public sealed class ConfigurationPresetPlannerTests
 
     [Theory]
 
-    [InlineData(true, false)]
+    [InlineData(false)]
 
-    [InlineData(true, true)]
-
-    [InlineData(false, false)]
+    [InlineData(true)]
 
     public void Completion_summary_never_presents_ordinary_Ward_as_an_approval_gate(
-        bool wardEnabled,
         bool unattendedMode)
     {
         ArcanumSettings settings = ValidSettings();
-
-        settings.Security.Ward.Enabled = wardEnabled;
 
         settings.Security.Ward.UnattendedMode = unattendedMode;
 

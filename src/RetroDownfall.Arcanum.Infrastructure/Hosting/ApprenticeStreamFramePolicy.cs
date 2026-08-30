@@ -16,6 +16,9 @@ internal enum ApprenticeStreamFrameDisposition
 
 internal static class ApprenticeStreamFramePolicy
 {
+    public static bool IsTerminalToolDenial(IntelligenceEvent frame) =>
+        frame.Type == IntelligenceEventType.ToolResult && frame.ToolDenied;
+
     public static ApprenticeStreamFrameDisposition Classify(IntelligenceEventType type) =>
         type switch
         {

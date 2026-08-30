@@ -61,6 +61,9 @@ public sealed class ConfigurationValidator(
     internal const string ObsoleteAutomaticRetentionWorkMessage =
         "Remove this retention implementation control. Eligible work continues automatically through internal checkpoints until it completes or the operator cancels it.";
 
+    internal const string ObsoleteWardApprovalConfigurationMessage =
+        "Remove this Ward approval setting. Ordinary tool calls create informational Ward records and never ask for or pre-answer operator approval.";
+
     private static readonly HashSet<string> ReservedRuntimeEnvironmentVariableNames =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -137,6 +140,9 @@ public sealed class ConfigurationValidator(
         ("execution.maxPendingApprenticeStarts", ObsoleteAutomaticApprenticeQueueMessage),
         ("retention.maxItemsPerSweep", ObsoleteAutomaticRetentionWorkMessage),
         ("retention.checkpointInterval", ObsoleteAutomaticRetentionWorkMessage),
+        ("security.ward.enabled", ObsoleteWardApprovalConfigurationMessage),
+        ("security.ward.autoDenyInUnattendedMode", ObsoleteWardApprovalConfigurationMessage),
+        ("security.ward.autoApprove", ObsoleteWardApprovalConfigurationMessage),
     ];
 
     /// <summary>
@@ -1173,8 +1179,6 @@ public sealed class ConfigurationValidator(
 
         ValidateCodingTools(settings, errors);
 
-        ValidateWardAutoApproval(settings.Security?.Ward, errors);
-
         ValidateDaemonJobs(settings.Daemon, errors);
 
         ValidatePathAllowlist(settings.ResolveCampaignRoots(), "security.campaignRoots", errors);
@@ -1204,51 +1208,6 @@ public sealed class ConfigurationValidator(
         }
 
         return Result.Success();
-
-    }
-
-    /// <summary>
-    /// The retained Ward auto-approval list has no live ordinary or Covenant-retirement consumer.
-    /// While issue #219 preserves the public shape, validate it consistently: a blank entry is
-    /// meaningless and a duplicate hides an intent the operator cannot see in the file.
-    /// </summary>
-    private static void ValidateWardAutoApproval(
-        WardPolicySettings? ward,
-        List<ConfigurationValidationError> errors)
-    {
-
-        List<string> tools = ward?.AutoApprove?.Tools ?? [];
-
-        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-
-        for (int index = 0; index < tools.Count; index++)
-        {
-
-            string pointer = $"security.ward.autoApprove.tools[{index}]";
-
-            string? tool = tools[index];
-
-            if (string.IsNullOrWhiteSpace(tool))
-            {
-
-                errors.Add(new ConfigurationValidationError(
-                    pointer,
-                    "Ward auto-approval tool names must not be blank."));
-
-                continue;
-
-            }
-
-            if (!seen.Add(tool.Trim()))
-            {
-
-                errors.Add(new ConfigurationValidationError(
-                    pointer,
-                    $"Ward auto-approval tool '{tool.Trim()}' is listed more than once; names must be unique."));
-
-            }
-
-        }
 
     }
 

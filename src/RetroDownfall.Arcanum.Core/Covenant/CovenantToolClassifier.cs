@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -56,16 +55,13 @@ public static class CovenantToolClassifier
 
     private static readonly byte[] EmptyArgumentObject = "{}"u8.ToArray();
 
-    private static readonly WardSettings EmptyWards = new() { ForbiddenArts = [] };
-
     /// <summary>
     /// Classifies a call that is already known to be one of the two Covenant mutation tools.
     /// </summary>
     /// <remarks>
-    /// Takes no <see cref="WardSettings"/> because it needs none: the configured forbidden-arts list
-    /// only separates ordinary calls from configured ones, and a Covenant mutation is
-    /// <see cref="CovenantToolRiskIdentity.CovenantSensitiveEgress"/> whatever that list says. Passing
-    /// a placeholder settings object here would suggest the classification depended on it.
+    /// Takes no Ward settings because a frozen call is either a Covenant-sensitive egress or an
+    /// ordinary call. The configured forbidden-arts list filters tool advertisement under
+    /// <see cref="ToolPolicy.NoForbiddenArts"/> and must not change a frozen call's risk identity.
     /// </remarks>
     public static Result<ProviderToolCallClassification> ClassifyCovenantTool(
         string toolName,
@@ -81,7 +77,7 @@ public static class CovenantToolClassifier
 
         }
 
-        return Classify(toolName, rawArgumentsUtf8, EmptyWards);
+        return Classify(toolName, rawArgumentsUtf8);
 
     }
 
@@ -96,13 +92,10 @@ public static class CovenantToolClassifier
     /// </remarks>
     public static Result<ProviderToolCallClassification> Classify(
         string toolName,
-        ReadOnlySpan<byte> rawArgumentsUtf8,
-        WardSettings wardSettings)
+        ReadOnlySpan<byte> rawArgumentsUtf8)
     {
 
         ArgumentException.ThrowIfNullOrEmpty(toolName);
-
-        ArgumentNullException.ThrowIfNull(wardSettings);
 
         byte[] canonicalArguments;
 
@@ -125,33 +118,13 @@ public static class CovenantToolClassifier
 
         return Result<ProviderToolCallClassification>.Success(new ProviderToolCallClassification(
             toolName,
-            ResolveRisk(toolName, isCovenantMutation, wardSettings),
+            isCovenantMutation
+                ? CovenantToolRiskIdentity.CovenantSensitiveEgress
+                : CovenantToolRiskIdentity.Ordinary,
             isCovenantMutation,
             isCovenantMutation,
             new CovenantDigest(SHA256.HashData(StrictUtf8.GetBytes(toolName))),
             new CovenantDigest(SHA256.HashData(canonicalArguments))));
-
-    }
-
-    private static CovenantToolRiskIdentity ResolveRisk(
-        string toolName,
-        bool isCovenantMutation,
-        WardSettings wardSettings)
-    {
-
-        if (isCovenantMutation)
-        {
-            return CovenantToolRiskIdentity.CovenantSensitiveEgress;
-        }
-
-        if (ToolRiskClassifier.IsIntrinsicWardTool(toolName))
-        {
-            return CovenantToolRiskIdentity.IntrinsicForbiddenArt;
-        }
-
-        return wardSettings.ForbiddenArts.Contains(toolName, StringComparer.OrdinalIgnoreCase)
-            ? CovenantToolRiskIdentity.ConfiguredForbiddenArt
-            : CovenantToolRiskIdentity.Ordinary;
 
     }
 

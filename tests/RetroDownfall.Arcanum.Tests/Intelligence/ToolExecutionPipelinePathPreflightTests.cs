@@ -247,7 +247,6 @@ public sealed class ToolExecutionPipelinePathPreflightTests
             {
                 Ward = new WardPolicySettings
                 {
-                    Enabled = true,
                     ForbiddenArts = [],
                 },
             },

@@ -18,8 +18,7 @@ public sealed class ApprenticeExecutionPolicyTests
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: false,
             escalationRequested: false,
-            wardDenied: false,
-            forbiddenArtDenied: false,
+            toolDenied: false,
             pauseOrCancelRequested: false,
             isRetryableError: false);
 
@@ -34,8 +33,7 @@ public sealed class ApprenticeExecutionPolicyTests
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: true,
-            wardDenied: true,
-            forbiddenArtDenied: true,
+            toolDenied: true,
             pauseOrCancelRequested: true,
             isRetryableError: true);
 
@@ -50,8 +48,7 @@ public sealed class ApprenticeExecutionPolicyTests
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: false,
-            wardDenied: false,
-            forbiddenArtDenied: false,
+            toolDenied: false,
             pauseOrCancelRequested: false,
             isRetryableError: true);
 
@@ -66,8 +63,7 @@ public sealed class ApprenticeExecutionPolicyTests
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: true,
-            wardDenied: false,
-            forbiddenArtDenied: false,
+            toolDenied: false,
             pauseOrCancelRequested: false,
             isRetryableError: false);
 
@@ -76,30 +72,13 @@ public sealed class ApprenticeExecutionPolicyTests
     }
 
     [Fact]
-    public void ClassifyStepFailure_WardDenied_ReturnsTerminal()
+    public void ClassifyStepFailure_ToolDenied_ReturnsTerminal()
     {
 
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: false,
-            wardDenied: true,
-            forbiddenArtDenied: false,
-            pauseOrCancelRequested: false,
-            isRetryableError: true);
-
-        Assert.Equal(StepFailureKind.Terminal, kind);
-
-    }
-
-    [Fact]
-    public void ClassifyStepFailure_ForbiddenArtDenied_ReturnsTerminal()
-    {
-
-        StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
-            stepFailed: true,
-            escalationRequested: false,
-            wardDenied: false,
-            forbiddenArtDenied: true,
+            toolDenied: true,
             pauseOrCancelRequested: false,
             isRetryableError: true);
 
@@ -114,8 +93,7 @@ public sealed class ApprenticeExecutionPolicyTests
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: false,
-            wardDenied: false,
-            forbiddenArtDenied: false,
+            toolDenied: false,
             pauseOrCancelRequested: false,
             isRetryableError: false);
 

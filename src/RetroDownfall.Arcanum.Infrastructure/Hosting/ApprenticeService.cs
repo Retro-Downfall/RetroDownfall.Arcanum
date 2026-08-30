@@ -1231,8 +1231,7 @@ internal sealed class ApprenticeService(
                     StepFailureKind failureKind = ApprenticeExecutionPolicy.ClassifyStepFailure(
                         outcome.StepFailed,
                         outcome.EscalationRequested,
-                        outcome.WardDenied,
-                        outcome.ForbiddenArtDenied,
+                        outcome.ToolDenied,
                         outcome.PauseOrCancel,
                         outcome.IsRetryable);
 
@@ -2234,8 +2233,7 @@ internal sealed class ApprenticeService(
             StepFailureKind failureKind = ApprenticeExecutionPolicy.ClassifyStepFailure(
                 outcome.StepFailed,
                 outcome.EscalationRequested,
-                outcome.WardDenied,
-                outcome.ForbiddenArtDenied,
+                outcome.ToolDenied,
                 outcome.PauseOrCancel,
                 outcome.IsRetryable);
 
@@ -2559,7 +2557,7 @@ internal sealed class ApprenticeService(
 
     }
 
-    private async Task<StepExecutionOutcome> ExecuteStepStreamAsync(
+    internal async Task<StepExecutionOutcome> ExecuteStepStreamAsync(
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
         string stepPrompt,
@@ -2575,9 +2573,7 @@ internal sealed class ApprenticeService(
 
         bool escalationRequested = false;
 
-        bool wardDenied = false;
-
-        bool forbiddenArtDenied = false;
+        bool toolDenied = false;
 
         bool pauseOrCancel = false;
 
@@ -2710,13 +2706,12 @@ internal sealed class ApprenticeService(
 
                 }
 
-                if (frame.Type == IntelligenceEventType.ToolResult
-                    && frame.ToolDenied)
+                if (ApprenticeStreamFramePolicy.IsTerminalToolDenial(frame))
                 {
 
                     stepFailed = true;
 
-                    forbiddenArtDenied = true;
+                    toolDenied = true;
 
                     stepError = frame.Data;
 
@@ -2748,17 +2743,6 @@ internal sealed class ApprenticeService(
 
                 }
 
-                if (frame.Type == IntelligenceEventType.WardResolved && frame.WardAllowed == false)
-                {
-
-                    stepFailed = true;
-
-                    wardDenied = true;
-
-                    stepError = frame.WardReason ?? "Ward denied.";
-
-                }
-
             }
 
         }
@@ -2781,10 +2765,9 @@ internal sealed class ApprenticeService(
         return new StepExecutionOutcome(
             StepFailed: stepFailed,
             EscalationRequested: escalationRequested,
-            WardDenied: wardDenied,
-            ForbiddenArtDenied: forbiddenArtDenied,
+            ToolDenied: toolDenied,
             PauseOrCancel: pauseOrCancel,
-            IsRetryable: stepFailed && !wardDenied && !forbiddenArtDenied && !escalationRequested,
+            IsRetryable: stepFailed && !toolDenied && !escalationRequested,
             ResultText: stepResultText,
             ErrorMessage: stepError,
             AlreadyAlerted: alreadyAlerted,
@@ -2849,11 +2832,10 @@ internal sealed class ApprenticeService(
             apprentice.UpdatedAt);
     }
 
-    private sealed record StepExecutionOutcome(
+    internal sealed record StepExecutionOutcome(
         bool StepFailed,
         bool EscalationRequested,
-        bool WardDenied,
-        bool ForbiddenArtDenied,
+        bool ToolDenied,
         bool PauseOrCancel,
         bool IsRetryable,
         string? ResultText,

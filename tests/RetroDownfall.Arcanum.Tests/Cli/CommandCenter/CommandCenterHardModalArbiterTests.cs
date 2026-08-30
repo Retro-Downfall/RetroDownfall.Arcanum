@@ -16,18 +16,18 @@ public sealed class CommandCenterHardModalArbiterTests
             "p1",
             () => Record(shown, "p1")));
         Assert.False(arbiter.RequestShow(
-            CommandCenterHardModalKind.WardConfirm,
-            "w1",
-            () => Record(shown, "w1")));
+            CommandCenterHardModalKind.HumanPrompt,
+            "p2",
+            () => Record(shown, "p2")));
 
         Assert.Equal(["p1"], shown);
         Assert.True(arbiter.HasActiveHardModal);
         Assert.True(arbiter.HasQueuedHardModal);
-        Assert.True(arbiter.IsQueued(CommandCenterHardModalKind.WardConfirm, "w1"));
+        Assert.True(arbiter.IsQueued(CommandCenterHardModalKind.HumanPrompt, "p2"));
     }
 
     [Fact]
-    public void Promote_PrefersWard_OverHumanPrompt()
+    public void Promote_uses_arrival_order_for_human_prompts()
     {
         CommandCenterHardModalArbiter arbiter = new();
         List<string> shown = [];
@@ -41,17 +41,17 @@ public sealed class CommandCenterHardModalArbiterTests
             "p2",
             () => Record(shown, "p2"));
         _ = arbiter.RequestShow(
-            CommandCenterHardModalKind.WardConfirm,
-            "w1",
-            () => Record(shown, "w1"));
+            CommandCenterHardModalKind.HumanPrompt,
+            "p3",
+            () => Record(shown, "p3"));
 
         Assert.True(arbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, "active"));
-        Assert.Equal(["active", "w1"], shown);
-        Assert.Equal(CommandCenterHardModalKind.WardConfirm, arbiter.ActiveKind);
+        Assert.Equal(["active", "p2"], shown);
+        Assert.Equal(CommandCenterHardModalKind.HumanPrompt, arbiter.ActiveKind);
     }
 
     [Fact]
-    public void QueuedWard_RemovedBeforeDisplay_DoesNotShow()
+    public void Queued_prompt_removed_before_display_does_not_show()
     {
         CommandCenterHardModalArbiter arbiter = new();
         List<string> shown = [];
@@ -61,11 +61,11 @@ public sealed class CommandCenterHardModalArbiterTests
             "p1",
             () => Record(shown, "p1")));
         _ = arbiter.RequestShow(
-            CommandCenterHardModalKind.WardConfirm,
-            "w1",
-            () => Record(shown, "w1"));
+            CommandCenterHardModalKind.HumanPrompt,
+            "p2",
+            () => Record(shown, "p2"));
 
-        Assert.True(arbiter.TryRemoveQueued(CommandCenterHardModalKind.WardConfirm, "w1"));
+        Assert.True(arbiter.TryRemoveQueued(CommandCenterHardModalKind.HumanPrompt, "p2"));
         Assert.True(arbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, "p1"));
         Assert.Equal(["p1"], shown);
         Assert.False(arbiter.HasActiveHardModal);
@@ -81,58 +81,56 @@ public sealed class CommandCenterHardModalArbiterTests
         _ = arbiter.RequestShow(CommandCenterHardModalKind.HumanPrompt, "p1", static () => true);
         Assert.True(arbiter.BlocksAuxiliary);
 
-        _ = arbiter.RequestShow(CommandCenterHardModalKind.WardConfirm, "w1", static () => true);
+        _ = arbiter.RequestShow(CommandCenterHardModalKind.HumanPrompt, "p2", static () => true);
         Assert.True(arbiter.BlocksAuxiliary);
 
         _ = arbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, "p1");
-        Assert.True(arbiter.BlocksAuxiliary); // ward promoted
+        Assert.True(arbiter.BlocksAuxiliary); // queued prompt promoted
 
-        _ = arbiter.TryClose(CommandCenterHardModalKind.WardConfirm, "w1");
+        _ = arbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, "p2");
         Assert.False(arbiter.BlocksAuxiliary);
     }
 
     /// <summary>
     /// Promotion dequeues an entry and marks it active under the gate, then invokes its show callback
-    /// outside it. A ward whose approval task completes in that gap tears itself down first, finds
-    /// nothing left in the queue to remove, and never closes the slot it was just handed — so
-    /// <c>_active</c> stays set for the rest of the session. That blocks F1/Ctrl+K/Ctrl+O and, worse,
-    /// queues every later ward prompt behind a modal nobody can answer. The promoted entry therefore
-    /// has to be able to decline the slot it inherited.
+    /// outside it. A prompt whose owner completes in that gap must be able to decline the slot it
+    /// inherited, otherwise <c>_active</c> stays set with no visible modal and blocks every later
+    /// prompt and auxiliary overlay.
     /// </summary>
     [Fact]
     public void A_modal_promoted_after_its_owner_resolved_releases_the_slot()
     {
         CommandCenterHardModalArbiter arbiter = new();
         List<string> shown = [];
-        bool wardAlreadyResolved = false;
+        bool secondPromptAlreadyResolved = false;
 
         _ = arbiter.RequestShow(
             CommandCenterHardModalKind.HumanPrompt,
             "p1",
             () => Record(shown, "p1"));
         _ = arbiter.RequestShow(
-            CommandCenterHardModalKind.WardConfirm,
-            "w1",
+            CommandCenterHardModalKind.HumanPrompt,
+            "p2",
             () =>
             {
-                if (wardAlreadyResolved)
+                if (secondPromptAlreadyResolved)
                 {
                     return false;
                 }
 
-                return Record(shown, "w1");
+                return Record(shown, "p2");
             });
         _ = arbiter.RequestShow(
             CommandCenterHardModalKind.HumanPrompt,
-            "p2",
-            () => Record(shown, "p2"));
+            "p3",
+            () => Record(shown, "p3"));
 
-        wardAlreadyResolved = true;
+        secondPromptAlreadyResolved = true;
 
         Assert.True(arbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, "p1"));
 
-        Assert.Equal(["p1", "p2"], shown);
-        Assert.True(arbiter.IsActive(CommandCenterHardModalKind.HumanPrompt, "p2"));
+        Assert.Equal(["p1", "p3"], shown);
+        Assert.True(arbiter.IsActive(CommandCenterHardModalKind.HumanPrompt, "p3"));
     }
 
     [Fact]
@@ -141,7 +139,7 @@ public sealed class CommandCenterHardModalArbiterTests
         CommandCenterHardModalArbiter arbiter = new();
 
         _ = arbiter.RequestShow(CommandCenterHardModalKind.HumanPrompt, "p1", static () => true);
-        _ = arbiter.RequestShow(CommandCenterHardModalKind.WardConfirm, "w1", static () => false);
+        _ = arbiter.RequestShow(CommandCenterHardModalKind.HumanPrompt, "p2", static () => false);
 
         Assert.True(arbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, "p1"));
 

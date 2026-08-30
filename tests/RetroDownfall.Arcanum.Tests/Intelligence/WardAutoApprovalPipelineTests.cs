@@ -27,7 +27,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// the <c>DisableParallelization</c> guarantee that assertion depends on.
 /// </summary>
 [Collection("Telemetry")]
-public sealed class WardAutoApprovalPipelineTests
+public sealed class WardRecordPipelineTests
 {
     [Theory]
     [InlineData("read_file_chunk")]
@@ -46,7 +46,7 @@ public sealed class WardAutoApprovalPipelineTests
         ToolExecutionPipeline pipeline = CreatePipeline(
             ward,
             new AllowAllSanctumGuard(),
-            new WardPolicySettings { Enabled = true, ForbiddenArts = [] });
+            new WardPolicySettings { ForbiddenArts = [] });
 
         bool invoked = false;
 
@@ -108,7 +108,7 @@ public sealed class WardAutoApprovalPipelineTests
     }
 
     [Fact]
-    public async Task An_unattended_write_file_call_executes_under_restrictive_ward_settings()
+    public async Task Unattended_write_file_call_executes_when_listed_as_a_forbidden_art()
     {
 
         RecordingWard ward = new();
@@ -118,9 +118,8 @@ public sealed class WardAutoApprovalPipelineTests
             new AllowAllSanctumGuard(),
             new WardPolicySettings
             {
-                Enabled = true,
                 ForbiddenArts = ["write_file"],
-                AutoDenyInUnattendedMode = true,
+                UnattendedMode = true,
             });
 
         bool invoked = false;
@@ -151,7 +150,7 @@ public sealed class WardAutoApprovalPipelineTests
     }
 
     [Fact]
-    public async Task An_ungated_call_is_still_blocked_by_Sanctum()
+    public async Task A_configured_forbidden_art_is_recorded_then_blocked_by_Sanctum()
     {
 
         RecordingWard ward = new();
@@ -159,12 +158,7 @@ public sealed class WardAutoApprovalPipelineTests
         ToolExecutionPipeline pipeline = CreatePipeline(
             ward,
             new DenyAllSanctumGuard(),
-            new WardPolicySettings
-            {
-                Enabled = true,
-                ForbiddenArts = ["execute_command"],
-                AutoDenyInUnattendedMode = true,
-            });
+            new WardPolicySettings { ForbiddenArts = ["execute_command"] });
 
         bool invoked = false;
 
@@ -232,7 +226,7 @@ public sealed class WardAutoApprovalPipelineTests
         ToolExecutionPipeline pipeline = CreatePipeline(
             new RecordingWard(),
             new AllowAllSanctumGuard(),
-            new WardPolicySettings { Enabled = true, ForbiddenArts = [] });
+            new WardPolicySettings { ForbiddenArts = [] });
 
         _ = await ProcessAsync(
             pipeline,
@@ -265,7 +259,7 @@ public sealed class WardAutoApprovalPipelineTests
         ToolExecutionPipeline pipeline = CreatePipeline(
             new RecordingWard(),
             new AllowAllSanctumGuard(),
-            new WardPolicySettings { Enabled = true, ForbiddenArts = [] });
+            new WardPolicySettings { ForbiddenArts = [] });
 
         ToolExecutionPipeline.ProcessedToolCall processed = await pipeline
             .ProcessSingleToolCallAsync(

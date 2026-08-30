@@ -905,7 +905,7 @@ public static class ErrorCodes
 
     }
 
-    /// <summary>Ward — operator approval gates for risky tool invocations.</summary>
+    /// <summary>Ward — tool-call audit records and retained active-record compatibility.</summary>
     public static class Ward
     {
 

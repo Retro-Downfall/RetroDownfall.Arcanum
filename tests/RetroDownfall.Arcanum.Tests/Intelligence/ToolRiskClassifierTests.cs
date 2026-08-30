@@ -49,7 +49,6 @@ public sealed class ToolRiskClassifierTests
     {
         WardSettings wards = ArcanumRuntimeDefaults.Ward with
         {
-            Enabled = true,
             ForbiddenArts = [toolName],
         };
 

@@ -72,7 +72,7 @@ public sealed class ArcanumInvocationContext
     /// </remarks>
     public CanonicalCampaignContext? Campaign { get; }
 
-    /// <summary>Whether an operator is present to answer an interactive Ward.</summary>
+    /// <summary>Whether an operator is present for surfaces that genuinely require human input.</summary>
     public InvocationAttendance Attendance { get; }
 
     /// <summary>The request's context policy. <c>None</c> is irrevocable once set at the boundary.</summary>
