@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS "covenant_versions" (
+CREATE TABLE covenant_versions_replacement (
     VersionId TEXT NOT NULL PRIMARY KEY,
     EntryId TEXT NOT NULL REFERENCES covenant_entries(EntryId),
     LaneCode INTEGER NOT NULL CHECK (LaneCode IN (1, 2)),
@@ -23,12 +23,10 @@ CREATE TABLE IF NOT EXISTS "covenant_versions" (
     RequestIdempotencyDigest BLOB NOT NULL CHECK (length(RequestIdempotencyDigest) = 32),
     AuthorizationDigest BLOB NOT NULL CHECK (length(AuthorizationDigest) = 32),
     FinalMutationDigest BLOB NOT NULL CHECK (length(FinalMutationDigest) = 32),
-    PredecessorVersionId TEXT NULL REFERENCES "covenant_versions"(VersionId),
+    PredecessorVersionId TEXT NULL REFERENCES covenant_versions_replacement(VersionId),
     AttachmentProvenanceCount INTEGER NOT NULL CHECK (AttachmentProvenanceCount >= 0),
     AttachmentProvenanceDigest BLOB NOT NULL CHECK (length(AttachmentProvenanceDigest) = 32),
     CreatedAtUtc TEXT NOT NULL,
-    -- A Set carries content and both hashes; a Retire is a tombstone and carries neither. Storing
-    -- one without the other would let a retirement resurrect text the operator asked to remove.
     CHECK (
         (OperationCode = 1
             AND AuthoredContent IS NOT NULL
@@ -42,18 +40,8 @@ CREATE TABLE IF NOT EXISTS "covenant_versions" (
             AND RenderedHash IS NULL
             AND CompiledByteCost = 0)
     ),
-    -- An agent proposal belongs to the Proposed lane and to nothing else. The rule runs one way:
-    -- an operator and an approved agent retirement both reach either lane, because retiring a
-    -- proposal is exactly how a proposal ends. Enforced here as well as in the contracts because a
-    -- direct writer could otherwise seat proposed content on a Confirmed head, and the first
-    -- complaint would be a constructor throw when the projection tried to load it.
     CHECK (OriginCode <> 2 OR LaneCode = 2),
-    -- An agent-authored version names the turn it came from. The operator origin has no turn, so
-    -- only the two agent origins require one. (The no-Global-Proposed rule spans entries and
-    -- versions, so it cannot be a single-table CHECK; covenant_heads_validate_* enforces it.)
     CHECK (OriginCode = 1 OR SourceTurnId IS NOT NULL),
-    -- New AgentApproved retirements are receipt-free. Historical AgentApproved rows retain their Ward
-    -- evidence and its persisted authorization mode; no other origin can carry either field.
     CHECK (
         (OriginCode = 3 AND (
             (WardReceiptDigest IS NULL AND AuthorizationModeCode IS NULL)
@@ -61,31 +49,9 @@ CREATE TABLE IF NOT EXISTS "covenant_versions" (
         ))
         OR (OriginCode <> 3 AND WardReceiptDigest IS NULL AND AuthorizationModeCode IS NULL)
     ),
-    -- An agent-authored version names the turn and tool call that produced it; an operator one does
-    -- not have either, and must not borrow them.
     CHECK (
         (OriginCode IN (2, 3) AND SourceToolCallId IS NOT NULL AND BasePlanDigest IS NOT NULL)
         OR (OriginCode = 1 AND SourceToolCallId IS NULL AND BasePlanDigest IS NULL)
     ),
-    -- Revision one is the first version in its lane and has no predecessor; every later revision
-    -- links to exactly one.
     CHECK ((LaneRevision = 1 AND PredecessorVersionId IS NULL) OR (LaneRevision > 1 AND PredecessorVersionId IS NOT NULL))
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS ux_covenant_versions_entry_lane_revision
-    ON covenant_versions(EntryId, LaneCode, LaneRevision);
-
--- The candidate key covenant_heads carries a composite foreign key to. It proves a head's current
--- version belongs to the same entry and lane and carries the same revision and operation, which no
--- single-column reference to VersionId could.
-CREATE UNIQUE INDEX IF NOT EXISTS ux_covenant_versions_head_candidate
-    ON covenant_versions(VersionId, EntryId, LaneCode, LaneRevision, OperationCode);
-
-CREATE UNIQUE INDEX IF NOT EXISTS ux_covenant_versions_mutation
-    ON covenant_versions(MutationId);
-
-CREATE INDEX IF NOT EXISTS idx_covenant_versions_entry_created
-    ON covenant_versions(EntryId, CreatedAtUtc);
-
-CREATE INDEX IF NOT EXISTS idx_covenant_versions_source_turn
-    ON covenant_versions(SourceTurnId);

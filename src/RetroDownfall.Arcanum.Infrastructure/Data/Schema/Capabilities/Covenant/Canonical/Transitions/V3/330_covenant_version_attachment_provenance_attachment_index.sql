@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS idx_covenant_version_attachment_provenance_attachment
+    ON covenant_version_attachment_provenance(AttachmentId, AttachmentVersionIdentity);

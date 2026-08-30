@@ -35,21 +35,16 @@ public sealed class CovenantCurationEvolutionTests
     }
 
     /// <summary>
-    /// The head fingerprint has to answer for the head version, or an installation already at version 2
-    /// is compared against the tree of the version below it.
+    /// The version-two reconstruction must continue to name the published tree after the head table is
+    /// edited for version 3; otherwise the chain would pin its upgrade source to the wrong definition.
     /// </summary>
     [Fact]
-    public void The_head_fingerprint_answers_for_version_two()
+    public void The_version_two_reconstruction_keeps_its_published_fingerprint()
     {
 
-        GrimoireSchemaVersionChain canonical =
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical);
-
-        Assert.Equal(2, canonical.HeadVersion);
-
         Assert.Equal(
-            GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
-            canonical.SourceDefinitionFingerprintFor(2));
+            CovenantCanonicalSchemaVersionTwoFixture.PublishedFingerprint,
+            CovenantCanonicalSchemaVersionTwoFixture.Fingerprint);
 
     }
 
@@ -130,13 +125,23 @@ public sealed class CovenantCurationEvolutionTests
 
         GrimoireSchemaInstallResult evolved = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CovenantCanonicalSchemaVersionTwoFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.CovenantCanonical.Health);
 
         Assert.Equal(2, evolved.CovenantCanonical.SchemaVersion);
+
+        evolved = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            GrimoireSchemaVersionChains.Default,
+            1536,
+            CancellationToken.None);
+
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.CovenantCanonical.Health);
+
+        Assert.Equal(3, evolved.CovenantCanonical.SchemaVersion);
 
     }
 

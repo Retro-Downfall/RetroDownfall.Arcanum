@@ -1,0 +1,1 @@
+ALTER TABLE covenant_versions_replacement RENAME TO covenant_versions;
