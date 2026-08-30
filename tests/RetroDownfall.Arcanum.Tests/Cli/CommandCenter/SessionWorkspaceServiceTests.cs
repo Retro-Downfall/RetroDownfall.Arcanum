@@ -791,10 +791,21 @@ public sealed class SessionWorkspaceServiceTests
         DateTimeOffset t1 = DateTimeOffset.Parse("2026-07-20T12:00:01Z");
         DateTimeOffset t2 = DateTimeOffset.Parse("2026-07-20T12:00:02Z");
         DateTimeOffset t3 = DateTimeOffset.Parse("2026-07-20T12:00:03Z");
+        DateTimeOffset t4 = DateTimeOffset.Parse("2026-07-20T12:00:04Z");
+        DateTimeOffset t5 = DateTimeOffset.Parse("2026-07-20T12:00:05Z");
 
-        // Newest-first API order: result, call, assistant, user
+        // Newest-first API order: second result/call, first result/call, assistant, user
         EntryDto[] apiEntries =
         [
+            new(Guid.NewGuid(), id, "system", "[ToolResult: 10.0.0]", null, null, t5),
+            new(
+                Guid.NewGuid(),
+                id,
+                "assistant",
+                """[ToolCall: execute_command({"command":"dotnet --version"})]""",
+                null,
+                "execute_command",
+                t4),
             new(Guid.NewGuid(), id, "system", "[ToolResult: ok]", null, null, t3),
             new(
                 Guid.NewGuid(),
@@ -809,7 +820,7 @@ public sealed class SessionWorkspaceServiceTests
         ];
 
         FakeSessionHttp handler = new(
-            detail: new SessionDetailDto(id, null, "Tools", "Active", EntryCount: 4, t0, t3, null, 0),
+            detail: new SessionDetailDto(id, null, "Tools", "Active", EntryCount: 6, t0, t5, null, 0),
             entries: apiEntries);
         SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
         CommandCenterState state = new(new SessionLogBuffer());
@@ -818,17 +829,24 @@ public sealed class SessionWorkspaceServiceTests
 
         Assert.Equal(SessionResumeOutcome.Success, result.Outcome);
         string transcript = state.Log.RenderPlainText();
-        Assert.DoesNotContain("[ToolCall:", transcript, StringComparison.Ordinal);
-        Assert.DoesNotContain("[ToolResult:", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("[ToolCall: write_file", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("[ToolResult: ok]", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("[ToolCall: execute_command", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("[ToolResult: 10.0.0]", transcript, StringComparison.Ordinal);
         Assert.Contains("build an app", transcript, StringComparison.Ordinal);
         Assert.Contains("Scaffolding", transcript, StringComparison.Ordinal);
 
-        Assert.Equal(1, state.Incantations.Count);
-        IncantationRecord record = state.Incantations.Snapshot()[0];
-        Assert.Equal("write_file", record.ToolName);
-        Assert.Equal(IncantationState.Succeeded, record.State);
-        Assert.Equal("ok", record.ResultText);
-        Assert.Contains("path", record.ArgumentsJson ?? "", StringComparison.Ordinal);
+        IReadOnlyList<IncantationRecord> records = state.Incantations.Snapshot();
+        Assert.Equal(2, records.Count);
+
+        Assert.Equal("write_file", records[0].ToolName);
+        Assert.Equal("""{"path":"/tmp/a.cs","content":"x"}""", records[0].ArgumentsJson);
+        Assert.Equal("ok", records[0].ResultText);
+        Assert.Equal(IncantationState.Succeeded, records[0].State);
+        Assert.Equal("execute_command", records[1].ToolName);
+        Assert.Equal("""{"command":"dotnet --version"}""", records[1].ArgumentsJson);
+        Assert.Equal("10.0.0", records[1].ResultText);
+        Assert.Equal(IncantationState.Succeeded, records[1].State);
     }
 
     private static SessionWorkspaceService CreateWorkspace(
