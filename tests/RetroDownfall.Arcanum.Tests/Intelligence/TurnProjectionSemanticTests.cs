@@ -201,10 +201,9 @@ public sealed class TurnProjectionSemanticTests
     }
 
     /// <summary>
-    /// A Ward asks the operator to approve a Forbidden Art. The tool name alone is not informed
-    /// consent — the arguments are what says which command runs against which path, and they carry
-    /// the <c>_arcanumRiskDisclosure</c> DESIGN §11.14 mandates. Dropping them from the wire frame
-    /// leaves every client (Command Center included) approving blind.
+    /// A Ward records an ordinary tool call. The tool name alone does not describe which command runs
+    /// against which path, so the arguments — including the <c>_arcanumRiskDisclosure</c> required by
+    /// DESIGN §11.14 — remain part of the audit frame for every client (Command Center included).
     /// </summary>
     [Fact]
     public void IntelligenceEventProjection_Warded_CarriesTheToolArgumentsOntoTheFrame()
