@@ -13,8 +13,8 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// capability is therefore an explicit object the API pipeline mints per tool call, registers under
 /// the exact connection-and-request id, and hands over exactly once. Everything a Covenant mutation
 /// needs — the turn's collector, its canonical Campaign, the admission that produced this call, the
-/// call-scoped materialization snapshot, and the retirement preflight and Ward receipt when one is
-/// required — travels inside it, so a handler has nothing to re-derive and no way to widen its own
+/// call-scoped materialization snapshot, and the retirement preflight when one is required — travels
+/// inside it, so a handler has nothing to re-derive and no way to widen its own
 /// authority (§10.14).
 ///
 /// <para>Taking is one-shot and disposal is a drain rather than a flag. A use that suspends across an
@@ -49,7 +49,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         string toolName,
         string toolCallId,
         CovenantRetirementPreflight? retirementPreflight,
-        CovenantToolWardReceipt? wardReceipt,
         CancellationToken turnCancellation)
     {
 
@@ -103,20 +102,13 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
 
         bool isRetirement = string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal);
 
-        if (isRetirement && (retirementPreflight is null || wardReceipt is null))
+        if (isRetirement != (retirementPreflight is not null))
         {
 
             throw new ArgumentException(
-                "A retirement capability carries both its resolved target preflight and its Ward receipt.",
-                nameof(retirementPreflight));
-
-        }
-
-        if (!isRetirement && (retirementPreflight is not null || wardReceipt is not null))
-        {
-
-            throw new ArgumentException(
-                "A proposal capability carries no retirement target and no Ward receipt.",
+                isRetirement
+                    ? "A retirement capability carries its resolved target preflight."
+                    : "A proposal capability carries no retirement target.",
                 nameof(retirementPreflight));
 
         }
@@ -138,8 +130,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         ToolCallId = toolCallId;
 
         RetirementPreflight = retirementPreflight;
-
-        WardReceipt = wardReceipt;
 
         LogicalTurnId = collector.LogicalTurnId;
 
@@ -184,8 +174,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
     public string ToolCallId { get; }
 
     public CovenantRetirementPreflight? RetirementPreflight { get; }
-
-    public CovenantToolWardReceipt? WardReceipt { get; }
 
     public Guid LogicalTurnId { get; }
 

@@ -395,18 +395,18 @@ public sealed record WardPolicySettings
 }
 
 /// <summary>
-/// Retained, opt-in operator consent for the separate Covenant retirement Ward. Ordinary tool calls
-/// are record-only and do not consult this policy.
+/// Retained Ward compatibility shape through issue #219. No ordinary or Covenant-retirement live
+/// path consumes it.
 /// </summary>
 public sealed record WardAutoApprovePolicySettings
 {
 
-    /// <summary>Master opt-in. Default <c>false</c>; an empty <see cref="Tools"/> list is a no-op.</summary>
+    /// <summary>Retained master flag. Default <c>false</c>; no live tool path consumes it.</summary>
     public bool Enabled { get; set; }
 
     /// <summary>
-    /// Exact tool names (matched ordinal-ignore-case) eligible for retained Covenant auto-approval.
-    /// Blank and duplicate entries are rejected at startup.
+    /// Retained exact names, matched ordinal-ignore-case. Blank and duplicate entries are still
+    /// rejected at startup while the compatibility shape remains.
     /// </summary>
     public List<string> Tools { get; set; } = [];
 

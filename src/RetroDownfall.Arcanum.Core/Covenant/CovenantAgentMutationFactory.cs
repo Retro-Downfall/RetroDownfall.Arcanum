@@ -9,10 +9,11 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// <remarks>
 /// Every field an agent could otherwise assert is derived here from the capability, never read from
 /// the tool arguments: the scope is the turn's canonical Campaign, the lane is Proposed for a
-/// proposal, the origin is AgentProposed for a proposal and AgentApproved for the operator-approved
-/// retirement, the turn and tool-call identities come from the capability, and the provenance is the
-/// exact materialization snapshot of the provider call that emitted the request. Agent-originated
-/// Global mutation is therefore unrepresentable rather than merely refused (§10.14).
+/// proposal, the origin is AgentProposed for a proposal and the frozen AgentApproved compatibility
+/// code for an ungated retirement, the turn and tool-call identities come from the capability, and
+/// the provenance is the exact materialization snapshot of the provider call that emitted the
+/// request. Agent-originated Global mutation is therefore unrepresentable rather than merely
+/// refused (§10.14).
 /// </remarks>
 public static class CovenantAgentMutationFactory
 {
@@ -66,16 +67,17 @@ public static class CovenantAgentMutationFactory
     }
 
     /// <summary>
-    /// Stages one retirement against the exact target its Ward was shown.
+    /// Stages one retirement against the exact target its canonical preflight resolved.
     /// </summary>
     /// <remarks>
     /// The target, its lane, and its expected revision all come from the capability's preflight, so
-    /// the staged tombstone is provably the thing the operator approved rather than whatever the
+    /// the staged tombstone is provably the thing canonical state resolved rather than whatever the
     /// model named afterwards.
     ///
     /// <para>The origin is <see cref="CovenantOrigin.AgentApproved"/> and not
-    /// <see cref="CovenantOrigin.AgentProposed"/>: the model asked, but the operator authorized, and
-    /// that is the one origin permitted to carry Ward evidence into a durable version (§5).</para>
+    /// <see cref="CovenantOrigin.AgentProposed"/>. The numeric code is frozen compatibility
+    /// vocabulary for an agent-requested retirement admitted by the ungated host; new rows carry no
+    /// Ward digest or Ward authorization mode.</para>
     /// </remarks>
     public static Result<CovenantMutationIntent> Retire(
         CovenantToolInvocationContext capability,
@@ -84,19 +86,11 @@ public static class CovenantAgentMutationFactory
 
         ArgumentNullException.ThrowIfNull(capability);
 
-        if (capability.RetirementPreflight is not { } preflight
-            || capability.WardReceipt is not { } ward)
+        if (capability.RetirementPreflight is not { } preflight)
         {
             return Result<CovenantMutationIntent>.Failure(new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
-                "This capability carries no resolved retirement target and no operator consent."));
-        }
-
-        if (!ward.IsApproved)
-        {
-            return Result<CovenantMutationIntent>.Failure(new Error(
-                ErrorCodes.Covenant.ForbiddenAuthority,
-                "The operator did not approve this Covenant retirement."));
+                "This capability carries no resolved retirement target."));
         }
 
         return Build(
@@ -211,9 +205,9 @@ public static class CovenantAgentMutationFactory
             capability.ProducingAdmission.Digest,
             [.. provenance.Select(static leaf => leaf.ContentHash)]));
 
-        // No operator authority epoch: an agent mutation is authorized by the turn's admission and,
-        // for a retirement, by the Ward receipt — never by operator authority, which models never
-        // hold. The key-reclamation epoch is bound because the intent expects it, and evidence that
+        // No operator authority epoch: an agent mutation is authorized by the turn's admission and
+        // one-call capability, never by operator authority, which models never hold. The
+        // key-reclamation epoch is bound because the intent expects it, and evidence that
         // omitted it would not cover the one fact publication compares the key against.
         CovenantDigest authorizationDigest = CovenantDigests.Authorization(new AuthorizationDigestInput(
             requestDigest,
@@ -223,8 +217,8 @@ public static class CovenantAgentMutationFactory
             checked((ulong)expectedKeyEpoch),
             CampaignRegistryEpoch: null,
             capability.RetirementPreflight?.PreflightBodyDigest,
-            capability.WardReceipt?.Digest,
-            capability.WardReceipt?.Mode ?? CovenantAuthorizationMode.None));
+            WardReceiptDigest: null,
+            Authorization: CovenantAuthorizationMode.None));
 
         CovenantDigest finalMutationDigest = CovenantDigests.Mutation(
             new MutationDigestInput(requestDigest, authorizationDigest));
@@ -247,9 +241,9 @@ public static class CovenantAgentMutationFactory
                 // The MCP path has no HTTP response body to bind, so the durable receipt binds the
                 // exact tool call whose answer reported this staging instead.
                 CovenantDigestPair.Combine(finalMutationDigest, toolInputDigest),
-                capability.WardReceipt?.Mode ?? CovenantAuthorizationMode.None,
-                capability.WardReceipt?.Digest,
-                capability.RetirementPreflight?.PreflightBodyDigest),
+                CovenantAuthorizationMode.None,
+                WardReceiptDigest: null,
+                PreflightBodyDigest: capability.RetirementPreflight?.PreflightBodyDigest),
             capability.LogicalTurnId,
             capability.ToolCallId,
             capability.BasePlanDigest,

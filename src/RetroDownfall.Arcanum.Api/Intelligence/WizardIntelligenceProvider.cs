@@ -3000,6 +3000,7 @@ public sealed partial class WizardIntelligenceProvider(
                             streamAdmitted.Receipt,
                             streamAdmitted.Receipt.Materialization,
                             stagingScope.HeadProbe,
+                            invocationContext.CanStageCovenantMutation,
                             covenantToolCapabilities,
                             inferenceToken));
 

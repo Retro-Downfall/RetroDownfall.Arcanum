@@ -1,8 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Ward compatibility projection. Ordinary tool calls are record-only; the live-Ward fields remain
-/// for the separate Covenant retirement path and the active-Ward API.
+/// Ward compatibility projection retained through issue #219. No ordinary or Covenant-retirement
+/// live path consumes the approval fields; the active-Ward API remains for compatibility.
 /// </summary>
 public sealed record WardSettings
 {
@@ -28,7 +28,7 @@ public sealed record WardSettings
 
     public int MaxActiveWards { get; set; } = 50;
 
-    /// <summary>Retained compatibility value; ordinary unattended tool calls ignore it.</summary>
+    /// <summary>No ordinary or Covenant-retirement live path consumes this compatibility value.</summary>
     public bool AutoDenyInUnattendedMode { get; set; } = true;
 
     /// <summary>
@@ -39,17 +39,16 @@ public sealed record WardSettings
     public bool UnattendedMode { get; set; }
 
     /// <summary>
-    /// Master opt-in for the retained Covenant retirement auto-approval policy
-    /// (<c>Arcanum:Security:Ward:AutoApprove:Enabled</c>). Ordinary tool calls ignore it.
+    /// Retained compatibility value (<c>Arcanum:Security:Ward:AutoApprove:Enabled</c>). No ordinary
+    /// or Covenant-retirement live path consumes it.
     /// </summary>
     public bool AutoApproveEnabled { get; set; }
 
     private readonly List<string> _autoApproveTools = [];
 
     /// <summary>
-    /// Exact tool names eligible for the retained Covenant auto-approval policy. Normalized by
-    /// <c>ResolveWard</c> (trimmed, blanks dropped, ordinal-ignore-case deduplicated). Ordinary tool
-    /// calls ignore this list.
+    /// Retained compatibility names normalized by <c>ResolveWard</c> (trimmed, blanks dropped,
+    /// ordinal-ignore-case deduplicated). No ordinary or Covenant-retirement live path consumes them.
     /// </summary>
     public IReadOnlyList<string> AutoApproveTools
     {

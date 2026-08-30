@@ -462,6 +462,71 @@ public sealed class CovenantCanonicalSchemaTests
     }
 
     /// <summary>
+    /// New AgentApproved retirements are receipt-free, while the retained Ward vocabulary still admits
+    /// only the historical interactive and configured-auto-approval evidence tuples.
+    /// </summary>
+    [Fact]
+    public async Task AgentApproved_Ward_evidence_tuples_preserve_legacy_rows_and_admit_receipt_free_retirement()
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        (long Origin, string WardDigest, string AuthorizationMode, bool Accepted)[] cases =
+        [
+            (3, "NULL", "NULL", true),
+            (3, "randomblob(32)", "2", true),
+            (3, "randomblob(32)", "3", true),
+            (3, "randomblob(32)", "1", false),
+            (3, "randomblob(32)", "NULL", false),
+            (3, "NULL", "2", false),
+            (1, "randomblob(32)", "NULL", false),
+            (1, "NULL", "2", false),
+            (2, "randomblob(32)", "NULL", false),
+            (2, "NULL", "3", false),
+        ];
+
+        foreach ((long origin, string wardDigest, string authorizationMode, bool accepted) in cases)
+        {
+
+            string entryId = NewId();
+
+            await database.ExecuteAsync(
+                InsertEntry(entryId, scopeCode: 2, campaignId: NewId(), normalizedKey: $"ward.tuple.{entryId}"),
+                CancellationToken.None);
+
+            string sql = InsertShapedVersion(
+                NewId(),
+                entryId,
+                laneCode: origin == 2 ? 2 : 1,
+                laneRevision: 1,
+                operationCode: 2,
+                ["NULL", "NULL", "NULL", "NULL"],
+                origin: origin,
+                useDefaultWardFields: false,
+                wardReceiptDigest: wardDigest,
+                authorizationModeCode: authorizationMode);
+
+            if (accepted)
+            {
+
+                await database.ExecuteAsync(sql, CancellationToken.None);
+
+            }
+            else
+            {
+
+                _ = await AssertRaisesAsync(database, sql);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
     /// Agent-proposed content is Campaign-scoped by construction. A Global Proposed head would let a
     /// proposal nobody has confirmed apply to every Campaign on the installation at once, so the
     /// combination is refused at the table rather than left to the layer that writes heads.
@@ -1100,7 +1165,10 @@ public sealed class CovenantCanonicalSchemaTests
         long operationCode,
         string[] shape,
         long compiledByteCost = 0,
-        long? origin = null)
+        long? origin = null,
+        bool useDefaultWardFields = true,
+        string? wardReceiptDigest = null,
+        string? authorizationModeCode = null)
     {
 
         // The lane decides the origin unless a test is deliberately writing a disagreeing pair, and
@@ -1116,9 +1184,13 @@ public sealed class CovenantCanonicalSchemaTests
 
         string basePlanDigest = agentAuthored ? "randomblob(32)" : "NULL";
 
-        string wardReceiptDigest = originCode == 3 ? "randomblob(32)" : "NULL";
+        string resolvedWardReceiptDigest = useDefaultWardFields
+            ? originCode == 3 ? "randomblob(32)" : "NULL"
+            : wardReceiptDigest ?? "NULL";
 
-        string authorizationModeCode = originCode == 3 ? "2" : "NULL";
+        string resolvedAuthorizationModeCode = useDefaultWardFields
+            ? originCode == 3 ? "2" : "NULL"
+            : authorizationModeCode ?? "NULL";
 
         return $"""
         INSERT INTO covenant_versions (
@@ -1169,8 +1241,8 @@ public sealed class CovenantCanonicalSchemaTests
             {sourceToolCallId},
             {basePlanDigest},
             NULL,
-            {wardReceiptDigest},
-            {authorizationModeCode},
+            {resolvedWardReceiptDigest},
+            {resolvedAuthorizationModeCode},
             {Quote(NewId())},
             randomblob(32),
             randomblob(32),

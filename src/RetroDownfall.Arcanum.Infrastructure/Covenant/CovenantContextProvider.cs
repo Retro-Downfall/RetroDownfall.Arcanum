@@ -135,12 +135,16 @@ public sealed class CovenantContextProvider(
             return plan.Error;
         }
 
-        bool canStage = invocation.CanStageCovenantMutation;
+        bool canStageProposal = invocation.CanStageCovenantMutation;
 
-        // An empty plan that cannot stage anything has no reason to keep a lease for the rest of the
-        // turn, and holding one would delay every destructive operation behind a turn that was never
-        // going to touch Covenant state.
-        if (plan.Value.EligibleDecisions.IsEmpty && !canStage)
+        bool canPrepareRetirement = invocation.CanPrepareCovenantRetirement;
+
+        bool needsMutationMaterial = canStageProposal || canPrepareRetirement;
+
+        // An empty plan that can neither stage a proposal nor prepare a retirement has no reason to
+        // keep a lease for the rest of the turn, and holding one would delay every destructive
+        // operation behind a turn that was never going to touch Covenant state.
+        if (plan.Value.EligibleDecisions.IsEmpty && !needsMutationMaterial)
         {
             return Absent(CovenantTurnAbsence.Empty);
         }
@@ -149,7 +153,7 @@ public sealed class CovenantContextProvider(
             CovenantTurnContext.ForPlan(
                 plan.Value,
                 lease,
-                canStage
+                needsMutationMaterial
                     ? new CovenantMutationCollector(logicalTurnId, plan.Value.Digest, Guid.NewGuid())
                     : null,
                 logicalTurnId,
@@ -157,7 +161,7 @@ public sealed class CovenantContextProvider(
                 // Built here because this is the one place that holds both the store and the turn's
                 // own lease. A probe assembled later would either need the lease handed out — which is
                 // how a turn ends up with two owners for one admission — or a second acquisition.
-                canStage ? new CovenantTurnHeadProbe(store, campaign, lease) : null));
+                needsMutationMaterial ? new CovenantTurnHeadProbe(store, campaign, lease) : null));
 
     }
 

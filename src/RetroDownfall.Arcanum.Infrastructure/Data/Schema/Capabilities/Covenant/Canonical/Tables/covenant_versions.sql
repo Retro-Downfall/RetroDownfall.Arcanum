@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS covenant_versions (
+CREATE TABLE IF NOT EXISTS "covenant_versions" (
     VersionId TEXT NOT NULL PRIMARY KEY,
     EntryId TEXT NOT NULL REFERENCES covenant_entries(EntryId),
     LaneCode INTEGER NOT NULL CHECK (LaneCode IN (1, 2)),
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS covenant_versions (
     RequestIdempotencyDigest BLOB NOT NULL CHECK (length(RequestIdempotencyDigest) = 32),
     AuthorizationDigest BLOB NOT NULL CHECK (length(AuthorizationDigest) = 32),
     FinalMutationDigest BLOB NOT NULL CHECK (length(FinalMutationDigest) = 32),
-    PredecessorVersionId TEXT NULL REFERENCES covenant_versions(VersionId),
+    PredecessorVersionId TEXT NULL REFERENCES "covenant_versions"(VersionId),
     AttachmentProvenanceCount INTEGER NOT NULL CHECK (AttachmentProvenanceCount >= 0),
     AttachmentProvenanceDigest BLOB NOT NULL CHECK (length(AttachmentProvenanceDigest) = 32),
     CreatedAtUtc TEXT NOT NULL,
@@ -52,10 +52,14 @@ CREATE TABLE IF NOT EXISTS covenant_versions (
     -- only the two agent origins require one. (The no-Global-Proposed rule spans entries and
     -- versions, so it cannot be a single-table CHECK; covenant_heads_validate_* enforces it.)
     CHECK (OriginCode = 1 OR SourceTurnId IS NOT NULL),
-    -- AgentApproved retirement is the one origin that requires Ward evidence and a Ward mode.
+    -- New AgentApproved retirements are receipt-free. Historical AgentApproved rows retain their Ward
+    -- evidence and its persisted authorization mode; no other origin can carry either field.
     CHECK (
-        (OriginCode = 3 AND WardReceiptDigest IS NOT NULL AND AuthorizationModeCode IN (2, 3))
-        OR (OriginCode <> 3 AND WardReceiptDigest IS NULL)
+        (OriginCode = 3 AND (
+            (WardReceiptDigest IS NULL AND AuthorizationModeCode IS NULL)
+            OR (WardReceiptDigest IS NOT NULL AND AuthorizationModeCode IS NOT NULL AND AuthorizationModeCode IN (2, 3))
+        ))
+        OR (OriginCode <> 3 AND WardReceiptDigest IS NULL AND AuthorizationModeCode IS NULL)
     ),
     -- An agent-authored version names the turn and tool call that produced it; an operator one does
     -- not have either, and must not borrow them.

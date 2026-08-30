@@ -1208,11 +1208,9 @@ public sealed class ConfigurationValidator(
     }
 
     /// <summary>
-    /// The Ward auto-approval allowlist grants advance operator consent, so a typo must fail at
-    /// startup rather than silently never matching. Tool availability is a runtime fact (MCP servers
-    /// are discovered after configuration binds), so only the shape is checked here: a blank entry is
-    /// meaningless and a duplicate hides an intent the operator cannot see in the file. A name that
-    /// resolves to no available tool simply grants nothing.
+    /// The retained Ward auto-approval list has no live ordinary or Covenant-retirement consumer.
+    /// While issue #219 preserves the public shape, validate it consistently: a blank entry is
+    /// meaningless and a duplicate hides an intent the operator cannot see in the file.
     /// </summary>
     private static void ValidateWardAutoApproval(
         WardPolicySettings? ward,

@@ -1,0 +1,1 @@
+DROP TABLE temp.covenant_version_attachment_provenance_v3_staging;

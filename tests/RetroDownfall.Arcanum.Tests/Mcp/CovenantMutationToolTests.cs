@@ -265,7 +265,7 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
-    public async Task A_retirement_stages_the_exact_target_its_ward_was_shown()
+    public async Task A_retirement_stages_the_exact_target_its_preflight_resolved()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
@@ -292,20 +292,6 @@ public sealed class CovenantMutationToolTests
         McpToolsCallResultWire result = await session.CallRetireAsync("some.other.key", nameof(CovenantLane.Proposed));
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, Failure(result).Code);
-        Assert.Equal(0, session.Collector.StagedCount);
-    }
-
-    [Fact]
-    public async Task A_retirement_the_operator_declined_stages_nothing()
-    {
-        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
-
-        session.RegisterRetirementCapability(
-            ward: CovenantCapabilityFixtures.WardReceipt(CovenantWardDecision.Denied));
-
-        McpToolsCallResultWire result = await session.CallRetireAsync("campaign.a", nameof(CovenantLane.Proposed));
-
-        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, Failure(result).Code);
         Assert.Equal(0, session.Collector.StagedCount);
     }
 
@@ -399,19 +385,10 @@ public sealed class CovenantMutationToolTests
             .Select(static property => property.Name)
             .Order(StringComparer.Ordinal)];
 
-    /// <summary>
-    /// Retirement is advertised only where it can be performed.
-    /// </summary>
-    /// <remarks>
-    /// With Wards switched off the egress policy denies every retirement outright, so the tool could
-    /// only ever refuse — and advertising a tool that always refuses teaches a model the capability is
-    /// broken rather than absent. The handler stays registered either way, so a direct or stale
-    /// invocation still fails closed rather than reaching an unregistered name.
-    /// </remarks>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Retirement_is_advertised_only_where_a_Ward_can_be_raised(bool wardsEnabled)
+    public async Task Retirement_is_advertised_independently_of_Ward_configuration(bool wardsEnabled)
     {
 
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync(wardsEnabled: wardsEnabled);
@@ -420,11 +397,9 @@ public sealed class CovenantMutationToolTests
 
         string[] listed = [.. tools.Tools.Select(static tool => tool.Name)];
 
-        // The proposal is advertised either way: it needs no Ward, because the Proposed lane is
-        // review-only beside effective Confirmed content and cannot change it.
         Assert.Contains(CovenantToolNames.ProposeCovenant, listed);
 
-        Assert.Equal(wardsEnabled, listed.Contains(CovenantToolNames.RetireCovenant));
+        Assert.Contains(CovenantToolNames.RetireCovenant, listed);
 
         Assert.Contains(
             CovenantToolNames.RetireCovenant,
@@ -590,18 +565,16 @@ public sealed class CovenantMutationToolTests
                 CovenantToolNames.ProposeCovenant,
                 toolCallId,
                 materialization,
-                retirementPreflight: null,
-                wardReceipt: null);
+                retirementPreflight: null);
 
         public CovenantToolInvocationContext RegisterRetirementCapability(
             string toolCallId = "call-1",
-            CovenantToolWardReceipt? ward = null) =>
+            CovenantRetirementPreflight? preflight = null) =>
             Register(
                 CovenantToolNames.RetireCovenant,
                 toolCallId,
                 materialization: null,
-                CovenantCapabilityFixtures.RetirementPreflight(),
-                ward ?? CovenantCapabilityFixtures.WardReceipt(CovenantWardDecision.Approved));
+                preflight ?? CovenantCapabilityFixtures.RetirementPreflight());
 
         public async Task<McpToolsListResultWire> ListToolsAsync()
         {
@@ -647,8 +620,7 @@ public sealed class CovenantMutationToolTests
             string toolName,
             string toolCallId,
             ProviderCallMaterializationSnapshot? materialization,
-            CovenantRetirementPreflight? retirementPreflight,
-            CovenantToolWardReceipt? wardReceipt)
+            CovenantRetirementPreflight? retirementPreflight)
         {
             CovenantToolCapabilityNonce nonce = CovenantToolCapabilityNonce.Create();
 
@@ -662,7 +634,6 @@ public sealed class CovenantMutationToolTests
                 toolName,
                 toolCallId,
                 retirementPreflight,
-                wardReceipt,
                 CancellationToken.None);
 
             Assert.True(Registry.TryRegister(
