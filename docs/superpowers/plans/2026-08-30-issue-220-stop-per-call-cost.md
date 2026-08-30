@@ -22,7 +22,7 @@
 - Preserve `ForbiddenArts`, `UnattendedMode`, and `ToolPolicy.NoForbiddenArts`. The list remains an advertisement filter and never becomes an execution gate.
 - Do not alter canonical product documentation unless implementation reveals a public semantic change. The approved spec and this plan are the expected documentation for this internal optimization; #221 owns the broad wording sweep.
 - Treat every proof as release-grade: no timing-dependent allocation assertion, warning suppression, skipped applicable gate, weakened containment, or test seam that adds work back to the production hot path.
-- Do not expand into #221 or #230, close epic #197, modify `main`, or create a PR. The temporary remote feature ref exists only long enough to run the repository's authoritative manually dispatched CI and is deleted as part of final integration.
+- Do not expand into #221 or #230, close epic #197, modify `main`, create a PR, push the temporary feature branch, or dispatch GitHub CI. Push only the completed `remove-wards` branch; GitHub CI is deferred until the epic's eventual merge to `main`.
 - Use `rg --no-config`. Run .NET build/test processes with `--disable-build-servers -m:1` when invoked directly. The VSTest host requires permission to open its local socket in this environment.
 - Run the complete verification suite exactly once after bounded review. Do not rerun it after the history-only merge; prove the merged tree equals the verified feature tree.
 
@@ -514,50 +514,34 @@ Run the exact Task 2 Step 3 measurement command against the reviewed implementat
 
 Prepare the issue comment from the actual captured values. Do not invent or round away an unfavorable result.
 
-## Task 5: Run the complete authoritative verification suite once
+## Task 5: Run the complete locally applicable verification suite once
 
-Use `superpowers:verification-before-completion`. The repository deliberately has no push-triggered CI, and its production macOS containment, Windows, benchmark, and workflow-lint lanes cannot all be reproduced faithfully in this checkout. Use one manually dispatched CI run against an ephemeral remote feature ref as the sole complete-suite run. Do not duplicate it with another local unfiltered suite.
-
-### Step 1: Run the host-native asset gate and freeze the candidate commit
-
-Run the one required host-native integrity check that `ci.yml` does not invoke, then prove the candidate is committed and clean:
+Use `superpowers:verification-before-completion`. Run from the repository root in this order, stop at the first failure, and apply `superpowers:systematic-debugging` before changing code:
 
 ```bash
+dotnet build RetroDownfall.Arcanum.slnx --disable-build-servers -m:1
+python3 -m unittest scripts/coverage_threshold_test.py
+./scripts/coverage.sh --threshold
+dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj --disable-build-servers -m:1
+dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj --disable-build-servers -m:1
+./scripts/packaging/macos/common_test.sh
+./scripts/verify_aot_il_warnings_test.sh
+./scripts/verify-aot-il-warnings.sh
 ./scripts/verify-native-sqlcipher.sh --rid osx-arm64
+dotnet build tests/RetroDownfall.Arcanum.Covenant.Benchmarks/RetroDownfall.Arcanum.Covenant.Benchmarks.csproj -c Debug --no-incremental --disable-build-servers -m:1
+./scripts/benchmark-covenant.sh --gate --record .superpowers/sdd/2026-08-30-issue-220-stop-per-call-cost/covenant-benchmark-run.json
+python3 scripts/align_csharp_blanklines.py --repo . --check
+find scripts -name '*.sh' -print0 | xargs -0 shellcheck -x -P SCRIPTDIR
+actionlint
 git diff --check b2561a3a..HEAD
 git status --short --branch
-git rev-parse HEAD
-git rev-parse HEAD^{tree}
 ```
 
-Expected: the verified `osx-arm64` asset passes provenance, hash, symbol, compile-option, and reproducibility checks; the worktree is clean. Record the candidate commit and tree ids.
+`scripts/coverage.sh --threshold` is the one complete non-Perf Arcanum suite; do not run another unfiltered Arcanum suite. Compendium and The Forge are separate shipped-client suites. The Covenant benchmark is the repository's Native-AOT absolute gate, not the manual xUnit `Category=Perf` suite. Do not run that machine-load-sensitive non-gate; Task 2's fixed-N allocation test is the deterministic #220 evidence.
 
-Do not run the manual `Category=Perf` suite. `docs/Arcanum.DESIGN.md` §13.8 defines it as a machine-load-sensitive non-gate, and Task 2's fixed-N current-thread allocation test is the deterministic #220 acceptance evidence.
+The GitHub-hosted production macOS workspace-check jail, disposable-Keychain integration, and Windows lanes are explicitly deferred by the operator until the eventual merge to `main`; do not simulate them by mutating the local root-owned SDK or operator Keychain. No temporary branch is pushed and no GitHub workflow is dispatched.
 
-### Step 2: Publish only the candidate ref and dispatch CI without a PR
-
-```bash
-git push --set-upstream origin codex/issue-220-stop-per-call-cost
-gh workflow run ci.yml --repo Retro-Downfall/RetroDownfall.Arcanum --ref codex/issue-220-stop-per-call-cost
-gh run list --repo Retro-Downfall/RetroDownfall.Arcanum --workflow ci.yml --branch codex/issue-220-stop-per-call-cost --event workflow_dispatch --limit 5 --json databaseId,headSha,status,conclusion,createdAt,url
-```
-
-Select the newly dispatched run whose `headSha` exactly equals the frozen candidate commit. Once the matching row appears, capture and validate its exact numeric id:
-
-```bash
-CANDIDATE_SHA="$(git rev-parse HEAD)"
-RUN_ID="$(gh run list --repo Retro-Downfall/RetroDownfall.Arcanum --workflow ci.yml --branch codex/issue-220-stop-per-call-cost --event workflow_dispatch --limit 5 --json databaseId,headSha,createdAt --jq "map(select(.headSha == \"$CANDIDATE_SHA\"))[0].databaseId")"
-test -n "$RUN_ID"
-test "$RUN_ID" != "null"
-gh run watch "$RUN_ID" --repo Retro-Downfall/RetroDownfall.Arcanum --exit-status
-gh run view "$RUN_ID" --repo Retro-Downfall/RetroDownfall.Arcanum --json databaseId,headSha,status,conclusion,url,jobs
-```
-
-Do not rely on "latest" after selection. Confirm the final readback's `headSha` is still `CANDIDATE_SHA` before accepting the result.
-
-Acceptance is a successful run at the frozen commit with all applicable authoritative jobs green: native asset status; Release builds; Compendium, The Forge, and the complete non-Perf Arcanum coverage suite; production macOS workspace-check containment; macOS AOT/IL closure and its self-test; Covenant benchmark gate; Windows suites when their verified native assets make them eligible; C# alignment; repository-wide shellcheck; and actionlint. Only the `shippable-change` and beta-release jobs may be skipped because this is a manual non-`main` dispatch. Record the run URL, job conclusions, exact test counts, warnings, coverage, benchmark artifact, and allocation evidence.
-
-If the run fails, use `superpowers:systematic-debugging`, add a failing focused test when the defect is observable, fix and commit, push the updated feature ref, and dispatch a new run. Never rerun a green complete suite.
+Acceptance is zero failed applicable tests, zero build/AOT/IL/native/benchmark errors, zero warnings, coverage thresholds met, alignment/shell/workflow/diff checks clean, and a clean tracked worktree. Record exact counts and outputs once. Never rerun a green complete suite.
 
 ## Task 6: Merge into `remove-wards`, clean branches, push, and mark #220 done
 
@@ -572,13 +556,12 @@ git rev-parse HEAD
 git rev-parse HEAD^{tree}
 git rev-parse origin/main
 git rev-parse origin/remove-wards
-git rev-parse origin/codex/issue-220-stop-per-call-cost
 git merge-base --is-ancestor origin/main origin/remove-wards
 git merge-base --is-ancestor origin/remove-wards HEAD
 git status --short --branch
 ```
 
-Confirm `origin/main` and `origin/remove-wards` have not advanced unexpectedly, the remote feature ref equals the CI-verified candidate commit, and both ancestry checks succeed. If `origin/main` has advanced beyond `origin/remove-wards`, or `origin/remove-wards` is no longer contained in the verified feature branch, stop for direction; #220 does not authorize silently merging new `main` or unrelated aggregation work into the verified tree. Do not overwrite or force-push.
+Confirm `origin/main` and `origin/remove-wards` have not advanced unexpectedly and both ancestry checks succeed. If `origin/main` has advanced beyond `origin/remove-wards`, or `origin/remove-wards` is no longer contained in the verified feature branch, stop for direction; #220 does not authorize silently merging new `main` or unrelated aggregation work into the verified tree. Do not overwrite or force-push.
 
 ### Step 2: Merge every #220 commit into the tracked aggregation branch
 
@@ -598,7 +581,7 @@ git diff --check
 git status --short --branch
 ```
 
-### Step 3: Delete the local feature branch and atomically publish the final branch state
+### Step 3: Delete the local feature branch and push only `remove-wards`
 
 Delete every local feature branch created for #220 after confirming it is merged. First inspect `git worktree list --porcelain`. If the feature branch is still checked out in an auxiliary worktree because the merge ran in a different `remove-wards` checkout, verify that auxiliary worktree is clean and detach it at the verified `remove-wards` merge commit; never remove a user worktree merely to free the branch. Then run in the aggregation checkout:
 
@@ -606,16 +589,16 @@ Delete every local feature branch created for #220 after confirming it is merged
 git branch -d codex/issue-220-stop-per-call-cost
 ```
 
-Publish the merge and delete the temporary remote ref in one atomic remote transaction:
+Publish only the completed aggregation branch:
 
 ```bash
-git push --atomic origin remove-wards :codex/issue-220-stop-per-call-cost
+git push origin remove-wards
 git rev-parse remove-wards
 git rev-parse origin/remove-wards
 git ls-remote --heads origin codex/issue-220-stop-per-call-cost
 ```
 
-The two final `remove-wards` ids must match and the feature-ref query must be empty. Do not push or merge `main`.
+The two final `remove-wards` ids must match and the feature-ref query must be empty because the feature branch was never pushed. Do not push or merge `main`.
 
 ### Step 4: Post evidence and close issue #220
 
