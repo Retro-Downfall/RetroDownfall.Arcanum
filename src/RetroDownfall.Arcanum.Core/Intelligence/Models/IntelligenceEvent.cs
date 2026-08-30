@@ -46,8 +46,8 @@ public sealed record IntelligenceEvent(
     /// <summary>
     /// How a <c>warded</c> / <c>wardResolved</c> outcome was produced (issues #53 and #216).
     /// Additive: omitted when null, so clients that ignore it keep their existing behavior. Clients
-    /// use it to tell an operator-resolved Ward from one the host resolved on its own — auto-approved
-    /// and record-only ungated outcomes must be reported, not prompted for.
+    /// use it to describe retained historical outcomes. Every Ward frame is informational; clients
+    /// report it and never open an approval prompt.
     /// </summary>
     [property: JsonPropertyName("origin")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

@@ -205,12 +205,10 @@ internal sealed class IntelligenceEventProjection
         };
 
     /// <summary>
-    /// Re-materializes the tool arguments the Ward gate is asking the operator to approve.
-    /// <see cref="ApprovalRequested"/> flattens them to text on the way through the streaming
-    /// mapper, and a <c>warded</c> frame without them leaves the operator consenting on a tool name
-    /// alone — with the <c>_arcanumRiskDisclosure</c> DESIGN §11.14 requires silently suppressed.
-    /// Empty or unparsable text is omitted rather than fatal: an unreadable argument document must
-    /// not take down a turn that is already waiting on a human.
+    /// Re-materializes the arguments carried by an informational Ward record.
+    /// <see cref="ApprovalRequested"/> is the retained internal TurnEvent name and flattens them to
+    /// text on the way through the streaming mapper. Empty or unparsable text is omitted rather than
+    /// fatal so malformed observability data cannot take down the turn.
     /// </summary>
     private static JsonElement? TryReadWardArguments(string? argumentsJson)
     {

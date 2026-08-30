@@ -79,9 +79,8 @@ public sealed class CampaignSettingsTests
             CampaignRepository.SerializeSettings(settings),
             StringComparison.Ordinal);
 
-        WardSettings restrictiveWards = ArcanumRuntimeDefaults.Ward with
+        WardSettings configuredAdvertisementFilter = ArcanumRuntimeDefaults.Ward with
         {
-            Enabled = true,
             ForbiddenArts = ["write_file"],
         };
 
@@ -89,7 +88,7 @@ public sealed class CampaignSettingsTests
             ToolRiskClassifier.RequiresWard(
                 "write_file",
                 campaignRequiresWard: true,
-                restrictiveWards));
+                configuredAdvertisementFilter));
 
     }
 

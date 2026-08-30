@@ -40,17 +40,47 @@ public sealed class ApprenticeServiceReliabilityTests
             new CapturingLogger<ApprenticeService>(),
             intelligence);
 
-        object outcome = await ExecuteStepStreamAsync(
+        ApprenticeService.StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
             service,
             intelligence,
             TestApprentice(apprenticeId));
 
-        Assert.True(OutcomeProperty<bool>(outcome, "StepFailed"));
-        Assert.True(OutcomeProperty<bool>(outcome, "ForbiddenArtDenied"));
-        Assert.False(OutcomeProperty<bool>(outcome, "IsRetryable"));
-        Assert.Equal(
-            denial.Data,
-            OutcomeProperty<string?>(outcome, "ErrorMessage"));
+        Assert.True(outcome.StepFailed);
+        Assert.True(outcome.ToolDenied);
+        Assert.False(outcome.IsRetryable);
+        Assert.Equal(denial.Data, outcome.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ExecuteStepStream_LegacyDeniedWardFollowedByResult_CompletesSuccessfully()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+        ScriptedStreamIntelligence intelligence = new(
+            new IntelligenceEvent(
+                IntelligenceEventType.WardResolved,
+                Message: "legacy audit record",
+                WardId: "legacy-ward",
+                WardToolName: "write_file",
+                WardAllowed: false),
+            new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                Message: "completed"));
+        ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            new ArcanumSettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        ApprenticeService.StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
+            service,
+            intelligence,
+            TestApprentice(apprenticeId));
+
+        Assert.False(outcome.StepFailed);
+        Assert.False(outcome.ToolDenied);
+        Assert.False(outcome.IsRetryable);
+        Assert.Equal("completed", outcome.ResultText);
+        Assert.Null(outcome.ErrorMessage);
     }
 
     [Fact]
@@ -76,16 +106,14 @@ public sealed class ApprenticeServiceReliabilityTests
             new CapturingLogger<ApprenticeService>(),
             intelligence);
 
-        object outcome = await ExecuteStepStreamAsync(
+        ApprenticeService.StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
             service,
             intelligence,
             TestApprentice(apprenticeId));
 
-        Assert.False(OutcomeProperty<bool>(outcome, "StepFailed"));
-        Assert.False(OutcomeProperty<bool>(outcome, "ForbiddenArtDenied"));
-        Assert.Equal(
-            "completed",
-            OutcomeProperty<string?>(outcome, "ResultText"));
+        Assert.False(outcome.StepFailed);
+        Assert.False(outcome.ToolDenied);
+        Assert.Equal("completed", outcome.ResultText);
     }
 
     [Fact]
@@ -110,16 +138,14 @@ public sealed class ApprenticeServiceReliabilityTests
             new CapturingLogger<ApprenticeService>(),
             intelligence);
 
-        object outcome = await ExecuteStepStreamAsync(
+        ApprenticeService.StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
             service,
             intelligence,
             TestApprentice(apprenticeId));
 
-        Assert.False(OutcomeProperty<bool>(outcome, "StepFailed"));
-        Assert.False(OutcomeProperty<bool>(outcome, "ForbiddenArtDenied"));
-        Assert.Equal(
-            "completed",
-            OutcomeProperty<string?>(outcome, "ResultText"));
+        Assert.False(outcome.StepFailed);
+        Assert.False(outcome.ToolDenied);
+        Assert.Equal("completed", outcome.ResultText);
     }
 
     [Fact]
@@ -158,15 +184,13 @@ public sealed class ApprenticeServiceReliabilityTests
                 .GetAsyncEnumerator();
         Task<bool> firstEvent = chronicle.MoveNextAsync().AsTask();
 
-        object outcome = await ExecuteStepStreamAsync(
+        ApprenticeService.StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
             service,
             intelligence,
             TestApprentice(apprenticeId));
 
-        Assert.False(OutcomeProperty<bool>(outcome, "StepFailed"));
-        Assert.Equal(
-            "completed",
-            OutcomeProperty<string?>(outcome, "ResultText"));
+        Assert.False(outcome.StepFailed);
+        Assert.Equal("completed", outcome.ResultText);
         Assert.True(
             await firstEvent.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(
@@ -756,58 +780,21 @@ public sealed class ApprenticeServiceReliabilityTests
         },
     };
 
-    private static async Task<object> ExecuteStepStreamAsync(
+    private static async Task<ApprenticeService.StepExecutionOutcome> ExecuteStepStreamAsync(
         ApprenticeService service,
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice)
     {
-        MethodInfo? method = typeof(ApprenticeService)
-            .GetMethod(
-                "ExecuteStepStreamAsync",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-
-        Assert.NotNull(method);
-
         using CancellationTokenSource linkedCancellation = new();
-        Task execution = Assert.IsAssignableFrom<Task>(
-            method!.Invoke(
-                service,
-                [
-                    intelligence,
-                    apprentice,
-                    "perform the step",
-                    linkedCancellation,
-                    apprentice.Id,
-                    false,
-                ]));
 
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
-
-        PropertyInfo? resultProperty = execution.GetType()
-            .GetProperty("Result", BindingFlags.Public | BindingFlags.Instance);
-
-        Assert.NotNull(resultProperty);
-
-        object? result = resultProperty!.GetValue(execution);
-
-        Assert.NotNull(result);
-
-        return result;
-    }
-
-    private static T OutcomeProperty<T>(
-        object outcome,
-        string propertyName)
-    {
-        PropertyInfo? property = outcome.GetType()
-            .GetProperty(
-                propertyName,
-                BindingFlags.Public | BindingFlags.Instance);
-
-        Assert.NotNull(property);
-
-        return Assert.IsAssignableFrom<T>(
-            property!.GetValue(outcome));
+        return await service.ExecuteStepStreamAsync(
+                intelligence,
+                apprentice,
+                "perform the step",
+                linkedCancellation,
+                apprentice.Id,
+                false)
+            .WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     private static Apprentice TestApprentice(Guid apprenticeId) =>

@@ -279,7 +279,6 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
             client,
             new TestOptionsMonitor(new ArcanumSettings()),
             workspace,
-            new CommandCenterWardCoordinator(arbiter),
             new CommandCenterHumanPromptCoordinator(client, arbiter),
             NullLogger<CommandCenterChatRunner>.Instance);
     }
@@ -873,7 +872,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
             new ShellCommandParser(),
             new TestOptionsMonitor(new ArcanumSettings()),
             workspace,
-            new CommandCenterWardCoordinator(new CommandCenterHardModalArbiter()),
             NullLogger<ShellCommandDispatcher>.Instance);
     }
 

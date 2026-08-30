@@ -44,7 +44,7 @@ public static class ConfigurationPresetCatalog
     [
         new(
             "Ward",
-            "A per-tool audit record; Covenant retirement keeps its separate approval policy."),
+            "A per-tool audit record; Covenant retirement retains independent authorization, preflight, disclosure, and one-call capability checks."),
         new(
             "Sanctum",
             "A workspace sandbox that enforces approved path boundaries."),

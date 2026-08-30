@@ -61,13 +61,13 @@ public enum WardResolutionOrigin
     [JsonStringEnumMemberName("human")]
     Human,
 
-    /// <summary>The configured <c>Arcanum:Security:Ward:AutoApprove</c> allowlist supplied consent.</summary>
+    /// <summary>Historical compatibility value for the removed configured auto-approval path.</summary>
     [JsonStringEnumMemberName("autoApproved")]
     AutoApproved,
 
     /// <summary>
-    /// The host denied without asking — unattended auto-deny policy, or the active-ward capacity
-    /// cap rejecting admission.
+    /// Historical compatibility value for an automatic denial, including retained active-engine
+    /// capacity behavior.
     /// </summary>
     [JsonStringEnumMemberName("autoDenied")]
     AutoDenied,

@@ -2165,7 +2165,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Unattended_write_file_executes_when_campaign_settings_use_the_absence_fallback()
+    public async Task Unattended_write_file_executes_when_campaign_settings_are_missing()
     {
 
         ScriptingChatClient chat = new();
@@ -2229,7 +2229,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Apply_patch_unattended_executes_without_a_ward()
+    public async Task Apply_patch_executes_when_listed_as_a_forbidden_art_in_an_unattended_turn()
     {
 
         const string relativePath = "unattended-production-patch.txt";
@@ -8361,9 +8361,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 Ward = new WardPolicySettings
                 {
-                    Enabled = true,
                     ForbiddenArts = ["execute_command"],
-                    AutoDenyInUnattendedMode = true,
                 },
             },
             Features = new FeatureSettings

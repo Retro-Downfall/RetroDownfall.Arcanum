@@ -35,16 +35,16 @@ public sealed class IncantationStoreTests
     }
 
     [Fact]
-    public void Ward_note_attaches_to_pending_tool()
+    public void Ward_audit_notes_attach_to_the_tool_record()
     {
         IncantationStore store = new();
         _ = store.UpsertCall("c4", "write_file", """{"path":"/tmp/a"}""");
-        _ = store.AppendWardNote("write_file", "Ward pending (abc)", "abc");
-        _ = store.AppendWardNote("write_file", "Always allowing write_file for this Command Center session", "abc");
+        _ = store.AppendWardNote("write_file", "Ward recorded (ungated): write_file", "abc");
+        _ = store.AppendWardNote("write_file", "Ward record resolved (ungated, allowed): write_file", "abc");
 
         IncantationRecord record = store.Snapshot()[0];
         Assert.Equal(2, record.WardNotes.Count);
-        Assert.Contains("Always allowing", record.WardNotes[^1], StringComparison.Ordinal);
+        Assert.Contains("resolved", record.WardNotes[^1], StringComparison.Ordinal);
     }
 
     [Fact]

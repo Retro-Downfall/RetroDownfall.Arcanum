@@ -326,7 +326,7 @@ internal sealed class CommandCenterWindow : Window
             SchemeName = CommandCenterTheme.OverlayScheme,
         };
 
-        // Confirm dialogs (Ward, quit, discard): multiline Label so each choice is its own row.
+        // Confirm dialogs (quit, discard): multiline Label so each choice is its own row.
         // ListView is reserved for filterable pickers (Sessions).
         OverlayBody = new Label
         {

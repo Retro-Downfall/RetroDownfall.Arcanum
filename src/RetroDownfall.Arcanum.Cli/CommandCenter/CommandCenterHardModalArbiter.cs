@@ -2,13 +2,12 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 internal enum CommandCenterHardModalKind
 {
-    WardConfirm,
     HumanPrompt,
 }
 
 /// <summary>
 /// Deterministic hard-modal arbitration for Command Center:
-/// active never preempted; subsequent queued; Ward priority when promoting;
+/// active never preempted; subsequent prompts queued in arrival order;
 /// auxiliary overlays blocked while any hard modal is active or queued.
 /// </summary>
 internal sealed class CommandCenterHardModalArbiter
@@ -107,8 +106,7 @@ internal sealed class CommandCenterHardModalArbiter
     }
 
     /// <summary>
-    /// Closes the active hard modal only when kind+id match, then promotes the next queued
-    /// entry (Wards before HumanPrompt).
+    /// Closes the active hard modal only when kind+id match, then promotes the next queued entry.
     /// </summary>
     public bool TryClose(CommandCenterHardModalKind kind, string id)
     {
@@ -254,11 +252,8 @@ internal sealed class CommandCenterHardModalArbiter
             return null;
         }
 
-        // Wards have priority over HumanPrompt when choosing the next queued modal.
-        int wardIndex = _queue.FindIndex(static q => q.Kind == CommandCenterHardModalKind.WardConfirm);
-        int index = wardIndex >= 0 ? wardIndex : 0;
-        QueuedHardModal next = _queue[index];
-        _queue.RemoveAt(index);
+        QueuedHardModal next = _queue[0];
+        _queue.RemoveAt(0);
         _active = new ActiveHardModal(next.Kind, next.Id);
         return next;
     }

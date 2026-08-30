@@ -473,7 +473,6 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ArcanumTheme))]
 [JsonSerializable(typeof(SecuritySettings))]
 [JsonSerializable(typeof(WardPolicySettings))]
-[JsonSerializable(typeof(WardAutoApprovePolicySettings))]
 [JsonSerializable(typeof(GuardrailsPolicySettings))]
 [JsonSerializable(typeof(GuardrailsAuditPolicySettings))]
 [JsonSerializable(typeof(DaemonSettings))]

@@ -407,7 +407,6 @@ public sealed class CommandCenterReasoningTests
             client,
             new StaticOptionsMonitor(new ArcanumSettings()),
             workspace,
-            new CommandCenterWardCoordinator(arbiter),
             new CommandCenterHumanPromptCoordinator(client, arbiter),
             NullLogger<CommandCenterChatRunner>.Instance);
     }

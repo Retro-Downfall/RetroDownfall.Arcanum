@@ -358,14 +358,14 @@ public sealed class ConfigurationPresetCatalogTests
 
     [Fact]
 
-    public void Ward_disclosures_describe_the_interim_record_only_tool_policy()
+    public void Ward_disclosures_describe_the_record_only_tool_policy()
     {
         ConfigurationPresetGlossaryEntry ward = Assert.Single(
             ConfigurationPresetCatalog.Glossary,
             static entry => entry.Term == "Ward");
 
         Assert.Equal(
-            "A per-tool audit record; Covenant retirement keeps its separate approval policy.",
+            "A per-tool audit record; Covenant retirement retains independent authorization, preflight, disclosure, and one-call capability checks.",
             ward.PlainLanguageMeaning);
 
         ConfigurationPresetDefinition coding = ConfigurationPresetCatalog.Find("coding-workspace")!;

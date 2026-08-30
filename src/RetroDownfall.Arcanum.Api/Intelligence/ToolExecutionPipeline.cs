@@ -244,7 +244,7 @@ public sealed class ToolExecutionPipeline(
 
     /// <summary>
     /// Records <c>arcanum_tool_invocations_total</c>. <paramref name="outcome"/> is one of
-    /// <c>success</c>, <c>denied</c> (ward or Sanctum blocked the call), or <c>error</c> (the tool
+    /// <c>success</c>, <c>denied</c> (Sanctum or another live policy blocked the call), or <c>error</c> (the tool
     /// invocation itself threw, or the model named a tool that was never registered). The configured
     /// MCP/local tool set is finite and an unregistered name collapses to
     /// <see cref="UnregisteredToolMetricLabel"/>, so <paramref name="toolName"/> is a bounded label

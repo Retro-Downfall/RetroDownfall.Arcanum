@@ -790,7 +790,7 @@ internal sealed class SetupPlanner(
             $"Workspace: {workspace}; Campaign: {campaign}",
             [.. network],
             memory.IsDefaultOrEmpty ? ["none"] : [.. memory],
-            presetSummary?.ToolPolicy ?? "Ward enabled; unsandboxed tool children disabled",
+            presetSummary?.ToolPolicy ?? "Ward audit records enabled; unsandboxed tool children disabled",
             presetSummary?.PrivacyState
                 ?? (candidate.Host.ListenAny ? "network host binding enabled" : "loopback host binding"),
             presetSummary?.NextRecommendedCommand ?? "arcanum run \"Hello\"");

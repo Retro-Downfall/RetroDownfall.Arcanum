@@ -382,33 +382,9 @@ public sealed record HostAuditPolicySettings
 public sealed record WardPolicySettings
 {
 
-    public bool Enabled { get; set; } = true;
-
     public List<string> ForbiddenArts { get; set; } = [];
 
-    public bool AutoDenyInUnattendedMode { get; set; } = true;
-
     public bool UnattendedMode { get; set; }
-
-    public WardAutoApprovePolicySettings AutoApprove { get; set; } = new();
-
-}
-
-/// <summary>
-/// Retained Ward compatibility shape through issue #219. No ordinary or Covenant-retirement live
-/// path consumes it.
-/// </summary>
-public sealed record WardAutoApprovePolicySettings
-{
-
-    /// <summary>Retained master flag. Default <c>false</c>; no live tool path consumes it.</summary>
-    public bool Enabled { get; set; }
-
-    /// <summary>
-    /// Retained exact names, matched ordinal-ignore-case. Blank and duplicate entries are still
-    /// rejected at startup while the compatibility shape remains.
-    /// </summary>
-    public List<string> Tools { get; set; } = [];
 
 }
 
