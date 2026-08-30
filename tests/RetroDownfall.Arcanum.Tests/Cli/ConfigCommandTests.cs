@@ -147,6 +147,49 @@ public sealed class ConfigCommandTests
 
     }
 
+    [Theory]
+
+    [InlineData("security.ward.enabled", "true")]
+
+    [InlineData("security.ward.autoDenyInUnattendedMode", "true")]
+
+    [InlineData("security.ward.autoApprove", "true")]
+
+    [InlineData("security.ward.autoApprove.tools", "apply_patch")]
+
+    public void Set_rejects_removed_ward_approval_paths_with_actionable_diagnostics(
+        string key,
+        string value)
+    {
+
+        FakeConfigurationCommandService fake = new(
+            new ArcanumSettings(),
+            ConfigurationAccessMode.HostApi);
+
+        ServiceCollection services = Services(fake);
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "config",
+            "set",
+            key,
+            value,
+            "--plain");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Null(fake.Written);
+
+        Assert.Equal(0, fake.ValidateCount);
+
+        Assert.Contains(key, result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("was removed", result.Error, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Remove this Ward approval setting", result.Error, StringComparison.Ordinal);
+
+    }
+
     [Fact]
 
     public void Set_rejects_sensitive_argv_without_echoing_value()
