@@ -300,6 +300,240 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task Live_ward_emit_forwards_the_pair_without_buffering_it()
+    {
+
+        List<IntelligenceEvent> emitted = [];
+
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new RecordingWard(),
+            new AllowAllSanctumGuard(),
+            new WardPolicySettings { ForbiddenArts = [] });
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
+            pipeline,
+            "write_file",
+            static () => "ran",
+            argumentsSnapshot: """{"scope":"fixture"}""",
+            liveWardEmit: (evt, _) =>
+            {
+                emitted.Add(evt);
+
+                return Task.CompletedTask;
+            });
+
+        Assert.Same(Array.Empty<IntelligenceEvent>(), processed.WardEvents);
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            emitted.Select(static evt => evt.Type));
+
+        Assert.Equal(emitted[0].WardId, emitted[1].WardId);
+
+        Assert.All(
+            emitted,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+
+    }
+
+    [Fact]
+    public async Task Live_apply_patch_session_refusal_emits_the_pair_without_a_buffer()
+    {
+
+        List<IntelligenceEvent> emitted = [];
+
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new RecordingWard(),
+            new AllowAllSanctumGuard(),
+            new WardPolicySettings { ForbiddenArts = [] });
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
+            pipeline,
+            ToolRiskClassifier.ApplyPatchToolName,
+            static () => "must not run",
+            argumentsSnapshot: """{"patch":"fixture"}""",
+            liveWardEmit: (evt, _) =>
+            {
+                emitted.Add(evt);
+
+                return Task.CompletedTask;
+            });
+
+        Assert.Equal(
+            """{"status":"invalid_request","code":"session_required","message":"apply_patch requires a bound persisted session and assistant-turn invocation."}""",
+            processed.ResultText);
+
+        Assert.Same(Array.Empty<IntelligenceEvent>(), processed.WardEvents);
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            emitted.Select(static evt => evt.Type));
+
+        Assert.Equal(emitted[0].WardId, emitted[1].WardId);
+
+        Assert.All(
+            emitted,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+
+    }
+
+    [Fact]
+    public async Task Live_tolerated_failure_emits_the_pair_without_a_buffer()
+    {
+
+        List<IntelligenceEvent> emitted = [];
+
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new RecordingWard(),
+            new AllowAllSanctumGuard(),
+            new WardPolicySettings { ForbiddenArts = [] });
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await pipeline
+            .ProcessSingleToolCallAsync(
+                new FunctionCallContent("call-write_file", "write_file", new Dictionary<string, object?>()),
+                new PingRequest("hi", WorkingDirectory: "/tmp"),
+                new ChatOptions
+                {
+                    Tools =
+                    [
+                        AIFunctionFactory.Create(
+                            () =>
+                            {
+                                throw new InvalidOperationException("mcp transport fault");
+#pragma warning disable CS0162
+                                return "unreachable";
+#pragma warning restore CS0162
+                            },
+                            "write_file"),
+                    ],
+                },
+                activeSpell: null,
+                sessionId: "session-1",
+                new ToolExecutionPipeline.TurnContext(),
+                suppressInvocationFailures: true,
+                CancellationToken.None,
+                liveWardEmit: (evt, _) =>
+                {
+                    emitted.Add(evt);
+
+                    return Task.CompletedTask;
+                },
+                argumentsSnapshot: """{"scope":"fixture"}""");
+
+        Assert.True(processed.Failed);
+
+        Assert.Equal(
+            "[Tool error: write_file failed with an internal error. The operator has been notified.]",
+            processed.ResultText);
+
+        Assert.Same(Array.Empty<IntelligenceEvent>(), processed.WardEvents);
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            emitted.Select(static evt => evt.Type));
+
+        Assert.Equal(emitted[0].WardId, emitted[1].WardId);
+
+        Assert.All(
+            emitted,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+
+    }
+
+    [Fact]
+    public async Task Malformed_non_empty_arguments_keep_the_raw_Ward_payload()
+    {
+
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new RecordingWard(),
+            new AllowAllSanctumGuard(),
+            new WardPolicySettings { ForbiddenArts = [] });
+
+        bool invoked = false;
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
+            pipeline,
+            "write_file",
+            () =>
+            {
+                invoked = true;
+
+                return "ran";
+            },
+            argumentsSnapshot: "{not-json");
+
+        Assert.True(invoked);
+
+        IntelligenceEvent warded = Assert.Single(
+            processed.WardEvents,
+            static evt => evt.Type == IntelligenceEventType.Warded);
+
+        JsonElement arguments = Assert.IsType<JsonElement>(warded.WardArguments);
+
+        JsonProperty raw = Assert.Single(arguments.EnumerateObject());
+
+        Assert.Equal("raw", raw.Name);
+
+        Assert.Equal("{not-json", raw.Value.GetString());
+
+    }
+
+    [Fact]
+    public void Ward_arguments_builder_rejects_an_empty_payload()
+    {
+
+        _ = Assert.Throws<ArgumentException>(
+            static () => ToolExecutionPipeline.BuildWardArgumentsDocument("", ""));
+
+    }
+
+    [Fact]
+    public async Task Ordinary_call_without_arguments_or_disclosure_skips_Ward_payload_materialization()
+    {
+
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new RecordingWard(),
+            new AllowAllSanctumGuard(),
+            new WardPolicySettings { ForbiddenArts = [] });
+
+        bool invoked = false;
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await ProcessAsync(
+            pipeline,
+            "write_file",
+            () =>
+            {
+                invoked = true;
+
+                return "ran";
+            },
+            argumentsSnapshot: "");
+
+        Assert.True(invoked);
+
+        Assert.Equal("ran", processed.ResultText);
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            processed.WardEvents.Select(static evt => evt.Type));
+
+        IntelligenceEvent warded = processed.WardEvents[0];
+
+        IntelligenceEvent resolved = processed.WardEvents[1];
+
+        Assert.False(string.IsNullOrWhiteSpace(warded.WardId));
+
+        Assert.Equal(warded.WardId, resolved.WardId);
+
+        Assert.All(
+            processed.WardEvents,
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+
+        Assert.Null(warded.WardArguments);
+
+    }
+
+    [Fact]
     public void N_tool_record_path_allocation_does_not_scale_with_ForbiddenArts_count()
     {
 
@@ -579,7 +813,8 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
         PingRequest? request = null,
         Func<ToolExecutionEvent, ValueTask>? observer = null,
         string? argumentsSnapshot = null,
-        bool registerTool = true) =>
+        bool registerTool = true,
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null) =>
         pipeline.ProcessSingleToolCallAsync(
             new FunctionCallContent($"call-{toolName}", toolName, new Dictionary<string, object?>()),
             request ?? new PingRequest("hi", WorkingDirectory: "/tmp"),
@@ -594,6 +829,7 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             turnContext ?? new ToolExecutionPipeline.TurnContext(),
             suppressInvocationFailures: false,
             CancellationToken.None,
+            liveWardEmit: liveWardEmit,
             observer: observer,
             argumentsSnapshot: argumentsSnapshot);
 

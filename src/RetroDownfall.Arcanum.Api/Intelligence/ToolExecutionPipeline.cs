@@ -348,7 +348,9 @@ public sealed class ToolExecutionPipeline(
 
         // Caller-owned so every exit after a provider-issued call can report its record-only
         // resolution, including apply_patch's persisted-turn prerequisite below.
-        List<IntelligenceEvent> wardEvents = new(2);
+        List<IntelligenceEvent>? wardEvents = liveWardEmit is null
+            ? new List<IntelligenceEvent>(2)
+            : null;
 
         bool isApplyPatch = string.Equals(
                 toolName,
@@ -378,7 +380,7 @@ public sealed class ToolExecutionPipeline(
                 toolName,
                 argsSnapshot,
                 ApplyPatchSessionRequiredResult,
-                wardEvents);
+                BufferedWardEventsOrEmpty(wardEvents));
         }
 
         ApplyPatchInvocationContext? applyPatchContext = null;
@@ -462,7 +464,10 @@ public sealed class ToolExecutionPipeline(
             catch (HumanPromptTimeoutException ex)
             {
 
-                wardedExecution = new WardedToolExecutionResult(ex.Message, wardEvents, Failed: true);
+                wardedExecution = new WardedToolExecutionResult(
+                    ex.Message,
+                    BufferedWardEventsOrEmpty(wardEvents),
+                    Failed: true);
 
                 RecordToolInvocationMetric(metricToolName, "error");
 
@@ -476,7 +481,10 @@ public sealed class ToolExecutionPipeline(
                     ex.GetType().FullName,
                     callId);
 
-                wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessage(toolName), wardEvents, Failed: true);
+                wardedExecution = new WardedToolExecutionResult(
+                    PublicToolFailureMessage(toolName),
+                    BufferedWardEventsOrEmpty(wardEvents),
+                    Failed: true);
 
                 RecordToolInvocationMetric(metricToolName, "error");
 
@@ -1335,7 +1343,7 @@ public sealed class ToolExecutionPipeline(
         TurnContext turnContext,
         string argsSnapshot,
         string metricToolName,
-        List<IntelligenceEvent> wardEvents,
+        List<IntelligenceEvent>? wardEvents,
         CancellationToken cancellationToken,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
         Func<ToolExecutionEvent, ValueTask>? observer = null)
@@ -1361,7 +1369,7 @@ public sealed class ToolExecutionPipeline(
                     activeSpell,
                     turnContext,
                     argsSnapshot,
-                    wardEvents,
+                    BufferedWardEventsOrEmpty(wardEvents),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -1384,7 +1392,10 @@ public sealed class ToolExecutionPipeline(
             argsSnapshot,
             cancellationToken).ConfigureAwait(false);
 
-        return new WardedToolExecutionResult(directResult, wardEvents, directDenied);
+        return new WardedToolExecutionResult(
+            directResult,
+            BufferedWardEventsOrEmpty(wardEvents),
+            directDenied);
 
     }
 
@@ -1392,17 +1403,27 @@ public sealed class ToolExecutionPipeline(
         string toolName,
         string argsSnapshot,
         string metricToolName,
-        List<IntelligenceEvent> wardEvents,
+        List<IntelligenceEvent>? wardEvents,
         CancellationToken cancellationToken,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit)
     {
         string recordWardId = Guid.NewGuid().ToString();
 
-        using JsonDocument? recordArgsDocument = BuildWardArgumentsDocument(
-            toolName,
-            argsSnapshot);
+        string disclosure = ToolRiskClassifier.GetWardDisclosure(toolName);
 
-        JsonElement? recordWardArguments = recordArgsDocument?.RootElement.Clone();
+        JsonElement? recordWardArguments = null;
+
+        if (!string.IsNullOrWhiteSpace(argsSnapshot)
+            || !string.IsNullOrEmpty(disclosure))
+        {
+
+            using JsonDocument recordArgsDocument = BuildWardArgumentsDocument(
+                argsSnapshot,
+                disclosure);
+
+            recordWardArguments = recordArgsDocument.RootElement.Clone();
+
+        }
 
         IntelligenceEvent recordWardedEvent = new(
             IntelligenceEventType.Warded,
@@ -1491,7 +1512,7 @@ public sealed class ToolExecutionPipeline(
         ParsedSpell? activeSpell,
         TurnContext turnContext,
         string argsSnapshot,
-        List<IntelligenceEvent> wardEvents,
+        IReadOnlyList<IntelligenceEvent> wardEvents,
         CancellationToken cancellationToken)
     {
 
@@ -1672,7 +1693,7 @@ public sealed class ToolExecutionPipeline(
 
     private static WardedToolExecutionResult CovenantRetirementDenied(
         string message,
-        List<IntelligenceEvent> wardEvents) =>
+        IReadOnlyList<IntelligenceEvent> wardEvents) =>
         new(message, wardEvents, Denied: true);
 
     private async Task<(string ResultText, bool Denied)> InvokeToolCallWithSanctumAsync(
@@ -2452,18 +2473,27 @@ public sealed class ToolExecutionPipeline(
 
     private static async Task EmitWardEventAsync(
         IntelligenceEvent wardEvent,
-        List<IntelligenceEvent> buffered,
+        List<IntelligenceEvent>? buffered,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit,
         CancellationToken cancellationToken)
     {
         if (liveWardEmit is not null)
         {
+
             await liveWardEmit(wardEvent, cancellationToken).ConfigureAwait(false);
+
             return;
+
         }
 
-        buffered.Add(wardEvent);
+        (buffered ?? throw new InvalidOperationException(
+            "Buffered Ward emission requires a buffer."))
+            .Add(wardEvent);
     }
+
+    private static IReadOnlyList<IntelligenceEvent> BufferedWardEventsOrEmpty(
+        List<IntelligenceEvent>? buffered) =>
+        (IReadOnlyList<IntelligenceEvent>?)buffered ?? Array.Empty<IntelligenceEvent>();
 
     private static JsonDocument? TryParseToolArgumentsDocument(string argsSnapshot)
     {
@@ -2492,18 +2522,27 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    private static JsonDocument? BuildWardArgumentsDocument(
-        string toolName,
-        string argsSnapshot)
+    internal static JsonDocument BuildWardArgumentsDocument(
+        string argsSnapshot,
+        string disclosure)
     {
 
+        if (string.IsNullOrWhiteSpace(argsSnapshot)
+            && string.IsNullOrWhiteSpace(disclosure))
+        {
+
+            throw new ArgumentException(
+                "Ward arguments require tool arguments or a risk disclosure.");
+
+        }
+
         JsonDocument? original = TryParseToolArgumentsDocument(argsSnapshot);
-        string disclosure = ToolRiskClassifier.GetWardDisclosure(toolName);
 
         if (string.IsNullOrEmpty(disclosure))
         {
 
-            return original;
+            return original ?? throw new InvalidOperationException(
+                "Non-empty Ward arguments must produce a JSON document.");
         }
 
         using MemoryStream stream = new();
