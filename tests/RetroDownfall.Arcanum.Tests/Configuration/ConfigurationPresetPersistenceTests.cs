@@ -1051,6 +1051,73 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     [Fact]
 
+    public async Task Recovery_rejects_a_rehashed_legacy_journal_that_disagrees_with_provenance()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings interrupted = Settings(
+            saga: true,
+            attachments: true,
+            defaultModel: "local-model");
+
+        interrupted.Cli.ShowManaBar = false;
+
+        Assert.True((await writer.WriteAsync(interrupted, CancellationToken.None)).IsSuccess);
+
+        ConfigurationPresetProvenance provenance = LegacyGeneralAssistantProvenance();
+
+        ConfigurationPresetBaselineValue[] tamperedCandidateValues =
+        [
+            .. provenance.AppliedValues.Select(static value =>
+                value.Path == "security.ward.enabled"
+                    ? value with { CanonicalJson = "false" }
+                    : value),
+        ];
+
+        ConfigurationPresetJournalDocument journal = new(
+            "apply",
+            provenance.BaselineValues,
+            [.. tamperedCandidateValues],
+            LegacyGeneralAssistantBaselineHash,
+            ConfigurationPresetHash.ComputeCanonicalValues(tamperedCandidateValues),
+            PreviousProvenance: null,
+            provenance,
+            DateTimeOffset.Parse("2026-08-03T12:01:00Z"));
+
+        await WriteJournalAsync(journal);
+
+        await WriteProvenanceAsync(
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            provenance);
+
+        byte[] configurationBefore = await File.ReadAllBytesAsync(
+            ArcanumPaths.ConfigurationFile);
+
+        byte[] journalBefore = await File.ReadAllBytesAsync(
+            ArcanumPaths.ConfigurationPresetJournalFile);
+
+        Result<ConfigurationPresetSnapshot> result = await CreatePersistence(writer)
+            .ReadAsync();
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Preset.RecoveryFailed", result.Error.Code);
+
+        Assert.Equal(
+            configurationBefore,
+            await File.ReadAllBytesAsync(ArcanumPaths.ConfigurationFile));
+
+        Assert.True(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
+
+        Assert.Equal(
+            journalBefore,
+            await File.ReadAllBytesAsync(ArcanumPaths.ConfigurationPresetJournalFile));
+
+    }
+
+    [Fact]
+
     public async Task Read_rejects_oversized_sidecars_before_deserialization()
     {
 
