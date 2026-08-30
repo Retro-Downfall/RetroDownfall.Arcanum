@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+using Xunit.Abstractions;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -27,7 +28,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// the <c>DisableParallelization</c> guarantee that assertion depends on.
 /// </summary>
 [Collection("Telemetry")]
-public sealed class WardRecordPipelineTests
+public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 {
     [Theory]
     [InlineData("read_file_chunk")]
@@ -298,6 +299,243 @@ public sealed class WardRecordPipelineTests
 
     }
 
+    [Fact]
+    public void N_tool_record_path_allocation_does_not_scale_with_ForbiddenArts_count()
+    {
+
+        const int WarmupCount = 8;
+
+        const int SampleCount = 128;
+
+        const int ForbiddenArtCount = 512;
+
+        const long MaximumSettingsDependentDelta = 4096;
+
+        const int TombstoneCapacitySeedCount = 768;
+
+        List<string> configuredForbiddenArts = new(ForbiddenArtCount);
+
+        for (int i = 0; i < ForbiddenArtCount; i++)
+        {
+
+            configuredForbiddenArts.Add($"forbidden_art_{i}");
+
+        }
+
+        ArcanumSettings emptySettings = new()
+        {
+            Security = new SecuritySettings
+            {
+                Ward = new WardPolicySettings { ForbiddenArts = [] },
+            },
+        };
+
+        ArcanumSettings configuredSettings = new()
+        {
+            Security = new SecuritySettings
+            {
+                Ward = new WardPolicySettings { ForbiddenArts = configuredForbiddenArts },
+            },
+        };
+
+        WardGate emptyWard = new(new TestOptionsMonitor<ArcanumSettings>(emptySettings));
+
+        WardGate configuredWard = new(new TestOptionsMonitor<ArcanumSettings>(configuredSettings));
+
+        // The production record ids are random GUIDs. Give both real gates the same table shape
+        // outside measurement so unrelated ConcurrentDictionary growth cannot consume the tolerance.
+        for (int i = 0; i < TombstoneCapacitySeedCount; i++)
+        {
+
+            string wardId = $"allocation-capacity-seed-{i}";
+
+            _ = emptyWard.RecordAutomaticResolution(
+                wardId,
+                allowed: true,
+                reason: null,
+                WardResolutionOrigin.Ungated);
+
+            _ = configuredWard.RecordAutomaticResolution(
+                wardId,
+                allowed: true,
+                reason: null,
+                WardResolutionOrigin.Ungated);
+
+        }
+
+        ToolExecutionPipeline emptyPipeline = CreatePipeline(
+            emptyWard,
+            new AllowAllSanctumGuard(),
+            emptySettings);
+
+        ToolExecutionPipeline configuredPipeline = CreatePipeline(
+            configuredWard,
+            new AllowAllSanctumGuard(),
+            configuredSettings);
+
+        FunctionCallContent[] calls = new FunctionCallContent[WarmupCount + SampleCount];
+
+        for (int i = 0; i < calls.Length; i++)
+        {
+
+            calls[i] = new FunctionCallContent(
+                $"allocation-probe-{i}",
+                "allocation_probe",
+                new Dictionary<string, object?>());
+
+        }
+
+        AIFunction allocationProbe = AIFunctionFactory.Create(
+            static () => "pong",
+            "allocation_probe");
+
+        PingRequest request = new("hi", WorkingDirectory: "/tmp");
+
+        ChatOptions options = new() { Tools = [allocationProbe] };
+
+        ToolExecutionPipeline.TurnContext turnContext = new();
+
+        RunToolCalls(
+            emptyPipeline,
+            calls,
+            start: 0,
+            count: WarmupCount,
+            request,
+            options,
+            turnContext);
+
+        RunToolCalls(
+            configuredPipeline,
+            calls,
+            start: 0,
+            count: WarmupCount,
+            request,
+            options,
+            turnContext);
+
+        long emptyBytes = MeasureToolCalls(
+            emptyPipeline,
+            calls,
+            start: WarmupCount,
+            count: SampleCount,
+            request,
+            options,
+            turnContext);
+
+        long configuredBytes = MeasureToolCalls(
+            configuredPipeline,
+            calls,
+            start: WarmupCount,
+            count: SampleCount,
+            request,
+            options,
+            turnContext);
+
+        long deltaBytes = configuredBytes - emptyBytes;
+
+        output.WriteLine(
+            $"Issue #220 allocation sample: N={SampleCount}; empty={emptyBytes}; "
+                + $"configured={configuredBytes}; delta={deltaBytes}");
+
+        Assert.True(
+            Math.Abs(deltaBytes) <= MaximumSettingsDependentDelta,
+            $"N={SampleCount}; empty={emptyBytes}; configured={configuredBytes}; delta={deltaBytes}");
+
+    }
+
+    private static long MeasureToolCalls(
+        ToolExecutionPipeline pipeline,
+        FunctionCallContent[] calls,
+        int start,
+        int count,
+        PingRequest request,
+        ChatOptions options,
+        ToolExecutionPipeline.TurnContext turnContext)
+    {
+
+        int managedThreadId = System.Environment.CurrentManagedThreadId;
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        int end = start + count;
+
+        for (int i = start; i < end; i++)
+        {
+
+            Task<ToolExecutionPipeline.ProcessedToolCall> task = pipeline.ProcessSingleToolCallAsync(
+                calls[i],
+                request,
+                options,
+                activeSpell: null,
+                sessionId: "session-1",
+                turnContext,
+                suppressInvocationFailures: false,
+                CancellationToken.None,
+                argumentsSnapshot: "");
+
+            if (!task.IsCompletedSuccessfully)
+            {
+
+                throw new InvalidOperationException("Allocation probe did not complete synchronously.");
+
+            }
+
+            _ = task.GetAwaiter().GetResult();
+
+        }
+
+        long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        if (System.Environment.CurrentManagedThreadId != managedThreadId)
+        {
+
+            throw new InvalidOperationException("Allocation measurement changed managed threads.");
+
+        }
+
+        return allocatedBytes;
+
+    }
+
+    private static void RunToolCalls(
+        ToolExecutionPipeline pipeline,
+        FunctionCallContent[] calls,
+        int start,
+        int count,
+        PingRequest request,
+        ChatOptions options,
+        ToolExecutionPipeline.TurnContext turnContext)
+    {
+
+        int end = start + count;
+
+        for (int i = start; i < end; i++)
+        {
+
+            Task<ToolExecutionPipeline.ProcessedToolCall> task = pipeline.ProcessSingleToolCallAsync(
+                calls[i],
+                request,
+                options,
+                activeSpell: null,
+                sessionId: "session-1",
+                turnContext,
+                suppressInvocationFailures: false,
+                CancellationToken.None,
+                argumentsSnapshot: "");
+
+            if (!task.IsCompletedSuccessfully)
+            {
+
+                throw new InvalidOperationException("Allocation probe did not complete synchronously.");
+
+            }
+
+            _ = task.GetAwaiter().GetResult();
+
+        }
+
+    }
+
     private static ToolExecutionPipeline CreatePipeline(
         IWard ward,
         ISanctumGuard sanctumGuard,
@@ -307,6 +545,17 @@ public sealed class WardRecordPipelineTests
             {
                 Security = new SecuritySettings { Ward = wardPolicy },
             }),
+            ward,
+            sanctumGuard,
+            new NoOpSessionAttachmentStore(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+
+    private static ToolExecutionPipeline CreatePipeline(
+        IWard ward,
+        ISanctumGuard sanctumGuard,
+        ArcanumSettings settings) =>
+        new(
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
             ward,
             sanctumGuard,
             new NoOpSessionAttachmentStore(),

@@ -44,13 +44,13 @@ public sealed class WardGate : IWard
 
     private readonly object _resolutionGate = new();
 
-    private readonly IOptionsMonitor<ArcanumSettings> _settings;
+    private readonly WardSettings _runtimeSettings;
 
     private readonly TimeProvider _timeProvider;
 
     public WardGate(IOptionsMonitor<ArcanumSettings> settings, TimeProvider? timeProvider = null)
     {
-        _settings = settings;
+        _runtimeSettings = settings.CurrentValue.ResolveWard();
 
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -70,7 +70,7 @@ public sealed class WardGate : IWard
         var entryCts = new CancellationTokenSource();
 
         int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
-            ResolveRuntimeSettings().MaxActiveWards);
+            _runtimeSettings.MaxActiveWards);
 
         if (!_activeWards.TryEnter(maxActiveWards, out IDisposable? wardLease))
         {
@@ -312,13 +312,10 @@ public sealed class WardGate : IWard
         return true;
     }
 
-    private WardSettings ResolveRuntimeSettings() =>
-        _settings.CurrentValue.ResolveWard();
-
     private void PruneResolvedTombstones()
     {
         int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(
-            ResolveRuntimeSettings().TimeoutSeconds);
+            _runtimeSettings.TimeoutSeconds);
 
         DateTimeOffset cutoff = _timeProvider.GetUtcNow().AddSeconds(-(timeoutSeconds + 60));
 
