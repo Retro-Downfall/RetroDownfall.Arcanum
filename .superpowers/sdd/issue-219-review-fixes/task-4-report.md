@@ -44,7 +44,9 @@ warning-free.
   - Deleted as obsolete reflection/absence coverage.
 - `tests/RetroDownfall.Arcanum.Tests/Intelligence/TurnProjectionSemanticTests.cs`
   - Corrects only stale operator-approval wording; semantic assertions are unchanged.
-- Commit: the scoped Task 4 commit includes this report and only the files listed above.
+- Scoped implementation commit: `79ae543c` (`test: cover ungated registered tool effects`). It contains
+  this report's original version and only the files listed above; the following report-only update
+  records that immutable implementation commit ID.
 
 ## Self-review and concerns
 
