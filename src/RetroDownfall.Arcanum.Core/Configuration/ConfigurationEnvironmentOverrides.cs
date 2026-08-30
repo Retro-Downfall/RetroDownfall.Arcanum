@@ -145,6 +145,17 @@ public static class ConfigurationEnvironmentResolver
         List<ConfigurationEnvironmentOverride> overrides)
     {
 
+        string? removedPath = FindRemovedWardApprovalPath(path);
+
+        if (removedPath is not null)
+        {
+
+            throw new InvalidOperationException(
+                $"Environment override '{variableName}' targets removed configuration path "
+                    + $"'{removedPath}'. {ConfigurationValidator.ObsoleteWardApprovalConfigurationMessage}");
+
+        }
+
         if (rawValue is null)
         {
 
@@ -172,6 +183,33 @@ public static class ConfigurationEnvironmentResolver
             Error: update.Error));
 
         return update.IsSuccess ? update.Settings! : settings;
+
+    }
+
+    private static string? FindRemovedWardApprovalPath(string path)
+    {
+
+        if (string.Equals(path, "security.ward.enabled", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return "security.ward.enabled";
+
+        }
+
+        if (string.Equals(
+                path,
+                "security.ward.autoDenyInUnattendedMode",
+                StringComparison.OrdinalIgnoreCase))
+        {
+
+            return "security.ward.autoDenyInUnattendedMode";
+
+        }
+
+        return path.Equals("security.ward.autoApprove", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("security.ward.autoApprove.", StringComparison.OrdinalIgnoreCase)
+                ? "security.ward.autoApprove"
+                : null;
 
     }
 

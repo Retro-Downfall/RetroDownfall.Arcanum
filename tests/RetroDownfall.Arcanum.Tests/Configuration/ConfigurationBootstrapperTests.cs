@@ -258,6 +258,53 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
     }
 
+    [Theory]
+
+    [InlineData(
+        "ARCANUM_Arcanum__Security__Ward__Enabled",
+        "security.ward.enabled")]
+
+    [InlineData(
+        "ARCANUM_Arcanum__Security__Ward__AutoDenyInUnattendedMode",
+        "security.ward.autoDenyInUnattendedMode")]
+
+    [InlineData(
+        "ARCANUM_Arcanum__Security__Ward__AutoApprove__Enabled",
+        "security.ward.autoApprove")]
+
+    public void LoadArcanumSettingsFile_rejects_removed_Ward_environment_overrides(
+        string variable,
+        string removedPath)
+    {
+
+        string? original = global::System.Environment.GetEnvironmentVariable(variable);
+
+        string path = Path.Combine(_workspace.Root, "environment-removed-ward-arcanum.json");
+
+        File.WriteAllText(path, """{"Arcanum":{"host":{"port":5001}}}""");
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, "true");
+
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+                () => ConfigurationBootstrapper.LoadArcanumSettingsFile(path));
+
+            Assert.Contains(removedPath, exception.Message, StringComparison.Ordinal);
+
+            Assert.Contains("remove", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, original);
+
+        }
+
+    }
+
     [Fact]
 
     public void AddArcanumConfiguration_projects_general_overrides_for_listener_configuration()
