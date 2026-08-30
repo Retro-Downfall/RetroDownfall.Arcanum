@@ -7,7 +7,7 @@ public sealed class ConfigurationPresetCatalogTests
 
     [Fact]
 
-    public void All_exposes_the_six_versioned_presets_in_stable_order()
+    public void All_exposes_the_six_current_presets_in_stable_order()
     {
 
         string[] expectedIds =
@@ -22,13 +22,17 @@ public sealed class ConfigurationPresetCatalogTests
 
         Assert.Equal(expectedIds, ConfigurationPresetCatalog.All.Select(static preset => preset.Id));
 
-        Assert.All(ConfigurationPresetCatalog.All, static preset => Assert.Equal(1, preset.Version));
+        int[] expectedVersions = [2, 2, 2, 2, 2, 1];
+
+        Assert.Equal(
+            expectedVersions,
+            ConfigurationPresetCatalog.All.Select(static preset => preset.Version));
 
     }
 
     [Fact]
 
-    public void Versions_match_the_exact_version_one_ownership_and_safety_goldens()
+    public void Versions_preserve_the_hard_coded_pre_issue_219_version_one_goldens()
     {
 
         Dictionary<string, string[]> expected = new(StringComparer.Ordinal)
@@ -84,9 +88,14 @@ public sealed class ConfigurationPresetCatalogTests
 
         };
 
-        Assert.Equal(expected.Count, ConfigurationPresetCatalog.Versions.Length);
+        ConfigurationPresetDefinition[] versionOne =
+        [
+            .. ConfigurationPresetCatalog.Versions.Where(static preset => preset.Version == 1),
+        ];
 
-        foreach (ConfigurationPresetDefinition preset in ConfigurationPresetCatalog.Versions)
+        Assert.Equal(expected.Count, versionOne.Length);
+
+        foreach (ConfigurationPresetDefinition preset in versionOne)
         {
 
             string key = $"{preset.Id}@{preset.Version}";
@@ -103,6 +112,165 @@ public sealed class ConfigurationPresetCatalogTests
 
         }
 
+        ConfigurationPresetDefinition general = versionOne.Single(
+            static preset => preset.Id == "general-assistant");
+
+        Assert.Equal(
+            "Ordinary tools do not pause for Ward approval; Covenant retirement remains separately authorized, and unsandboxed child processes remain disabled.",
+            general.Disclosure.SecurityImplications);
+
+        ConfigurationPresetDefinition automation = versionOne.Single(
+            static preset => preset.Id == "automation");
+
+        Assert.Equal(
+            "Ordinary calls do not pause for approval; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
+            automation.Disclosure.SecurityImplications);
+
+    }
+
+    [Fact]
+
+    public void Current_version_two_presets_subtract_only_the_retired_Ward_paths()
+    {
+
+        string[] changedIds =
+        [
+            "general-assistant",
+            "coding-workspace",
+            "research",
+            "private-offline",
+            "automation",
+        ];
+
+        string[] retiredPaths =
+        [
+            "security.ward.enabled",
+            "security.ward.autoDenyInUnattendedMode",
+        ];
+
+        foreach (string id in changedIds)
+        {
+
+            ConfigurationPresetDefinition versionOne =
+                ConfigurationPresetCatalog.FindVersion(id, 1)!;
+
+            ConfigurationPresetDefinition versionTwo =
+                ConfigurationPresetCatalog.FindVersion(id, 2)!;
+
+            ConfigurationPresetOwnedSetting[] expectedSurvivors =
+            [
+                .. versionOne.OwnedSettings.Where(setting =>
+                    !retiredPaths.Contains(setting.Path, StringComparer.Ordinal)),
+            ];
+
+            Assert.Equal(expectedSurvivors.Length, versionTwo.OwnedSettings.Length);
+
+            for (int index = 0; index < expectedSurvivors.Length; index++)
+            {
+
+                ConfigurationPresetOwnedSetting expected = expectedSurvivors[index];
+
+                ConfigurationPresetOwnedSetting actual = versionTwo.OwnedSettings[index];
+
+                Assert.Equal(expected.Path, actual.Path);
+
+                Assert.Equal(expected.CanonicalJson, actual.CanonicalJson);
+
+                Assert.Equal(expected.RequiresRestart, actual.RequiresRestart);
+
+                Assert.Equal(expected.IsSafetyBoundary, actual.IsSafetyBoundary);
+
+                Assert.Equal(
+                    expected.PrerequisiteIds.ToArray(),
+                    actual.PrerequisiteIds.ToArray());
+
+            }
+
+            Assert.DoesNotContain(
+                versionTwo.OwnedSettings,
+                setting => retiredPaths.Contains(setting.Path, StringComparer.Ordinal));
+
+            Assert.Equal(versionOne.DisplayName, versionTwo.DisplayName);
+
+            Assert.Equal(versionOne.Purpose, versionTwo.Purpose);
+
+            Assert.Equal(versionOne.Disclosure.Enables, versionTwo.Disclosure.Enables);
+
+            Assert.Equal(versionOne.Disclosure.Disables, versionTwo.Disclosure.Disables);
+
+            Assert.Equal(
+                versionOne.Disclosure.ProviderRequirements,
+                versionTwo.Disclosure.ProviderRequirements);
+
+            Assert.Equal(
+                versionOne.Disclosure.ResourceAndCostBehavior,
+                versionTwo.Disclosure.ResourceAndCostBehavior);
+
+            if (id is not "general-assistant" and not "automation")
+            {
+
+                Assert.Equal(
+                    versionOne.Disclosure.SecurityImplications,
+                    versionTwo.Disclosure.SecurityImplications);
+
+            }
+
+            Assert.Equal(
+                versionOne.Prerequisites.Select(static prerequisite =>
+                    $"{prerequisite.Id}|{prerequisite.Description}|{prerequisite.ResolutionCommand}|{prerequisite.Required}"),
+                versionTwo.Prerequisites.Select(static prerequisite =>
+                    $"{prerequisite.Id}|{prerequisite.Description}|{prerequisite.ResolutionCommand}|{prerequisite.Required}"));
+
+            Assert.Equal(
+                versionOne.Recommendations.Select(static recommendation =>
+                    $"{recommendation.Description}|{recommendation.Command}|{recommendation.IsAdvancedFeature}"),
+                versionTwo.Recommendations.Select(static recommendation =>
+                    $"{recommendation.Description}|{recommendation.Command}|{recommendation.IsAdvancedFeature}"));
+
+            Assert.Equal(
+                versionOne.ProgressiveDisclosure.EssentialChoice,
+                versionTwo.ProgressiveDisclosure.EssentialChoice);
+
+            Assert.Equal(
+                versionOne.ProgressiveDisclosure.DeferredFeatures.ToArray(),
+                versionTwo.ProgressiveDisclosure.DeferredFeatures.ToArray());
+
+            Assert.Equal(
+                versionOne.ProgressiveDisclosure.FirstSuccessRecommendation,
+                versionTwo.ProgressiveDisclosure.FirstSuccessRecommendation);
+
+        }
+
+        ConfigurationPresetDefinition automation =
+            ConfigurationPresetCatalog.FindVersion("automation", 2)!;
+
+        Assert.Contains(
+            automation.OwnedSettings,
+            static setting => setting.Path == "security.ward.unattendedMode"
+                && setting.CanonicalJson == "true");
+
+    }
+
+    [Fact]
+
+    public void Historical_general_assistant_hash_matches_the_design_audit_golden()
+    {
+
+        ConfigurationPresetBaselineValue[] appliedValues =
+        [
+            new("features.attachments", "true"),
+            new("features.saga", "false"),
+            new("features.sagaExtraction", "false"),
+            new("features.memoryManagement", "false"),
+            new("security.ward.enabled", "true"),
+            new("security.ward.autoDenyInUnattendedMode", "true"),
+            new("security.allowUnsandboxedToolChildren", "false"),
+        ];
+
+        Assert.Equal(
+            "a6240807df3e3e86bc649e5a790826a374c921de839f71790b03d7688616f522",
+            ConfigurationPresetHash.ComputeCanonicalValues(appliedValues));
+
     }
 
     [Fact]
@@ -111,13 +279,15 @@ public sealed class ConfigurationPresetCatalogTests
     {
 
         ConfigurationPresetDefinition expected = ConfigurationPresetCatalog.Versions.Single(static preset =>
-            preset.Id == "general-assistant" && preset.Version == 1);
+            preset.Id == "general-assistant" && preset.Version == 2);
 
-        Assert.Same(expected, ConfigurationPresetCatalog.FindVersion("  GENERAL-ASSISTANT  ", 1));
+        Assert.Same(expected, ConfigurationPresetCatalog.FindVersion("  GENERAL-ASSISTANT  ", 2));
+
+        Assert.NotNull(ConfigurationPresetCatalog.FindVersion("general-assistant", 1));
 
         Assert.Null(ConfigurationPresetCatalog.FindVersion("General Assistant", 1));
 
-        Assert.Null(ConfigurationPresetCatalog.FindVersion("general-assistant", 2));
+        Assert.Null(ConfigurationPresetCatalog.FindVersion("general-assistant", 3));
 
         Assert.Null(ConfigurationPresetCatalog.FindVersion("general-assistant", 0));
 
@@ -284,7 +454,7 @@ public sealed class ConfigurationPresetCatalogTests
             automation.Disclosure.Enables);
 
         Assert.Equal(
-            "Ordinary calls do not pause for approval; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
+            "Ward records are informational; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
             automation.Disclosure.SecurityImplications);
 
     }

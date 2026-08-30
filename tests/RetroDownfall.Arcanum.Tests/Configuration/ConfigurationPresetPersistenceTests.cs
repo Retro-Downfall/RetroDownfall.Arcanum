@@ -23,6 +23,43 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 {
 
+    private const string LegacyGeneralAssistantAppliedHash =
+        "a6240807df3e3e86bc649e5a790826a374c921de839f71790b03d7688616f522";
+
+    private const string LegacyGeneralAssistantBaselineHash =
+        "f475e8d99fafcd33b9231f84bdd03504b380a1658ffed7c24e5ca6a049bb63c4";
+
+    private const string NormalizedGeneralAssistantAppliedHash =
+        "8f843f14e3691552153a45044a8392ec48e6c6e9ec4265160668825c691a1d4b";
+
+    private const string LegacyGeneralAssistantProvenanceJson =
+        """
+        {
+          "presetId": "general-assistant",
+          "version": 1,
+          "appliedAt": "2026-08-03T12:00:00+00:00",
+          "ownedValuesHash": "a6240807df3e3e86bc649e5a790826a374c921de839f71790b03d7688616f522",
+          "baselineValues": [
+            { "path": "features.attachments", "canonicalJson": "false" },
+            { "path": "features.saga", "canonicalJson": "false" },
+            { "path": "features.sagaExtraction", "canonicalJson": "false" },
+            { "path": "features.memoryManagement", "canonicalJson": "false" },
+            { "path": "security.ward.enabled", "canonicalJson": "false" },
+            { "path": "security.ward.autoDenyInUnattendedMode", "canonicalJson": "false" },
+            { "path": "security.allowUnsandboxedToolChildren", "canonicalJson": "true" }
+          ],
+          "appliedValues": [
+            { "path": "features.attachments", "canonicalJson": "true" },
+            { "path": "features.saga", "canonicalJson": "false" },
+            { "path": "features.sagaExtraction", "canonicalJson": "false" },
+            { "path": "features.memoryManagement", "canonicalJson": "false" },
+            { "path": "security.ward.enabled", "canonicalJson": "true" },
+            { "path": "security.ward.autoDenyInUnattendedMode", "canonicalJson": "true" },
+            { "path": "security.allowUnsandboxedToolChildren", "canonicalJson": "false" }
+          ]
+        }
+        """;
+
     private TempWorkspace _workspace = null!;
 
     private string? _originalDotnetEnvironment;
@@ -261,7 +298,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             saga: false,
             attachments: false,
             defaultModel: "local-model",
-            wardEnabled: false);
+            allowUnsandboxedToolChildren: true);
 
         Assert.True((await writer.WriteAsync(baseline, CancellationToken.None)).IsSuccess);
 
@@ -307,7 +344,8 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         Assert.Equal(1, reset.Value.PreservedDriftCount);
 
-        Assert.False(reset.Value.Snapshot.PersistedSettings.Security.Ward.Enabled);
+        Assert.True(
+            reset.Value.Snapshot.PersistedSettings.Security.AllowUnsandboxedToolChildren);
 
         Assert.False(reset.Value.Snapshot.PersistedSettings.Features.Attachments);
 
@@ -681,6 +719,338 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     [Fact]
 
+    public async Task Read_and_peek_normalize_a_real_legacy_pair_without_rewriting_its_bytes()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings applied = Settings(
+            saga: false,
+            attachments: true,
+            defaultModel: "local-model");
+
+        Assert.True((await writer.WriteAsync(applied, CancellationToken.None)).IsSuccess);
+
+        await WriteLegacyGeneralAssistantPairAsync();
+
+        byte[] stateBefore = await File.ReadAllBytesAsync(
+            ArcanumPaths.ConfigurationPresetStateFile);
+
+        byte[] rollbackBefore = await File.ReadAllBytesAsync(
+            ArcanumPaths.ConfigurationPresetRollbackFile);
+
+        FileConfigurationPresetPersistence persistence = CreatePersistence(writer);
+
+        Result<ConfigurationPresetSnapshot> read = await persistence.ReadAsync();
+
+        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : null);
+
+        AssertNormalizedLegacyGeneralAssistant(read.Value);
+
+        ConfigurationPresetInspection inspection =
+            new ConfigurationPresetPlanner().Inspect(read.Value);
+
+        Assert.Equal(ConfigurationPresetEffectiveState.Active, inspection.State);
+
+        Assert.Equal(2, inspection.ActivePreset?.Version);
+
+        Assert.Empty(inspection.Drift);
+
+        Result<ConfigurationPresetSnapshot> peek = await persistence.PeekAsync();
+
+        Assert.True(peek.IsSuccess, peek.IsFailure ? peek.Error.Message : null);
+
+        AssertNormalizedLegacyGeneralAssistant(peek.Value);
+
+        Assert.Equal(
+            stateBefore,
+            await File.ReadAllBytesAsync(ArcanumPaths.ConfigurationPresetStateFile));
+
+        Assert.Equal(
+            rollbackBefore,
+            await File.ReadAllBytesAsync(ArcanumPaths.ConfigurationPresetRollbackFile));
+
+    }
+
+    [Theory]
+
+    [InlineData("missing-retired-ownership")]
+
+    [InlineData("incorrect-retired-applied-value")]
+
+    [InlineData("invalid-retired-baseline")]
+
+    [InlineData("wrong-hash")]
+
+    [InlineData("retired-state-rollback-mismatch")]
+
+    public async Task Read_rejects_tampered_legacy_pairs(string tampering)
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings applied = Settings(
+            saga: false,
+            attachments: true,
+            defaultModel: "local-model");
+
+        Assert.True((await writer.WriteAsync(applied, CancellationToken.None)).IsSuccess);
+
+        ConfigurationPresetProvenance state = LegacyGeneralAssistantProvenance();
+
+        ConfigurationPresetProvenance rollback = state;
+
+        switch (tampering)
+        {
+            case "missing-retired-ownership":
+
+                state = state with
+                {
+
+                    BaselineValues =
+                    [
+                        .. state.BaselineValues.Where(static value =>
+                            value.Path != "security.ward.enabled"),
+                    ],
+
+                    AppliedValues =
+                    [
+                        .. state.AppliedValues.Where(static value =>
+                            value.Path != "security.ward.enabled"),
+                    ],
+
+                };
+
+                state = state with
+                {
+
+                    OwnedValuesHash = ConfigurationPresetHash.ComputeCanonicalValues(
+                        state.AppliedValues),
+
+                };
+
+                rollback = state;
+
+                break;
+
+            case "incorrect-retired-applied-value":
+
+                state = state with
+                {
+
+                    AppliedValues =
+                    [
+                        .. state.AppliedValues.Select(static value =>
+                            value.Path == "security.ward.enabled"
+                                ? value with { CanonicalJson = "false" }
+                                : value),
+                    ],
+
+                };
+
+                state = state with
+                {
+
+                    OwnedValuesHash = ConfigurationPresetHash.ComputeCanonicalValues(
+                        state.AppliedValues),
+
+                };
+
+                rollback = state;
+
+                break;
+
+            case "invalid-retired-baseline":
+
+                state = state with
+                {
+
+                    BaselineValues =
+                    [
+                        .. state.BaselineValues.Select(static value =>
+                            value.Path == "security.ward.autoDenyInUnattendedMode"
+                                ? value with { CanonicalJson = "0" }
+                                : value),
+                    ],
+
+                };
+
+                rollback = state;
+
+                break;
+
+            case "wrong-hash":
+
+                state = state with { OwnedValuesHash = new string('0', 64) };
+
+                rollback = state;
+
+                break;
+
+            case "retired-state-rollback-mismatch":
+
+                rollback = rollback with
+                {
+
+                    BaselineValues =
+                    [
+                        .. rollback.BaselineValues.Select(static value =>
+                            value.Path == "security.ward.enabled"
+                                ? value with { CanonicalJson = "true" }
+                                : value),
+                    ],
+
+                };
+
+                break;
+
+            default:
+
+                throw new InvalidOperationException($"Unknown tampering case '{tampering}'.");
+        }
+
+        await WriteProvenanceAsync(ArcanumPaths.ConfigurationPresetStateFile, state);
+
+        await WriteProvenanceAsync(
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            rollback);
+
+        string settingsHashBefore = ConfigurationPresetHash.ComputeSettings(
+            ConfigurationBootstrapper.LoadPersistedArcanumSettings());
+
+        Result<ConfigurationPresetSnapshot> result = await CreatePersistence(writer)
+            .ReadAsync();
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Preset.RollbackSnapshotInvalid", result.Error.Code);
+
+        Assert.Equal(
+            settingsHashBefore,
+            ConfigurationPresetHash.ComputeSettings(
+                ConfigurationBootstrapper.LoadPersistedArcanumSettings()));
+
+    }
+
+    [Fact]
+
+    public async Task Reset_from_normalized_legacy_provenance_restores_only_v2_survivors()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings drifted = Settings(
+            saga: false,
+            attachments: false,
+            defaultModel: "local-model");
+
+        drifted.Cli.ShowManaBar = false;
+
+        Assert.True((await writer.WriteAsync(drifted, CancellationToken.None)).IsSuccess);
+
+        await WriteLegacyGeneralAssistantPairAsync();
+
+        FileConfigurationPresetPersistence persistence = CreatePersistence(writer);
+
+        Result<ConfigurationPresetSnapshot> read = await persistence.ReadAsync();
+
+        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : null);
+
+        ConfigurationPresetProvenance normalized =
+            Assert.IsType<ConfigurationPresetProvenance>(read.Value.Provenance);
+
+        Result<ConfigurationPresetResetCommitResult> reset = await persistence.ResetAsync(
+            new ConfigurationPresetResetCommitRequest(
+                normalized,
+                ConfigurationPresetHash.ComputeSettings(read.Value.PersistedSettings)),
+            CancellationToken.None);
+
+        Assert.True(reset.IsSuccess, reset.IsFailure ? reset.Error.Message : null);
+
+        Assert.Equal(4, reset.Value.RestoredSettingCount);
+
+        Assert.Equal(1, reset.Value.PreservedDriftCount);
+
+        Assert.False(reset.Value.Snapshot.PersistedSettings.Features.Attachments);
+
+        Assert.True(
+            reset.Value.Snapshot.PersistedSettings.Security.AllowUnsandboxedToolChildren);
+
+        Assert.False(reset.Value.Snapshot.PersistedSettings.Cli.ShowManaBar);
+
+        Assert.Null(reset.Value.Snapshot.Provenance);
+
+        Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetStateFile));
+
+        Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
+
+        Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
+
+        await AssertRemovedWardPathsAreAbsentFromConfigurationAsync();
+
+    }
+
+    [Fact]
+
+    public async Task Recovery_of_a_validated_legacy_journal_skips_retired_paths()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings interrupted = Settings(
+            saga: true,
+            attachments: true,
+            defaultModel: "local-model");
+
+        interrupted.Cli.ShowManaBar = false;
+
+        Assert.True((await writer.WriteAsync(interrupted, CancellationToken.None)).IsSuccess);
+
+        ConfigurationPresetProvenance provenance = LegacyGeneralAssistantProvenance();
+
+        ConfigurationPresetJournalDocument journal = new(
+            "apply",
+            provenance.BaselineValues,
+            provenance.AppliedValues,
+            LegacyGeneralAssistantBaselineHash,
+            LegacyGeneralAssistantAppliedHash,
+            PreviousProvenance: null,
+            provenance,
+            DateTimeOffset.Parse("2026-08-03T12:01:00Z"));
+
+        await WriteJournalAsync(journal);
+
+        await WriteProvenanceAsync(
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            provenance);
+
+        Result<ConfigurationPresetSnapshot> result = await CreatePersistence(writer)
+            .ReadAsync();
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(result.Value.PersistedSettings.Features.Attachments);
+
+        Assert.True(result.Value.PersistedSettings.Features.Saga);
+
+        Assert.True(result.Value.PersistedSettings.Security.AllowUnsandboxedToolChildren);
+
+        Assert.False(result.Value.PersistedSettings.Cli.ShowManaBar);
+
+        Assert.Null(result.Value.Provenance);
+
+        Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetStateFile));
+
+        Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
+
+        Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
+
+        await AssertRemovedWardPathsAreAbsentFromConfigurationAsync();
+
+    }
+
+    [Fact]
+
     public async Task Read_rejects_oversized_sidecars_before_deserialization()
     {
 
@@ -973,7 +1343,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             saga: false,
             attachments: false,
             defaultModel: "local-model",
-            wardEnabled: false);
+            allowUnsandboxedToolChildren: true);
 
         ConfigurationPresetPlanningResult plan = GeneralAssistantPlan(baseline);
 
@@ -1019,7 +1389,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         Assert.False(result.Value.PersistedSettings.Features.Attachments);
 
-        Assert.True(result.Value.PersistedSettings.Security.Ward.Enabled);
+        Assert.False(result.Value.PersistedSettings.Security.AllowUnsandboxedToolChildren);
 
         Assert.False(result.Value.PersistedSettings.Cli.ShowManaBar);
 
@@ -1053,7 +1423,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             saga: false,
             attachments: false,
             defaultModel: "local-model",
-            wardEnabled: false);
+            allowUnsandboxedToolChildren: true);
 
         ConfigurationPresetPlanningResult plan = GeneralAssistantPlan(baseline);
 
@@ -1091,7 +1461,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         Assert.True(result.Value.PersistedSettings.Features.Attachments);
 
-        Assert.False(result.Value.PersistedSettings.Security.Ward.Enabled);
+        Assert.True(result.Value.PersistedSettings.Security.AllowUnsandboxedToolChildren);
 
         Assert.False(result.Value.PersistedSettings.Cli.ShowManaBar);
 
@@ -1113,8 +1483,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         ArcanumSettings baseline = Settings(
             saga: false,
             attachments: false,
-            defaultModel: "local-model",
-            wardEnabled: false);
+            defaultModel: "local-model");
 
         ConfigurationPresetPlanningResult plan = GeneralAssistantPlan(baseline);
 
@@ -1435,6 +1804,93 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     }
 
+    private static async Task WriteLegacyGeneralAssistantPairAsync()
+    {
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            ArcanumPaths.ConfigurationPresetStateFile,
+            LegacyGeneralAssistantProvenanceJson);
+
+        await File.WriteAllTextAsync(
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            LegacyGeneralAssistantProvenanceJson);
+
+    }
+
+    private static ConfigurationPresetProvenance LegacyGeneralAssistantProvenance() =>
+        JsonSerializer.Deserialize(
+            LegacyGeneralAssistantProvenanceJson,
+            ConfigurationPresetPersistenceJsonContext.Default.ConfigurationPresetProvenance)
+        ?? throw new InvalidOperationException("The hard-coded legacy provenance fixture was empty.");
+
+    private static void AssertNormalizedLegacyGeneralAssistant(
+        ConfigurationPresetSnapshot snapshot)
+    {
+
+        ConfigurationPresetProvenance provenance =
+            Assert.IsType<ConfigurationPresetProvenance>(snapshot.Provenance);
+
+        Assert.Equal("general-assistant", provenance.PresetId);
+
+        Assert.Equal(2, provenance.Version);
+
+        Assert.Equal(DateTimeOffset.Parse("2026-08-03T12:00:00Z"), provenance.AppliedAt);
+
+        Assert.Equal(NormalizedGeneralAssistantAppliedHash, provenance.OwnedValuesHash);
+
+        Assert.Equal(
+            [
+                "features.attachments=false",
+                "features.saga=false",
+                "features.sagaExtraction=false",
+                "features.memoryManagement=false",
+                "security.allowUnsandboxedToolChildren=true",
+            ],
+            provenance.BaselineValues.Select(static value =>
+                $"{value.Path}={value.CanonicalJson}"));
+
+        Assert.Equal(
+            [
+                "features.attachments=true",
+                "features.saga=false",
+                "features.sagaExtraction=false",
+                "features.memoryManagement=false",
+                "security.allowUnsandboxedToolChildren=false",
+            ],
+            provenance.AppliedValues.Select(static value =>
+                $"{value.Path}={value.CanonicalJson}"));
+
+        Assert.Equal(
+            NormalizedGeneralAssistantAppliedHash,
+            ConfigurationPresetHash.ComputeCanonicalValues(provenance.AppliedValues));
+
+    }
+
+    private static async Task AssertRemovedWardPathsAreAbsentFromConfigurationAsync()
+    {
+
+        byte[] configurationBytes = await File.ReadAllBytesAsync(
+            ArcanumPaths.ConfigurationFile);
+
+        using JsonDocument document = JsonDocument.Parse(configurationBytes);
+
+        JsonElement ward = document.RootElement
+            .GetProperty("Arcanum")
+            .GetProperty("security")
+            .GetProperty("ward");
+
+        Assert.DoesNotContain(
+            ward.EnumerateObject(),
+            static property => property.NameEquals("enabled"));
+
+        Assert.DoesNotContain(
+            ward.EnumerateObject(),
+            static property => property.NameEquals("autoDenyInUnattendedMode"));
+
+    }
+
     private static FileConfigurationPresetPersistence CreatePersistence(
         ConfigurationWriter writer,
         ConfigurationPresetPersistenceHooks? hooks = null) =>
@@ -1448,7 +1904,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         bool saga,
         bool attachments,
         string defaultModel,
-        bool wardEnabled = true) =>
+        bool allowUnsandboxedToolChildren = false) =>
         new()
         {
 
@@ -1482,12 +1938,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             Security = new SecuritySettings
             {
 
-                Ward = new WardPolicySettings
-                {
-
-                    Enabled = wardEnabled,
-
-                },
+                AllowUnsandboxedToolChildren = allowUnsandboxedToolChildren,
 
             },
 
