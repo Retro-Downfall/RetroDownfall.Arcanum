@@ -388,6 +388,8 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             new AllowAllSanctumGuard(),
             new WardPolicySettings { ForbiddenArts = [] });
 
+        Func<string> faultingTool = static () => throw new InvalidOperationException("mcp transport fault");
+
         ToolExecutionPipeline.ProcessedToolCall processed = await pipeline
             .ProcessSingleToolCallAsync(
                 new FunctionCallContent("call-write_file", "write_file", new Dictionary<string, object?>()),
@@ -397,13 +399,7 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
                     Tools =
                     [
                         AIFunctionFactory.Create(
-                            () =>
-                            {
-                                throw new InvalidOperationException("mcp transport fault");
-#pragma warning disable CS0162
-                                return "unreachable";
-#pragma warning restore CS0162
-                            },
+                            faultingTool,
                             "write_file"),
                     ],
                 },
