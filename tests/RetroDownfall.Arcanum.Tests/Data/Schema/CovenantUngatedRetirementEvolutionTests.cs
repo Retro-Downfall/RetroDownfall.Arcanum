@@ -1,5 +1,10 @@
+using System.Data;
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
@@ -17,6 +22,16 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
     private const string HistoricalContentHash =
         "X'202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F'";
+
+    private const string KernelNormalizedKey = "kernel.key";
+
+    private static readonly Guid KernelCampaignId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+    private static readonly Guid KernelEntryId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+
+    private static readonly Guid KernelVersionId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+
+    private static readonly Guid KernelRetirementMutationId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
 
     private static readonly string[] RebuiltIndexNames =
     [
@@ -75,6 +90,42 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         await SeedVersionTwoRowsAsync(connection);
 
+        TableSnapshot versionsBefore = await SnapshotTableAsync(
+            connection,
+            "covenant_versions",
+            "VersionId");
+
+        TableSnapshot headsBefore = await SnapshotTableAsync(
+            connection,
+            "covenant_heads",
+            "EntryId, LaneCode");
+
+        TableSnapshot provenanceBefore = await SnapshotTableAsync(
+            connection,
+            "covenant_version_attachment_provenance",
+            "VersionId, Ordinal");
+
+        TableSnapshot keyEpochsBefore = await SnapshotTableAsync(
+            connection,
+            "covenant_key_epochs",
+            "NormalizedKey");
+
+        Assert.Equal(28, versionsBefore.Columns.Count);
+
+        Assert.Equal(4, versionsBefore.Rows.Count);
+
+        Assert.Equal(12, headsBefore.Columns.Count);
+
+        Assert.Equal(2, headsBefore.Rows.Count);
+
+        Assert.Equal(11, provenanceBefore.Columns.Count);
+
+        Assert.Single(provenanceBefore.Rows);
+
+        Assert.Equal(3, keyEpochsBefore.Columns.Count);
+
+        Assert.Equal(2, keyEpochsBefore.Rows.Count);
+
         GrimoireSchemaInstallResult evolved = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
             GrimoireSchemaVersionChains.Default,
@@ -84,6 +135,25 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.CovenantCanonical.Health);
 
         Assert.Equal(3, evolved.CovenantCanonical.SchemaVersion);
+
+        AssertCompleteTableSnapshot(
+            versionsBefore,
+            await SnapshotTableAsync(connection, "covenant_versions", "VersionId"));
+
+        AssertCompleteTableSnapshot(
+            headsBefore,
+            await SnapshotTableAsync(connection, "covenant_heads", "EntryId, LaneCode"));
+
+        AssertCompleteTableSnapshot(
+            provenanceBefore,
+            await SnapshotTableAsync(
+                connection,
+                "covenant_version_attachment_provenance",
+                "VersionId, Ordinal"));
+
+        AssertCompleteTableSnapshot(
+            keyEpochsBefore,
+            await SnapshotTableAsync(connection, "covenant_key_epochs", "NormalizedKey"));
 
         Assert.Equal(
             "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20",
@@ -216,15 +286,25 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         Assert.Contains("origin of its current version", headUpdateDenied.Message, StringComparison.Ordinal);
 
-        await ExecuteAsync(
-            connection,
-            ReceiptFreeAgentApprovedRetirement("receipt-free-evolved", "ordinary-entry", laneRevision: 2, predecessor: "ordinary-one"));
+        (CovenantMutationIntent intent, CovenantMutationReceipt receipt) =
+            await PublishReceiptFreeRetirementThroughKernelAsync(connection);
+
+        Assert.Equal(CovenantMutationOutcome.Applied, receipt.Outcome);
+
+        Assert.Equal(KernelEntryId, receipt.EntryId);
+
+        Assert.Equal(2, receipt.ResultingLaneRevision);
+
+        AssertPublishedRetirementBindings(
+            await SnapshotTableAsync(connection, "covenant_versions", "VersionId"),
+            intent,
+            receipt);
 
         Assert.Equal(
-            1L,
+            2L,
             await ScalarLongAsync(
                 connection,
-                "SELECT COUNT(*) FROM covenant_versions WHERE VersionId = 'receipt-free-evolved' AND OriginCode = 3 AND WardReceiptDigest IS NULL AND AuthorizationModeCode IS NULL;"));
+                $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{KernelNormalizedKey}';"));
 
     }
 
@@ -360,6 +440,23 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         await ExecuteAsync(connection, OrdinaryVersion("ordinary-one", "ordinary-entry"));
 
+        await ExecuteAsync(
+            connection,
+            $"INSERT INTO covenant_entries (EntryId, ScopeCode, CampaignId, AuthoredKey, NormalizedKey, CreatedAtUtc) VALUES ('{KernelEntryId:D}', 2, '{KernelCampaignId:D}', '{KernelNormalizedKey}', '{KernelNormalizedKey}', '{Timestamp}');");
+
+        await ExecuteAsync(
+            connection,
+            OrdinaryVersion(KernelVersionId.ToString("D"), KernelEntryId.ToString("D")));
+
+        await ExecuteAsync(
+            connection,
+            $"""
+            INSERT INTO covenant_heads (
+                EntryId, LaneCode, CurrentVersionId, CurrentLaneRevision, CurrentOperationCode,
+                ScopeCode, CampaignId, NormalizedKey, CompiledByteCost, OriginCode, SearchRowId, UpdatedAtUtc)
+            VALUES ('{KernelEntryId:D}', 1, '{KernelVersionId:D}', 1, 1, 2, '{KernelCampaignId:D}', '{KernelNormalizedKey}', 8, 1, 2, '{Timestamp}');
+            """);
+
     }
 
     private static string HistoricalAgentApprovedVersion(string versionId, string entryId, int revision, string? predecessor) =>
@@ -393,24 +490,100 @@ public sealed class CovenantUngatedRetirementEvolutionTests
             'mutation-{versionId}', randomblob(32), randomblob(32), randomblob(32), NULL, 0, randomblob(32), '{Timestamp}');
         """;
 
-    private static string ReceiptFreeAgentApprovedRetirement(
-        string versionId,
-        string entryId,
-        int laneRevision,
-        string predecessor) =>
-        $"""
-        INSERT INTO covenant_versions (
-            VersionId, EntryId, LaneCode, LaneRevision, OperationCode, AuthoredContent, CompiledContent,
-            AuthoredHash, RenderedHash, CompiledByteCost, RequiredFenceLength, CompilerPolicyVersion,
-            RendererPolicyVersion, OriginCode, SourceTurnId, SourceToolCallId, BasePlanDigest,
-            AdmissionReceiptDigest, WardReceiptDigest, AuthorizationModeCode, MutationId,
-            RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, PredecessorVersionId,
-            AttachmentProvenanceCount, AttachmentProvenanceDigest, CreatedAtUtc)
-        VALUES (
-            '{versionId}', '{entryId}', 1, {laneRevision}, 2, NULL, NULL, NULL, NULL, 0, 0, 1, 1, 3,
-            'retire-turn', 'retire-tool', randomblob(32), NULL, NULL, NULL, 'mutation-{versionId}',
-            randomblob(32), randomblob(32), randomblob(32), '{predecessor}', 0, randomblob(32), '{Timestamp}');
-        """;
+    private static async Task<(CovenantMutationIntent Intent, CovenantMutationReceipt Receipt)>
+        PublishReceiptFreeRetirementThroughKernelAsync(SqliteConnection connection)
+    {
+
+        CovenantMutationIntent intent = CovenantMutationFixture.AgentRetire(
+            CovenantOperationScope.ForCampaign(KernelCampaignId),
+            KernelNormalizedKey,
+            CovenantLane.Confirmed,
+            expectedRevision: 1,
+            expectedKeyEpoch: 1,
+            mutationId: KernelRetirementMutationId);
+
+        Guid datasetGeneration = await ScalarGuidBlobAsync(
+            connection,
+            "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;");
+
+        long keyReclamationEpoch = await ScalarLongAsync(
+            connection,
+            "SELECT KeyReclamationEpoch FROM covenant_state WHERE StateKey = 1;");
+
+        CovenantMutationBatch batch = new(
+            datasetGeneration,
+            keyReclamationEpoch,
+            expectedCampaignRegistryEpoch: null,
+            CovenantMutationFixture.CommitTime,
+            [intent]);
+
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection
+            .BeginTransactionAsync(IsolationLevel.Serializable, CancellationToken.None);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> published = await new CovenantMutationKernel()
+            .ApplyBatchAsync(
+                batch,
+                new CovenantMutationTransaction(connection, transaction),
+                CancellationToken.None);
+
+        Assert.True(published.IsSuccess, published.IsFailure ? published.Error.Message : string.Empty);
+
+        CovenantMutationReceipt receipt = Assert.Single(published.Value);
+
+        await transaction.CommitAsync(CancellationToken.None);
+
+        return (intent, receipt);
+
+    }
+
+    private static void AssertPublishedRetirementBindings(
+        TableSnapshot versions,
+        CovenantMutationIntent intent,
+        CovenantMutationReceipt receipt)
+    {
+
+        string versionId = receipt.ResultingVersionId!.Value.ToString("D");
+
+        IReadOnlyList<string> actual = Assert.Single(
+            versions.Rows,
+            row => row[0] == SnapshotValue(versionId));
+
+        string[] expected =
+        [
+            SnapshotValue(versionId),
+            SnapshotValue(KernelEntryId.ToString("D")),
+            SnapshotValue((long)CovenantLane.Confirmed),
+            SnapshotValue(2L),
+            SnapshotValue((long)CovenantOperation.Retire),
+            "null",
+            "null",
+            "null",
+            "null",
+            SnapshotValue(0L),
+            SnapshotValue(0L),
+            SnapshotValue((long)CovenantCompiler.CompilerPolicyVersion),
+            SnapshotValue((long)CovenantCompiler.RendererPolicyVersion),
+            SnapshotValue((long)CovenantOrigin.AgentApproved),
+            SnapshotValue(intent.SourceTurnId!.Value.ToString("D")),
+            SnapshotValue(intent.SourceToolCallId!),
+            SnapshotValue(intent.BasePlanDigest!.Value.Bytes),
+            SnapshotValue(intent.AdmissionReceiptDigest!.Value.Bytes),
+            "null",
+            "null",
+            SnapshotValue(intent.MutationId.ToString("D")),
+            SnapshotValue(intent.Authorization.RequestIdempotencyDigest.Bytes),
+            SnapshotValue(intent.Authorization.AuthorizationDigest.Bytes),
+            SnapshotValue(intent.Authorization.FinalMutationDigest.Bytes),
+            SnapshotValue(KernelVersionId.ToString("D")),
+            SnapshotValue(0L),
+            SnapshotValue(CovenantDigests.Materialization(
+                new MaterializationDigestInput(Unprovenanced: true, [])).Bytes),
+            SnapshotValue("2026-03-01T12:00:00.0000000Z"),
+        ];
+
+        Assert.Equal(expected, actual);
+
+    }
 
     private static async Task AssertWardTupleMatrixAsync(SqliteConnection connection)
     {
@@ -624,6 +797,83 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
     }
 
+    private static async Task<Guid> ScalarGuidBlobAsync(SqliteConnection connection, string sql)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return new Guid((byte[])(await command.ExecuteScalarAsync(CancellationToken.None))!);
+
+    }
+
+    private static async Task<TableSnapshot> SnapshotTableAsync(
+        SqliteConnection connection,
+        string tableName,
+        string orderBy)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"SELECT * FROM \"{tableName}\" ORDER BY {orderBy};";
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+        string[] columns = Enumerable.Range(0, reader.FieldCount)
+            .Select(reader.GetName)
+            .ToArray();
+
+        List<IReadOnlyList<string>> rows = [];
+
+        while (await reader.ReadAsync(CancellationToken.None))
+        {
+
+            string[] values = new string[reader.FieldCount];
+
+            for (int ordinal = 0; ordinal < reader.FieldCount; ordinal++)
+            {
+
+                values[ordinal] = SnapshotValue(reader.GetValue(ordinal));
+
+            }
+
+            rows.Add(values);
+
+        }
+
+        return new TableSnapshot(tableName, columns, rows);
+
+    }
+
+    private static string SnapshotValue(object value) => value switch
+    {
+        DBNull => "null",
+        byte[] bytes => $"blob:{Convert.ToHexString(bytes)}",
+        string text => $"text:{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text))}",
+        long integer => $"integer:{integer.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+        double real => $"real:{real.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}",
+        _ => throw new InvalidOperationException($"Unsupported SQLite snapshot value type {value.GetType().FullName}."),
+    };
+
+    private static void AssertCompleteTableSnapshot(TableSnapshot expected, TableSnapshot actual)
+    {
+
+        Assert.Equal(expected.TableName, actual.TableName);
+
+        Assert.Equal(expected.Columns, actual.Columns);
+
+        Assert.Equal(expected.Rows.Count, actual.Rows.Count);
+
+        for (int row = 0; row < expected.Rows.Count; row++)
+        {
+
+            Assert.Equal(expected.Rows[row], actual.Rows[row]);
+
+        }
+
+    }
+
     private static async Task<long> CountRowsAsync(SqliteConnection connection, string sql)
     {
 
@@ -694,5 +944,10 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         long? SourceEnd,
         string? SourceTurnId,
         string? MaterializationReference);
+
+    private sealed record TableSnapshot(
+        string TableName,
+        IReadOnlyList<string> Columns,
+        IReadOnlyList<IReadOnlyList<string>> Rows);
 
 }
