@@ -13,19 +13,102 @@ internal interface IGrimoireConnectionAdmissionGate
 
     long CurrentGeneration { get; }
 
+    bool TryAcquireRequestLease(
+        GrimoireRequestKind kind,
+        out IGrimoireRequestLease? lease);
+
+    bool TryAcquireWorkLease(
+        GrimoireWorkKind kind,
+        out IGrimoireWorkLease? lease);
+
     IGrimoireConnectionOpenTicket AcquireOrdinaryOpen(DbConnection connection);
 
     Result<IGrimoireClosingOwner> BeginOrResumeExclusive(
-        CovenantExclusiveRecoveryOwner owner);
+        CovenantExclusiveRecoveryOwner owner,
+        IGrimoireRequestLease? initiatingRequest = null,
+        DbConnection? scopedConnection = null);
+
+    ValueTask<Result> DrainRequestAndWorkAsync(
+        IGrimoireClosingOwner closingOwner,
+        CancellationToken cancellationToken);
 
     ValueTask<Result<IGrimoireExclusiveClosedLease>> CloseConnectionAdmissionAsync(
         IGrimoireClosingOwner closingOwner,
+        CancellationToken cancellationToken);
+
+    ValueTask<Result> AbortClosingAsync(
+        IGrimoireClosingOwner closingOwner,
+        Func<CancellationToken, ValueTask<bool>> proveNoDestructiveEffectAsync,
         CancellationToken cancellationToken);
 
     Task<long> WaitForNextOpenGenerationAsync(
         long observedGeneration,
         CancellationToken cancellationToken);
 
+}
+
+/// <summary>
+/// The ordinary request lifetime policy applied before endpoint execution.
+/// </summary>
+internal enum GrimoireRequestKind : byte
+{
+
+    Finite = 1,
+
+    QuiesceableStream = 2,
+
+}
+
+/// <summary>
+/// The complete background unit whose scope and durable disposition drain together.
+/// </summary>
+internal enum GrimoireWorkKind : byte
+{
+
+    SessionAttachmentIndexing = 1,
+
+    EntryWeaving = 2,
+
+    SagaExtraction = 3,
+
+}
+
+/// <summary>
+/// One admitted request, held through asynchronous disposal of its request scope.
+/// </summary>
+internal interface IGrimoireRequestLease : IAsyncDisposable
+{
+
+    GrimoireRequestKind Kind { get; }
+
+    long Generation { get; }
+
+    CancellationToken MaintenanceRevocation { get; }
+
+}
+
+/// <summary>
+/// One admitted background unit, held through its final effect disposition and scope disposal.
+/// </summary>
+internal interface IGrimoireWorkLease : IAsyncDisposable
+{
+
+    GrimoireWorkKind Kind { get; }
+
+    long Generation { get; }
+
+    CancellationToken MaintenanceRevocation { get; }
+
+    bool TryBeginExternalEffectGroup(
+        out IGrimoireExternalEffectGroup? effectGroup);
+
+}
+
+/// <summary>
+/// Atomic authority for one independently resumable external-effect group.
+/// </summary>
+internal interface IGrimoireExternalEffectGroup : IAsyncDisposable
+{
 }
 
 /// <summary>
