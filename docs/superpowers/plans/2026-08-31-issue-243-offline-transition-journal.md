@@ -27,7 +27,8 @@
 - New operations compare `Closed(E)` to `Active(E+1)` only after exact file and temporary-residue absence. An active different operation conflicts; an exact active duplicate validates and resumes; a closed same operation never reopens.
 - The file protocol retains the proved parent directory for every mutation and uses four exact sibling leaves: canonical `J`, working `W = J + ".publish"`, predecessor `P = J + ".previous"`, and retirement `D = J + ".retiring"`. No generic `.arcanum-cleanup-*` quarantine is permitted.
 - An update atomically exchanges/replaces `W` and `J` while retaining the displaced target at `W`/`P`, then verifies that displaced identity before accepting publication. A target substituted in the last validation window is preserved as evidence and fails closed; it is never silently overwritten or accepted.
-- Retirement writes and rereads the exact `Closed` anchor before moving the exact final file to `D`, authenticating it there, unlinking it through the retained parent, fsyncing the parent, proving all four leaves absent twice, retaining the key and tombstone, and remaining idempotent.
+- Retirement writes and rereads the exact `Closed` anchor before moving the exact final file to `D`, authenticating it there, compare-unlinking it through the retained parent, verifying the retained handle lost its final link, fsyncing the parent, proving all four leaves absent twice, retaining the key and tombstone, and remaining idempotent.
+- Unix has no unlink-by-open-handle syscall. The final `unlinkat(parent, D)` is therefore a deliberately narrow delegated-deletion window: compare the retained D handle to the relative name immediately before unlink, require that same handle's link count become zero immediately after, and return recovery-required on any mismatch or residual evidence. Success proves only the compare-before-unlink result, the expected handle's zero-link postcondition, and fixed-namespace absence; it cannot prove that the syscall removed no last-instant same-UID replacement. Never claim a portable guarantee stronger than those postconditions.
 - Reject symlinks/reparse points, hard links, owner-posture failures, case aliases, stale temporary files, substitutions, ambiguous absence, unknown versions, noncanonical JSON, replay, rollback, skips, and partial evidence.
 - Follow RED/GREEN/refactor for every behavior. Run each named focused test once per task; reserve the repository-wide suite and AOT gates for umbrella issue #239 qualification.
 - Preserve the two unrelated untracked issue-221 documents byte-for-byte and do not include them in any commit.
@@ -385,7 +386,8 @@ Publication_preserves_and_refuses_a_target_substituted_after_final_validation
 Publication_crash_after_atomic_exchange_retains_authentic_predecessor_evidence
 Read_refuses_symlink_hardlink_non_owner_and_non_regular_evidence
 Absence_refuses_case_alias_working_previous_retiring_legacy_temp_and_unreadable_parent_evidence
-Delete_moves_to_retiring_authenticates_unlinks_fsyncs_and_proves_absence
+Delete_moves_to_retiring_authenticates_compare_unlinks_and_proves_the_handle_unlinked
+Compare_unlink_detects_a_substitution_in_the_delegated_unlink_window
 Publication_failure_before_exchange_preserves_current_and_removes_exact_working_file
 Publication_failure_after_exchange_returns_recovery_required_and_preserves_all_evidence
 Production_never_creates_a_generic_arcanum_cleanup_quarantine
@@ -404,6 +406,7 @@ file:parent-flushed
 file:previous-retiring
 file:previous-retiring-verified
 file:previous-unlinked
+file:previous-zero-link-verified
 file:previous-delete-parent-flushed
 file:residue-absence-proved
 ```
@@ -462,9 +465,9 @@ Enumerate and open relative to the retained parent, not by resolving the parent 
 
 - [ ] **Step 4: Implement durable replacement, reread, and deletion**
 
-Implement a #243-only `GrimoireOfflineTransitionJournalFilePrimitives` capability. On Linux use retained-parent `openat`, `renameat2(RENAME_NOREPLACE|RENAME_EXCHANGE)`, `unlinkat`, and `fsync`; on macOS use `openat`, `renameatx_np(RENAME_EXCL|RENAME_SWAP)`, `unlinkat`, and `fsync`; on Windows retain an owner-proved directory handle without delete sharing, create/open children relative with `NtCreateFile`/`NtOpenFile`, atomically replace with a backup using `ReplaceFileW`, rename/unlink exact opened children with handle-based file-information APIs, and flush the directory handle. Unknown platforms fail closed. All imports must be source-generated and Native-AOT-safe.
+Implement a #243-only `GrimoireOfflineTransitionJournalFilePrimitives` capability. On Linux use retained-parent `openat`, `renameat2(RENAME_NOREPLACE|RENAME_EXCHANGE)`, `unlinkat`, `fstat`, and `fsync`; on macOS use `openat`, `renameatx_np(RENAME_EXCL|RENAME_SWAP)`, `unlinkat`, `fstat`, and `fsync`; on Windows retain an owner-proved directory handle without delete sharing, create/open children relative with `NtCreateFile`/`NtOpenFile`, atomically replace with a backup using `ReplaceFileW`, rename/unlink exact opened children with handle-based file-information APIs, and flush the directory handle. Unknown platforms fail closed. All imports must be source-generated and Native-AOT-safe.
 
-The cross-platform primitive exposes only `CreateWorkingExclusive`, `PublishFirstNoReplace`, `ExchangeRetainingPrevious`, `MoveNoReplace`, `ApplyOwnerOnlyAndVerify`, `UnlinkExact`, `EnumerateExactChildren`, and `FlushParent`. `ExchangeRetainingPrevious` is one atomic namespace exchange/replace: Linux/macOS swap `W` and `J`, leaving the displaced target at `W`, while Windows `ReplaceFileW(J, W, P)` (replaced, replacement, backup) retains old `J` at `P` and publishes `W` as `J`. The Unix arm then moves displaced `W -> P` without replacement. A crash between swap and that move is an explicit recoverable `Working` state. Permission application and verification operate on the captured file handle and the relative child reopened beneath the same retained parent; they never trust a newly resolved absolute parent path. Tests pin the Windows argument order and post-call identities even when executed through a deterministic fake primitive on non-Windows hosts.
+The cross-platform primitive exposes only `CreateWorkingExclusive`, `PublishFirstNoReplace`, `ExchangeRetainingPrevious`, `MoveNoReplace`, `ApplyOwnerOnlyAndVerify`, `CompareUnlink`, `EnumerateExactChildren`, and `FlushParent`. `ExchangeRetainingPrevious` is one atomic namespace exchange/replace: Linux/macOS swap `W` and `J`, leaving the displaced target at `W`, while Windows `ReplaceFileW(J, W, P)` (replaced, replacement, backup) retains old `J` at `P` and publishes `W` as `J`. The Unix arm then moves displaced `W -> P` without replacement. A crash between swap and that move is an explicit recoverable `Working` state. Permission application and verification operate on the captured file handle and the relative child reopened beneath the same retained parent; they never trust a newly resolved absolute parent path. Tests pin the Windows argument order and post-call identities even when executed through a deterministic fake primitive on non-Windows hosts.
 
 Publication must execute this exact sequence while the supplied lock asserts `location.GuardedDirectory`:
 
@@ -477,14 +480,14 @@ Publication must execute this exact sequence while the supplied lock asserts `lo
 6. For revision one, atomically rename `W -> J` without replacement. For an update, atomically exchange/replace `W` and `J` while retaining the displaced target at `W`/`P`, then move Unix `W -> P` without replacement.
 7. Prove `J` has the captured working identity and prove `P` has the exact expected prior identity. A mismatch preserves every leaf and returns recovery-required.
 8. Apply and verify owner-only posture on the captured `J` handle and its retained-parent-relative name.
-9. Fsync the retained parent, securely reread and compare `J`, then retire the exact predecessor `P -> D -> unlink`, fsync, and prove residue absence before returning.
+9. Fsync the retained parent, securely reread and compare `J`, then retire the authenticated predecessor through `P -> D ->` delegated compare-unlink, fsync, and prove residue absence before returning.
 ```
 
 Before publication, failures unlink only the still-proved `W` and preserve `J`. Once the atomic exchange/replace occurs, cancellation, I/O, permission, identity, and injected failures return `Data.RecoveryRequired`; they never claim no publication occurred or delete ambiguous evidence. A substitution in the last window is retained at `W`/`P`, detected by its mismatched identity, and never accepted.
 
 `ReadIfPresentAsync` opens `J` relative to the retained parent, applies the same bounded checks as `SecureFileReader.ReadBytesAsync` with `MaxJournalFileBytes` and `requireOwnerControlled: true`, returns its final same-handle metadata, and emits `file:secure-reread` only after that proof. Evidence reads use the same routine for `W`, `P`, and `D`.
 
-`DeleteDurably` performs no generic quarantine. It moves exact `J -> D` without replacement, reopens `D` relative/no-follow, verifies the exact expected identity and bytes before emitting `file:retiring-verified`, fsyncs the parent, unlinks only that exact opened child, fsyncs again, and proves `J/W/P/D` absent twice. `ProveAbsentDurably` inspects through the retained parent, flushes and emits `file:absence-parent-flushed`, inspects again, then emits `file:absence-proved`. The test inventory must prove this component never calls `IdentityOwnedFileSystemCleanup` and never creates `.arcanum-cleanup-*`.
+`DeleteDurably` performs no generic quarantine. It moves exact `J -> D` without replacement, reopens `D` relative/no-follow, verifies the exact expected identity and bytes before emitting `file:retiring-verified`, fsyncs the parent, then calls `CompareUnlink`. On Unix that primitive compares the retained D handle with the relative D name immediately before `unlinkat`, calls `unlinkat`, and requires `fstat` on the still-open expected handle to report link count zero immediately after; Windows uses handle disposition and applies the same zero-link/post-name proof. Any mismatch, injected substitution, or residual evidence is recovery-required and cannot produce clean absence. After the proof, fsync again and prove `J/W/P/D` absent twice. `ProveAbsentDurably` inspects through the retained parent, flushes and emits `file:absence-parent-flushed`, inspects again, then emits `file:absence-proved`. The test inventory must prove this component never calls `IdentityOwnedFileSystemCleanup` and never creates `.arcanum-cleanup-*`.
 
 - [ ] **Step 5: Run GREEN and commit**
 
@@ -738,8 +741,8 @@ Retire_writes_and_reads_closed_anchor_before_deleting_the_file
 Recover_finishes_exact_file_cleanup_beneath_a_closed_anchor
 Retire_is_idempotent_after_closed_anchor_file_delete_and_parent_fsync
 Closed_anchor_refuses_an_earlier_different_or_resealed_file
-Delete_refuses_identity_substitution_and_leaves_the_replacement
-Retiring_substitution_is_preserved_and_never_reported_absent
+Delete_refuses_identity_substitution_before_the_delegated_unlink_window
+Retiring_substitution_during_the_delegated_window_is_detected_and_never_reported_absent
 Next_epoch_cannot_open_until_exact_canonical_working_previous_retiring_and_temp_absence_is_proved
 ```
 
@@ -759,6 +762,7 @@ file:secure-reread
 file:previous-retiring
 file:previous-retiring-verified
 file:previous-unlinked
+file:previous-zero-link-verified
 file:previous-delete-parent-flushed
 file:residue-absence-proved
 anchor:advance-written
@@ -774,6 +778,7 @@ file:retiring-moved
 file:retiring-verified
 file:retiring-parent-flushed
 file:retiring-unlinked
+file:retiring-zero-link-verified
 file:delete-parent-flushed
 file:absence-parent-flushed
 file:absence-proved
@@ -834,8 +839,8 @@ Retirement must:
 2. Accept only terminal.Anchor or the exact Closed projection of terminal.Anchor.
 3. Inspect J/W/P/D and aliases first. If the anchor is Active, require exactly J, securely reread/authenticate it against terminal, then compare-write/readback the exact Closed anchor and emit closed-written/closed-readback.
 4. Beneath the exact Closed anchor, accept exactly one of: authenticated exact J; authenticated exact D; or proven total J/W/P/D absence. Reject every other combination before mutation.
-5. For exact J, move `J -> D` without replacement, reopen/authenticate D against terminal, fsync the retained parent, unlink the exact open D, fsync again, and prove J/W/P/D absence twice.
-6. For exact D, finish only the unlink/fsync/absence suffix. For total absence, fsync and repeat the absence proof.
+5. For exact J, move `J -> D` without replacement, reopen/authenticate D against terminal, fsync the retained parent, compare-unlink D and prove the retained expected handle's final link was removed, fsync again, and prove J/W/P/D absence twice.
+6. For exact D, finish only the compare-unlink/fsync/absence suffix. For total absence, fsync and repeat the absence proof.
 7. Retain the Closed tombstone and stable key.
 ```
 
@@ -874,6 +879,7 @@ Add a clearly labelled #243 foundation paragraph to DESIGN §10.20.3 that states
 The fixed slot is implemented but is not yet wired into Covenant reset, factory erasure, startup, admission, or a migration handler.
 The canonical file is the maintenance-lock sibling ending .grimoire-transition.active.json.
 The distinct key/anchor accounts, envelope/AAD bindings, closed genesis, epoch CAS, one-ahead recovery, and closed-before-delete order are exact.
+Retirement uses retained-parent compare-unlink plus a retained-handle zero-link postcondition; Unix has no unlink-by-handle primitive, so success proves those postconditions and fixed-namespace absence, not that `unlinkat` removed no last-instant same-UID replacement. Any observable ambiguity returns recovery-required and never becomes clean absence.
 Opaque payload bytes require a typed Native-AOT codec from #244 before any production transition may use them.
 The existing V3 same-database reset checkpoint remains the active runtime path until later #239 children replace it.
 ```
