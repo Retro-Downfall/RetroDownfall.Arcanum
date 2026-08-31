@@ -514,7 +514,7 @@ git commit -m "feat: publish Grimoire transition journal securely"
 
 **Interfaces:**
 - Consumes: Task 1 codecs/key provider, Task 2 file store, `BackupRestoreJournalInstallationIdentityProvider.RequireMatchesDatabase`, and caller-held `ArcanumMaintenanceLock`.
-- Produces: `IGrimoireOfflineTransitionJournalStore`, publication/recovery records, `BeginAsync`, and `AdvanceAsync`; Task 4 adds recovery and retirement behavior to this same store.
+- Produces: `IGrimoireOfflineTransitionJournalStore`, the publication record, `BeginAsync`, and `AdvanceAsync`; Task 4 adds the recovery records plus `RecoverAsync` and `RetireAsync` to this same interface/store.
 
 - [ ] **Step 1: Write failing begin/advance protocol tests**
 
@@ -528,17 +528,6 @@ internal sealed record GrimoireOfflineTransitionJournalPublication(
     byte[] PayloadBytes,
     GrimoireOfflineTransitionAnchorV1 Anchor,
     FileHandleMetadata FileMetadata);
-
-internal enum GrimoireOfflineTransitionJournalRecoveryOutcome : byte
-{
-    NoActiveJournal = 1,
-    Authenticated = 2,
-}
-
-internal sealed record GrimoireOfflineTransitionJournalRecoveryState(
-    GrimoireOfflineTransitionJournalRecoveryOutcome Outcome,
-    GrimoireOfflineTransitionJournalPublication? Publication,
-    Guid? OperationId = null);
 
 internal interface IGrimoireOfflineTransitionJournalStore
 {
@@ -557,16 +546,6 @@ internal interface IGrimoireOfflineTransitionJournalStore
         GrimoireOfflineTransitionJournalPublication current,
         ReadOnlyMemory<byte> payloadBytes,
         CancellationToken cancellationToken);
-
-    Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverAsync(
-        ArcanumMaintenanceLock heldInstallationLock,
-        string guardedDirectory,
-        CancellationToken cancellationToken);
-
-    Task<Result> RetireAsync(
-        ArcanumMaintenanceLock heldInstallationLock,
-        GrimoireOfflineTransitionJournalPublication terminal,
-        CancellationToken cancellationToken);
 }
 ```
 
@@ -576,6 +555,10 @@ Add these cases first:
 Begin_provisions_closed_genesis_then_active_zero_before_file_revision_one
 Begin_requires_external_installation_identity_to_match_the_database_identity
 Begin_publishes_file_then_secure_reread_then_anchor_revision_one
+Begin_active_exact_same_operation_resumes_only_byte_identical_payload
+Begin_active_different_operation_conflicts_without_mutation
+Begin_closed_same_operation_never_reopens
+Begin_closed_epoch_opens_only_next_epoch_for_a_different_operation
 Advance_keeps_epoch_operation_kind_payload_version_and_chains_previous_digest
 Advance_compares_current_file_identity_and_anchor_before_writing
 Failure_before_first_file_publication_compare_closes_only_the_exact_opening
@@ -656,7 +639,7 @@ Use this exact decision order:
 3. Require the external profile installation identity to equal installationId.
 4. Read the anchor and inspect fixed-file/temp/case evidence.
 5. If no anchor: prove no evidence, CreateOrOpen the dedicated key, dispose that lease, write/read back Closed(0) genesis.
-6. If an Active anchor exists: dispatch through the Task 4 recovery classifier; only exact same operation/kind/payloadVersion and byte-identical payload returns the existing publication.
+6. If an Active anchor exists: accept only the narrow exact-current state needed for idempotent begin—J alone exactly matches the anchor revision/digest and every binding, opens with the existing key, and names the same operation/kind/payloadVersion with byte-identical payload. Return that publication. A different operation conflicts; any one-ahead or W/P/D/alias/temp state returns recovery-required for Task 4's full classifier.
 7. If a Closed anchor names the same operation: refuse reopening.
 8. For another operation: require the existing key, exact location/profile/installation binding, and proven journal absence.
 9. Compare-write Closed(E) -> Active(E+1, revision 0).
@@ -706,8 +689,33 @@ git commit -m "feat: add transition journal begin and advance"
 - Modify: `tests/RetroDownfall.Arcanum.Tests/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStoreTests.cs`
 
 **Interfaces:**
-- Consumes: Task 3 `RecoverAsync`/`RetireAsync` declarations and exact publication values.
+- Consumes: Task 3's begin/advance interface, narrow exact-current begin classifier, and exact publication values.
 - Produces: the complete #243 fixed-slot protocol that #244 can consume without reopening or interpreting payload bytes.
+
+Task 4 adds these exact records and methods to the existing interface/store before writing the recovery tests:
+
+```csharp
+internal enum GrimoireOfflineTransitionJournalRecoveryOutcome : byte
+{
+    NoActiveJournal = 1,
+    Authenticated = 2,
+}
+
+internal sealed record GrimoireOfflineTransitionJournalRecoveryState(
+    GrimoireOfflineTransitionJournalRecoveryOutcome Outcome,
+    GrimoireOfflineTransitionJournalPublication? Publication,
+    Guid? OperationId = null);
+
+Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverAsync(
+    ArcanumMaintenanceLock heldInstallationLock,
+    string guardedDirectory,
+    CancellationToken cancellationToken);
+
+Task<Result> RetireAsync(
+    ArcanumMaintenanceLock heldInstallationLock,
+    GrimoireOfflineTransitionJournalPublication terminal,
+    CancellationToken cancellationToken);
+```
 
 - [ ] **Step 1: Add failing recovery and sequential-operation tests**
 
@@ -724,10 +732,6 @@ Recover_rejects_missing_key_or_identity_beside_active_or_closed_evidence
 Recover_rejects_unanchored_file_case_alias_stale_temp_unknown_residue_and_multiple_evidence
 Recover_converges_exchange_crashes_with_exact_working_or_previous_predecessor
 Recover_finishes_exact_predecessor_retirement_before_adopting_one_ahead
-Active_same_operation_begin_resumes_only_byte_identical_payload
-Active_different_operation_conflicts
-Closed_same_operation_never_reopens
-Closed_epoch_opens_only_the_next_epoch_for_a_different_operation
 ```
 
 To prove one-ahead, save anchor revision `N`, publish file revision `N+1` chained to its digest without updating the anchor, call `RecoverAsync`, and assert the anchor is synchronously advanced/read back before the authenticated publication is returned.
