@@ -18,6 +18,13 @@ internal sealed record GrimoireOfflineTransitionJournalPublication(
     GrimoireOfflineTransitionAnchorV1 Anchor,
     FileHandleMetadata FileMetadata);
 
+internal delegate Task<Result> GrimoireOfflineTransitionJournalReplaceDurably(
+    ArcanumMaintenanceLock heldInstallationLock,
+    GrimoireOfflineTransitionJournalLocation location,
+    ReadOnlyMemory<byte> bytes,
+    FileHandleIdentity? expectedCurrentIdentity,
+    CancellationToken cancellationToken);
+
 internal interface IGrimoireOfflineTransitionJournalStore
 {
 
@@ -54,6 +61,8 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
     private readonly Action<string>? _afterStep;
 
+    private readonly GrimoireOfflineTransitionJournalReplaceDurably _replaceDurably;
+
     internal GrimoireOfflineTransitionJournalStore(IOsCredentialStore credentials)
         : this(
             credentials,
@@ -68,7 +77,8 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         IOsCredentialStore credentials,
         GrimoireOfflineTransitionJournalFileStore files,
         GrimoireOfflineTransitionJournalAnchorStore anchors,
-        Action<string>? afterStep = null)
+        Action<string>? afterStep = null,
+        GrimoireOfflineTransitionJournalReplaceDurably? replaceDurably = null)
     {
 
         ArgumentNullException.ThrowIfNull(credentials);
@@ -82,6 +92,8 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         _anchors = anchors ?? throw new ArgumentNullException(nameof(anchors));
 
         _afterStep = afterStep;
+
+        _replaceDurably = replaceDurably ?? files.ReplaceDurablyAsync;
 
     }
 
@@ -358,7 +370,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result replaced = await _files.ReplaceDurablyAsync(
+        Result replaced = await _replaceDurably(
                 heldInstallationLock,
                 location,
                 encoded.Value,
@@ -459,6 +471,17 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         {
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+        }
+
+        Result identity = _identities.RequireMatchesDatabase(
+            resolved.Value.ProfileNamespace,
+            current.Envelope.InstallationId);
+
+        if (identity.IsFailure)
+        {
+
+            return Result<GrimoireOfflineTransitionJournalPublication>.Failure(identity.Error);
 
         }
 
@@ -588,7 +611,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         }
 
-        Result replaced = await _files.ReplaceDurablyAsync(
+        Result replaced = await _replaceDurably(
                 heldInstallationLock,
                 current.Location,
                 encoded.Value,
@@ -599,7 +622,10 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         if (replaced.IsFailure)
         {
 
-            return Result<GrimoireOfflineTransitionJournalPublication>.Failure(replaced.Error);
+            return await ClassifyFailedAdvanceReplacementAsync(
+                    current,
+                    replaced.Error)
+                .ConfigureAwait(false);
 
         }
 
@@ -888,6 +914,46 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             GrimoireOfflineTransitionAnchorWriteStage.Closed);
 
         return tombstoned.IsSuccess
+            ? Result<GrimoireOfflineTransitionJournalPublication>.Failure(original)
+            : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+    }
+
+    private async Task<Result<GrimoireOfflineTransitionJournalPublication>>
+        ClassifyFailedAdvanceReplacementAsync(
+            GrimoireOfflineTransitionJournalPublication current,
+            Error original)
+    {
+
+        Result<GrimoireOfflineTransitionJournalEvidence> inspected =
+            await _files.InspectEvidenceAsync(
+                    current.Location,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+        if (inspected.IsFailure)
+        {
+
+            return RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
+
+        }
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
+
+        Result<byte[]> currentBytes =
+            GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(current.Envelope);
+
+        bool exactOldPublicationRemains = currentBytes.IsSuccess
+            && evidence.Canonical is { } canonical
+            && evidence.Working is null
+            && evidence.Previous is null
+            && evidence.Retiring is null
+            && FileHandleIdentity.IdentitiesMatch(
+                current.FileMetadata.Identity,
+                canonical.Metadata.Identity)
+            && canonical.Bytes.Span.SequenceEqual(currentBytes.Value);
+
+        return exactOldPublicationRemains
             ? Result<GrimoireOfflineTransitionJournalPublication>.Failure(original)
             : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
 

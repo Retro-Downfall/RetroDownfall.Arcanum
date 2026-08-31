@@ -414,6 +414,113 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Advance_requires_external_installation_identity_to_still_match()
+    {
+
+        GrimoireOfflineTransitionJournalStore store = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(store);
+
+        byte[] before = File.ReadAllBytes(first.Location.JournalPath);
+
+        string account = ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(
+            first.Location.ProfileNamespace.AccountSuffix);
+
+        Guid drifted = Guid.Parse("66666666-6666-4666-8666-666666666666");
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _credentials.Set(
+                ArcanumCredentialIdentity.Service,
+                account,
+                drifted.ToString("D").ToUpperInvariant()).Status);
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await store.AdvanceAsync(
+            _lock,
+            first,
+            Bytes("second"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, result.Error.Code);
+
+        Assert.Equal(before, File.ReadAllBytes(first.Location.JournalPath));
+
+        Assert.Equal(
+            first.Anchor,
+            Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(
+                first.Location)));
+
+    }
+
+    [Fact]
+    public async Task Advance_post_atomic_replace_failure_is_recovery_required_with_old_anchor()
+    {
+
+        GrimoireOfflineTransitionJournalStore initial = ReadyStore();
+
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(initial);
+
+        GrimoireOfflineTransitionJournalFileStore postRenameFiles = new(
+            failBeforeStep: step => step == "file:permissions-verified");
+
+        async Task<Result> ReplaceThenMaskFailure(
+            ArcanumMaintenanceLock heldInstallationLock,
+            GrimoireOfflineTransitionJournalLocation location,
+            ReadOnlyMemory<byte> bytes,
+            FileHandleIdentity? expectedCurrentIdentity,
+            CancellationToken cancellationToken)
+        {
+
+            Result replaced = await postRenameFiles.ReplaceDurablyAsync(
+                heldInstallationLock,
+                location,
+                bytes,
+                expectedCurrentIdentity,
+                cancellationToken);
+
+            return replaced.IsFailure
+                ? new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "The injected lower layer hid its post-rename classification.")
+                : replaced;
+
+        }
+
+        GrimoireOfflineTransitionJournalStore advancing = new(
+            _credentials,
+            postRenameFiles,
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials),
+            afterStep: null,
+            replaceDurably: ReplaceThenMaskFailure);
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await advancing.AdvanceAsync(
+            _lock,
+            first,
+            Bytes("second"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.Error.Code);
+
+        Assert.Equal(
+            first.Anchor,
+            Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(
+                first.Location)));
+
+        GrimoireOfflineTransitionEnvelopeV1 oneAhead = Value(
+            GrimoireOfflineTransitionJournalAuthenticator.DecodeEnvelope(
+                File.ReadAllBytes(first.Location.JournalPath)));
+
+        Assert.Equal(first.Envelope.Revision + 1, oneAhead.Revision);
+
+        Assert.Equal(first.EnvelopeDigest, oneAhead.PreviousEnvelopeDigest);
+
+    }
+
+    [Fact]
     public async Task Failure_before_first_file_publication_compare_closes_only_the_exact_opening()
     {
 
