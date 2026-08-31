@@ -50,7 +50,9 @@ public sealed class ArcanumDbContext(
             return;
         }
 
-        ArcanumDbContextOptionsConfigurator.Configure(optionsBuilder, passphraseSource, drain: null);
+        ArcanumDbContextOptionsConfigurator.ConfigureNonServingFallback(
+            optionsBuilder,
+            passphraseSource);
     }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

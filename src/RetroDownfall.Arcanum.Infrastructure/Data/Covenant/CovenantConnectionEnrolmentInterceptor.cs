@@ -1,73 +1,143 @@
+using System.Data;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
-/// Enrols every Grimoire connection Entity Framework opens with the Covenant drain, for exactly as
-/// long as it is open.
+/// Owns ordinary Grimoire admission and Covenant-drain enrolment for every physical connection
+/// Entity Framework opens.
 /// </summary>
 /// <remarks>
-/// Enrolment used to be a component's responsibility — the Covenant connection source enrolled the
-/// scope's handle, and so did the long-running operation store — which made "is this open handle
-/// drained" a question about which unrelated services the scope happened to resolve. A scope that
-/// obtained <see cref="ArcanumDbContext"/> and opened its connection without asking for either
-/// component held the Grimoire open and was invisible to the drain, and the maintenance sweep driver
-/// is exactly that scope. An unenrolled handle survives both the drain and the pool clear, because it
-/// is in use rather than idle, and the exclusive maintenance connection that follows then spends the
-/// whole busy timeout on every wal-index lock its first transaction takes before <c>BEGIN</c> gives
-/// up: tens of seconds of waiting ending in <c>database is locked</c>, with no way for that caller to
-/// name the holder.
+/// Admission is acquired before provider I/O and revalidated after it. The post-open ordering is
+/// deliberate: a handle that loses its generation is physically closed before its ticket reports
+/// refusal, while a successfully revalidated handle is enrolled in the drain before EF can return
+/// it to its caller.
 ///
-/// <para>Hooked to the open rather than to a constructor, so opening without enrolling is not a shape
-/// this composition can express. A constructor-time enrolment would also be wrong for a pooled
-/// context, whose constructor runs once per pooled instance while its connection is opened and closed
-/// many times after that.</para>
-///
-/// <para>Enrolment is released on close and on dispose, and holding it across a close would be the
-/// safer-looking mistake: the drain keeps a strong reference to every handle it is holding, since an
-/// open connection nobody references still holds the database file, so a registration that outlived
-/// its connection would keep that connection alive for the life of the process.</para>
+/// <para>One weak lifecycle state follows each physical connection across pooled reopen cycles. Its
+/// drain registration is only this interceptor's registration; the drain itself remains reference
+/// counted, so releasing it cannot unregister a second logical holder of the same handle.</para>
 /// </remarks>
 internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInterceptor
 {
+
+    private readonly IGrimoireConnectionAdmissionGate _admissionGate;
 
     private readonly ICovenantConnectionDrain _drain;
 
     private readonly Lock _gate = new();
 
-    private readonly ConditionalWeakTable<DbConnection, IDisposable> _enrolments = [];
+    private readonly ConditionalWeakTable<DbConnection, ConnectionLifecycleState> _lifecycles = [];
 
-    internal CovenantConnectionEnrolmentInterceptor(ICovenantConnectionDrain drain)
+    internal CovenantConnectionEnrolmentInterceptor(
+        IGrimoireConnectionAdmissionGate admissionGate,
+        ICovenantConnectionDrain drain)
     {
+
+        ArgumentNullException.ThrowIfNull(admissionGate);
 
         ArgumentNullException.ThrowIfNull(drain);
 
+        _admissionGate = admissionGate;
+
         _drain = drain;
+
+    }
+
+    public override InterceptionResult ConnectionOpening(
+        DbConnection connection,
+        ConnectionEventData eventData,
+        InterceptionResult result)
+    {
+
+        BeginOpen(connection);
+
+        return base.ConnectionOpening(connection, eventData, result);
+
+    }
+
+    public override ValueTask<InterceptionResult> ConnectionOpeningAsync(
+        DbConnection connection,
+        ConnectionEventData eventData,
+        InterceptionResult result,
+        CancellationToken cancellationToken = default)
+    {
+
+        BeginOpen(connection);
+
+        return base.ConnectionOpeningAsync(
+            connection,
+            eventData,
+            result,
+            cancellationToken);
 
     }
 
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
 
-        Enrol(connection);
+        if (!CompleteOpen(connection))
+        {
+
+            connection.Close();
+
+            CompleteRefusalAfterPhysicalClose(connection);
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
 
         base.ConnectionOpened(connection, eventData);
 
     }
 
-    public override Task ConnectionOpenedAsync(
+    public override async Task ConnectionOpenedAsync(
         DbConnection connection,
         ConnectionEndEventData eventData,
         CancellationToken cancellationToken = default)
     {
 
-        Enrol(connection);
+        if (!CompleteOpen(connection))
+        {
 
-        return base.ConnectionOpenedAsync(connection, eventData, cancellationToken);
+            await connection.CloseAsync().ConfigureAwait(false);
+
+            CompleteRefusalAfterPhysicalClose(connection);
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
+        await base.ConnectionOpenedAsync(connection, eventData, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    public override void ConnectionFailed(
+        DbConnection connection,
+        ConnectionErrorEventData eventData)
+    {
+
+        Release(connection);
+
+        base.ConnectionFailed(connection, eventData);
+
+    }
+
+    public override Task ConnectionFailedAsync(
+        DbConnection connection,
+        ConnectionErrorEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+
+        Release(connection);
+
+        return base.ConnectionFailedAsync(connection, eventData, cancellationToken);
 
     }
 
@@ -107,36 +177,103 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     }
 
-    /// <summary>
-    /// Enrols one handle once, however many times its owner reopens it.
-    /// </summary>
-    /// <remarks>
-    /// A drain closes the handles it holds directly rather than through Entity Framework, so a
-    /// reopen after a drain arrives here with the enrolment still standing. Registering again would
-    /// leave a count this interceptor can never pay back, and the handle would stay enrolled after
-    /// its owner had let go of it.
-    /// </remarks>
-    private void Enrol(DbConnection connection)
+    private void BeginOpen(DbConnection connection)
     {
-
-        if (connection is not SqliteConnection sqlite)
-        {
-
-            return;
-
-        }
 
         lock (_gate)
         {
 
-            if (_enrolments.TryGetValue(sqlite, out _))
+            ConnectionLifecycleState lifecycle = _lifecycles.GetOrCreateValue(connection);
+
+            if (lifecycle.OpenTicket is not null)
+            {
+
+                throw new InvalidOperationException(
+                    "This physical Grimoire connection already has an unresolved open attempt.");
+
+            }
+
+            lifecycle.OpenTicket = _admissionGate.AcquireOrdinaryOpen(connection);
+
+            lifecycle.RefusalAfterOpenRequired = false;
+
+        }
+
+    }
+
+    private bool CompleteOpen(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle)
+                || lifecycle.OpenTicket is null)
+            {
+
+                throw new InvalidOperationException(
+                    "This physical Grimoire connection has no matching open ticket.");
+
+            }
+
+            Result admitted = lifecycle.OpenTicket.MarkOpened();
+
+            if (admitted.IsFailure)
+            {
+
+                lifecycle.RefusalAfterOpenRequired = true;
+
+                return false;
+
+            }
+
+            lifecycle.OpenTicket.Dispose();
+
+            lifecycle.OpenTicket = null;
+
+            if (connection is SqliteConnection sqlite && lifecycle.Enrolment is null)
+            {
+
+                lifecycle.Enrolment = _drain.Register(sqlite);
+
+            }
+
+            return true;
+
+        }
+
+    }
+
+    private void CompleteRefusalAfterPhysicalClose(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle)
+                || lifecycle.OpenTicket is null
+                || !lifecycle.RefusalAfterOpenRequired)
             {
 
                 return;
 
             }
 
-            _enrolments.Add(sqlite, _drain.Register(sqlite));
+            if (connection.State != ConnectionState.Closed)
+            {
+
+                throw new InvalidOperationException(
+                    "A refused Grimoire open must be physically closed before its admission ticket completes.");
+
+            }
+
+            lifecycle.OpenTicket.MarkRefusedAfterOpen();
+
+            lifecycle.OpenTicket.Dispose();
+
+            lifecycle.OpenTicket = null;
+
+            lifecycle.RefusalAfterOpenRequired = false;
 
         }
 
@@ -148,18 +285,60 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         lock (_gate)
         {
 
-            if (!_enrolments.TryGetValue(connection, out IDisposable? enrolment))
+            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle))
             {
 
                 return;
 
             }
 
-            _ = _enrolments.Remove(connection);
+            if (lifecycle.OpenTicket is not null)
+            {
 
-            enrolment.Dispose();
+                if (lifecycle.RefusalAfterOpenRequired)
+                {
+
+                    if (connection.State != ConnectionState.Closed)
+                    {
+
+                        return;
+
+                    }
+
+                    lifecycle.OpenTicket.MarkRefusedAfterOpen();
+
+                }
+                else
+                {
+
+                    lifecycle.OpenTicket.MarkFailed();
+
+                }
+
+                lifecycle.OpenTicket.Dispose();
+
+                lifecycle.OpenTicket = null;
+
+                lifecycle.RefusalAfterOpenRequired = false;
+
+            }
+
+            lifecycle.Enrolment?.Dispose();
+
+            lifecycle.Enrolment = null;
 
         }
+
+    }
+
+    private sealed class ConnectionLifecycleState
+    {
+
+        internal IGrimoireConnectionOpenTicket? OpenTicket { get; set; }
+
+        internal IDisposable? Enrolment { get; set; }
+
+        internal bool RefusalAfterOpenRequired { get; set; }
 
     }
 

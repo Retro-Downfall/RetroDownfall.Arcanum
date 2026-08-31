@@ -311,6 +311,7 @@ public static class ServiceCollectionExtensions
             ArcanumDbContextOptionsConfigurator.Configure(
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>()));
 
         // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
@@ -1120,6 +1121,7 @@ public static class ServiceCollectionExtensions
             (sp, options) => ArcanumDbContextOptionsConfigurator.Configure(
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>()),
             poolSize: 32);
 
@@ -1632,6 +1634,13 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
+
+        services.AddSingleton(
+            static sp => new GrimoireConnectionAdmissionGate(
+                sp.GetRequiredService<TimeProvider>()));
+
+        services.AddSingleton<IGrimoireConnectionAdmissionGate>(
+            static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
 
         // Its enrolment set is the proof a drain owns. Every direct Covenant handle in the process
         // therefore has to meet the same instance, whichever request scope opened it.

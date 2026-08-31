@@ -1,9 +1,11 @@
 using System.Data;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -89,6 +91,42 @@ public sealed class CovenantConnectionDrainTests
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
+        Assert.Equal(ConnectionState.Closed, database.Connection.State);
+
+    }
+
+    [Fact]
+    public async Task An_EF_close_releases_only_the_interceptors_reference_counted_enrolment()
+    {
+
+        await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        CovenantConnectionDrain drain = new();
+
+        GrimoireConnectionAdmissionGate admission = new(TimeProvider.System);
+
+        using IDisposable otherHolder = drain.Register(database.Connection);
+
+        DbContextOptions<DrainProbeDbContext> options =
+            new DbContextOptionsBuilder<DrainProbeDbContext>()
+                .UseSqlite(database.Connection, contextOwnsConnection: false)
+                .AddInterceptors(new CovenantConnectionEnrolmentInterceptor(admission, drain))
+                .Options;
+
+        await using DrainProbeDbContext context = new(options);
+
+        await context.Database.OpenConnectionAsync(Token);
+
+        await context.Database.CloseConnectionAsync();
+
+        await database.Connection.OpenAsync(Token);
+
+        Result drained = await drain.DrainAsync(Token);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        // The interceptor paid back only its own enrolment. The other logical holder still owns the
+        // physical handle, so the reference-counted drain must retain and close it.
         Assert.Equal(ConnectionState.Closed, database.Connection.State);
 
     }
@@ -486,6 +524,11 @@ public sealed class CovenantConnectionDrainTests
 
         }
 
+    }
+
+    private sealed class DrainProbeDbContext(DbContextOptions<DrainProbeDbContext> options)
+        : DbContext(options)
+    {
     }
 
     /// <summary>

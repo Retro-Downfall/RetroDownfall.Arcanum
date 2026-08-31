@@ -17,19 +17,37 @@ internal static class ArcanumDbContextOptionsConfigurator
 {
 
     /// <summary>
-    /// Builds the workload's options, enrolling every connection it opens with <paramref name="drain"/>.
+    /// Builds one serving workload's options with the host-wide admission and drain singletons.
     /// </summary>
-    /// <remarks>
-    /// <paramref name="drain"/> is null only where there is no host to drain into: the design-time
-    /// factory and <see cref="ArcanumDbContext.OnConfiguring"/>'s fallback for a context somebody
-    /// constructed by hand. Every composition that registers this context also registers the drain,
-    /// and passes it, because a Covenant erasure has to be able to close the handles that
-    /// composition opens.
-    /// </remarks>
     public static void Configure(
         DbContextOptionsBuilder optionsBuilder,
         IGrimoireDbPassphraseSource passphraseSource,
-        ICovenantConnectionDrain? drain)
+        IGrimoireConnectionAdmissionGate admissionGate,
+        ICovenantConnectionDrain drain)
+    {
+
+        ArgumentNullException.ThrowIfNull(admissionGate);
+
+        ArgumentNullException.ThrowIfNull(drain);
+
+        ConfigureProvider(optionsBuilder, passphraseSource);
+
+        _ = optionsBuilder.AddInterceptors(
+            new CovenantConnectionEnrolmentInterceptor(admissionGate, drain));
+
+    }
+
+    /// <summary>
+    /// Configures the manual/design-time fallback that has no serving host or maintenance owner.
+    /// </summary>
+    internal static void ConfigureNonServingFallback(
+        DbContextOptionsBuilder optionsBuilder,
+        IGrimoireDbPassphraseSource passphraseSource) =>
+        ConfigureProvider(optionsBuilder, passphraseSource);
+
+    private static void ConfigureProvider(
+        DbContextOptionsBuilder optionsBuilder,
+        IGrimoireDbPassphraseSource passphraseSource)
     {
 
         string connectionString = new SqliteConnectionStringBuilder
@@ -42,13 +60,6 @@ internal static class ArcanumDbContextOptionsConfigurator
             .UseSqlite(connectionString)
             .UseModel(ArcanumDbContextModel.Instance)
             .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance);
-
-        if (drain is not null)
-        {
-
-            _ = optionsBuilder.AddInterceptors(new CovenantConnectionEnrolmentInterceptor(drain));
-
-        }
 
     }
 

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -151,6 +152,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
             services.AddScoped<IContextPreviewService>(_ => _fakeIntelligence);
 
+            services.RemoveAll<IDbContextOptionsConfiguration<ArcanumDbContext>>();
+
             services.RemoveAll<DbContextOptions<ArcanumDbContext>>();
 
             services.RemoveAll<ArcanumDbContext>();
@@ -180,6 +183,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                         .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance)
                         .AddInterceptors(
                             new CovenantConnectionEnrolmentInterceptor(
+                                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                                 sp.GetRequiredService<ICovenantConnectionDrain>())));
             }
             else
