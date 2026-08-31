@@ -207,6 +207,36 @@ public sealed class GrimoireConnectionAdmissionGateTests
     }
 
     [Fact]
+    public async Task Precancelled_connection_close_does_not_issue_a_lease_when_no_open_is_unresolved()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(9));
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => gate.CloseConnectionAdmissionAsync(closing, cancelled.Token).AsTask());
+
+        Result<IGrimoireExclusiveClosedLease> resumed =
+            await gate.CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = resumed.Value;
+
+        Result keptClosed = await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None);
+
+        Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
+
+    }
+
+    [Fact]
     public async Task Owner_generation_and_double_disposition_mismatches_are_rejected()
     {
 
@@ -291,6 +321,41 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(duplicate.IsFailure);
 
         Assert.Equal(observedGeneration + 1, await nextOpen);
+
+    }
+
+    [Fact]
+    public async Task Precancelled_next_open_generation_wait_is_cancelled_when_generation_is_already_open()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        long observedGeneration = gate.CurrentGeneration;
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(10));
+
+        Result<IGrimoireExclusiveClosedLease> closed =
+            await gate.CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+        Result reopened = await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            CancellationToken.None);
+
+        Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        Task<long> nextOpen = gate.WaitForNextOpenGenerationAsync(
+            observedGeneration,
+            cancelled.Token);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => nextOpen);
 
     }
 

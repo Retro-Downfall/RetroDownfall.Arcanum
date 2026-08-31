@@ -208,6 +208,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         try
         {
 
@@ -225,6 +227,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                     "A physical Grimoire open did not reach its terminal callback before maintenance closing timed out."));
 
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         lock (_sync)
         {
@@ -260,6 +264,13 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         {
 
             throw new ArgumentOutOfRangeException(nameof(observedGeneration));
+
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+
+            return Task.FromCanceled<long>(cancellationToken);
 
         }
 
