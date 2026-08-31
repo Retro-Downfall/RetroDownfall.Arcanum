@@ -294,7 +294,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                     LifecycleConflict("Another Covenant owner already controls Grimoire admission."));
 
             }
-
             else if (initiatingRequest is not null
                 && (!ReferenceEquals(_closure.InitiatingRequest, initiatingRequest)
                     || !ReferenceEquals(_closure.ScopedConnection, scopedConnection)))
@@ -813,13 +812,43 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         && token.Generation <= _generation
         && token.Closure.ActiveClosedLease is null;
 
-    private Result MarkOpened(OpenTicket ticket)
+    private Result RevalidateAfterNativeOpen(OpenTicket ticket)
     {
 
         lock (_sync)
         {
 
             ticket.RequireStateWhileLocked(OpenTicketState.Opening);
+
+            if (ticket.RefusalRequested
+                || ticket.Generation != _generation
+                || _state == GateState.Closed)
+            {
+
+                ticket.State = OpenTicketState.RefusedAfterOpenRequired;
+
+                return Result.Failure(
+                    new Error(
+                        StaleOpenCode,
+                        "The physical Grimoire open lost its admission generation and must be closed."));
+
+            }
+
+            ticket.State = OpenTicketState.RevalidatedAfterOpen;
+
+            return Result.Success();
+
+        }
+
+    }
+
+    private Result MarkOpened(OpenTicket ticket)
+    {
+
+        lock (_sync)
+        {
+
+            ticket.RequireStateWhileLocked(OpenTicketState.RevalidatedAfterOpen);
 
             if (ticket.RefusalRequested
                 || ticket.Generation != _generation
@@ -849,7 +878,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         lock (_sync)
         {
 
-            if (ticket.State != OpenTicketState.Opening)
+            if (ticket.State is not OpenTicketState.Opening
+                and not OpenTicketState.RevalidatedAfterOpen)
             {
 
                 throw new InvalidOperationException(
@@ -883,7 +913,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         lock (_sync)
         {
 
-            if (ticket.State == OpenTicketState.Opening)
+            if (ticket.State is OpenTicketState.Opening
+                or OpenTicketState.RevalidatedAfterOpen)
             {
 
                 CompleteTicketWhileLocked(ticket);
@@ -1812,9 +1843,11 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         Opening = 1,
 
-        RefusedAfterOpenRequired = 2,
+        RevalidatedAfterOpen = 2,
 
-        Terminal = 3,
+        RefusedAfterOpenRequired = 3,
+
+        Terminal = 4,
 
     }
 
@@ -2073,6 +2106,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal Task TerminalCallback => _terminal.Task;
 
+        public Result RevalidateAfterNativeOpen()
+        {
+
+            ThrowIfDisposed();
+
+            return gate.RevalidateAfterNativeOpen(this);
+
+        }
+
         public Result MarkOpened()
         {
 
@@ -2119,7 +2161,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal void RequestRefusalWhileLocked()
         {
 
-            if (State == OpenTicketState.Opening)
+            if (State is OpenTicketState.Opening
+                or OpenTicketState.RevalidatedAfterOpen)
             {
 
                 RefusalRequested = true;

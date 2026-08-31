@@ -14,10 +14,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// Entity Framework opens.
 /// </summary>
 /// <remarks>
-/// Admission is acquired before provider I/O and revalidated after it. The post-open ordering is
-/// deliberate: a handle that loses its generation is physically closed before its ticket reports
-/// refusal, while a successfully revalidated handle is enrolled in the drain before EF can return
-/// it to its caller.
+/// Admission is acquired before provider I/O and revalidated immediately after it. The post-open
+/// ordering is deliberate: a handle that already lost its generation is physically closed before
+/// initializer I/O, drain enrolment, or ticket refusal. A revalidated handle remains unresolved
+/// through initialization and drain enrolment, then completes only after a final generation check.
 ///
 /// <para>One weak lifecycle state follows each physical connection across pooled reopen cycles. Its
 /// drain registration is only this interceptor's registration; the drain itself remains reference
@@ -88,6 +88,17 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
 
+        if (!RevalidateAfterNativeOpen(connection))
+        {
+
+            connection.Close();
+
+            CompleteRefusalAfterPhysicalClose(connection);
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
+
         bool admitted;
 
         try
@@ -138,6 +149,17 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         ConnectionEndEventData eventData,
         CancellationToken cancellationToken = default)
     {
+
+        if (!RevalidateAfterNativeOpen(connection))
+        {
+
+            await connection.CloseAsync().ConfigureAwait(false);
+
+            CompleteRefusalAfterPhysicalClose(connection);
+
+            throw new GrimoireMaintenanceUnavailableException();
+
+        }
 
         bool admitted;
 
@@ -313,7 +335,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
     }
 
-    private bool CompleteOpen(DbConnection connection)
+    private bool RevalidateAfterNativeOpen(DbConnection connection)
     {
 
         lock (_gate)
@@ -329,6 +351,38 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
             }
 
             lifecycle.NativeOpenObserved = true;
+
+            Result admitted = lifecycle.OpenTicket.RevalidateAfterNativeOpen();
+
+            if (admitted.IsFailure)
+            {
+
+                lifecycle.RefusalAfterOpenRequired = true;
+
+                return false;
+
+            }
+
+            return true;
+
+        }
+
+    }
+
+    private bool CompleteOpen(DbConnection connection)
+    {
+
+        lock (_gate)
+        {
+
+            if (!_lifecycles.TryGetValue(connection, out ConnectionLifecycleState? lifecycle)
+                || lifecycle.OpenTicket is null)
+            {
+
+                throw new InvalidOperationException(
+                    "This physical Grimoire connection has no matching open ticket.");
+
+            }
 
             if (connection is SqliteConnection sqlite && lifecycle.Enrolment is null)
             {

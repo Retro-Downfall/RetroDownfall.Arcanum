@@ -48,9 +48,15 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         RecordingConnectionDrain drain = new();
 
+        RecordingConnectionInitializer initializer = new();
+
         await using GatedOpenSqliteConnection connection = new(ConnectionString);
 
-        await using ProbeDbContext context = CreateContext(connection, gate, drain);
+        await using ProbeDbContext context = CreateContext(
+            connection,
+            gate,
+            drain,
+            initializer);
 
         Task opening = context.Database.OpenConnectionAsync();
 
@@ -75,6 +81,68 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
         connection.AllowOpen();
 
         _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(() => opening);
+
+        Assert.Equal(ConnectionState.Closed, connection.State);
+
+        Assert.Equal(1, connection.PhysicalCloseCount);
+
+        Assert.Equal(0, initializer.CallCount);
+
+        Assert.Equal(0, drain.RegisterCount);
+
+        Assert.Equal(0, drain.DisposeCount);
+
+        Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+    }
+
+    [Fact]
+    public async Task Closure_during_post_open_initializer_closes_before_ticket_completion()
+    {
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        RecordingConnectionDrain drain = new();
+
+        BlockingConnectionInitializer initializer = new();
+
+        await using TrackingSqliteConnection connection = new(ConnectionString);
+
+        await using ProbeDbContext context = CreateContext(
+            connection,
+            gate,
+            drain,
+            initializer);
+
+        Task opening = context.Database.OpenConnectionAsync();
+
+        await initializer.Entered;
+
+        await using IGrimoireClosingOwner closing = Begin(gate, 20);
+
+        Result requestsDrained = await gate.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None);
+
+        Assert.True(
+            requestsDrained.IsSuccess,
+            requestsDrained.IsFailure ? requestsDrained.Error.Message : null);
+
+        Task<Result<IGrimoireExclusiveClosedLease>> closingAdmission = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Assert.False(closingAdmission.IsCompleted);
+
+        initializer.AllowCompletion();
+
+        _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(() => opening);
+
+        Assert.Equal(1, initializer.CallCount);
 
         Assert.Equal(ConnectionState.Closed, connection.State);
 
@@ -677,6 +745,80 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
             CovenantSqliteConnectionMode mode,
             CancellationToken cancellationToken) =>
             ValueTask.CompletedTask;
+
+        public CovenantSqliteAuthorizationScope Authorize(
+            SqliteConnection connection,
+            CovenantSqliteAuthorizationKind kind) =>
+            throw new NotSupportedException();
+
+        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
+            RestoreStagingManagedAuthoritySanitizationCapability authority,
+            RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
+            throw new NotSupportedException();
+
+    }
+
+    private sealed class RecordingConnectionInitializer : ICovenantSqliteConnectionInitializer
+    {
+
+        private int _callCount;
+
+        internal int CallCount => Volatile.Read(ref _callCount);
+
+        public ValueTask InitializeAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken)
+        {
+
+            _ = Interlocked.Increment(ref _callCount);
+
+            return ValueTask.CompletedTask;
+
+        }
+
+        public CovenantSqliteAuthorizationScope Authorize(
+            SqliteConnection connection,
+            CovenantSqliteAuthorizationKind kind) =>
+            throw new NotSupportedException();
+
+        public CovenantSqliteAuthorizationScope AuthorizeRestoreStagingManagedAuthoritySanitization(
+            RestoreStagingManagedAuthoritySanitizationCapability authority,
+            RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
+            throw new NotSupportedException();
+
+    }
+
+    private sealed class BlockingConnectionInitializer : ICovenantSqliteConnectionInitializer
+    {
+
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _allowCompletion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _callCount;
+
+        internal int CallCount => Volatile.Read(ref _callCount);
+
+        internal Task Entered => _entered.Task;
+
+        internal void AllowCompletion() => _allowCompletion.TrySetResult();
+
+        public async ValueTask InitializeAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken)
+        {
+
+            _ = Interlocked.Increment(ref _callCount);
+
+            _entered.TrySetResult();
+
+            await _allowCompletion.Task.WaitAsync(cancellationToken);
+
+        }
 
         public CovenantSqliteAuthorizationScope Authorize(
             SqliteConnection connection,

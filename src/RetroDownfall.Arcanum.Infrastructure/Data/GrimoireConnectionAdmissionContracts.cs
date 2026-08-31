@@ -125,6 +125,8 @@ internal interface IGrimoireConnectionOpenTicket : IDisposable
 
     long Generation { get; }
 
+    Result RevalidateAfterNativeOpen();
+
     Result MarkOpened();
 
     void MarkFailed();

@@ -25,9 +25,99 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.Equal(gate.CurrentGeneration, ticket.Generation);
 
+        ticket.MarkFailed();
+
+    }
+
+    [Fact]
+    public void Successful_post_native_open_revalidation_remains_unresolved_until_final_success()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        using SqliteConnection connection = new();
+
+        using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
+
+        Result revalidated = ticket.RevalidateAfterNativeOpen();
+
+        Assert.True(
+            revalidated.IsSuccess,
+            revalidated.IsFailure ? revalidated.Error.Message : null);
+
         Result opened = ticket.MarkOpened();
 
         Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
+
+    }
+
+    [Fact]
+    public async Task Stale_open_is_refused_at_post_native_open_revalidation()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        using SqliteConnection connection = new();
+
+        using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(18));
+
+        Task<Result<IGrimoireExclusiveClosedLease>> close = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Result revalidated = ticket.RevalidateAfterNativeOpen();
+
+        Assert.True(revalidated.IsFailure);
+
+        Assert.False(close.IsCompleted);
+
+        ticket.MarkRefusedAfterOpen();
+
+        Result<IGrimoireExclusiveClosedLease> closed = await close;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+    }
+
+    [Fact]
+    public async Task Closure_between_post_native_open_revalidation_and_final_success_wins()
+    {
+
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        using SqliteConnection connection = new();
+
+        using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(connection);
+
+        Result revalidated = ticket.RevalidateAfterNativeOpen();
+
+        Assert.True(
+            revalidated.IsSuccess,
+            revalidated.IsFailure ? revalidated.Error.Message : null);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(19));
+
+        Task<Result<IGrimoireExclusiveClosedLease>> close = gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        Result opened = ticket.MarkOpened();
+
+        Assert.True(opened.IsFailure);
+
+        Assert.False(close.IsCompleted);
+
+        ticket.MarkRefusedAfterOpen();
+
+        Result<IGrimoireExclusiveClosedLease> closed = await close;
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
 
     }
 
@@ -1570,7 +1660,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
 
-
         TaskCompletionSource terminalCasCompleted = NewBarrier();
 
         terminalCasCompleted.TrySetResult();
@@ -1856,7 +1945,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         await allowNativeCompletion.Task;
 
-        Result admitted = ticket.MarkOpened();
+        Result admitted = ticket.RevalidateAfterNativeOpen();
 
         Assert.True(admitted.IsFailure);
 
@@ -2125,6 +2214,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
                         dueAt = dueAt.Add(Period);
 
                     }
+
                     while (dueAt <= now);
 
                     DueAt = dueAt;
